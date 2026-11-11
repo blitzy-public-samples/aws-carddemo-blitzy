@@ -883,6 +883,7 @@ entries:
   # ---------------------------------------------------------------------------------------------------------
   # Version probes, recorded verbatim in environment.yaml. Installation paths as in zip bin/carddemo.env.
   # The flag forms are unconfirmed; a failing probe or command is recorded as text, never raised.
+  # report.py --import-unikix closes GAP-MIS-009 only once each of these entries is status: confirmed.
   # ---------------------------------------------------------------------------------------------------------
   version_tpe:
     action: record the TPE installation

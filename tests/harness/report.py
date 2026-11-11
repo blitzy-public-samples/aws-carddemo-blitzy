@@ -170,6 +170,9 @@ __all__ = [
 # --------------------------------------------------------------------------
 
 GAPS_FILE = INVENTORY_DIR / "gaps.yaml"
+# The UniKix command registry adapters/unikix/env.py runs from: GAP-MIS-009
+# closes only once every entry of it that cites GAP-MIS-009 is confirmed.
+UNIKIX_COMMANDS_FILE = TESTS_ROOT / "adapters" / "unikix" / "commands.yaml"
 MATRIX_FILE = REPORTS_DIR / "coverage-matrix.csv"
 REGISTER_FILE = REPORTS_DIR / "gap-register.csv"
 REPORT_FILE = REPORTS_DIR / "coverage-report.md"
@@ -495,7 +498,8 @@ PLANNING_PROJECTION_NO_PAGE_ZERO = {VERIFIED: 112, FAILING: 0, BLOCKED: 520, UNE
 PYTHON_PACKAGES = ("pytest", "pluggy", "iniconfig", "packaging", "Pygments", "PyYAML")
 DPKG_PACKAGES = ("build-essential", "libgmp-dev", "libncurses-dev", "libdb-dev", "s3270")
 # environment.yaml keys of the UniKix version probes (adapters/unikix/env.py);
-# GAP-MIS-009 closes once all five name a version.
+# GAP-MIS-009 closes once all five name a version and every commands.yaml
+# entry citing it is confirmed (_settle_gaps).
 UNIKIX_VERSION_KEYS = ("version_tpe", "version_bpe", "version_vcobol", "version_licence", "version_java")
 _VERSION_FAILURE_PREFIXES = ("unavailable", "not defined", "exit status")
 # The facts every environment.yaml records as non-empty text, wherever it
@@ -2012,14 +2016,55 @@ def _literal_pattern(literal: str) -> re.Pattern[str]:
     ), re.S)
 
 
+def _observed_text_pattern(text: str) -> str:
+    """The regular expression of ``text``, observed message text, read
+    literally: as in ``_literal_pattern``, a run of spaces stands for any
+    run, and every other character, ``<...>`` and ``\u2026`` included, stands
+    for itself."""
+    return "".join(r"\s+" if token.isspace() else re.escape(token)
+                   for token in re.split(r"(\s+)", text.strip()) if token)
+
+
+def _addition_pattern(text: str) -> re.Pattern[str]:
+    """The pattern of an observed-message addition quoting ``text``, which
+    matches ``text`` as literal text (``_observed_text_pattern``): it is what
+    a screen showed, not a source template, so a ``<...>`` or ``\u2026`` in
+    it is no placeholder, and reading it as one would let the addition match
+    unrelated later messages, which would then never be added. A text of
+    ``MIN_MESSAGE_LENGTH`` or more characters, which the source extraction
+    would also take, matches as a source literal does. A shorter one matches
+    only a whole observed text, never a part of a longer one, because that
+    cutoff exists to keep short literals from matching nearly every message."""
+    pattern = _observed_text_pattern(text)
+    if len(text.strip()) >= _inventory.MIN_MESSAGE_LENGTH:
+        return re.compile(pattern)
+    return re.compile(rf"\A(?:{pattern})\Z")
+
+
 @functools.lru_cache(maxsize=4)
 def _message_patterns(texts: tuple) -> tuple:
+    """``(item id, pattern)`` for each message literal of the
+    ``(id, name, description, addition)`` tuples ``texts``: the text an
+    item's name quotes and each quoted text of its description.
+
+    A literal shorter than ``MIN_MESSAGE_LENGTH``, the source extraction's
+    cutoff, gets no pattern, except the name of an observed-message addition
+    (``addition`` true): that text was observed whatever its length, so it
+    gets ``_addition_pattern``, and a later import of the same evidence
+    matches the addition instead of adding it again. That pattern reads the
+    addition's text literally, never as a template whose ``<...>`` or
+    ``\u2026`` stand for run-time text, so a later, different message still
+    matches no item and is added in turn."""
     patterns = []
-    for item_id, name, description in texts:
+    for item_id, name, description, addition in texts:
         literals = []
         start, end = name.find("'"), name.rfind("'")
         if 0 <= start < end:
-            literals.append(name[start + 1:end])
+            quoted = name[start + 1:end]
+            if addition and quoted.strip():
+                patterns.append((item_id, _addition_pattern(quoted)))
+            else:
+                literals.append(quoted)
         literals.extend(_QUOTED_RE.findall(description))
         for literal in literals:
             if len(literal.strip()) >= _inventory.MIN_MESSAGE_LENGTH:
@@ -2028,20 +2073,37 @@ def _message_patterns(texts: tuple) -> tuple:
 
 
 def _patterns_of(items: Iterable[Mapping[str, Any]]) -> tuple:
+    """The message patterns of ``items`` (``_message_patterns``). An item is
+    an observed-message addition when its ``source`` lies under the UniKix
+    evidence folder, where ``_new_message_items`` cites the record that
+    observed it."""
+    evidence = f"{display_path(UNIKIX_EVIDENCE_DIR)}/"
     return _message_patterns(tuple(
-        (item["id"], str(item.get("name") or ""), str(item.get("description") or ""))
+        (item["id"], str(item.get("name") or ""), str(item.get("description") or ""),
+         str(item.get("source") or "").startswith(evidence))
         for item in sorted(items, key=lambda item: item["id"])
     ))
+
+
+def _first_line(text: str) -> str:
+    """The first non-blank line of ``text`` without its surrounding blanks,
+    or ``""`` when every line is blank."""
+    return next((line.strip() for line in text.split("\n") if line.strip()), "")
 
 
 def message_items(value: str, field_name: str, patterns: Sequence[tuple[str, re.Pattern[str]]]) -> list[str]:
     """The inventory items whose quoted message text matches an observed
     ``ERRMSG`` value (the whole value, trailing spaces aside) or appears in an
-    unformatted screen's ``@text``."""
+    unformatted screen's ``@text``, or matches the whole of that screen's
+    first non-blank line, the text an addition made from the screen quotes."""
     if field_name == _scenarios.SCREEN_TEXT:
         # SEND TEXT wraps at column 80, so a message may run on into the next row.
         screen = value.replace("\n", "")
-        return sorted({item_id for item_id, pattern in patterns if pattern.search(screen)})
+        # A pattern without anchors that matches the whole first line also
+        # matches within the screen, so the first line adds a match only for
+        # a short addition, which matches a whole text alone.
+        first = _first_line(value)
+        return sorted({item_id for item_id, pattern in patterns if pattern.search(screen) or pattern.fullmatch(first)})
     text = value.strip()
     return sorted({item_id for item_id, pattern in patterns if pattern.fullmatch(text)})
 
@@ -6116,7 +6178,7 @@ def _addition_text(message: ObservedMessage) -> str:
     Empty when the message holds no such text, so that it can never become
     an addition."""
     if message.field == _scenarios.SCREEN_TEXT:
-        return next((line.strip() for line in message.text.split("\n") if line.strip()), "")
+        return _first_line(message.text)
     return message.text.strip()
 
 
@@ -6126,7 +6188,9 @@ def _new_message_items(state: State, execution_id: str, imported: Iterable[str],
     the inventory, raising its total, and list each added item under
     GAP-UNC-012 in ``document``, reopening that entry when it is closed.
     Without a GAP-UNC-012 entry nothing is added and the import rejects the
-    messages."""
+    messages. An addition matches later messages through
+    ``_addition_pattern``, in this import as in every later one, so the same
+    evidence is never added twice."""
     patterns = list(_patterns_of(state.items))
     added: set[str] = set()
     additions: list[tuple[dict, str]] = []
@@ -6162,7 +6226,7 @@ def _new_message_items(state: State, execution_id: str, imported: Iterable[str],
                 "gap_ids": [GAP_COMPLETENESS],
             }
             additions.append((item, f"unmatched observed message ({execution_id}/{scenario_id})"))
-            patterns.append((text, _literal_pattern(text)))
+            patterns.append((text, _addition_pattern(text)))
     if not additions:
         return
     entry = _gap_entries(document).get(GAP_COMPLETENESS)
@@ -6451,21 +6515,68 @@ def _settle_inferred(document: dict, state: State, execution_id: str | None, cha
             changes.append(f"{gap_id}: narrowed to the {len(after)} items still unverified")
 
 
+def _unconfirmed_commands(gap_id: str) -> tuple[list[str], str | None]:
+    """The ids, sorted, of the ``UNIKIX_COMMANDS_FILE`` entries whose ``gap``
+    is ``gap_id`` and whose ``status`` is not exactly ``confirmed``, with
+    ``None``; or ``[]`` with what is wrong when the file cannot show which
+    they are: it cannot be read or parsed, holds no ``entries`` mapping, or
+    holds an entry that is not a mapping. A caller that needs every such
+    entry confirmed withholds on either answer, so it fails closed."""
+    path = UNIKIX_COMMANDS_FILE
+    try:
+        document = load_yaml(path)
+    except OSError as exc:
+        return [], _os_problem(exc, path)
+    except YAMLLoadError as exc:
+        return [], str(exc)
+    entries = document.get("entries") if isinstance(document, dict) else None
+    if not isinstance(entries, dict):
+        return [], f"{display_path(path)}: holds no 'entries' mapping"
+    unconfirmed = []
+    for entry_id, entry in entries.items():
+        if not isinstance(entry, dict):
+            return [], f"{display_path(path)}: entry {entry_id!r} is not a mapping"
+        if entry.get("gap") == gap_id and entry.get("status") != "confirmed":
+            unconfirmed.append(str(entry_id))
+    return sorted(unconfirmed), None
+
+
 def _settle_gaps(document: dict, state: State, execution_id: str, environments: Iterable[Mapping[str, Any]],
                  summary: ImportSummary, closures: list) -> None:
     """Judge the inferred-not-observed entries (``_settle_inferred``), and
-    GAP-MIS-009 once the installation's versions are recorded. Each closing
-    needs the inventory to hold the additions its evidence entails and an
-    activation it does not contradict (``_ClosingCheck``); otherwise the
-    entry stays open, with what is lacking in ``summary.gaps_changed``.
-    ``_close`` queues the inventory record of each closing's reason in
-    ``closures``."""
+    GAP-MIS-009 once the installation's versions are recorded. GAP-MIS-009
+    closes only once every ``commands.yaml`` entry citing it is confirmed
+    as well (``_unconfirmed_commands``), since an unconfirmed entry must
+    cite an open gap and only the operator confirms an entry; until then,
+    or while the file cannot show it, the entry stays open, the line in
+    ``summary.gaps_changed`` naming the unconfirmed entries or what is wrong
+    with the file. Each closing needs the inventory to hold the additions its
+    evidence entails and an activation it does not contradict
+    (``_ClosingCheck``); otherwise the entry stays open, with what is
+    lacking in ``summary.gaps_changed``. ``_close`` queues the inventory
+    record of each closing's reason in ``closures``."""
     check = _ClosingCheck(state, execution_id)
     _settle_inferred(document, state, execution_id, summary.gaps_changed, closures, check)
     evidence = {"execution_id": execution_id, "evidence_path": f"{display_path(UNIKIX_EVIDENCE_DIR)}/{execution_id}"}
     installation = _gap_entries(document).get(GAP_NO_INSTALLATION)
     if (installation is not None and installation.get("status") == "open"
             and any(_versions_recorded(environment) for environment in environments)):
+        unconfirmed, problem = _unconfirmed_commands(GAP_NO_INSTALLATION)
+        shown = display_path(UNIKIX_COMMANDS_FILE)
+        held = f"{GAP_NO_INSTALLATION}: left open although the installation's versions are recorded"
+        if problem is not None:
+            summary.gaps_changed.append(f"{held}: cannot tell whether every {shown} entry that cites it is "
+                                        f"confirmed: {_clip(problem, 300)}; repair the file, then import this "
+                                        "execution again")
+            return
+        if unconfirmed:
+            one = len(unconfirmed) == 1
+            summary.gaps_changed.append(
+                f"{held}: {shown} {'entry' if one else 'entries'} {_clip(', '.join(unconfirmed), 300)} that "
+                f"{'cites it is' if one else 'cite it are'} unconfirmed; set {'it' if one else 'each'} to "
+                "status: confirmed once it has worked, then import this execution again"
+            )
+            return
         members = _resolve(GAP_NO_INSTALLATION, installation, _Universe.build(state.items, state.scenarios.values()))
         withheld = check.withheld(GAP_NO_INSTALLATION, "the installation's versions are recorded", members)
         if withheld is not None:
@@ -6565,9 +6676,12 @@ def import_unikix(execution_id: str) -> ImportSummary:
     register entry when it differs), register cross-adapter divergences,
     write ``validation.yaml`` beside each ``result.yaml``, add observed
     messages no item matches to the inventory and to GAP-UNC-012, judge the
-    inferred-not-observed entries and settle GAP-MIS-009, closing only once
-    the inventory holds the additions the closing evidence entails and an
-    activation it does not contradict. Record each closing's reason in the
+    inferred-not-observed entries and settle GAP-MIS-009 (it closes only
+    once an environment records every version and every ``commands.yaml``
+    entry citing it is confirmed; the import never confirms an entry),
+    closing an entry only once the inventory holds the additions the
+    closing evidence entails and an activation it does not contradict.
+    Record each closing's reason in the
     inventory's ``header.changes`` before ``gaps.yaml`` is written
     (``_write_register``), and regenerate the reports. An entry whose
     evidence the inventory does not yet reflect or whose closing it cannot
@@ -6577,10 +6691,12 @@ def import_unikix(execution_id: str) -> ImportSummary:
     execution fingerprint cannot be computed is rejected. Imports and
     revalidations run one at a time (``_exclusive``). An invalid
     ``CARDDEMO_ADAPTER``, which the final regeneration refuses, raises
-    ``ReportError`` before anything is written, and so do an inventory whose
-    item count differs from its frozen total and a gnucobol-batch result
-    record that cannot be read or is a symbolic link, which the final
-    regeneration refuses too (``_refuse_unreportable``)."""
+    ``ReportError`` before anything is written, and so do a missing
+    execution directory, one holding no scenario directory and no symbolic
+    link (0 scenario records), an inventory whose item count differs from
+    its frozen total and a gnucobol-batch result record that cannot be read
+    or is a symbolic link, which the final regeneration refuses too
+    (``_refuse_unreportable``)."""
     if not isinstance(execution_id, str) or not _UNIKIX_ID_RE.fullmatch(execution_id):
         raise ReportError(f"{execution_id!r} is not a unikix execution id unikix-<yyyymmddThhmmssZ>-<8 hex>")
     _selected_adapter()
@@ -6590,12 +6706,26 @@ def import_unikix(execution_id: str) -> ImportSummary:
             raise ReportError(f"no evidence directory {display_path(execution_dir)}")
     except OSError as exc:
         raise ReportError(f"cannot read {_os_problem(exc, execution_dir)}") from None
+    entries: list[Path] = []
+    _refuse_empty_execution(execution_dir, _scenario_dirs(execution_dir, entries), entries)
     with _exclusive():
         return _import_execution(execution_id, execution_dir)
 
 
+def _refuse_empty_execution(execution_dir: Path, scenario_dirs: Sequence[Path], links: Sequence[Path]) -> None:
+    """Raise ``ReportError`` when ``execution_dir`` holds no scenario
+    directory (``scenario_dirs``) and no linked entry (``links``): there is
+    no scenario record to import, so the import writes nothing."""
+    if not scenario_dirs and not links:
+        raise ReportError(f"0 scenario records found in {display_path(execution_dir)}; nothing was imported")
+
+
 def _import_execution(execution_id: str, execution_dir: Path) -> ImportSummary:
-    """The import itself, run while the lock is held."""
+    """The import itself, run while the lock is held. A state the reports
+    cannot be regenerated from (``_refuse_unreportable``) and then an
+    execution directory with no scenario directory and no linked entry
+    (``_refuse_empty_execution``, which ``import_unikix`` also applies before
+    taking the lock) raise ``ReportError`` before anything is written."""
     summary = ImportSummary(execution_id)
     original = GAPS_FILE.read_text(encoding="utf-8")
     document = load_yaml(GAPS_FILE)
@@ -6605,6 +6735,7 @@ def _import_execution(execution_id: str, execution_dir: Path) -> ImportSummary:
     environments = []
     links: list[Path] = []
     scenario_dirs = _scenario_dirs(execution_dir, links)
+    _refuse_empty_execution(execution_dir, scenario_dirs, links)
     summary.rejected.extend((link.name, _ENTRY_LINK) for link in links)
     for scenario_dir in scenario_dirs:
         evidence, why = read_evidence(execution_id, scenario_dir, state.zip_info)

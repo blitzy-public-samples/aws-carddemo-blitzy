@@ -152,12 +152,40 @@ whose path holds a space or a colon, ``LD_PRELOAD`` must name the shim from
 the working directory without either, and ``command.yaml`` show it under
 ``<build>``; a shim whose path from there still holds one is refused unrun.
 
+Build cache integrity: ``build._complete_mode``, on a build directory of the
+case's own whose manifest records each artifact's sha256 as ``_populate``
+records it, must return its clock fraction mode and keep it, whatever files
+the manifest does not list. A truncated or altered artifact, a listed one
+deleted, or ``artifacts`` missing, empty, naming an absolute path or one that
+escapes with ``..``, or holding a digest that is not lowercase hex must make
+the directory stale: ``None``, with neither it nor a ``.stale-`` copy left.
+``BuildCache``, on stand-ins for the toolchain and plan with
+``_build_profile`` replaced by one writing a sound profile, must set aside and
+rebuild once an on-demand profile whose loader is truncated or whose manifest
+is missing, then neither check nor build it again on later ``loader`` and
+``unloader`` calls; it never checks a static profile, and checks a sound
+on-demand one once per instance and keeps it.
+
 Process-group scope: ``datasets.kill_all(within=...)`` must end only the
 process groups ``run_process`` started in that directory or below it, as real
 paths, and ``GnuCOBOLBatchAdapter.cleanup`` only those of the scenario's own
 working directory, never another scenario's, the work root's or one outside
 it, while the other programs run on to their own end; ``kill_all()`` and
 ``close`` end every group.
+
+Failed probes and builds: ``build._probe_toolchain``, on a fake ``cobc`` of
+the case's own whose ``--version`` starts a background child and hangs, must
+kill the probe's whole process group, the child included, once
+``_TOOL_PROBE_TIMEOUT_S`` has passed and raise ``ToolchainUnavailable``; a
+second call must raise it again with the same message and run nothing.
+``build.ensure_built``, on stand-ins for the toolchain, the plan and the build
+key and a compile that fails, must raise ``BuildError`` naming the unit and
+its log in ``_build/<key>.failed``, and a second call the same error without
+building again. ``build._tool_output``, run by a caller of its own session on a
+probe that starts a background child and waits, must kill the probe's whole
+process group, the child included, when SIGTERM reaches the caller's group,
+then die by the signal under its default action or, under a Python handler
+that returns, raise ``BuildError`` naming it.
 
 GDG roll-off: ``datasets.Catalog.catalog_new``, given a second generation of
 a base of LIMIT 1, must roll off the first, return its name and drop its
@@ -262,7 +290,9 @@ passes, and refuse, writing nothing, a gap id that is no register entry or
 no GAP id, and a blank reason; the header check must refuse a change whose
 ``gap_id`` is not a GAP id. ``report._settle_gaps`` must close an
 inferred-not-observed entry whose items are all verified, and GAP-MIS-009
-once the installation's versions are recorded, only when the inventory
+once the installation's versions are recorded and every ``commands.yaml``
+entry citing it is confirmed (else leave it open, naming the unconfirmed
+entries or why the file cannot show them), only when the inventory
 holds the additions their importing and verifying executions entail (even
 for a scenario not yet validated) and no verified member is recorded
 unreachable. Otherwise it must leave the entry
@@ -395,11 +425,13 @@ import configparser
 import copy
 import dataclasses
 import datetime
+import errno
 import functools
 import inspect
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import stat
@@ -422,7 +454,7 @@ if _TESTS_ROOT not in sys.path:
     sys.path.insert(0, _TESTS_ROOT)
 
 from adapters import base  # noqa: E402
-from adapters.gnucobol_batch import datasets, jobs  # noqa: E402
+from adapters.gnucobol_batch import build, datasets, jobs  # noqa: E402
 from adapters.gnucobol_batch.adapter import GnuCOBOLBatchAdapter  # noqa: E402
 from adapters.unikix import adapter as unikix_adapter  # noqa: E402
 from adapters.unikix import bpe, evidence, tpe  # noqa: E402
@@ -451,6 +483,7 @@ from harness import (  # noqa: E402
     results,
     runner,
     scenarios,
+    sha256_file,
 )
 from harness import capture as capture_cli  # noqa: E402
 
@@ -3405,6 +3438,229 @@ def test_run_program_refuses_a_tiot_name_that_is_no_jcl_name(
     assert not (workdir / jobs.EVIDENCE_SUBDIR).exists()
 
 
+# build._complete_mode and BuildCache profile cases: a build directory laid out
+# as build.py lays it out, under a work root of each case's own (cache_root);
+# nothing is compiled.
+CACHE_ROOT_PREFIX = "unit-build-cache-"
+CACHE_KEY = "c" * 64
+CACHE_MODE = "nanoseconds"
+CACHE_STATIC_PROFILE = build.KeyProfile(50, (0, 16))
+CACHE_PROFILE = build.KeyProfile(80, (0, 8))  # not static: built on demand
+# The files of the build directory by their path in it, a static profile's
+# COMPLETE among them; build._artifact_hashes records every one.
+CACHE_ARTIFACTS = {
+    "bin/CBTRN02C": b"\x7fELF CBTRN02C " * 64,
+    "modules/CEE3ABD.so": b"\x7fELF CEE3ABD.so " * 32,
+    f"profiles/{CACHE_STATIC_PROFILE.name}/KSLOAD": b"\x7fELF KSLOAD " * 16,
+    f"profiles/{CACHE_STATIC_PROFILE.name}/COMPLETE": b"",
+}
+# The files of a profile directory by their path in it.
+CACHE_PROFILE_ARTIFACTS = {
+    "KSLOAD": b"\x7fELF KSLOAD " * 16,
+    "KSUNLOAD": b"\x7fELF KSUNLOAD " * 16,
+    "logs/KSLOAD.log": b"command: cobc -x\n",
+}
+
+
+def _truncate_artifact(directory: Path, manifest: dict) -> None:
+    os.truncate(directory / "bin" / "CBTRN02C", 100)
+
+
+def _alter_artifact_byte(directory: Path, manifest: dict) -> None:
+    path = directory / "modules" / "CEE3ABD.so"
+    data = bytearray(path.read_bytes())
+    data[10] ^= 0xFF
+    path.write_bytes(bytes(data))
+
+
+def _delete_listed_artifact(directory: Path, manifest: dict) -> None:
+    (directory / "profiles" / CACHE_STATIC_PROFILE.name / "KSLOAD").unlink()
+
+
+def _drop_artifacts(directory: Path, manifest: dict) -> None:
+    del manifest["artifacts"]
+
+
+def _empty_artifacts(directory: Path, manifest: dict) -> None:
+    manifest["artifacts"] = {}
+
+
+def _list_escaping_artifact(directory: Path, manifest: dict) -> None:
+    """A path out of the directory with ``..``, naming a file whose digest it
+    records truly."""
+    outside = directory.parent / "outside.so"
+    outside.write_bytes(b"\x7fELF outside")
+    manifest["artifacts"][f"../{outside.name}"] = sha256_file(outside)
+
+
+def _list_absolute_artifact(directory: Path, manifest: dict) -> None:
+    path = directory / "bin" / "CBTRN02C"
+    manifest["artifacts"][os.fspath(path)] = manifest["artifacts"].pop("bin/CBTRN02C")
+
+
+def _upper_case_digest(directory: Path, manifest: dict) -> None:
+    manifest["artifacts"]["bin/CBTRN02C"] = manifest["artifacts"]["bin/CBTRN02C"].upper()
+
+
+# What makes a build directory stale: its files changed after the manifest
+# recorded them, or a manifest whose artifacts are missing or malformed.
+CACHE_CORRUPTIONS = [
+    pytest.param(_truncate_artifact, id="truncated-artifact"),
+    pytest.param(_alter_artifact_byte, id="one-byte-altered"),
+    pytest.param(_delete_listed_artifact, id="listed-artifact-deleted"),
+    pytest.param(_drop_artifacts, id="manifest-without-artifacts"),
+    pytest.param(_empty_artifacts, id="empty-artifacts"),
+    pytest.param(_list_escaping_artifact, id="path-escaping-with-dotdot"),
+    pytest.param(_list_absolute_artifact, id="absolute-path"),
+    pytest.param(_upper_case_digest, id="digest-not-lowercase-hex"),
+]
+
+
+def _truncate_profile_loader(directory: Path) -> None:
+    os.truncate(directory / "KSLOAD", 3)
+
+
+def _remove_profile_manifest(directory: Path) -> None:
+    (directory / "manifest.yaml").unlink()
+
+
+# What makes an on-demand profile unsound once it was built.
+CACHE_PROFILE_CORRUPTIONS = [
+    pytest.param(_truncate_profile_loader, id="truncated-loader"),
+    pytest.param(_remove_profile_manifest, id="manifest-missing"),
+]
+
+
+@pytest.fixture
+def cache_root(carddemo_work_root: Path) -> Iterator[Path]:
+    """A fresh directory of this case's own inside the session work root
+    (carddemo_work_root), never under pytest's basetemp, given by its real
+    path and removed afterwards."""
+    directory = Path(tempfile.mkdtemp(prefix=CACHE_ROOT_PREFIX, dir=carddemo_work_root)).resolve()
+    try:
+        yield directory
+    finally:
+        shutil.rmtree(directory)
+
+
+def _write_tree(directory: Path, files: Mapping[str, bytes]) -> None:
+    for relative, data in files.items():
+        path = directory / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+
+
+def _cache_directory(
+    cache_root: Path, corrupt: Callable[[Path, dict], None] | None = None
+) -> Path:
+    """``<cache_root>/_build/<CACHE_KEY>/`` holding ``CACHE_ARTIFACTS``, its
+    manifest recording their hashes with ``build._artifact_hashes`` as
+    ``_populate`` does, then COMPLETE. ``corrupt`` changes the files or the
+    manifest in between."""
+    directory = cache_root / "_build" / CACHE_KEY
+    _write_tree(directory, CACHE_ARTIFACTS)
+    manifest = {
+        "artifacts": build._artifact_hashes(directory),
+        "clock_fraction_mode": CACHE_MODE,
+        "key": CACHE_KEY,
+    }
+    if corrupt is not None:
+        corrupt(directory, manifest)
+    (directory / "manifest.yaml").write_text(dump_yaml(manifest), encoding="utf-8")
+    (directory / "COMPLETE").write_text("", encoding="utf-8")
+    return directory
+
+
+def _write_profile(directory: Path) -> None:
+    """A sound on-demand profile ``CACHE_PROFILE`` at ``directory``, laid out
+    as ``BuildCache._build_profile`` publishes it."""
+    _write_tree(directory, CACHE_PROFILE_ARTIFACTS)
+    manifest = {"artifacts": build._artifact_hashes(directory), "profile": CACHE_PROFILE.name}
+    (directory / "manifest.yaml").write_text(dump_yaml(manifest), encoding="utf-8")
+    (directory / "COMPLETE").write_text("", encoding="utf-8")
+
+
+def _stand_in_cache(directory: Path) -> build.BuildCache:
+    """A ``BuildCache`` on ``directory`` whose toolchain and plan are
+    stand-ins holding what its constructor reads, with one static profile."""
+    toolchain = SimpleNamespace(cobc="/usr/bin/cobc", cobc_version="cobc (GnuCOBOL) 3.2.0",
+                                lib_dirs=())
+    plan = SimpleNamespace(units={}, compiles=(), profiles=(CACHE_STATIC_PROFILE,))
+    return build.BuildCache(
+        key=CACHE_KEY, directory=directory, repo_root=Path(_TESTS_ROOT).parent,
+        toolchain=toolchain, plan=plan, clock_fraction_mode=CACHE_MODE,
+    )
+
+
+def test_complete_mode_reuses_a_build_directory_whose_artifacts_all_match(
+    cache_root: Path,
+) -> None:
+    directory = _cache_directory(cache_root)
+    # A file the manifest does not list, as a profile built on demand later.
+    later = f"profiles/{CACHE_PROFILE.name}/KSLOAD"
+    _write_tree(directory, {later: b"\x7fELF later"})
+    # The directory's own manifest and COMPLETE are never artifacts; a
+    # profile's COMPLETE is one.
+    assert sorted(build._artifact_hashes(directory)) == sorted([*CACHE_ARTIFACTS, later])
+    assert build._complete_mode(directory, CACHE_KEY) == CACHE_MODE
+    assert {relative: (directory / relative).read_bytes() for relative in CACHE_ARTIFACTS} == (
+        CACHE_ARTIFACTS
+    )
+    assert list(directory.parent.glob(f"{CACHE_KEY}.stale-*")) == []
+
+
+@pytest.mark.parametrize("corrupt", CACHE_CORRUPTIONS)
+def test_complete_mode_discards_a_build_directory_whose_artifacts_do_not_match(
+    cache_root: Path, corrupt: Callable[[Path, dict], None]
+) -> None:
+    directory = _cache_directory(cache_root, corrupt)
+    assert build._complete_mode(directory, CACHE_KEY) is None
+    assert not os.path.lexists(directory)
+    assert list(directory.parent.glob(f"{CACHE_KEY}.stale-*")) == []
+
+
+@pytest.mark.parametrize("corrupt", CACHE_PROFILE_CORRUPTIONS)
+def test_build_cache_rebuilds_an_unsound_on_demand_profile_once(
+    cache_root: Path, monkeypatch: pytest.MonkeyPatch, corrupt: Callable[[Path], None]
+) -> None:
+    directory = _cache_directory(cache_root)
+    profile_dir = directory / "profiles" / CACHE_PROFILE.name
+    _write_profile(profile_dir)
+    corrupt(profile_dir)
+    checks: list[str] = []
+    builds: list[str] = []
+    profile_intact = build._profile_intact
+
+    def counted_check(path: Path, name: str) -> bool:
+        checks.append(name)
+        return profile_intact(path, name)
+
+    def build_profile(cache: build.BuildCache, profile: build.KeyProfile, target: Path) -> None:
+        # The unsound copy is gone before the build: _publish would keep it.
+        assert not os.path.lexists(target)
+        builds.append(profile.name)
+        _write_profile(target)
+
+    monkeypatch.setattr(build, "_profile_intact", counted_check)
+    monkeypatch.setattr(build.BuildCache, "_build_profile", build_profile)
+    cache = _stand_in_cache(directory)
+    assert cache.loader(CACHE_PROFILE) == profile_dir / "KSLOAD"
+    assert builds == [CACHE_PROFILE.name]
+    assert (profile_dir / "KSLOAD").read_bytes() == CACHE_PROFILE_ARTIFACTS["KSLOAD"]
+    assert list(profile_dir.parent.glob(f"{CACHE_PROFILE.name}.stale-*")) == []
+    checked = len(checks)
+    assert cache.loader(CACHE_PROFILE) == profile_dir / "KSLOAD"
+    assert cache.unloader(CACHE_PROFILE) == profile_dir / "KSUNLOAD"
+    static_dir = directory / "profiles" / CACHE_STATIC_PROFILE.name
+    assert cache.loader(CACHE_STATIC_PROFILE) == static_dir / "KSLOAD"
+    assert (builds, len(checks)) == ([CACHE_PROFILE.name], checked)
+    # Another session's cache checks the rebuilt profile once and keeps it.
+    later = _stand_in_cache(directory)
+    assert later.loader(CACHE_PROFILE) == profile_dir / "KSLOAD"
+    assert later.unloader(CACHE_PROFILE) == profile_dir / "KSUNLOAD"
+    assert (builds, checks[checked:]) == ([CACHE_PROFILE.name], [CACHE_PROFILE.name])
+
+
 PROCESS_SCOPE_ROOT_PREFIX = "unit-process-scope-"
 # The whole environment of the cases' shell groups; run_process adds HOME.
 PROCESS_SCOPE_ENV = {"PATH": "/usr/bin:/bin"}
@@ -3570,6 +3826,256 @@ def test_gnucobol_batch_cleanup_ends_only_its_own_scenarios_groups(
     for group in others:
         _assert_killed(group)
     assert datasets._LIVE == {} and datasets._LIVE_CWD == {}
+
+
+BUILD_MEMO_ROOT_PREFIX = "unit-build-memo-"
+# A fake cobc that appends its arguments to a runs file, starts a background
+# child, writes the child's pid and waits for it; the probe deadline the case
+# sets leaves it time for all three.
+BUILD_HANG_PROBE_S = 2
+BUILD_HANG_CHILD = ("sleep", "1000")
+BUILD_HANG_COBC = """\
+#!/bin/sh
+echo "$*" >> {runs}
+{child} &
+echo $! > {pid}
+wait
+"""
+# A fake probe that writes its own pid, starts the background child, fills
+# its stdout past a pipe's capacity, writes the child's pid and waits for it.
+# Each pid is one whole line once written. The child's pid is written only
+# once the caller reads the probe's output, so the caller is then waiting for
+# the probe. The caller, a process of its own session, sets the SIGTERM
+# disposition its argument names, the default action or a handler that prints
+# "handler <signal>" and returns, and runs build._tool_output on the probe; it
+# prints a BuildError as "<type>: <message>" and exits 0.
+BUILD_SIGNAL_PROBE = """\
+#!/bin/sh
+echo $$ > {probe_pid}
+{child} &
+head -c {fill} /dev/zero
+echo $! > {child_pid}
+wait
+"""
+BUILD_SIGNAL_FILL = 256 * 1024
+BUILD_SIGNAL_CALLER = """\
+import os, signal, sys
+sys.path.insert(0, sys.argv[1])
+from adapters.gnucobol_batch import build
+
+probe, disposition = sys.argv[2], sys.argv[3]
+
+def handler(signum, frame):
+    print(f"handler {signal.Signals(signum).name}")
+
+signal.signal(signal.SIGTERM, signal.SIG_DFL if disposition == "default" else handler)
+try:
+    build._tool_output([probe], os.environ)
+except build.BuildError as exc:
+    print(f"{type(exc).__name__}: {exc}")
+"""
+BUILD_SIGNAL_DISPOSITIONS = [
+    pytest.param("default", id="default-action"),
+    pytest.param("handler", id="handler-returns"),
+]
+# The build key of the stand-ins, and the unit, log and detail of the
+# failing compile.
+BUILD_FAILED_KEY = "0123456789abcdef" * 4
+BUILD_FAILED_UNIT = "UNIT"
+BUILD_FAILED_LOG = "logs/UNIT.log"
+BUILD_FAILED_DETAIL = "cobc exited 1"
+BUILD_FAILED_LOG_TEXT = "status: exit 1\n"
+BUILD_FAILURES = [
+    pytest.param(True, id="compile-fails"),
+    pytest.param(False, id="published-incomplete"),
+]
+
+
+@pytest.fixture
+def build_memo_root(carddemo_work_root: Path) -> Iterator[Path]:
+    """A fresh directory of this case's own inside the session work root
+    (carddemo_work_root), never under pytest's basetemp, given by its real
+    path and removed afterwards."""
+    directory = Path(
+        tempfile.mkdtemp(prefix=BUILD_MEMO_ROOT_PREFIX, dir=carddemo_work_root)
+    ).resolve()
+    try:
+        yield directory
+    finally:
+        shutil.rmtree(directory)
+
+
+def _process_gone(pid: int, argv: tuple[str, ...]) -> bool:
+    """Whether the process ``pid`` running ``argv`` has ended: there is no
+    such process, it is a zombie left to be reaped, or another program holds
+    the pid."""
+    proc = Path("/proc") / str(pid)
+    try:
+        stat_line = (proc / "stat").read_text(encoding="utf-8", errors="replace")
+        cmdline = (proc / "cmdline").read_bytes()
+    except (FileNotFoundError, ProcessLookupError):
+        return True
+    state = stat_line.rpartition(")")[2].split()[:1]
+    return state in (["Z"], ["X"]) or cmdline.split(b"\0")[:-1] != [
+        part.encode() for part in argv
+    ]
+
+
+def test_toolchain_probe_kills_a_hung_probes_group_and_runs_once(
+    monkeypatch: pytest.MonkeyPatch, build_memo_root: Path
+) -> None:
+    fake_bin = build_memo_root / "bin"
+    fake_bin.mkdir()
+    runs, pid_file = build_memo_root / "runs.log", build_memo_root / "child.pid"
+    cobc = fake_bin / "cobc"
+    cobc.write_text(
+        BUILD_HANG_COBC.format(
+            runs=shlex.quote(str(runs)), child=shlex.join(BUILD_HANG_CHILD),
+            pid=shlex.quote(str(pid_file)),
+        ),
+        encoding="utf-8",
+    )
+    cobc.chmod(0o755)
+    # Fresh memos, so nothing this case probes reaches the session's adapters.
+    monkeypatch.setattr(build, "_TOOL_PROBE_TIMEOUT_S", BUILD_HANG_PROBE_S)
+    monkeypatch.setattr(build, "_TOOLCHAINS", {})
+    monkeypatch.setattr(build, "_TOOLCHAIN_FAILURES", {})
+    path = os.pathsep.join([str(fake_bin), "/usr/bin", "/bin"])
+    expected = (
+        f"cannot run {shlex.join([str(cobc), '--version'])}: it did not finish within "
+        f"{BUILD_HANG_PROBE_S} s. {build._SETUP_HINT}"
+    )
+    child: int | None = None
+    try:
+        with pytest.raises(build.ToolchainUnavailable) as first:
+            build._probe_toolchain(path, "", ())
+        child = int(pid_file.read_text(encoding="utf-8"))
+        assert _awaited(
+            lambda: _process_gone(child, BUILD_HANG_CHILD),
+            time.monotonic() + PROCESS_SCOPE_WAIT_S,
+        ), f"the probe's child {child} outlived it"
+        with pytest.raises(build.ToolchainUnavailable) as second:
+            build._probe_toolchain(path, "", ())
+    finally:
+        if child is not None and not _process_gone(child, BUILD_HANG_CHILD):
+            os.kill(child, signal.SIGKILL)
+    assert str(first.value) == str(second.value) == expected
+    assert second.value is not first.value
+    assert runs.read_text(encoding="utf-8").splitlines() == ["--version"]
+
+
+@pytest.mark.parametrize("compile_fails", BUILD_FAILURES)
+def test_ensure_built_raises_a_failed_build_again_without_rebuilding(
+    monkeypatch: pytest.MonkeyPatch, build_memo_root: Path, compile_fails: bool
+) -> None:
+    repo_root, work_root = build_memo_root / "repo", build_memo_root / "work"
+    repo_root.mkdir()
+    populated: list[Path] = []
+
+    def populate(workspace: Path, *_: object) -> None:
+        # A failing compile writes its log; otherwise nothing is written, so
+        # the published directory holds no COMPLETE.
+        populated.append(workspace)
+        if compile_fails:
+            log = workspace / BUILD_FAILED_LOG
+            log.parent.mkdir(parents=True)
+            log.write_text(BUILD_FAILED_LOG_TEXT, encoding="utf-8")
+            raise build._CompileFailure(BUILD_FAILED_UNIT, BUILD_FAILED_LOG, BUILD_FAILED_DETAIL)
+
+    toolchain, plan = object(), object()
+    monkeypatch.setattr(build, "_toolchain", lambda: toolchain)
+    monkeypatch.setattr(build, "_plan", lambda _root: plan)
+    monkeypatch.setattr(build, "_build_key", lambda *_: BUILD_FAILED_KEY)
+    monkeypatch.setattr(build, "_populate", populate)
+    monkeypatch.setattr(build, "_CACHES", {})
+    monkeypatch.setattr(build, "_BUILD_FAILURES", {})
+    raised = []
+    for _ in range(2):
+        with pytest.raises(build.BuildError) as error:
+            build.ensure_built(repo_root, work_root)
+        raised.append(error.value)
+    final = work_root / "_build" / BUILD_FAILED_KEY
+    log = final.with_name(f"{BUILD_FAILED_KEY}.failed") / BUILD_FAILED_LOG
+    expected = (
+        (f"cannot compile {BUILD_FAILED_UNIT}: {BUILD_FAILED_DETAIL}; log {log}",
+         BUILD_FAILED_UNIT, log)
+        if compile_fails
+        else (f"the build directory {final} is incomplete after publishing", None, None)
+    )
+    assert [(type(exc), str(exc), exc.unit, exc.log_path) for exc in raised] == [
+        (build.BuildError, *expected)
+    ] * 2
+    assert raised[1] is not raised[0]
+    assert len(populated) == 1
+    if compile_fails:
+        assert log.read_text(encoding="utf-8") == BUILD_FAILED_LOG_TEXT
+    else:
+        assert not final.exists()
+
+
+def _written_pid(path: Path) -> int | None:
+    """The pid written to ``path`` as one whole line, or ``None`` while the
+    file is absent or partly written."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    return int(text) if text.endswith("\n") else None
+
+
+@pytest.mark.parametrize("disposition", BUILD_SIGNAL_DISPOSITIONS)
+def test_sigterm_to_the_callers_group_kills_the_toolchain_probes_group(
+    build_memo_root: Path, disposition: str
+) -> None:
+    probe = build_memo_root / "probe"
+    probe_pid_file, child_pid_file = build_memo_root / "probe.pid", build_memo_root / "child.pid"
+    probe.write_text(
+        BUILD_SIGNAL_PROBE.format(
+            probe_pid=shlex.quote(str(probe_pid_file)), child=shlex.join(BUILD_HANG_CHILD),
+            fill=BUILD_SIGNAL_FILL, child_pid=shlex.quote(str(child_pid_file)),
+        ),
+        encoding="utf-8",
+    )
+    probe.chmod(0o755)
+    probe_argv = ("/bin/sh", str(probe))
+    caller = subprocess.Popen(
+        [sys.executable, "-B", "-c", BUILD_SIGNAL_CALLER, _TESTS_ROOT, str(probe), disposition],
+        cwd=build_memo_root, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, text=True, start_new_session=True,
+    )
+    probe_pid: int | None = None
+    child: int | None = None
+    try:
+        assert _awaited(
+            lambda: caller.poll() is not None or _written_pid(child_pid_file) is not None,
+            time.monotonic() + PROCESS_SCOPE_WAIT_S,
+        ), "the probe never wrote its child's pid"
+        probe_pid, child = _written_pid(probe_pid_file), _written_pid(child_pid_file)
+        assert caller.poll() is None, caller.communicate(timeout=PROCESS_SCOPE_WAIT_S)
+        os.killpg(caller.pid, signal.SIGTERM)
+        # The caller's teardown of the probe is bounded by _REAP_TIMEOUT_S.
+        out, err = caller.communicate(timeout=build._REAP_TIMEOUT_S + PROCESS_SCOPE_WAIT_S)
+        assert probe_pid is not None and child is not None
+        assert _awaited(
+            lambda: _process_gone(probe_pid, probe_argv) and _process_gone(child, BUILD_HANG_CHILD),
+            time.monotonic() + PROCESS_SCOPE_WAIT_S,
+        ), f"the probe {probe_pid} or its child {child} outlived the caller"
+    finally:
+        if caller.poll() is None:
+            os.killpg(caller.pid, signal.SIGKILL)
+            caller.communicate(timeout=PROCESS_SCOPE_WAIT_S)
+        probe_pid = probe_pid or _written_pid(probe_pid_file)
+        if probe_pid is not None and not _process_gone(probe_pid, probe_argv):
+            os.kill(probe_pid, signal.SIGKILL)
+        child = child or _written_pid(child_pid_file)
+        if child is not None and not _process_gone(child, BUILD_HANG_CHILD):
+            os.kill(child, signal.SIGKILL)
+    if disposition == "default":
+        assert (caller.returncode, out) == (-signal.SIGTERM, ""), err
+    else:
+        assert (caller.returncode, out) == (
+            0, "handler SIGTERM\nBuildError: the build stopped on SIGTERM\n"
+        ), err
 
 
 # GDG roll-off past LIMIT (GAP-STB-009): a base of LIMIT 1 holding two
@@ -5375,13 +5881,14 @@ def test_add_gap_refuses_an_entry_whose_items_are_not_a_list(form: str) -> None:
 
 # Closure records: the inventory update of a register entry the import or the
 # revalidation closes, and the write that records it before gaps.yaml. Every
-# case works on copies of the committed inventory.yaml and gaps.yaml in a
-# repository root of its own inside the work root, which report.py's
-# gaps.yaml, inventory and repository root point at for the case. The
-# gaps.yaml copy starts every inferred-not-observed entry and GAP-MIS-009
-# open, without evidence and with its full membership, whatever the
-# committed register's lifecycle holds, so a valid import that closed or
-# narrowed one changes no case's outcome.
+# case works on copies of the committed inventory.yaml, gaps.yaml and
+# commands.yaml in a repository root of its own inside the work root, which
+# report.py's gaps.yaml, inventory, commands.yaml and repository root point
+# at for the case. The gaps.yaml copy starts every inferred-not-observed
+# entry and GAP-MIS-009 open, without evidence and with its full membership,
+# whatever the committed register's lifecycle holds, so a valid import that
+# closed or narrowed one changes no case's outcome; the commands.yaml copy
+# has every entry citing GAP-MIS-009 confirmed.
 # CLOSURE_EXECUTION is an invented execution id of valid form.
 CLOSURE_ROOT_PREFIX = "unit-closure-"
 CLOSURE_EXECUTION = "unikix-20250103T000000Z-0123abcd"
@@ -5419,6 +5926,21 @@ CLOSURE_ALREADY_CLOSED = [
     pytest.param([CLOSURE_INFERRED], id="inferred-closed"),
     pytest.param([CLOSURE_INSTALLATION], id="installation-closed"),
     pytest.param([CLOSURE_INFERRED, CLOSURE_INSTALLATION], id="both-closed"),
+]
+
+# Each case: how the commands.yaml copy is left once the installation's
+# versions are recorded, and the problem the GAP-MIS-009 line names when the
+# file cannot show which entries citing it are confirmed. "all" leaves every
+# such entry unconfirmed, as the committed file ships them, and "one" only
+# the last of them; the other cases make the file unusable.
+CLOSURE_UNCONFIRMED = [
+    pytest.param("all", None, id="every-citing-entry-unconfirmed"),
+    pytest.param("one", None, id="one-citing-entry-unconfirmed"),
+    pytest.param("absent", os.strerror(errno.ENOENT), id="commands-file-absent"),
+    pytest.param("directory", os.strerror(errno.EISDIR), id="commands-file-unreadable"),
+    pytest.param("not-yaml", "not valid YAML", id="commands-file-not-yaml"),
+    pytest.param("no-entries", "holds no 'entries' mapping", id="no-entries-mapping"),
+    pytest.param("entry-text", "is not a mapping", id="entry-not-a-mapping"),
 ]
 
 # A gap id of valid form that no register entry has, put together at run time
@@ -5462,9 +5984,11 @@ def closure_root(monkeypatch: pytest.MonkeyPatch, carddemo_work_root: Path) -> I
     """A repository root of this case's own inside the session work root
     (carddemo_work_root), never under pytest's basetemp or in the checkout,
     given by its real path, holding copies of the committed
-    ``inventory.yaml`` and ``gaps.yaml`` under ``tests/inventory/``, which
-    ``report.GAPS_FILE``, ``inventory_tools.INVENTORY_FILE`` and
-    ``report.REPO_ROOT`` name for the case; removed afterwards.
+    ``inventory.yaml`` and ``gaps.yaml`` under ``tests/inventory/`` and of
+    ``commands.yaml`` under ``tests/adapters/unikix/``, which
+    ``report.GAPS_FILE``, ``inventory_tools.INVENTORY_FILE``,
+    ``report.UNIKIX_COMMANDS_FILE`` and ``report.REPO_ROOT`` name for the
+    case; removed afterwards.
 
     The ``gaps.yaml`` copy holds a controlled lifecycle state rather than the
     committed one: every inferred-not-observed entry and GAP-MIS-009 is
@@ -5473,15 +5997,25 @@ def closure_root(monkeypatch: pytest.MonkeyPatch, carddemo_work_root: Path) -> I
     ``narrowed_from`` kept (``affected_inventory_ids``, and ``affected`` only
     when it held clauses) with ``narrowed_from`` dropped. The copy is
     rewritten, its comments kept, only when the committed register differs
-    from that state."""
+    from that state. The ``commands.yaml`` copy has every entry citing
+    GAP-MIS-009 ``confirmed``, whatever the committed file holds, so that
+    GAP-MIS-009 closes once the installation's versions are recorded."""
     directory = Path(tempfile.mkdtemp(prefix=CLOSURE_ROOT_PREFIX, dir=carddemo_work_root)).resolve()
     try:
         copies = directory / "tests" / "inventory"
         copies.mkdir(parents=True)
         for name in ("inventory.yaml", "gaps.yaml"):
             shutil.copyfile(INVENTORY_DIR / name, copies / name)
+        commands = directory / "tests" / "adapters" / "unikix" / COMMANDS_FILE.name
+        commands.parent.mkdir(parents=True)
+        registry = load_yaml(COMMANDS_FILE)
+        for entry in registry["entries"].values():
+            if isinstance(entry, dict) and entry.get("gap") == report.GAP_NO_INSTALLATION:
+                entry["status"] = "confirmed"
+        commands.write_text(dump_yaml(registry), encoding="utf-8")
         monkeypatch.setattr(report, "GAPS_FILE", copies / "gaps.yaml")
         monkeypatch.setattr(inventory_tools, "INVENTORY_FILE", copies / "inventory.yaml")
+        monkeypatch.setattr(report, "UNIKIX_COMMANDS_FILE", commands)
         monkeypatch.setattr(report, "REPO_ROOT", directory)
         original = report.GAPS_FILE.read_text(encoding="utf-8")
         committed = load_yaml(report.GAPS_FILE)
@@ -5667,6 +6201,52 @@ def test_settling_leaves_an_already_closed_entry_as_it_is(closure_root: Path, pr
     assert all(closure.entry is entries[closure.gap_id] for closure in closures)
 
 
+@pytest.mark.parametrize(("case", "problem"), CLOSURE_UNCONFIRMED)
+def test_settling_leaves_the_installation_open_while_a_command_citing_it_is_unconfirmed(
+    closure_root: Path, monkeypatch: pytest.MonkeyPatch, case: str, problem: str | None
+) -> None:
+    items = inventory_tools.load(inventory_tools.INVENTORY_FILE)["items"]
+    document = load_yaml(report.GAPS_FILE)
+    path = report.UNIKIX_COMMANDS_FILE
+    registry = load_yaml(path)
+    citing = sorted(entry_id for entry_id, entry in registry["entries"].items()
+                    if entry.get("gap") == CLOSURE_INSTALLATION)
+    assert citing, f"no commands.yaml entry cites {CLOSURE_INSTALLATION}"
+    unconfirmed = {"all": citing, "one": citing[-1:]}.get(case, [])
+    for entry_id in unconfirmed:
+        registry["entries"][entry_id]["status"] = "unconfirmed"
+    if case == "no-entries":
+        registry["entries"] = sorted(registry["entries"])
+    elif case == "entry-text":
+        registry["entries"][citing[0]] = "confirmed"
+    if case == "absent":
+        path.unlink()
+    elif case == "directory":
+        path = path.parent
+        monkeypatch.setattr(report, "UNIKIX_COMMANDS_FILE", path)
+    else:
+        path.write_text("entries: [\n" if case == "not-yaml" else dump_yaml(registry), encoding="utf-8")
+    # Nothing is verified, so only the installation's versions could settle
+    # an entry, and the commands.yaml copy withholds that.
+    state = SimpleNamespace(items=items, scenarios={}, statuses={}, item_scenarios={}, item_status={})
+    expected = copy.deepcopy(document)
+    summary = report.ImportSummary(CLOSURE_EXECUTION)
+    closures: list = []
+    report._settle_gaps(document, state, CLOSURE_EXECUTION, [CLOSURE_ENVIRONMENT], summary, closures)
+    entry = report._gap_entries(document)[CLOSURE_INSTALLATION]
+    assert (entry["status"], entry["resolving_evidence"]) == ("open", None)
+    assert document == expected
+    assert closures == []
+    [line] = summary.gaps_changed
+    assert line.startswith(f"{CLOSURE_INSTALLATION}: left open although {CLOSURE_VERSIONS_RECORDED}: "), line
+    assert report.display_path(path) in line, line
+    if problem is None:
+        assert f" {', '.join(unconfirmed)} that cite" in line and "status: confirmed" in line, line
+        assert all(entry_id not in line for entry_id in set(citing) - set(unconfirmed)), line
+    else:
+        assert problem in line and "repair the file" in line, line
+
+
 @pytest.mark.parametrize(("gap_id", "revalidating"), [
     pytest.param(CLOSURE_INFERRED, False, id="inferred-import"),
     pytest.param(CLOSURE_INFERRED, True, id="inferred-revalidation"),
@@ -5752,6 +6332,94 @@ def test_closing_requires_the_inventory_to_reflect_its_evidence(
             assert f"1 observed message(s) of {message_execution} match no item (first: '{quoted}')" in line
     else:
         assert line.startswith(f"{gap_id}: closed,")
+
+
+# An observed value, the text its inventory addition quotes, whether that
+# text is shorter than the source extraction's cutoff
+# (inventory_tools.MIN_MESSAGE_LENGTH), a different value of the same field
+# observed later, and the text the later value's addition quotes: a short
+# ERRMSG, and a short unformatted screen whose later rows hold more text,
+# each later value merely containing the first; and ERRMSG values that read
+# like a source template's placeholders, `<...>` and the ellipsis, short and
+# long, whose later value only such a placeholder would match.
+OBSERVED_MESSAGE_ADDITIONS = [
+    pytest.param("ERRMSG", "Error", "Error", True, "Error reading the user security file",
+                 "Error reading the user security file", id="errmsg"),
+    pytest.param(scenarios.SCREEN_TEXT, " \n  Bye\nA second screen line", "Bye", True,
+                 " \n  Bye for now\nA second screen line", "Bye for now", id="screen-text"),
+    pytest.param("ERRMSG", "<x>", "<x>", True, "An unrelated outcome QQQ", "An unrelated outcome QQQ",
+                 id="errmsg-angle-brackets"),
+    pytest.param("ERRMSG", "\u2026", "\u2026", True, "An unrelated outcome QQQ", "An unrelated outcome QQQ",
+                 id="errmsg-ellipsis"),
+    pytest.param("ERRMSG", "<none> selected", "<none> selected", False, "Account selected", "Account selected",
+                 id="errmsg-long-angle-brackets"),
+]
+
+
+@pytest.mark.parametrize(("field_name", "value", "text", "short", "later", "later_text"), OBSERVED_MESSAGE_ADDITIONS)
+def test_an_observed_message_is_added_once_and_matches_only_its_literal_text(
+    closure_root: Path, monkeypatch: pytest.MonkeyPatch, field_name: str, value: str, text: str, short: bool,
+    later: str, later_text: str,
+) -> None:
+    assert (len(text) < inventory_tools.MIN_MESSAGE_LENGTH) == short
+    evidence_dir = closure_root / "tests" / "reports" / "unikix"
+    monkeypatch.setattr(report, "UNIKIX_EVIDENCE_DIR", evidence_dir)
+    scenario = scenarios.get("SEC-COSGN00C-normal-01")
+    later_execution = "unikix-20250104T000000Z-0123abcd"
+    for execution_id, observed in ((CLOSURE_EXECUTION, value), (later_execution, later)):
+        result = evidence_dir / execution_id / scenario.id / report.RESULT_FILE
+        result.parent.mkdir(parents=True)
+        result.write_text(dump_yaml({"observed_messages": [{"step": 1, "field": field_name, "value": observed}]}),
+                          encoding="utf-8")
+    items = inventory_tools.load(inventory_tools.INVENTORY_FILE)["items"]
+    added: list[dict] = []
+
+    def record_additions(new_items: list[dict], reason: str) -> list[str]:
+        """append_items without the committed inventory its defaults name:
+        each item gets the next id of its area and is recorded."""
+        assert reason.strip()
+        assigned = []
+        for new in new_items:
+            item_id = inventory_tools.next_id(new["area"], {"header": {}, "items": [*items, *added]})
+            added.append({"id": item_id, **{key: entry for key, entry in new.items() if key != "area"}})
+            assigned.append(item_id)
+        return assigned
+
+    monkeypatch.setattr(report._inventory, "append_items", record_additions)
+    document = {"gaps": [{"gap_id": report.GAP_COMPLETENESS, "status": "open", "affected_inventory_ids": []}]}
+    first = report.ImportSummary(CLOSURE_EXECUTION)
+    report._new_message_items(SimpleNamespace(items=items, scenarios={scenario.id: scenario}), CLOSURE_EXECUTION,
+                              [scenario.id], document, first)
+    assert len(added) == 1 and first.items_added == [added[0]["id"]] and first.rejected == []
+    assert added[0]["name"] == f"{scenario.program_or_job} observed message '{text}'"
+    listed = report._gap_entries(document)[report.GAP_COMPLETENESS]["affected_inventory_ids"]
+    assert listed == first.items_added
+    # The next import of the same evidence finds the addition: nothing is
+    # added, the total stays where the first import raised it, and the
+    # register is left as it was.
+    second = report.ImportSummary(CLOSURE_EXECUTION)
+    report._new_message_items(SimpleNamespace(items=[*items, *added], scenarios={scenario.id: scenario}),
+                              CLOSURE_EXECUTION, [scenario.id], document, second)
+    assert len(added) == 1
+    assert (second.items_added, second.gaps_changed, second.rejected) == ([], [], [])
+    assert report._gap_entries(document)[report.GAP_COMPLETENESS]["affected_inventory_ids"] == listed
+    # The addition matches its own value as literal text, but not the later
+    # value, neither one holding it nor one a placeholder would stand for.
+    patterns = report._patterns_of([*items, *added])
+    assert report.message_items(value, field_name, patterns) == [added[0]["id"]]
+    assert report.message_items(later, field_name, patterns) == []
+    # So the import of the later execution adds the later value in turn: one
+    # more item, which the register lists beside the first.
+    third = report.ImportSummary(later_execution)
+    report._new_message_items(SimpleNamespace(items=[*items, *added], scenarios={scenario.id: scenario}),
+                              later_execution, [scenario.id], document, third)
+    assert len(added) == 2 and third.items_added == [added[1]["id"]] and third.rejected == []
+    assert added[1]["name"] == f"{scenario.program_or_job} observed message '{later_text}'"
+    assert report._gap_entries(document)[report.GAP_COMPLETENESS]["affected_inventory_ids"] == sorted(
+        [*listed, added[1]["id"]])
+    patterns = report._patterns_of([*items, *added])
+    assert report.message_items(value, field_name, patterns) == [added[0]["id"]]
+    assert report.message_items(later, field_name, patterns) == [added[1]["id"]]
 
 
 def test_write_register_records_the_closing_in_the_inventory_before_gaps_yaml(closure_root: Path) -> None:
@@ -5879,6 +6547,41 @@ def test_write_register_names_both_failures_when_its_closures_cannot_be_withdraw
     *earlier, recorded = inventory_tools.load(inventory_tools.INVENTORY_FILE)["header"]["changes"]
     assert earlier == before and recorded["gap_id"] == CLOSURE_INFERRED
     assert repr(recorded) in text and "without discarding other inventory changes" in text
+
+
+@pytest.mark.parametrize("files", [
+    pytest.param([], id="empty"),
+    pytest.param(["environment.yaml"], id="files-only"),
+])
+def test_import_of_an_execution_with_no_scenario_record_writes_nothing(
+    closure_root: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], files: list[str]
+) -> None:
+    tests_root = closure_root / "tests"
+    evidence_dir = tests_root / "reports" / "unikix"
+    execution_dir = evidence_dir / CLOSURE_EXECUTION
+    execution_dir.mkdir(parents=True)
+    for name in files:
+        (execution_dir / name).write_text(dump_yaml(CLOSURE_ENVIRONMENT), encoding="utf-8")
+    # The lock is taken on this case's own tests/ root, never the checkout's.
+    monkeypatch.setattr(report, "TESTS_ROOT", tests_root)
+    monkeypatch.setattr(report, "UNIKIX_EVIDENCE_DIR", evidence_dir)
+
+    def refuse(name: str) -> Callable[..., None]:
+        def called(*args: object, **kwargs: object) -> None:
+            pytest.fail(f"report.{name} ran for an execution holding no scenario record")
+        return called
+
+    for name in ("build_state", "_write_register", "regenerate"):
+        monkeypatch.setattr(report, name, refuse(name))
+    copies = (report.GAPS_FILE, inventory_tools.INVENTORY_FILE)
+    before = [path.read_bytes() for path in copies]
+    assert report.main(["--import-unikix", CLOSURE_EXECUTION]) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err == (f"report.py: error: 0 scenario records found in {report.display_path(execution_dir)}; "
+                   "nothing was imported\n")
+    assert [path.read_bytes() for path in copies] == before
+    assert sorted(path.name for path in execution_dir.iterdir()) == files
 
 
 def test_report_lists_a_closure_record_by_its_gap_id() -> None:

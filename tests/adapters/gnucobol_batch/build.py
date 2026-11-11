@@ -21,7 +21,8 @@ the adapter runs into ``<work root>/_build/<build key>/``:
     The generated indexed-file loader and unloader of one ``KeyProfile``.
 ``logs/<unit>.log``, ``src/``, ``manifest.yaml``, ``COMPLETE``
     Each compile's command line, stdout and stderr; generated sources; the
-    evidence of what was built; the marker written last.
+    evidence of what was built, with the sha256 of every artifact under
+    ``artifacts``; the marker written last.
 ``logs/CLOCKCHK.probe.log``
     Each clock-probe run's command line, ``COB_CURRENT_DATE``, status, stdout
     and stderr: the evidence of ``clock_fraction_mode``.
@@ -58,11 +59,24 @@ the unit or the probe and its log there. A build interrupted by
 too, with the logs its compiles wrote, before the exception goes on or the
 signal is acted on; an on-demand profile is kept as
 ``profiles/<profile>.failed`` in either case. A ``.failed`` directory is never
-complete, so the next session rebuilds. A failed build is a harness error,
-never a gap. A missing or unsuitable toolchain is not a failed build: the
-probe of ``cobc`` and ``cc`` raises ``ToolchainUnavailable`` before anything
-is written or compiled, and the adapter reports that missing runtime as
-``blocked`` under its registered gap.
+complete, so the next session rebuilds. Within a session a failed build is
+not retried: every later call with the same repository and work root raises
+the same ``BuildError`` and compiles nothing. A failed build is a harness
+error, never a gap. A missing or unsuitable toolchain is not a failed build:
+the probe of ``cobc`` and ``cc``, made once per session, raises
+``ToolchainUnavailable`` before anything is written or compiled, and every
+later call raises it again without probing; the adapter reports that missing
+runtime as ``blocked`` under its registered gap. Each probe runs in a process
+group of its own, killed whole when the probe has not finished within
+``_TOOL_PROBE_TIMEOUT_S``.
+
+Integrity. A finished directory is reused only when every sha256 its manifest
+records matches its file, checked once per session when the cache is loaded.
+A truncated, altered or missing artifact, or a manifest without the hashes,
+makes the directory stale, so it is removed and rebuilt. An on-demand profile
+keeps its own ``profiles/<profile>/manifest.yaml``, checked on its first use
+in a session; on a mismatch it is set aside under the key lock, removed and
+rebuilt.
 
 Indexed files. GnuCOBOL 3.2 with Berkeley DB keeps alternate key *i* in
 ``<file>.i``. ``OPEN INPUT`` fails with status 35 when a declared alternate's
@@ -125,6 +139,7 @@ import re
 import shlex
 import shutil
 import signal
+import stat
 import subprocess
 import tempfile
 import threading
@@ -133,7 +148,7 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextlib import contextmanager
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from harness import (
@@ -185,7 +200,7 @@ TEMPLATE_VERSION = "3"
 # Seconds one compile or probe may take. The build is session-level, so no
 # scenario deadline bounds it. A compile that overruns COMPILE_TIMEOUT_S is
 # killed with its whole process group, the C compiler, assembler and linker
-# cobc started.
+# cobc started, as is a toolchain probe that overruns _TOOL_PROBE_TIMEOUT_S.
 COMPILE_TIMEOUT_S = 600
 _TOOL_PROBE_TIMEOUT_S = 60
 
@@ -236,6 +251,7 @@ _TOOLCHAIN_VARIABLES = (
 _COBC_VERSION_RE = re.compile(r"^cobc \(GnuCOBOL\) 3\.2(\.0)?$")
 _BDB_RE = re.compile(r"^indexed file handler\s*:\s*BDB\b", re.MULTILINE)
 _INFO_ENTRY_RE = re.compile(r"^(\S.*?)\s+:\s?(.*)$")
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")  # an ``artifacts`` digest, matched whole
 _COBOL_LINE_LIMIT = 72
 
 _PARALLEL_COMPILES = max(1, min(4, os.cpu_count() or 1))
@@ -244,7 +260,8 @@ _PARALLEL_COMPILES = max(1, min(4, os.cpu_count() or 1))
 class BuildError(HarnessError):
     """The toolchain is missing or unsuitable, the build configuration is
     inconsistent, a compile or the clock probe failed, or a SIGTERM or SIGHUP
-    stopped the compiles and the caller's handler let the process go on.
+    stopped the compiles or a toolchain probe and the caller's handler let the
+    process go on.
 
     ``unit`` names the compilation unit and ``log_path`` its compile log when
     the error comes from a compile, or ``CLOCKCHK`` and its probe log when the
@@ -1042,21 +1059,58 @@ class _Toolchain:
 
 def _tool_output(argv: Sequence[str], env: Mapping[str, str]) -> str:
     """The stdout of one toolchain probe (``cobc --version``, ``cobc --info``,
-    ``cc --version``). A probe that cannot run or exits non-zero leaves the
-    toolchain unusable: ``ToolchainUnavailable``."""
+    ``cc --version``). A probe that cannot start, exits non-zero or does not
+    finish within ``_TOOL_PROBE_TIMEOUT_S`` leaves the toolchain unusable:
+    ``ToolchainUnavailable``.
+
+    The probe starts a new session, so it and every process it starts form a
+    process group of their own. When it overruns, or an exception such as
+    ``KeyboardInterrupt`` interrupts the wait, that group is killed, its
+    output drained and its leader reaped within ``_REAP_TIMEOUT_S``
+    (``_kill_group``), so no process of the probe outlives it; the error
+    names any teardown problem, and the interrupting exception is re-raised.
+    In the main thread SIGTERM and SIGHUP interrupt the wait the same way, as
+    ``_Terminated`` (``_stop_signals_raise``); once the previous dispositions
+    are restored, the signal is acted on as its disposition would have
+    (``_resume_signal``): under ``SIG_DFL`` the process dies by it, and a
+    handler that lets the process go on gets ``BuildError``. A stopped probe
+    is no verdict on the toolchain, so ``_probe_toolchain`` does not memoize
+    that error."""
+    command = shlex.join(argv)
+    stopped: tuple[int, Any] | None = None
     try:
-        completed = subprocess.run(
-            list(argv), env=dict(env), stdin=subprocess.DEVNULL, capture_output=True,
-            timeout=_TOOL_PROBE_TIMEOUT_S, check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise ToolchainUnavailable(f"cannot run {shlex.join(argv)}: {exc}. {_SETUP_HINT}") from None
-    if completed.returncode != 0:
-        stderr = completed.stderr.decode("utf-8", "replace").strip()
+        with _stop_signals_raise():
+            try:
+                process = subprocess.Popen(
+                    list(argv), env=dict(env), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, start_new_session=True,
+                )
+            except OSError as exc:
+                raise ToolchainUnavailable(f"cannot run {command}: {exc}. {_SETUP_HINT}") from None
+            try:
+                stdout, stderr = process.communicate(timeout=_TOOL_PROBE_TIMEOUT_S)
+            except subprocess.TimeoutExpired as exc:
+                _, _, note = _kill_group(process, exc.stdout or b"", exc.stderr or b"")
+                raise ToolchainUnavailable(
+                    f"cannot run {command}: it did not finish within {_TOOL_PROBE_TIMEOUT_S} "
+                    f"s{note}. {_SETUP_HINT}"
+                ) from None
+            except BaseException:
+                # KeyboardInterrupt, SIGTERM or SIGHUP (_Terminated), or any other
+                # exception: kill the probe's group, then let it go on.
+                _kill_group(process, b"", b"")
+                raise
+    except _Terminated as exc:
+        stopped = exc.signum, exc.disposition
+    if stopped is not None:
+        # Outside the handler, so what follows does not chain _Terminated.
+        _resume_signal(*stopped)
+    if process.returncode != 0:
+        errors = stderr.decode("utf-8", "replace").strip()
         raise ToolchainUnavailable(
-            f"{shlex.join(argv)} exited {completed.returncode}: {stderr}. {_SETUP_HINT}"
+            f"{command} exited {process.returncode}: {errors}. {_SETUP_HINT}"
         )
-    return completed.stdout.decode("utf-8", "replace").strip()
+    return stdout.decode("utf-8", "replace").strip()
 
 
 def _info_entries(info: str) -> dict[str, str]:
@@ -1093,14 +1147,38 @@ def _toolchain() -> _Toolchain:
 
 
 _TOOLCHAINS: dict[tuple[str, str, tuple[tuple[str, str], ...]], _Toolchain] = {}
+# The message of each probe that found the toolchain unusable, by the same key.
+_TOOLCHAIN_FAILURES: dict[tuple[str, str, tuple[tuple[str, str], ...]], str] = {}
+_TOOLCHAIN_LOCK = threading.Lock()
 
 
 def _probe_toolchain(
     path: str, ld_library_path: str, overrides: tuple[tuple[str, str], ...]
 ) -> _Toolchain:
+    """The toolchain ``path``, ``ld_library_path`` and ``overrides`` give,
+    probed once per session: a later call returns the toolchain found, or
+    raises a fresh ``ToolchainUnavailable`` with the first probe's message,
+    and starts no process. Concurrent callers wait for the one probe."""
     memo_key = (path, ld_library_path, overrides)
-    if memo_key in _TOOLCHAINS:
-        return _TOOLCHAINS[memo_key]
+    with _TOOLCHAIN_LOCK:
+        if memo_key in _TOOLCHAINS:
+            return _TOOLCHAINS[memo_key]
+        if memo_key in _TOOLCHAIN_FAILURES:
+            raise ToolchainUnavailable(_TOOLCHAIN_FAILURES[memo_key])
+        try:
+            toolchain = _find_toolchain(path, ld_library_path, overrides)
+        except ToolchainUnavailable as exc:
+            _TOOLCHAIN_FAILURES[memo_key] = str(exc)
+            raise
+        _TOOLCHAINS[memo_key] = toolchain
+        return toolchain
+
+
+def _find_toolchain(
+    path: str, ld_library_path: str, overrides: tuple[tuple[str, str], ...]
+) -> _Toolchain:
+    """Probe ``cobc`` and ``cc`` on ``path``, unmemoized; ``ToolchainUnavailable``
+    when either is missing or unsuitable."""
     cobc = shutil.which("cobc", path=path)
     if cobc is None:
         raise ToolchainUnavailable(f"cobc is not on PATH. {_SETUP_HINT}")
@@ -1139,9 +1217,7 @@ def _probe_toolchain(
         *(word[2:] for word in entries.get("COB_LIBS", "").split() if word.startswith("-L")),
         *ld_library_path.split(os.pathsep),
     ])
-    toolchain = _Toolchain(cobc, cc, cobc_version, cc_version, bin_dirs, lib_dirs, overrides)
-    _TOOLCHAINS[memo_key] = toolchain
-    return toolchain
+    return _Toolchain(cobc, cc, cobc_version, cc_version, bin_dirs, lib_dirs, overrides)
 
 
 # --------------------------------------------------------------------------
@@ -1605,7 +1681,8 @@ def _run_compile(
 
 class _Terminated(BaseException):
     """SIGTERM or SIGHUP, raised in the main thread while ``_compile_all``
-    waits; ``disposition`` is the signal's action before the build."""
+    waits for the compiles or ``_tool_output`` for a toolchain probe;
+    ``disposition`` is the signal's action before the build or the probe."""
 
     def __init__(self, signum: int, disposition: Any) -> None:
         super().__init__(signum, disposition)
@@ -1620,14 +1697,14 @@ def _stop_signals_raise() -> Iterator[None]:
     """While the body runs, turn the first SIGTERM or SIGHUP into
     ``_Terminated`` and restore the replaced dispositions on exit.
 
-    The compiles run in sessions of their own, so a termination signal sent
-    to the caller's process group no longer reaches them, and the default
-    action would end the interpreter before it kills their groups. A signal
-    that is ignored, or whose handler was set outside Python (``None``), is
-    left alone. Only the main thread may set handlers, so in any other thread
-    nothing changes. A repeat during the cleanup the first one starts is
-    dropped; a signal caught while the dispositions are being restored is sent
-    again once they are."""
+    The compiles and the toolchain probes run in sessions of their own, so a
+    termination signal sent to the caller's process group no longer reaches
+    them, and the default action would end the interpreter before it kills
+    their groups. A signal that is ignored, or whose handler was set outside
+    Python (``None``), is left alone. Only the main thread may set handlers,
+    so in any other thread nothing changes. A repeat during the cleanup the
+    first one starts is dropped; a signal caught while the dispositions are
+    being restored is sent again once they are."""
     previous: dict[int, Any] = {}
     raised: list[int] = []
     late: list[int] = []
@@ -1657,10 +1734,11 @@ def _stop_signals_raise() -> Iterator[None]:
 
 
 def _resume_signal(signum: int, disposition: Any) -> None:
-    """Act on ``signum``, which stopped a build, as ``disposition``, its
-    restored action from before the build, would have: under ``SIG_DFL`` the
-    process dies by the signal, and a Python handler is called and decides.
-    When the process survives, ``BuildError`` reports the stopped build."""
+    """Act on ``signum``, which stopped a build or a toolchain probe, as
+    ``disposition``, its restored action from before them, would have: under
+    ``SIG_DFL`` the process dies by the signal, and a Python handler is called
+    and decides. When the process survives, ``BuildError`` reports the stopped
+    build."""
     if disposition is signal.SIG_DFL:
         os.kill(os.getpid(), signum)
     else:
@@ -1898,6 +1976,72 @@ def _keep_unfinished(workspace: Path, target: Path, build_root: Path, key: str) 
         _remove_tree(workspace)
 
 
+def _artifact_hashes(directory: Path) -> dict[str, str]:
+    """The ``artifacts`` a manifest of ``directory`` records: the sha256 of
+    every regular file under it by its POSIX path relative to it, in path
+    order, leaving out the directory's own manifest and COMPLETE marker. A
+    subdirectory that cannot be listed raises ``OSError`` rather than leaving
+    its files out."""
+
+    def refuse(error: OSError) -> None:
+        raise error
+
+    hashes: dict[str, str] = {}
+    for parent, _, names in os.walk(directory, onerror=refuse):
+        for name in names:
+            path = Path(parent) / name
+            relative = path.relative_to(directory).as_posix()
+            if relative not in (_MANIFEST, _COMPLETE) and stat.S_ISREG(os.lstat(path).st_mode):
+                hashes[relative] = sha256_file(path)
+    return dict(sorted(hashes.items()))
+
+
+def _artifacts_intact(directory: Path, artifacts: Any) -> bool:
+    """Whether ``artifacts``, as read from a manifest of ``directory``, is a
+    non-empty mapping of safe relative paths (neither absolute nor holding a
+    ``..`` part) to sha256 hex digests, and each path names a regular file
+    inside ``directory`` with that digest. Files it does not list, such as a
+    profile built on demand later, are not looked at."""
+    if not isinstance(artifacts, Mapping) or not artifacts:
+        return False
+    try:
+        root = directory.resolve(strict=True)
+        for relative, digest in artifacts.items():
+            if not (
+                isinstance(relative, str)
+                and isinstance(digest, str)
+                and _SHA256_RE.fullmatch(digest)
+            ):
+                return False
+            parts = PurePosixPath(relative)
+            if not relative or parts.is_absolute() or ".." in parts.parts:
+                return False
+            path = directory / relative
+            if (
+                not stat.S_ISREG(os.lstat(path).st_mode)
+                or root not in path.resolve(strict=True).parents
+                or sha256_file(path) != digest
+            ):
+                return False
+    except (OSError, RuntimeError, ValueError):  # missing or unreadable; a symlink loop; a NUL
+        return False
+    return True
+
+
+def _profile_intact(directory: Path, name: str) -> bool:
+    """Whether ``directory`` is a finished on-demand profile ``name``: it holds
+    COMPLETE and a manifest of that profile whose ``artifacts`` all match."""
+    try:
+        manifest = load_yaml(directory / _MANIFEST) if (directory / _COMPLETE).is_file() else None
+    except Exception:  # an unreadable manifest is treated like a missing one
+        manifest = None
+    return (
+        isinstance(manifest, Mapping)
+        and manifest.get("profile") == name
+        and _artifacts_intact(directory, manifest.get("artifacts"))
+    )
+
+
 def _populate(
     workspace: Path, key: str, plan: _Plan, toolchain: _Toolchain, repo_root: Path
 ) -> None:
@@ -1914,6 +2058,8 @@ def _populate(
         (directory / _COMPLETE).write_text("", encoding="utf-8")
     mode = _probe_clock(toolchain, workspace)
     manifest = {
+        # Everything the build wrote, the clock probe's log included.
+        "artifacts": _artifact_hashes(workspace),
         "cc_version": toolchain.cc_version,
         "clock_fraction_mode": mode,
         "cobc_version": toolchain.cobc_version,
@@ -1929,10 +2075,14 @@ def _populate(
 
 def _complete_mode(directory: Path, key: str) -> str | None:
     """The clock fraction mode of a finished build directory, or ``None`` when
-    there is none. A directory that is unfinished or whose manifest does not
-    match is removed, so it gets rebuilt. The caller holds the key lock, so no
-    other session publishes the directory between the inspection and the
-    removal."""
+    there is none. A directory is finished when it holds COMPLETE and a
+    manifest of ``key`` with a clock fraction mode whose ``artifacts`` all
+    match their files (``_artifacts_intact``). Any other directory, whether
+    unfinished, of another key, or holding a truncated, altered or missing
+    artifact or a manifest without the hashes, is removed, so it gets rebuilt;
+    files the manifest does not list, such as profiles built on demand, are
+    not looked at. The caller holds the key lock, so no other session
+    publishes the directory between the inspection and the removal."""
     if not directory.exists():
         return None
     try:
@@ -1943,6 +2093,7 @@ def _complete_mode(directory: Path, key: str) -> str | None:
         isinstance(manifest, Mapping)
         and manifest.get("key") == key
         and manifest.get("clock_fraction_mode") in _CLOCK_MODES
+        and _artifacts_intact(directory, manifest.get("artifacts"))
     ):
         return manifest["clock_fraction_mode"]
     stale = directory.with_name(f"{directory.name}.stale-{os.getpid()}")
@@ -1966,7 +2117,12 @@ class BuildCache:
     ``LD_LIBRARY_PATH``), ``clock_fraction_mode`` (``hundredths`` or
     ``nanoseconds``, for ``harness.cob_current_date``) and ``profiles`` (the
     static key profiles). The directory is read-only to its users; only
-    ``loader`` and ``unloader`` add to it, atomically, for a new profile."""
+    ``loader`` and ``unloader`` add to it, atomically, for a new profile.
+    Its artifacts, the static profiles' included, were checked against the
+    manifest when it was loaded (``_complete_mode``). A profile built on
+    demand carries its own manifest, checked on the profile's first use by
+    this instance: a profile whose manifest is missing or any of whose
+    artifacts does not match is set aside, removed and built afresh."""
 
     def __init__(
         self, *, key: str, directory: Path, repo_root: Path, toolchain: _Toolchain, plan: _Plan,
@@ -1989,6 +2145,10 @@ class BuildCache:
         self._repo_root = repo_root
         self._toolchain = toolchain
         self._lock = threading.Lock()
+        self._static_profiles = frozenset(profile.name for profile in plan.profiles)
+        # The on-demand profiles checked or built by this instance; written
+        # only under _lock.
+        self._verified_profiles: set[str] = set()
 
     def __repr__(self) -> str:
         return f"BuildCache(key={self.key[:16]}..., dir={self.dir})"
@@ -2032,13 +2192,41 @@ class BuildCache:
     def _profile_dir(self, profile: KeyProfile) -> Path:
         if not isinstance(profile, KeyProfile):
             raise BuildError(f"a KeyProfile is required, got {profile!r}")
-        directory = self.dir / "profiles" / profile.name
-        if (directory / _COMPLETE).is_file():
+        name = profile.name
+        directory = self.dir / "profiles" / name
+        # A static profile was checked with the whole directory when the cache
+        # was loaded; an on-demand one is checked here on its first use. The
+        # first test runs unlocked, the second under _lock, which every write
+        # of _verified_profiles holds.
+        if (directory / _COMPLETE).is_file() and (
+            name in self._static_profiles or name in self._verified_profiles
+        ):
             return directory
         with self._lock:
+            if name not in self._static_profiles and not (
+                name in self._verified_profiles and (directory / _COMPLETE).is_file()
+            ):
+                self._drop_unverified_profile(name, directory)
             if not (directory / _COMPLETE).is_file():
                 self._build_profile(profile, directory)
+            if name not in self._static_profiles:
+                self._verified_profiles.add(name)
         return directory
+
+    def _drop_unverified_profile(self, name: str, directory: Path) -> None:
+        """Set aside and remove ``directory``, the on-demand profile ``name``,
+        unless it is finished with every artifact matching its manifest
+        (``_profile_intact``), so the caller builds it afresh; ``_publish``
+        would otherwise keep the existing copy. The check is repeated under the
+        key lock before the removal, so a copy another session has just
+        published intact is kept. The caller holds ``_lock``."""
+        if not os.path.lexists(directory) or _profile_intact(directory, name):
+            return
+        with _key_lock(self.dir.parent, self.key):
+            if not os.path.lexists(directory) or _profile_intact(directory, name):
+                return
+            stale = directory.with_name(f"{name}.stale-{os.getpid()}")
+            _remove_tree(_set_aside(directory, stale))
 
     def _build_profile(self, profile: KeyProfile, directory: Path) -> None:
         directory.parent.mkdir(parents=True, exist_ok=True)
@@ -2048,6 +2236,8 @@ class BuildCache:
         try:
             tasks = _profile_tasks(profile, workspace)
             _compile_all(tasks, self._toolchain, self._repo_root, workspace)
+            manifest = {"artifacts": _artifact_hashes(workspace), "profile": profile.name}
+            (workspace / _MANIFEST).write_text(dump_yaml(manifest), encoding="utf-8")
             (workspace / _COMPLETE).write_text("", encoding="utf-8")
         except _CompileFailure as failure:
             with _key_lock(self.dir.parent, self.key):
@@ -2074,14 +2264,32 @@ class BuildCache:
 
 
 _CACHES: dict[tuple[str, str], BuildCache] = {}
+# The message, unit and log path of the BuildError that ended each failed
+# build attempt, by the same key.
+_BUILD_FAILURES: dict[tuple[str, str], tuple[str, str | None, Path | None]] = {}
 _ENSURE_LOCK = threading.Lock()
+
+
+def _remember_failure(memo_key: tuple[str, str], error: BuildError) -> BuildError:
+    """Record ``error``, which ends the build attempt of ``memo_key``, and
+    return it."""
+    _BUILD_FAILURES[memo_key] = (str(error), error.unit, error.log_path)
+    return error
 
 
 def ensure_built(repo_root: Path | str, work_root: Path | str) -> BuildCache:
     """Return the build cache of ``repo_root`` under ``work_root``, compiling
     it first when no finished copy exists. Memoized per process and safe to
     call from every ``prepare``; the build itself is not bounded by any
-    scenario deadline."""
+    scenario deadline.
+
+    A failed build is not retried in the process: once a compile or the clock
+    probe failed, or the finished build could not be published, every later
+    call with the same repository and work root raises a fresh ``BuildError``
+    with the same message, unit and log path, and compiles nothing. A missing
+    toolchain is memoized by its probe instead (``_probe_toolchain``); an
+    interrupted build, a configuration error and a work root inside the
+    repository are not memoized."""
     root = Path(repo_root).resolve()
     work = Path(work_root).resolve()
     if work == root or root in work.parents:
@@ -2094,6 +2302,10 @@ def ensure_built(repo_root: Path | str, work_root: Path | str) -> BuildCache:
         cache = _CACHES.get(memo_key)
         if cache is not None and cache.is_complete():
             return cache
+        remembered = _BUILD_FAILURES.get(memo_key)
+        if remembered is not None:
+            message, unit, log_path = remembered
+            raise BuildError(message, unit=unit, log_path=log_path) from None
         toolchain = _toolchain()
         plan = _plan(root)
         key = _build_key(root, toolchain, plan)
@@ -2113,7 +2325,7 @@ def ensure_built(repo_root: Path | str, work_root: Path | str) -> BuildCache:
             except _CompileFailure as failure:
                 with _key_lock(build_root, key):
                     error = _build_failure(failure, workspace, failed)
-                raise error from None
+                raise _remember_failure(memo_key, error) from None
             except BaseException as exc:
                 # KeyboardInterrupt, SIGTERM or SIGHUP (_Terminated), or any other
                 # exception: keep the logs written so far, then let it go on.
@@ -2128,11 +2340,14 @@ def ensure_built(repo_root: Path | str, work_root: Path | str) -> BuildCache:
                 with _key_lock(build_root, key):
                     _publish(workspace, final)
                     mode = _complete_mode(final, key)
-            except BaseException:
+            except BaseException as exc:
                 _remove_tree(workspace)  # a no-op once the workspace is published
+                if isinstance(exc, BuildError):  # the publication or its lock failed
+                    _remember_failure(memo_key, exc)
                 raise
             if mode is None:
-                raise BuildError(f"the build directory {final} is incomplete after publishing")
+                error = BuildError(f"the build directory {final} is incomplete after publishing")
+                raise _remember_failure(memo_key, error)
         cache = BuildCache(
             key=key, directory=final, repo_root=root, toolchain=toolchain, plan=plan,
             clock_fraction_mode=mode,
