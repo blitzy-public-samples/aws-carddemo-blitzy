@@ -1,0 +1,110 @@
+# Derived baseline of scenario CRD-COCRDSLC-alternate-02 (capture_platform:
+# derived): USER0001 signs on, selects main-menu option 4 'Credit Card View',
+# lands on the COCRDSLC search screen and presses PF3, which returns to the
+# COMEN01C main menu. Authored from the source, never captured: it stays
+# inferred-not-observed under GAP-INF-006 and GAP-INF-012 until
+# `python tests/harness/report.py --import-unikix <execution_id>` promotes an
+# eligible UniKix run.
+# One screen per step, each the screen shown after the step's AID. Values are
+# whole BMS fields at their LENGTH with trailing spaces kept; fields the
+# program leaves LOW-VALUES are captured as spaces. CURDATE (mm/dd/yy) and
+# CURTIME (hh:mm:ss) come from the region clock through CSDAT01Y
+# [app/cpy/CSDAT01Y.cpy:30-41], so they are the only matcher fields.
+# Every field the scenario's inline expectation names is kept, with the same
+# value, so this baseline asserts no less than the scenario.
+screens:
+# Step 1: COSGN00C XCTLs the type-U user to COMEN01C with program context 0
+# [app/cbl/COSGN00C.cbl:221-240]. On first entry COMEN01C sends COMEN1A from
+# LOW-VALUES with ERASE [app/cbl/COMEN01C.cbl:85-90,182-193]: its own CM00 and
+# COMEN01C header and the COTTL01Y titles [app/cbl/COMEN01C.cbl:212-231]
+# [app/cpy/COTTL01Y.cpy:18-22]; the ten COMEN02Y options as '<nn>. ' plus the
+# 35-byte name in the 40-byte WS-MENU-OPT-TXT, OPTN011 and OPTN012 left at
+# their INITIAL blank [app/cbl/COMEN01C.cbl:236-277] [app/cpy/COMEN02Y.cpy:21-84]
+# [app/bms/COMEN01.bms:130-139]; an empty OPTION; and the blank WS-MESSAGE in
+# the 78-byte ERRMSG [app/cbl/COMEN01C.cbl:79-80,187].
+- '@map': COMEN01
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  OPTION: '  '
+  OPTN001: '01. Account View                        '
+  OPTN002: '02. Account Update                      '
+  OPTN003: '03. Credit Card List                    '
+  OPTN004: '04. Credit Card View                    '
+  OPTN005: '05. Credit Card Update                  '
+  OPTN006: '06. Transaction List                    '
+  OPTN007: '07. Transaction View                    '
+  OPTN008: '08. Transaction Add                     '
+  OPTN009: '09. Transaction Reports                 '
+  OPTN010: '10. Bill Payment                        '
+  OPTN011: '                                        '
+  OPTN012: '                                        '
+  PGMNAME: COMEN01C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CM00
+# Step 2: option 4 is numeric, within the 10 options, of user type U and not a
+# DUMMY program, so COMEN01C records CM00/COMEN01C as the caller and XCTLs to
+# COCRDSLC with context 0 [app/cbl/COMEN01C.cbl:115-155]. Either branch of
+# COCRDSLC's COMMAREA test leaves CDEMO-PGM-ENTER, and the caller is not the
+# card list, so ENTER sends CCRDSLA without reading a file
+# [app/cbl/COCRDSLC.cbl:268-299,349-356,412-577]. No card is found, so the card
+# detail fields stay LOW-VALUES; the blank WS-INFO-MSG becomes the 36-character
+# prompt in the 40-byte INFOMSG, and the blank 75-byte WS-RETURN-MSG fills the
+# 80-byte ERRMSG, whose last position is the FKEYS attribute byte
+# [app/cbl/COCRDSLC.cbl:126-135,490-496].
+# ACCTSID and CARDSID are not asserted, as the scenario decides: no program on
+# this path sets CDEMO-ACCT-ID or CDEMO-CARD-NUM, so their content rests on the
+# region's working-storage initialization [app/cbl/COCRDSLC.cbl:459-472].
+- '@map': COCRDSL
+  CRDNAME: '                                                  '
+  CRDSTCD: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                                '
+  EXPMON: '  '
+  EXPYEAR: '    '
+  INFOMSG: 'Please enter Account and Card Number    '
+  PGMNAME: COCRDSLC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CCDL
+# Step 3, the item under test: CSSTRPFY maps DFHPF3 to CCARD-AID-PFK03, a valid
+# key here [app/cpy/CSSTRPFY.cpy:34-35] [app/cbl/COCRDSLC.cbl:284-299]. The
+# target is the restored caller CM00/COMEN01C, or LIT-MENUTRANID CM00 and
+# LIT-MENUPGM COMEN01C when the FROM fields are blank, so COMEN01C on either
+# path; COCRDSLC sets CDEMO-USRTYP-USER and CDEMO-PGM-ENTER and XCTLs without
+# receiving the map [app/cbl/COCRDSLC.cbl:179-182,305-334]. COMEN01C, entered
+# with a COMMAREA that is not REENTER, sends the main menu afresh, so the screen
+# is the one of step 1 [app/cbl/COMEN01C.cbl:82-90,182-277]. Neither a COCRDSL
+# repaint nor the sign-on screen matches @map COMEN01 with PGMNAME COMEN01C.
+- '@map': COMEN01
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  OPTION: '  '
+  OPTN001: '01. Account View                        '
+  OPTN002: '02. Account Update                      '
+  OPTN003: '03. Credit Card List                    '
+  OPTN004: '04. Credit Card View                    '
+  OPTN005: '05. Credit Card Update                  '
+  OPTN006: '06. Transaction List                    '
+  OPTN007: '07. Transaction View                    '
+  OPTN008: '08. Transaction Add                     '
+  OPTN009: '09. Transaction Reports                 '
+  OPTN010: '10. Bill Payment                        '
+  OPTN011: '                                        '
+  OPTN012: '                                        '
+  PGMNAME: COMEN01C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CM00
