@@ -65,6 +65,24 @@ month or day first) at the precision it shows and a malformed one as no time;
 and keep every observation in the evidence as soon as it is acquired, through
 ``BatchService.observe``'s ``keep`` as well, so a later failure loses none.
 
+Online fault placement: ``UniKixAdapter``'s fault planning, on fake commands,
+must place an online ``unavailable`` fault without ``after`` before step
+index 1 and one with ``after`` 0 before step index 0, MissingPrerequisite
+under GAP-MIS-011 when the scenario has no such step; accept ``after`` 1 or
+more only for a read, write or rewrite fault on a region file with a step
+after the first and ``region_file_requests`` available, MissingPrerequisite
+under GAP-MIS-011 otherwise; and keep ``locked``, ``io-error`` and ``abend``
+MissingPrerequisite under GAP-MIS-014. Called as ``tpe.drive`` calls it, on
+scripted ``region_file_requests`` counts, the placement must apply a counted
+fault before the first step at whose start ``after`` requests have been
+served since the attempt's first step (CRD-COCRDLIC-recovery-03 and
+CRD-COCRDUPC-recovery-01 before step index 3), count only while it is
+unapplied, take a new baseline after a restart, end in MissingPrerequisite
+under GAP-MIS-011 when more were served by a step's start or fewer by the
+last step's, in AdapterUnavailable under GAP-MIS-011 for output without
+exactly one count or a count below the baseline, and leave a run that stopped
+before its last step to the comparison.
+
 Evidence ownership: ``EvidenceWriter.write``, on a tests root of the case's
 own, must refuse a scenario folder that already exists, whatever stands
 there, and keep it as found; of concurrent writes of one scenario exactly one
@@ -119,8 +137,8 @@ accounts after POSTTRAN each naming the proof's account fields.
 
 Stage observations on unikix: ``BatchService.run_jobs``, on fake
 submissions, must call ``after_job`` with each job's 0-based position once
-its wait returned and before the next submission, an abended job included,
-and submit nothing after an abend. ``UniKixAdapter``, on fakes, must declare
+its wait returned and before the next job's ``before_job`` and submission,
+an abended job included, and submit nothing after an abend. ``UniKixAdapter``, on fakes, must declare
 ``@AFTER:*`` before its session and, once it has started, exactly when it
 declares the business datasets, under GAP-MIS-007 otherwise; refuse with
 ``HarnessError``, before any command or BPE use, a stage observation whose job
@@ -130,6 +148,42 @@ keeping it in the evidence under its stage name as soon as it is acquired;
 leave out one whose dataset is not catalogued then or whose job never ran;
 keep what was acquired when a later unload fails; and never pass a stage name
 to the post-run unloads.
+
+Region stage observations: ``base.region_stage_observation`` and
+``parse_region_stage`` must round-trip ``@BEFORE:<JOB>:@REGION-FILES`` and
+``@AFTER:<JOB>:@REGION-FILES``, which ``observation_matches`` covers exactly
+when it covers ``@REGION-FILES`` (never through ``"@AFTER:*"``), and refuse
+an unknown stage, a malformed job and any other name. gnucobol-batch and the
+runner's default must block one under GAP-MIS-011, and neither adapter may
+unload one as a dataset stage. ``scenarios.validate`` must accept one under
+``expected.file_state`` for a job the chain runs once, its records lines, and
+refuse a malformed name, a job ``inputs.job`` does not run or lists twice, an
+online scenario's, a record that is not a line and one under
+``expected.datasets``. ``baselines.decode_result`` must decode one as its
+lines, ``capture.raw_datasets`` keep no raw bytes of it, and ``compare`` pass
+the committed CFG-OPENFIL, CFG-CLOSEFIL and BAT-RUNORDER baselines on their
+derived region states and fail them on files left unchanged where the job
+changes them, or changed where it does not. ``BatchService.run_jobs`` must
+call ``before_job`` just before each submission, after the previous
+``after_job``, and never for a job an abend leaves unreached.
+``UniKixAdapter``, on fakes, must declare one exactly when
+``region_file_inquire`` probed available, unloads or not, under GAP-MIS-011
+otherwise; cover ``fct.lst`` in its source identity; refuse, before the
+region, one whose job the chain does not run once; and read the region files
+just before the job is submitted and, at its end, before the unloads of that
+job's dataset stages, keeping each under its stage name and leaving out the
+ones of jobs never reached.
+
+Session close on unikix: ``UniKixAdapter.close``, on fake commands, must end
+every ``s3270`` session first, then attempt ``region_stop`` (unless the
+adapter has stopped the region itself) and ``bpe_stop`` whatever the other
+did; append each stop that probed unavailable or failed to
+``<deployment root>/logs/session-close.log`` as one line with the UTC time
+and the execution id, and raise ``AdapterUnavailable`` with the
+``commands.yaml`` gap of the first of them, its reason listing every problem
+and where they were appended or why they could not be; return ``None`` when
+nothing failed or no session started; and, closed again, attempt only the
+stops still owed, never raising once nothing is left to stop.
 """
 
 from __future__ import annotations
@@ -156,6 +210,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 _TESTS_ROOT = str(Path(__file__).resolve().parent)
 if _TESTS_ROOT not in sys.path:
@@ -180,6 +235,7 @@ from harness import (  # noqa: E402
     UNIKIX_EVIDENCE_DIR,
     HarnessError,
     baselines,
+    capture,
     codec,
     dump_yaml,
     fixtures,
@@ -188,6 +244,7 @@ from harness import (  # noqa: E402
     load_yaml,
     report,
     results,
+    runner,
     scenarios,
 )
 
@@ -1089,6 +1146,77 @@ def test_evidence_writer_writes_a_conforming_record_that_reads_back_equal(
     assert results.record_problems(fields) == []
 
 
+# The command log of a scenario's evidence: a CommandSet of the committed
+# commands.yaml whose in-memory log holds a probe, a refused run and a run with
+# clipped output, logged by its own _record with elapsed times; the env has no
+# deployment root, so nothing is run or written.
+EVIDENCE_COMMANDS_LOG = f"{evidence.SYSOUT_DIR}/adapter/commands.log"
+
+
+def _logged_commands() -> unikix_env.CommandSet:
+    commands = unikix_env.CommandSet.load()
+    env = SimpleNamespace(vars={})
+    commands._record(
+        env, "probe", "region_start", "command -v kixregion", "/deployment/project", 0,
+        "completed", 0.0042, stdout="/opt/unikix/bin/kixregion\n",
+    )
+    commands._record(
+        env, "run", "bpe_submit", "BPESUB TRNRPT00", None, None, "refused", 0.0,
+        reason="probe failed",
+    )
+    commands._record(
+        env, "run", "region_quiesce_query", "kixstat", "/deployment/project", 0, "completed",
+        12.3456, stdout="T" * (unikix_env.LOG_LIMIT_BYTES + 1), stderr="warning\n",
+    )
+    return commands
+
+
+def _without_elapsed(records: list[dict]) -> list[dict]:
+    return [
+        {key: value for key, value in record.items() if key != unikix_env.LOG_ELAPSED_KEY}
+        for record in records
+    ]
+
+
+def test_evidence_command_log_renders_every_field_but_the_elapsed_time() -> None:
+    records = _logged_commands().log
+    # The in-memory log keeps the elapsed times the evidence copy leaves out.
+    assert [record[unikix_env.LOG_ELAPSED_KEY] for record in records] == ["0.004", "0.000", "12.346"]
+    expected = _without_elapsed(records)
+    assert [sorted(record) for record in expected] == [
+        ["command", "cwd", "id", "kind", "outcome", "rc", "seq", "stderr", "stdout"],
+        ["command", "cwd", "id", "kind", "outcome", "rc", "reason", "seq", "stderr", "stdout"],
+        ["command", "cwd", "id", "kind", "outcome", "rc", "seq", "stderr", "stdout", "truncated"],
+    ]
+    rendered = unikix_env.CommandSet.render_evidence_log(records)
+    assert rendered.startswith("---\n")
+    assert list(yaml.safe_load_all(rendered)) == expected
+    assert unikix_env.LOG_ELAPSED_KEY not in rendered
+    # Rendering leaves the records it was given as they were.
+    assert all(unikix_env.LOG_ELAPSED_KEY in record for record in records)
+
+
+def test_unikix_write_evidence_writes_the_command_log_without_elapsed_times(
+    evidence_tests_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commands = _logged_commands()
+    adapter = UniKixAdapter(work_root=evidence_tests_root, repo_root=Path(_TESTS_ROOT).parent)
+    adapter.execution_id = EVIDENCE_EXECUTION_ID
+    adapter._commands = commands
+    adapter._capture, adapter._capture_id = evidence.Capture(), EVIDENCE_SCENARIO
+    monkeypatch.setattr(unikix_adapter.harness, "TESTS_ROOT", evidence_tests_root)
+    record = _evidence_record()
+    assert adapter.write_evidence(scenarios.get(EVIDENCE_SCENARIO), record) == record["evidence_path"]
+    folder = _evidence_folder(evidence_tests_root)
+    text = (folder / EVIDENCE_COMMANDS_LOG).read_text(encoding="utf-8")
+    assert list(yaml.safe_load_all(text)) == _without_elapsed(commands.log)
+    assert unikix_env.LOG_ELAPSED_KEY not in text
+    written = load_yaml(folder / evidence.RESULT_FILE)
+    assert written["capture_summary"]["sysout"] == {"adapter/commands.log": "adapter/commands.log"}
+    # The session's own log keeps them.
+    assert all(unikix_env.LOG_ELAPSED_KEY in entry for entry in commands.log)
+
+
 # UniKixAdapter's @TDQ:JOBS capture on fakes: jobs_capture answers with
 # scripted listings and JCL while parse.job and the gap come from the
 # committed commands.yaml; adapter.py's monotonic clock moves only when it
@@ -1646,6 +1774,406 @@ def test_unikix_batch_observe_keeps_each_observation_as_it_is_acquired(
     assert calls == [(name, acquired[name]) for name in kept]
 
 
+# Online fault placement: UniKixAdapter._plan_faults and the before_step
+# callback _fault_applier gives tpe.drive, on fake commands. A fault's `after`
+# is the number of its operation requests on the target that succeed before
+# it, read through region_file_requests when it is 1 or more.
+FAULT_SCENARIO = "CRD-COCRDLIC-recovery-03"
+FAULT_DISABLE = "region_file_disable"
+FAULT_COUNT = "region_file_requests"
+FAULT_GAP = "GAP-MIS-011"
+FAULT_NOTE = "adapter/faults.txt"
+FAULT_CARD_READ = {"target": "CARDDAT", "operation": "read", "condition": "unavailable"}
+
+
+class _FaultCommands:
+    """The ``CommandSet`` online fault planning and placement use: entries of
+    the committed commands.yaml, ``found`` the entries probed available, and
+    ``region_file_requests`` printing the scripted ``counts`` in turn.
+    ``runs`` records every run with its placeholder values."""
+
+    def __init__(self, found: frozenset[str], counts: tuple[str, ...] = ()) -> None:
+        self.entries = unikix_env.CommandSet.load()
+        self.found = frozenset(found)
+        self.counts = list(counts)
+        self.runs: list[tuple[str, dict[str, str | int]]] = []
+
+    def entry(self, entry_id: str) -> unikix_env.CommandEntry:
+        return self.entries.entry(entry_id)
+
+    def available(
+        self, entry_id: str, env: object = None, *, deadline_left: float | None = None
+    ) -> bool:
+        return entry_id in self.found
+
+    def probe_reason(self, entry_id: str) -> str | None:
+        return None if entry_id in self.found else f"probe found no {entry_id}"
+
+    def run(
+        self, entry_id: str, env: object, deadline_left: float | None = None, **values: str | int
+    ) -> SimpleNamespace:
+        assert entry_id in self.found, f"{entry_id} ran although its probe failed"
+        assert deadline_left is not None and deadline_left > 0
+        self.runs.append((entry_id, dict(values)))
+        if entry_id != FAULT_COUNT:
+            return SimpleNamespace(stdout="")
+        assert self.counts, f"{FAULT_COUNT} read more often than the case scripts"
+        return SimpleNamespace(stdout=self.counts.pop(0))
+
+
+def _fault_adapter(commands: _FaultCommands) -> UniKixAdapter:
+    """A ``UniKixAdapter`` with a fresh capture, ``commands``, the committed
+    resources.yaml and no deadline (the default limit applies)."""
+    work_root = Path(os.environ.get(WORK_ROOT_ENV, "").strip() or tempfile.gettempdir())
+    adapter = UniKixAdapter(work_root=work_root, repo_root=Path(_TESTS_ROOT).parent)
+    adapter._capture = evidence.Capture()
+    adapter._commands = commands
+    adapter._env = object()
+    adapter._batch = SimpleNamespace(resources=bpe.Resources.load())
+    return adapter
+
+
+def _fault_plan(
+    adapter: UniKixAdapter, scenario: object
+) -> tuple[unikix_adapter._Plan, base.MissingPrerequisite | None]:
+    """The online plan of ``scenario`` with its faults planned, and the first
+    fault ``_plan_faults`` found it cannot provide."""
+    plan = unikix_adapter._Plan(
+        scenario_id=scenario.id,
+        online=True,
+        steps=list(scenario.inputs.get("steps") or []),
+        sessions=1,
+        jobs=(),
+        dateparm=None,
+    )
+    return plan, adapter._plan_faults(scenario, plan)
+
+
+def _planned(step: int | None, target: str, entry: str, operation: str, after: int | None) -> object:
+    placeholder = "queue" if target == "JOBS" else "file"
+    return unikix_adapter._OnlineFault(step, target, entry, placeholder, operation, after)
+
+
+# Each case: the fault, how many steps the scenario has, the entries probed
+# available, and the planned fault, or the gap and texts of the
+# MissingPrerequisite _plan_faults returns instead.
+FAULT_PLANS = [
+    pytest.param(
+        FAULT_CARD_READ,
+        4,
+        {FAULT_DISABLE},
+        _planned(1, "CARDDAT", FAULT_DISABLE, "read", None),
+        id="absent-after-the-sign-on-step",
+    ),
+    pytest.param(
+        {**FAULT_CARD_READ, "target": "USRSEC", "after": 0},
+        1,
+        {FAULT_DISABLE},
+        _planned(0, "USRSEC", FAULT_DISABLE, "read", 0),
+        id="zero-before-the-first-step",
+    ),
+    pytest.param(
+        {**FAULT_CARD_READ, "after": 18},
+        4,
+        {FAULT_DISABLE, FAULT_COUNT},
+        _planned(None, "CARDDAT", FAULT_DISABLE, "read", 18),
+        id="counted-with-request-count",
+    ),
+    pytest.param(
+        {**FAULT_CARD_READ, "after": 1},
+        3,
+        {"region_file_close", FAULT_COUNT},
+        _planned(None, "CARDDAT", "region_file_close", "read", 1),
+        id="counted-closing-for-disabling",
+    ),
+    pytest.param(
+        {"target": "JOBS", "operation": "write", "condition": "unavailable"},
+        3,
+        {"tdq_disable"},
+        _planned(1, "JOBS", "tdq_disable", "write", None),
+        id="tdq-after-the-sign-on-step",
+    ),
+    pytest.param(
+        {**FAULT_CARD_READ, "after": 18},
+        4,
+        {FAULT_DISABLE},
+        (FAULT_GAP, (f"{FAULT_COUNT} unavailable: probe found no {FAULT_COUNT}",)),
+        id="counted-without-request-count",
+    ),
+    pytest.param(
+        {**FAULT_CARD_READ, "after": 1},
+        3,
+        set(),
+        (FAULT_GAP, (f"{FAULT_COUNT} unavailable", "region_file_close unavailable")),
+        id="counted-without-file-control",
+    ),
+    pytest.param(
+        {"target": "JOBS", "operation": "write", "condition": "unavailable", "after": 1},
+        3,
+        {"tdq_disable", FAULT_COUNT},
+        (FAULT_GAP, ("counts requests on the TDQ JOBS",)),
+        id="counted-on-the-tdq",
+    ),
+    pytest.param(
+        {**FAULT_CARD_READ, "operation": "open", "after": 2},
+        3,
+        {FAULT_DISABLE, FAULT_COUNT},
+        (FAULT_GAP, (f"{FAULT_COUNT} counts only read, write, rewrite requests",)),
+        id="counted-open-requests",
+    ),
+    pytest.param(
+        {**FAULT_CARD_READ, "after": 1},
+        1,
+        {FAULT_DISABLE, FAULT_COUNT},
+        (FAULT_GAP, ("no step boundary follows the first step",)),
+        id="counted-with-one-step",
+    ),
+    pytest.param(
+        FAULT_CARD_READ,
+        1,
+        {FAULT_DISABLE},
+        (FAULT_GAP, ("before steps[1] (after the sign-on step)",)),
+        id="absent-with-one-step",
+    ),
+    pytest.param(
+        {**FAULT_CARD_READ, "after": 0},
+        0,
+        {FAULT_DISABLE},
+        (FAULT_GAP, ("before steps[0] (with `after` 0)",)),
+        id="zero-without-steps",
+    ),
+    *(
+        pytest.param(
+            {**FAULT_CARD_READ, "condition": condition, "after": 1},
+            5,
+            {FAULT_DISABLE, FAULT_COUNT},
+            ("GAP-MIS-014", ("no mechanism holds a record lock",)),
+            id=condition,
+        )
+        for condition in ("locked", "io-error", "abend")
+    ),
+]
+
+
+@pytest.mark.parametrize(("fault", "steps", "found", "expected"), FAULT_PLANS)
+def test_unikix_plans_an_online_fault_from_its_operation_count(
+    fault: dict, steps: int, found: set[str], expected: object
+) -> None:
+    commands = _FaultCommands(frozenset(found))
+    adapter = _fault_adapter(commands)
+    scenario = SimpleNamespace(
+        id=FAULT_SCENARIO,
+        inputs={"steps": [{"aid": "ENTER"} for _ in range(steps)]},
+        expected={},
+        preconditions={"faults": [fault]},
+    )
+    plan, unprovidable = _fault_plan(adapter, scenario)
+    if isinstance(expected, unikix_adapter._OnlineFault):
+        assert unprovidable is None
+        assert plan.online_faults == [expected]
+    else:
+        gap_id, texts = expected
+        assert isinstance(unprovidable, base.MissingPrerequisite)
+        assert unprovidable.gap_id == gap_id
+        for text in texts:
+            assert text in unprovidable.need
+        assert plan.online_faults == []
+    assert commands.runs == []
+
+
+# Each case: the scenario, what region_file_requests prints in turn, the step
+# indices before_step is called with (a restart starts again at 0), the step
+# indices before which the fault's entry ran, how many counts were read, the
+# exception the placement raises (None: none) with its gap and texts, and a
+# text the fault note holds.
+FAULT_RUNS = [
+    pytest.param(
+        "CRD-COCRDLIC-recovery-03",
+        ("requests 0", "requests 0", "requests 9", "requests 18"),
+        (0, 1, 2, 3),
+        [3],
+        4,
+        None,
+        "before steps[3]: region_file_disable CARDDAT, after 18 read request(s)",
+        id="card-list-before-page-up",
+    ),
+    pytest.param(
+        "CRD-COCRDUPC-recovery-01",
+        ("requests 0", "requests 0", "requests 0", "requests 1", "requests 1"),
+        (0, 1, 2, 3, 4),
+        [3],
+        4,
+        None,
+        "before steps[3]: region_file_disable CARDDAT, after 1 read request(s)",
+        id="card-update-before-the-edit",
+    ),
+    pytest.param(
+        "CRD-COCRDLIC-recovery-03",
+        ("requests 7", "requests 7", "requests 16", "requests 25"),
+        (0, 1, 2, 3),
+        [3],
+        4,
+        None,
+        f"{FAULT_COUNT} 7 before steps[0], 25 before steps[3]",
+        id="served-since-the-first-step",
+    ),
+    pytest.param(
+        "CRD-COCRDLIC-recovery-03",
+        (
+            "requests 0", "requests 0", "requests 9", "requests 18",
+            "requests 40", "requests 40", "requests 49", "requests 58",
+        ),
+        (0, 1, 2, 3, 0, 1, 2, 3),
+        [3, 3],
+        8,
+        None,
+        f"{FAULT_COUNT} 40 before steps[0], 58 before steps[3]",
+        id="restart-takes-a-new-baseline",
+    ),
+    pytest.param(
+        "CRD-COCRDLIC-recovery-03",
+        ("requests 0", "requests 0", "requests 9", "requests 19"),
+        (0, 1, 2, 3),
+        [],
+        4,
+        (
+            base.MissingPrerequisite,
+            FAULT_GAP,
+            ("19 were served by the start of steps[3]", "request 19 was served inside steps[2]"),
+        ),
+        None,
+        id="served-past-after",
+    ),
+    pytest.param(
+        "CRD-COCRDLIC-recovery-03",
+        ("requests 0", "requests 0", "requests 9", "requests 17"),
+        (0, 1, 2, 3),
+        [],
+        4,
+        (
+            base.MissingPrerequisite,
+            FAULT_GAP,
+            ("only 17 were served by the start of the last step, steps[3]",),
+        ),
+        None,
+        id="after-never-reached",
+    ),
+    pytest.param(
+        "CRD-COCRDLIC-recovery-03",
+        ("requests 0", "requests 0", "requests 9"),
+        (0, 1, 2),
+        [],
+        3,
+        None,
+        "the steps stopped at steps[2], before the last step, steps[3]",
+        id="steps-stopped-before-the-boundary",
+    ),
+    pytest.param(
+        "CRD-COCRDLIC-recovery-03",
+        ("requests 0", "the region answered nothing"),
+        (0, 1),
+        [],
+        2,
+        (base.AdapterUnavailable, FAULT_GAP, ("printed no count",)),
+        None,
+        id="unreadable-count",
+    ),
+    pytest.param(
+        "CRD-COCRDLIC-recovery-03",
+        ("requests 0", "requests 4\nrequests 5\n"),
+        (0, 1),
+        [],
+        2,
+        (base.AdapterUnavailable, FAULT_GAP, ("printed 2 count(s)",)),
+        None,
+        id="two-counts",
+    ),
+    pytest.param(
+        "CRD-COCRDLIC-recovery-03",
+        ("requests 5", "requests 5", "requests 4"),
+        (0, 1, 2),
+        [],
+        3,
+        (base.AdapterUnavailable, FAULT_GAP, ("fell from 5 before steps[0] to 4 before steps[2]",)),
+        None,
+        id="count-below-the-baseline",
+    ),
+    pytest.param(
+        "USR-COUSR02C-recovery-01",
+        (),
+        (0, 1, 2),
+        [1],
+        0,
+        None,
+        "before steps[1]: region_file_disable USRSEC",
+        id="absent-after-the-sign-on-step",
+    ),
+    pytest.param(
+        "SEC-COSGN00C-recovery-01",
+        (),
+        (0,),
+        [0],
+        0,
+        None,
+        "before steps[0]: region_file_disable USRSEC",
+        id="zero-before-the-only-step",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("scenario_id", "counts", "indices", "applied", "reads", "raised", "noted"), FAULT_RUNS
+)
+def test_unikix_applies_an_online_fault_after_its_operation_count(
+    scenario_id: str,
+    counts: tuple[str, ...],
+    indices: tuple[int, ...],
+    applied: list[int],
+    reads: int,
+    raised: tuple | None,
+    noted: str | None,
+) -> None:
+    commands = _FaultCommands(frozenset({FAULT_DISABLE, FAULT_COUNT}), counts)
+    adapter = _fault_adapter(commands)
+    plan, unprovidable = _fault_plan(adapter, scenarios.get(scenario_id))
+    assert unprovidable is None
+    (fault,) = plan.online_faults
+    placement = adapter._fault_applier(plan)
+    assert placement is not None
+    before: list[int] = []
+
+    def disabled() -> int:
+        return sum(entry_id == FAULT_DISABLE for entry_id, _ in commands.runs)
+
+    def drive() -> None:
+        # As tpe.drive calls before_step, then the check made once it returns.
+        for index in indices:
+            ran = disabled()
+            placement(index)
+            if disabled() > ran:
+                before.append(index)
+        placement.finish()
+
+    if raised is None:
+        drive()
+    else:
+        exception, gap_id, texts = raised
+        with pytest.raises(exception) as caught:
+            drive()
+        assert caught.value.gap_id == gap_id
+        for text in texts:
+            assert text in str(caught.value)
+    assert before == applied
+    assert [values for entry_id, values in commands.runs if entry_id == FAULT_COUNT] == [
+        {"file": fault.target, "operation": fault.operation}
+    ] * reads
+    assert [values for entry_id, values in commands.runs if entry_id == FAULT_DISABLE] == [
+        {"file": fault.target}
+    ] * len(applied)
+    if noted is not None:
+        assert noted in adapter._capture.sysout[FAULT_NOTE]
+
+
 # jobs.run_program cases: a scenario working directory and a build cache under
 # a work root of each case's own (launch_root); the units are /bin/sh scripts.
 LAUNCH_ROOT_PREFIX = "unit-launch-"
@@ -2173,6 +2701,16 @@ STAGE_ACCEPTED = [
     pytest.param(
         "@AFTER:TRANREPT:TRANREPT", {"contains": ["a report line"]}, id="text-layout-lines"
     ),
+    pytest.param(
+        "@BEFORE:POSTTRAN:@REGION-FILES",
+        {"records": ["ACCTDAT open enabled", "CARDAIX open enabled"]},
+        id="region-files-before-a-job",
+    ),
+    pytest.param(
+        "@AFTER:TRANREPT:@REGION-FILES",
+        {"contains": ["ACCTDAT closed disabled"]},
+        id="region-files-after-a-job",
+    ),
 ]
 
 # (section, name, value, jobs, problem): jobs replaces inputs.job when given.
@@ -2205,6 +2743,31 @@ STAGE_REFUSALS = [
     pytest.param(
         "datasets", STAGE_ACCOUNTS, {"records": []}, None,
         "reserved observations belong under file_state", id="under-expected-datasets",
+    ),
+    pytest.param(
+        "file_state", "@BEFORE:POSTTRAN", {"records": []}, None,
+        "is not a region stage observation @BEFORE:<JOB>:@REGION-FILES", id="region-malformed-name",
+    ),
+    pytest.param(
+        "file_state", "@BEFORE:POSTTRAN:@CATALOG", {"records": []}, None,
+        "is not a region stage observation @BEFORE:<JOB>:@REGION-FILES", id="region-other-observation",
+    ),
+    pytest.param(
+        "file_state", "@AFTER:READACCT:@REGION-FILES", {"records": []}, None,
+        "names job READACCT, which the scenario does not run", id="region-job-not-run",
+    ),
+    pytest.param(
+        "file_state", "@BEFORE:POSTTRAN:@REGION-FILES", {"records": []}, ["POSTTRAN", "INTCALC", "POSTTRAN"],
+        "names job POSTTRAN, which inputs.job lists 2 times, so the start of POSTTRAN",
+        id="region-job-listed-twice",
+    ),
+    pytest.param(
+        "file_state", "@AFTER:POSTTRAN:@REGION-FILES", {"records": [{"ACCTDAT": "open enabled"}]}, None,
+        "must be a line of text or a matcher", id="region-record-not-a-line",
+    ),
+    pytest.param(
+        "datasets", "@AFTER:POSTTRAN:@REGION-FILES", {"records": []}, None,
+        "reserved observations belong under file_state", id="region-under-expected-datasets",
     ),
 ]
 
@@ -2506,6 +3069,34 @@ UNIKIX_STAGE_GUARD_CASES = [
     pytest.param(
         STAGE_ACCOUNTS, UNIKIX_STAGE_JOBS, _BeyondTheGate, "_GateCommands", id="job-run-once-passes"
     ),
+    pytest.param(
+        "@BEFORE:READACCT:@REGION-FILES",
+        UNIKIX_STAGE_JOBS,
+        HarnessError,
+        "does not run READACCT, so no start of it exists to read the region files at",
+        id="region-job-not-run",
+    ),
+    pytest.param(
+        "@AFTER:POSTTRAN:@REGION-FILES",
+        ("POSTTRAN", "INTCALC", "POSTTRAN"),
+        HarnessError,
+        "runs POSTTRAN 2 times, so its end is not one point of the run",
+        id="region-job-run-twice",
+    ),
+    pytest.param(
+        "@BEFORE:POSTTRAN:@REGION-FILES",
+        (),
+        HarnessError,
+        "the scenario runs no job, so no start of POSTTRAN exists",
+        id="region-online-run",
+    ),
+    pytest.param(
+        "@AFTER:POSTTRAN:@REGION-FILES",
+        UNIKIX_STAGE_JOBS,
+        _BeyondTheGate,
+        "_GateCommands",
+        id="region-job-run-once-passes",
+    ),
 ]
 
 
@@ -2536,7 +3127,9 @@ def _unikix_stage_scenario(names: tuple[str, ...], jobs: tuple[str, ...]) -> Sim
 
 
 @pytest.mark.parametrize(("abends", "ran"), UNIKIX_RUN_JOBS_CASES)
-def test_unikix_run_jobs_calls_after_job_between_the_jobs(abends: str | None, ran: list[str]) -> None:
+def test_unikix_run_jobs_calls_before_job_and_after_job_around_each_job(
+    abends: str | None, ran: list[str]
+) -> None:
     service = bpe.BatchService(SimpleNamespace(vars={}), SimpleNamespace(), bpe.Resources.load())
     events: list[tuple] = []
 
@@ -2556,12 +3149,15 @@ def test_unikix_run_jobs_calls_after_job_between_the_jobs(abends: str | None, ra
     outcome = service.run_jobs(
         list(UNIKIX_STAGE_JOBS),
         time.monotonic() + 300,
+        before_job=lambda position, job: events.append(("before", position, job)),
         after_job=lambda position, job: events.append(("after", position, job)),
     )
+    # before_job runs after the previous job's after_job and before the
+    # submission, and never for a job the chain does not reach.
     assert events == [
         event
         for position, job in enumerate(ran)
-        for event in (("submit", job), ("wait", job), ("after", position, job))
+        for event in (("before", position, job), ("submit", job), ("wait", job), ("after", position, job))
     ]
     assert [run.name for run in outcome.runs] == ran
     assert outcome.return_code == (None if abends else 0)
@@ -2703,6 +3299,419 @@ def test_unikix_refuses_a_stage_observation_without_one_job_end_before_the_regio
         assert name in str(caught.value)
     assert adapter._plan is None and not adapter._touched
     assert list(csd_gate_work_root.iterdir()) == []
+
+
+# Region stage observations: @REGION-FILES just before job <JOB> of a
+# scenario's job chain is submitted (@BEFORE:<JOB>:@REGION-FILES) and at the
+# end of <JOB> (@AFTER:<JOB>:@REGION-FILES). REGION_STAGE_CLOSED holds the
+# files CLOSEFIL closes on app/ [app/jcl/CLOSEFIL.jcl:22-30], which CEMT SET
+# FILE CLOSED leaves disabled.
+REGION_STAGE_CLOSED = frozenset({"ACCTDAT", "CCXREF", "CXACAIX", "TRANSACT", "USRSEC"})
+
+REGION_STAGE_NAMES = [
+    pytest.param("before", "OPENFIL", id="before-a-job"),
+    pytest.param("after", "CLOSEFIL", id="after-a-job"),
+    pytest.param("before", "TRNRPT00", id="before-the-generated-job"),
+]
+
+REGION_STAGE_REFUSED_PARTS = [
+    pytest.param("during", "OPENFIL", id="unknown-stage"),
+    pytest.param("BEFORE", "OPENFIL", id="stage-in-capitals"),
+    pytest.param(None, "OPENFIL", id="stage-not-text"),
+    pytest.param("before", "", id="empty-job"),
+    pytest.param("after", "CLOSE:FIL", id="colon-in-job"),
+    pytest.param("before", "OPEN FIL", id="space-in-job"),
+    pytest.param("after", None, id="job-not-text"),
+]
+
+REGION_STAGE_NOT_NAMES = [
+    pytest.param("@BEFORE:", id="prefix-only"),
+    pytest.param("@BEFORE:OPENFIL", id="no-observation"),
+    pytest.param("@BEFORE::@REGION-FILES", id="empty-job"),
+    pytest.param("@BEFORE:OPEN FIL:@REGION-FILES", id="space-in-job"),
+    pytest.param("@AFTER:CLOSEFIL:@REGION-FILES:OPENFIL", id="third-part"),
+    pytest.param("@BEFORE:OPENFIL:@CATALOG", id="another-reserved-observation"),
+    pytest.param("@AFTER:CLOSEFIL:@TDQ:JOBS", id="a-reserved-observation-with-a-colon"),
+    pytest.param("@BEFORE:OPENFIL:ACCTDATA", id="a-dataset-before-a-job"),
+    pytest.param(STAGE_ACCOUNTS, id="a-dataset-stage"),
+    pytest.param(base.REGION_FILES, id="the-end-of-run-inquiry"),
+    pytest.param(None, id="not-text"),
+]
+
+# Every pattern family but the region file inquiry itself, a dataset-stage
+# pattern included: none of them covers a region stage observation.
+REGION_STAGE_OTHER_PATTERNS = frozenset(
+    {
+        base.BUSINESS_DATASETS,
+        base.CATALOG,
+        base.TDQ_JOBS,
+        base.SCREENS,
+        base.AIX_PREFIX + "*",
+        base.AFTER_PREFIX + "*",
+        base.AFTER_PREFIX,
+        base.BEFORE_PREFIX + "*",
+        base.BEFORE_PREFIX,
+    }
+)
+
+# Each case: whether the session has started, the commands.yaml entries its
+# probes found available, whether the region stage observations are
+# declared, whether the business datasets are, and what the reason they are
+# not names.
+UNIKIX_REGION_STAGE_SESSIONS = [
+    pytest.param(False, frozenset(), True, True, None, id="before-the-session"),
+    pytest.param(
+        True, frozenset({"region_file_inquire"}), True, False, None, id="inquiry-without-unloads"
+    ),
+    pytest.param(
+        True,
+        UNIKIX_STAGE_UNLOADS | set(unikix_adapter._FILE_CONTROL),
+        False,
+        True,
+        "region_file_inquire: probe found no region_file_inquire",
+        id="unloads-without-inquiry",
+    ),
+]
+
+# Each case: the scenario, the region file states its run shows (name -> the
+# files closed and disabled; every other fct.lst file open and enabled), and
+# the status compare gives against the committed baseline.
+REGION_STAGE_COMPARISONS = [
+    pytest.param(
+        "CFG-OPENFIL-normal-01",
+        {"@BEFORE:OPENFIL:@REGION-FILES": frozenset(), base.REGION_FILES: frozenset()},
+        "passed",
+        id="openfil-leaves-every-file-open",
+    ),
+    pytest.param(
+        "CFG-OPENFIL-normal-01",
+        {"@BEFORE:OPENFIL:@REGION-FILES": REGION_STAGE_CLOSED, base.REGION_FILES: frozenset()},
+        "failing",
+        id="openfil-from-closed-files",
+    ),
+    pytest.param(
+        "CFG-CLOSEFIL-normal-01",
+        {"@BEFORE:CLOSEFIL:@REGION-FILES": frozenset(), base.REGION_FILES: REGION_STAGE_CLOSED},
+        "passed",
+        id="closefil-closes-its-five-files",
+    ),
+    pytest.param(
+        "CFG-CLOSEFIL-normal-01",
+        {"@BEFORE:CLOSEFIL:@REGION-FILES": frozenset(), base.REGION_FILES: frozenset()},
+        "failing",
+        id="closefil-leaves-every-file-open",
+    ),
+    pytest.param(
+        "BAT-RUNORDER-normal-01",
+        {"@AFTER:CLOSEFIL:@REGION-FILES": REGION_STAGE_CLOSED, base.REGION_FILES: frozenset()},
+        "passed",
+        id="runorder-closed-after-closefil-open-at-the-end",
+    ),
+    pytest.param(
+        "BAT-RUNORDER-normal-01",
+        {"@AFTER:CLOSEFIL:@REGION-FILES": frozenset(), base.REGION_FILES: frozenset()},
+        "failing",
+        id="runorder-every-file-open-after-closefil",
+    ),
+]
+
+# Region stage observations on unikix: UNIKIX_STAGE_JOBS with the region
+# files expected before POSTTRAN, at its end beside its dataset stage
+# STAGE_ACCOUNTS, before INTCALC and at the end of the run. Each region file
+# inquiry returns the next of UNIKIX_REGION_INQUIRIES.
+UNIKIX_REGION_BEFORE_POSTTRAN = "@BEFORE:POSTTRAN:@REGION-FILES"
+UNIKIX_REGION_AFTER_POSTTRAN = "@AFTER:POSTTRAN:@REGION-FILES"
+UNIKIX_REGION_BEFORE_INTCALC = "@BEFORE:INTCALC:@REGION-FILES"
+UNIKIX_REGION_EXPECTED = (
+    STAGE_ACCOUNTS,
+    UNIKIX_REGION_BEFORE_POSTTRAN,
+    UNIKIX_REGION_AFTER_POSTTRAN,
+    UNIKIX_REGION_BEFORE_INTCALC,
+    base.REGION_FILES,
+)
+UNIKIX_REGION_INQUIRIES = tuple(f"region file inquiry {number}\n".encode("ascii") for number in range(1, 5))
+# POSTTRAN's part of the run: the inquiry before it is submitted, then, once
+# it has completed, the inquiry at its end before its dataset stage's unload
+# closes and reopens the region files.
+UNIKIX_REGION_POSTTRAN = [
+    ("inquire", 1),
+    ("kept", UNIKIX_REGION_BEFORE_POSTTRAN),
+    ("submit", "POSTTRAN"),
+    ("wait", "POSTTRAN"),
+    ("inquire", 2),
+    ("kept", UNIKIX_REGION_AFTER_POSTTRAN),
+    ("close",),
+    ("observe", ("ACCTDATA",)),
+    ("kept", STAGE_ACCOUNTS),
+    ("open",),
+]
+
+# Each case: the job that abends (None: none), the calls in order, and the
+# observations the Result and the evidence hold.
+UNIKIX_REGION_EXECUTIONS = [
+    pytest.param(
+        None,
+        UNIKIX_REGION_POSTTRAN
+        + [("inquire", 3), ("kept", UNIKIX_REGION_BEFORE_INTCALC)]
+        + UNIKIX_STAGE_RUN["INTCALC"]
+        + UNIKIX_STAGE_RUN["TRANBKP"]
+        + [("inquire", 4), ("kept", base.REGION_FILES)],
+        {
+            UNIKIX_REGION_BEFORE_POSTTRAN: UNIKIX_REGION_INQUIRIES[0],
+            UNIKIX_REGION_AFTER_POSTTRAN: UNIKIX_REGION_INQUIRIES[1],
+            STAGE_ACCOUNTS: UNIKIX_STAGE_LEFT["POSTTRAN"]["ACCTDATA"],
+            UNIKIX_REGION_BEFORE_INTCALC: UNIKIX_REGION_INQUIRIES[2],
+            base.REGION_FILES: UNIKIX_REGION_INQUIRIES[3],
+        },
+        id="every-job-completes",
+    ),
+    pytest.param(
+        "POSTTRAN",
+        UNIKIX_REGION_POSTTRAN + [("inquire", 3), ("kept", base.REGION_FILES)],
+        {
+            UNIKIX_REGION_BEFORE_POSTTRAN: UNIKIX_REGION_INQUIRIES[0],
+            UNIKIX_REGION_AFTER_POSTTRAN: UNIKIX_REGION_INQUIRIES[1],
+            STAGE_ACCOUNTS: UNIKIX_STAGE_LEFT["POSTTRAN"]["ACCTDATA"],
+            base.REGION_FILES: UNIKIX_REGION_INQUIRIES[2],
+        },
+        id="an-abend-leaves-the-later-region-stages-absent",
+    ),
+]
+
+
+def _region_file_states(closed: frozenset[str]) -> bytes:
+    """``@REGION-FILES`` of the 14 fct.lst files with ``closed`` closed and
+    disabled and every other file open and enabled."""
+    return base.format_region_files(
+        (name, name not in closed, name not in closed) for name in bpe.Resources.load().region_files
+    )
+
+
+@pytest.mark.parametrize(("stage", "job"), REGION_STAGE_NAMES)
+def test_region_stage_names_round_trip_and_match_only_the_region_file_inquiry(
+    stage: str, job: str
+) -> None:
+    name = base.region_stage_observation(stage, job)
+    prefix = base.BEFORE_PREFIX if stage == "before" else base.AFTER_PREFIX
+    assert name == f"{prefix}{job}:{base.REGION_FILES}"
+    assert base.parse_region_stage(name) == (stage, job)
+    assert base.parse_after_job(name) is None  # never a dataset stage
+    assert base.observation_matches(name, {base.REGION_FILES})
+    assert not base.observation_matches(name, REGION_STAGE_OTHER_PATTERNS)
+    # gnucobol-batch declares "@AFTER:*" for its dataset stages, never the
+    # region file inquiry, so it is blocked under the inquiry's gap.
+    gnucobol = GnuCOBOLBatchAdapter()  # construction creates nothing
+    assert not gnucobol.can_observe(name)
+    assert gnucobol.observation_gap(name) == "GAP-MIS-011"
+    assert runner._observation_gap(SimpleNamespace(), name) == "GAP-MIS-011"
+    # Neither adapter unloads it as a dataset stage at the end of a job.
+    wanted = {name, STAGE_ACCOUNTS}
+    grouped = {"POSTTRAN": [(STAGE_ACCOUNTS, "ACCTDATA")]}
+    assert GnuCOBOLBatchAdapter._stage_observations(STAGE_CHAIN, (job, "POSTTRAN"), wanted) == grouped
+    assert UniKixAdapter._stage_observations(STAGE_CHAIN, (job, "POSTTRAN"), wanted) == grouped
+
+
+@pytest.mark.parametrize(("stage", "job"), REGION_STAGE_REFUSED_PARTS)
+def test_region_stage_name_refuses_a_malformed_part(stage: object, job: object) -> None:
+    with pytest.raises(ValueError):
+        base.region_stage_observation(stage, job)
+
+
+@pytest.mark.parametrize("key", REGION_STAGE_NOT_NAMES)
+def test_parse_region_stage_reads_no_stage_from_any_other_name(key: object) -> None:
+    assert base.parse_region_stage(key) is None
+
+
+@pytest.mark.parametrize("stage", ["before", "after"])
+def test_schema_refuses_a_region_stage_observation_of_an_online_scenario(stage: str) -> None:
+    scenario = scenarios.get(EVIDENCE_SCENARIO)
+    assert scenarios.job_names(scenario) == () and scenario.inputs.get("steps")
+    name = base.region_stage_observation(stage, "CLOSEFIL")
+    data = copy.deepcopy(scenario.data)
+    data["expected"].setdefault("file_state", {})[name] = {"records": ["ACCTDAT open enabled"]}
+    online = dataclasses.replace(scenario, data=data, inputs=data["inputs"], expected=data["expected"])
+    added = set(scenarios.validate(online)) - set(scenarios.validate(scenario))
+    assert len(added) == 1, added
+    (line,) = added
+    assert f": expected.file_state.{name}: " in line
+    assert "names job CLOSEFIL, which the scenario does not run (the scenario runs no job)" in line
+
+
+def test_decode_result_reads_a_region_stage_observation_as_region_file_lines() -> None:
+    before = base.region_stage_observation("before", "POSTTRAN")
+    after = base.region_stage_observation("after", "TRANREPT")
+    scenario = _chain_with("file_state", before, {"count": 14})
+    scenario.expected["file_state"][after] = {"count": 14}  # the copy's
+    delivered = base.Result(
+        return_code=4,
+        datasets={before: _region_file_states(frozenset()), after: _region_file_states(REGION_STAGE_CLOSED)},
+    )
+    decoded = baselines.decode_result(scenario, delivered)["file_state"]
+    files = bpe.Resources.load().region_files
+    assert decoded[before] == [f"{name} open enabled" for name in files]
+    assert decoded[after] == [
+        f"{name} {'closed disabled' if name in REGION_STAGE_CLOSED else 'open enabled'}" for name in files
+    ]
+    assert delivered.datasets[before] == _region_file_states(frozenset())  # raw bytes are never changed
+    absent = baselines.decode_result(scenario, base.Result(return_code=4, datasets={}))
+    assert absent["file_state"][before] == {"@missing": True}
+    # Like @REGION-FILES, a region stage has no raw .bin in an observed baseline.
+    named = SimpleNamespace(expected={"file_state": {before: {"count": 14}, "ACCTDATA": {"count": 1}}})
+    accounts = base.Result(return_code=0, datasets={before: b"open\n", "ACCTDATA": b"A" * 300})
+    assert capture.raw_datasets(named, accounts) == {"ACCTDATA": b"A" * 300}
+
+
+@pytest.mark.parametrize(("scenario_id", "states", "status"), REGION_STAGE_COMPARISONS)
+def test_region_stage_baselines_compare_the_region_state_around_the_job(
+    scenario_id: str, states: dict[str, frozenset[str]], status: str
+) -> None:
+    scenario = scenarios.get(scenario_id)
+    named = {
+        name
+        for name in scenario.expected["file_state"]
+        if name == base.REGION_FILES or base.parse_region_stage(name) is not None
+    }
+    assert named == set(states)  # the committed scenario names exactly these
+    # The committed scenario and baseline, judged on their region file states alone.
+    region_only = SimpleNamespace(
+        id=scenario.id,
+        inputs=scenario.inputs,
+        preconditions=scenario.preconditions,
+        expected={"file_state": {name: scenario.expected["file_state"][name] for name in named}},
+    )
+    result = base.Result(return_code=0, datasets={name: _region_file_states(closed) for name, closed in states.items()})
+    found, reason, diff = baselines.compare(region_only, baselines.load(scenario_id), result, "unikix", None)
+    assert found == status, diff
+    assert reason == (None if status == "passed" else "assertion"), diff
+
+
+@pytest.mark.parametrize(
+    ("started", "available", "declared", "datasets_declared", "missing"), UNIKIX_REGION_STAGE_SESSIONS
+)
+def test_unikix_declares_region_stage_observations_with_the_region_file_inquiry(
+    started: bool,
+    available: frozenset[str],
+    declared: bool,
+    datasets_declared: bool,
+    missing: str | None,
+) -> None:
+    work_root = Path(os.environ.get(WORK_ROOT_ENV, "").strip() or tempfile.gettempdir())
+    adapter = UniKixAdapter(work_root=work_root, repo_root=Path(_TESTS_ROOT).parent)
+    if started:
+        adapter._session_ready = True
+        adapter._commands = _ProbedCommands(available)
+    assert adapter.can_observe(base.REGION_FILES) is declared
+    assert adapter.can_observe(STAGE_ACCOUNTS) is datasets_declared
+    for stage in ("before", "after"):
+        name = base.region_stage_observation(stage, "CLOSEFIL")
+        assert adapter.can_observe(name) is declared
+        assert adapter.observation_gap(name) == (None if declared else "GAP-MIS-011")
+        assert adapter._observation_entries(name) == ("region_file_inquire",)
+        if missing is not None:
+            reason = adapter._unobservable(name)
+            assert missing in reason and "the region files cannot be closed" not in reason
+
+
+@pytest.mark.parametrize("stage", ["before", "after"])
+def test_unikix_source_identity_covers_fct_lst_for_a_region_stage_observation(stage: str) -> None:
+    work_root = Path(os.environ.get(WORK_ROOT_ENV, "").strip() or tempfile.gettempdir())
+    adapter = UniKixAdapter(work_root=work_root, repo_root=Path(_TESTS_ROOT).parent)
+    fct = unikix_adapter._APP + "catlg/tpe/fct.lst"
+
+    def units(file_state: dict) -> dict:
+        scenario = SimpleNamespace(
+            id="CFG-CLOSEFIL-normal-01",
+            inputs={"job": "CLOSEFIL"},
+            expected={"messages": ["STEP CLCIFIL RC 0000"], "file_state": file_state},
+            inventory_ids=[],
+        )
+        return adapter.source_identity(scenario)["units"]
+
+    assert fct not in units({})
+    assert fct in units({base.region_stage_observation(stage, "CLOSEFIL"): {"count": 14}})
+
+
+@pytest.mark.parametrize(("abends", "calls", "kept"), UNIKIX_REGION_EXECUTIONS)
+def test_unikix_reads_each_region_stage_observation_around_its_job(
+    monkeypatch: pytest.MonkeyPatch,
+    abends: str | None,
+    calls: list[tuple],
+    kept: dict[str, bytes],
+) -> None:
+    work_root = Path(os.environ.get(WORK_ROOT_ENV, "").strip() or tempfile.gettempdir())
+    adapter = UniKixAdapter(work_root=work_root, repo_root=Path(_TESTS_ROOT).parent)
+    adapter._capture = evidence.Capture()
+    adapter.deadline = time.monotonic() + 300
+    scenario = _unikix_stage_scenario(UNIKIX_REGION_EXPECTED, UNIKIX_STAGE_JOBS)
+    wanted = base.required_observations(scenario.expected)
+    before, after = UniKixAdapter._region_stage_observations(scenario.id, UNIKIX_STAGE_JOBS, wanted)
+    assert before == {"POSTTRAN": UNIKIX_REGION_BEFORE_POSTTRAN, "INTCALC": UNIKIX_REGION_BEFORE_INTCALC}
+    assert after == {"POSTTRAN": UNIKIX_REGION_AFTER_POSTTRAN}
+    adapter._plan = unikix_adapter._Plan(
+        scenario_id=scenario.id,
+        online=False,
+        steps=[],
+        sessions=1,
+        jobs=UNIKIX_STAGE_JOBS,
+        dateparm=None,
+        stages=UniKixAdapter._stage_observations(scenario.id, UNIKIX_STAGE_JOBS, wanted),
+        regions_before=before,
+        regions_after=after,
+    )
+    service = bpe.BatchService(SimpleNamespace(vars={}), SimpleNamespace(), bpe.Resources.load())
+    catalog: dict[str, bytes] = {}
+    events: list[tuple] = []
+    region = {"closed": False}
+    inquiries = list(UNIKIX_REGION_INQUIRIES)
+
+    def submit(name: str, jcl_text: str | None, entry_id: str, budget: object) -> bpe.JobRun:
+        assert not region["closed"], "a job was submitted while the region files were closed"
+        events.append(("submit", name))
+        return bpe.JobRun(name, name, name, entry_id, str(len(events)))
+
+    def wait(run: bpe.JobRun, budget: object) -> bpe.JobRun:
+        events.append(("wait", run.name))
+        catalog.update(UNIKIX_STAGE_LEFT[run.name])
+        run.completed = True
+        run.steps = [bpe.StepOutcome("STEP15", None if run.name == abends else 0)]
+        return run
+
+    def observe(names: list[str], *, deadline: float | None, keep: object) -> dict[str, bytes]:
+        assert region["closed"] and deadline == adapter.deadline
+        events.append(("observe", tuple(names)))
+        for logical in names:
+            keep(logical, catalog[logical])
+        return {logical: catalog[logical] for logical in names}
+
+    def inquire() -> bytes:
+        assert not region["closed"], "the region files were inquired while closed for BPE"
+        events.append(("inquire", len(UNIKIX_REGION_INQUIRIES) - len(inquiries) + 1))
+        return inquiries.pop(0)
+
+    def set_closed(closed: bool, label: str) -> None:
+        assert region["closed"] is not closed, f"region files {label} twice"
+        region["closed"] = closed
+        events.append((label,))
+
+    keep = adapter._keep
+
+    def recorded_keep(name: str, data: bytes) -> None:
+        events.append(("kept", name))
+        keep(name, data)
+
+    service._submit, service._wait, service.observe = submit, wait, observe
+    adapter._batch = service
+    monkeypatch.setattr(adapter, "_region_files", inquire)
+    monkeypatch.setattr(adapter, "_keep", recorded_keep)
+    monkeypatch.setattr(adapter, "_close_region_files", lambda: set_closed(True, "close"))
+    monkeypatch.setattr(adapter, "_open_region_files", lambda: set_closed(False, "open"))
+    result = adapter.execute(scenario, work_root / UNIKIX_STAGE_SCENARIO)
+    assert events == calls
+    assert result.datasets == kept
+    assert adapter._capture.datasets == kept
+    assert result.return_code == (None if abends else 0)
+    # The state before a job is asserted under its stage name, never kept as evidence alone.
+    assert "adapter/region-files-before.txt" not in adapter._capture.sysout
 
 
 
@@ -3410,7 +4419,14 @@ REQUIRED_COMMANDS = {
     ),
     "dataset load, unload and catalog listing": (("dataset_load", "dataset_unload", "catalog_list"), "GAP-MIS-007"),
     "region file control and inquiry": (
-        ("region_file_close", "region_file_open", "region_file_disable", "region_file_enable", "region_file_inquire"),
+        (
+            "region_file_close",
+            "region_file_open",
+            "region_file_disable",
+            "region_file_enable",
+            "region_file_inquire",
+            "region_file_requests",
+        ),
         "GAP-MIS-011",
     ),
     "JOBS capture": (("jobs_capture",), "GAP-MIS-017"),
@@ -3502,3 +4518,207 @@ def test_protected_tree(carddemo_repo_root: Path) -> None:
     _require_commit(carddemo_repo_root, inventory_tools.load()["header"]["protected_base"])
     _assert_passes(_cli(carddemo_repo_root, "report.py", "--check-protected"))
 
+
+# --------------------------------------------------------------------------
+# UniKixAdapter.close on fakes: the region and BPE the session started are
+# stopped, and a stop that could not run is kept and raised.
+# --------------------------------------------------------------------------
+
+CLOSE_WORK_ROOT_PREFIX = "unit-unikix-close-"
+CLOSE_PROBE_REASON = "kixstop is not on PATH"
+CLOSE_STAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
+
+
+class _CloseCommands:
+    """The ``CommandSet`` ``UniKixAdapter.close`` uses: the committed
+    commands.yaml entries, so each stop carries its own gap; the stops in
+    ``unavailable`` probe unavailable with ``CLOSE_PROBE_REASON``, and those
+    in ``failing`` raise ``error(entry_id)`` when run. ``calls`` records each
+    availability check and run in order."""
+
+    def __init__(
+        self, calls: list[tuple[str, str]], unavailable: frozenset[str], failing: frozenset[str]
+    ) -> None:
+        self.entries = unikix_env.CommandSet.load()
+        self.calls = calls
+        self.unavailable = unavailable
+        self.failing = failing
+
+    def entry(self, entry_id: str) -> unikix_env.CommandEntry:
+        return self.entries.entry(entry_id)
+
+    def available(self, entry_id: str, env: object = None, *, deadline_left: float | None = None) -> bool:
+        self.calls.append(("available", entry_id))
+        return entry_id not in self.unavailable
+
+    def probe_reason(self, entry_id: str) -> str:
+        return CLOSE_PROBE_REASON if entry_id in self.unavailable else ""
+
+    def error(self, entry_id: str) -> base.AdapterUnavailable:
+        """A failed stop, on two lines as a command's stderr gives them."""
+        return base.AdapterUnavailable(
+            f"{entry_id} exited 12:\n{entry_id}: still active", self.entry(entry_id).gap
+        )
+
+    def run(
+        self, entry_id: str, env: object, deadline_left: float | None = None, **values: str | int
+    ) -> SimpleNamespace:
+        # The session close is no scenario time: only the entry's own
+        # timeout_s bounds a stop.
+        assert deadline_left is None and not values
+        self.calls.append(("run", entry_id))
+        if entry_id in self.failing:
+            raise self.error(entry_id)
+        return SimpleNamespace(stdout="", stderr="", returncode=0)
+
+    def problem(self, entry_id: str) -> str:
+        """What ``_stop_started`` reports for ``entry_id`` once it could not
+        stop."""
+        if entry_id in self.unavailable:
+            return f"{entry_id} unavailable: {CLOSE_PROBE_REASON}; it may still run"
+        return f"{entry_id} failed: {self.error(entry_id)}"
+
+
+@pytest.fixture
+def close_work_root() -> Iterator[Path]:
+    """A fresh, empty work root of this case's own inside the work root,
+    never under pytest's basetemp. A configured work root is created when
+    missing and kept; the directory is removed afterwards, with the default
+    root when this fixture made it."""
+    configured = os.environ.get(WORK_ROOT_ENV, "")
+    made = None if configured.strip() else Path(tempfile.mkdtemp(prefix=DEFAULT_WORK_ROOT_PREFIX))
+    try:
+        root = Path(configured) if made is None else made
+        root.mkdir(parents=True, exist_ok=True)
+        directory = Path(tempfile.mkdtemp(prefix=CLOSE_WORK_ROOT_PREFIX, dir=root))
+        try:
+            yield directory
+        finally:
+            shutil.rmtree(directory)
+    finally:
+        if made is not None:
+            shutil.rmtree(made)
+
+
+# Each case: whether a session started; the flags (_region_started,
+# _region_down, _bpe_started) when close is called; the stops that probe
+# unavailable and those whose run fails; whether the deployment root's log
+# folder cannot be created; the stops close attempts; and the stops still
+# owed afterwards, the first of which gives the raised gap.
+CLOSE_CASES = [
+    pytest.param(
+        True, (True, False, True), {"region_stop"}, set(), False,
+        ("region_stop", "bpe_stop"), ("region_stop",), id="region-stop-unavailable",
+    ),
+    pytest.param(
+        True, (True, False, True), set(), {"region_stop"}, False,
+        ("region_stop", "bpe_stop"), ("region_stop",), id="region-stop-raising",
+    ),
+    pytest.param(
+        True, (True, False, True), set(), {"bpe_stop"}, False,
+        ("region_stop", "bpe_stop"), ("bpe_stop",), id="bpe-stop-failing",
+    ),
+    pytest.param(
+        True, (True, False, True), set(), {"region_stop", "bpe_stop"}, False,
+        ("region_stop", "bpe_stop"), ("region_stop", "bpe_stop"), id="both-failing",
+    ),
+    pytest.param(
+        True, (True, False, True), set(), set(), False,
+        ("region_stop", "bpe_stop"), (), id="nothing-failing",
+    ),
+    pytest.param(False, (False, False, False), set(), set(), False, (), (), id="no-session"),
+    # The adapter stopped the region itself: region_stop, which would fail,
+    # is never run again.
+    pytest.param(
+        True, (True, True, True), set(), {"region_stop"}, False,
+        ("bpe_stop",), (), id="region-already-stopped",
+    ),
+    pytest.param(
+        True, (True, False, True), set(), {"region_stop"}, True,
+        ("region_stop", "bpe_stop"), ("region_stop",), id="diagnostics-unwritable",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("session", "flags", "unavailable", "failing", "unwritable", "attempted", "owed"), CLOSE_CASES
+)
+def test_unikix_close_raises_what_it_could_not_stop(
+    monkeypatch: pytest.MonkeyPatch,
+    close_work_root: Path,
+    session: bool,
+    flags: tuple[bool, bool, bool],
+    unavailable: set[str],
+    failing: set[str],
+    unwritable: bool,
+    attempted: tuple[str, ...],
+    owed: tuple[str, ...],
+) -> None:
+    adapter = UniKixAdapter(work_root=close_work_root, repo_root=Path(_TESTS_ROOT).parent)
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(tpe, "close_all", lambda: calls.append(("close_all", "")))
+    commands = _CloseCommands(calls, frozenset(unavailable), frozenset(failing))
+    log_dir = unikix_adapter.deploy.deployment_root(close_work_root, adapter.execution_id) / "logs"
+    log = log_dir / unikix_adapter._SESSION_CLOSE_LOG
+    if unwritable:
+        # The deployment root is a file, so its log folder cannot be created.
+        log_dir.parent.parent.mkdir(parents=True)
+        log_dir.parent.write_text("not a directory\n", encoding="utf-8")
+    if session:
+        adapter._env, adapter._commands = SimpleNamespace(log_dir=log_dir), commands
+    region_down = flags[1]
+    adapter._region_started, adapter._region_down, adapter._bpe_started = flags
+
+    def attempts(entry_ids: tuple[str, ...]) -> list[tuple[str, str]]:
+        """Every s3270 session ended first, then each stop checked and run
+        unless it probed unavailable."""
+        expected = [("close_all", "")]
+        for entry_id in entry_ids:
+            expected.append(("available", entry_id))
+            if entry_id not in commands.unavailable:
+                expected.append(("run", entry_id))
+        return expected
+
+    if owed:
+        problems = [commands.problem(entry_id) for entry_id in owed]
+        with pytest.raises(base.AdapterUnavailable) as caught:
+            adapter.close()
+        assert caught.value.gap_id == commands.entry(owed[0]).gap
+        reason = caught.value.reason
+        assert adapter.execution_id in reason
+        assert all(problem in reason for problem in problems), reason
+        if unwritable:
+            assert f"; the diagnostics could not be appended to {log}: " in reason
+            assert not log.exists()
+        else:
+            assert reason.endswith(f"; diagnostics appended to {log}")
+            assert log.is_relative_to(close_work_root)
+            lines = log.read_text(encoding="utf-8").splitlines()
+            assert [line.split(" ", 2)[1:] for line in lines] == [
+                [adapter.execution_id, " ".join(problem.split())] for problem in problems
+            ]
+            assert all(CLOSE_STAMP_RE.fullmatch(line.split(" ", 1)[0]) for line in lines)
+    else:
+        assert adapter.close() is None
+        assert not log.exists()
+    assert calls == attempts(attempted)
+    assert adapter._pending_stops() == list(owed)
+    assert adapter._region_down is (
+        region_down or ("region_stop" in attempted and "region_stop" not in owed)
+    )
+    assert adapter._bpe_started is ("bpe_stop" in owed)
+
+    # Once the stops work, a second close attempts only those still owed and
+    # keeps the diagnostics as they were; a third has nothing left to stop.
+    kept = log.read_bytes() if log.exists() else None
+    commands.unavailable = commands.failing = frozenset()
+    calls.clear()
+    assert adapter.close() is None
+    assert calls == attempts(owed)
+    assert adapter._pending_stops() == []
+    assert adapter._region_down is (region_down or "region_stop" in attempted)
+    assert adapter._bpe_started is False
+    assert (log.read_bytes() if log.exists() else None) == kept
+    calls.clear()
+    assert adapter.close() is None
+    assert calls == [("close_all", "")]

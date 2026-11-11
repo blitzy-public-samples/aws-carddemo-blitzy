@@ -54,6 +54,13 @@ are keyed by their logical names:
 ``@REGION-FILES``
     One line per region file, ``<name> open|closed enabled|disabled``, sorted
     by name (``format_region_files``).
+``@BEFORE:<JOB>:@REGION-FILES``, ``@AFTER:<JOB>:@REGION-FILES``
+    ``@REGION-FILES`` as the adapter reads it just before job ``<JOB>`` of the
+    scenario's ``inputs.job`` chain is submitted, or at the end of ``<JOB>``,
+    before the next job starts and before any other observation of that
+    point is acquired. It is absent when ``<JOB>`` is never reached (an
+    earlier job abended), and acquiring it never changes what the jobs do
+    (``region_stage_observation``, ``parse_region_stage``).
 ``@TDQ:JOBS``
     The 80-byte records the region wrote to the TDQ ``JOBS``, concatenated in
     write order (``format_fixed_records``).
@@ -80,6 +87,7 @@ from typing import Any, ClassVar
 __all__ = [
     "AFTER_PREFIX",
     "AIX_PREFIX",
+    "BEFORE_PREFIX",
     "BUSINESS_DATASETS",
     "CATALOG",
     "CATALOG_TYPES",
@@ -108,6 +116,8 @@ __all__ = [
     "marker_name",
     "observation_matches",
     "parse_after_job",
+    "parse_region_stage",
+    "region_stage_observation",
     "required_observations",
     "screen_text",
 ]
@@ -125,6 +135,9 @@ DEFAULT_DEADLINE_S = 300
 CATALOG = "@CATALOG"
 AIX_PREFIX = "@AIX:"
 AFTER_PREFIX = "@AFTER:"  # @AFTER:<JOB>:<LOGICAL>, a dataset at the end of one job of the chain
+# @BEFORE:<JOB>:@REGION-FILES, the region files just before one job of the
+# chain is submitted; @AFTER:<JOB>:@REGION-FILES is the same at its end.
+BEFORE_PREFIX = "@BEFORE:"
 REGION_FILES = "@REGION-FILES"
 TDQ_JOBS = "@TDQ:JOBS"
 
@@ -245,6 +258,7 @@ class Result:
     ``datasets``
         Logical dataset name or reserved observation name (``@CATALOG``,
         ``@AIX:<path>``, ``@AFTER:<JOB>:<LOGICAL>``, ``@REGION-FILES``,
+        ``@BEFORE:<JOB>:@REGION-FILES``, ``@AFTER:<JOB>:@REGION-FILES``,
         ``@TDQ:JOBS``) -> raw bytes, never decoded.
     ``screens``
         One mapping per step: BMS field name -> value, plus ``@map`` and, for
@@ -437,8 +451,9 @@ def after_job_observation(job: str, logical: str) -> str:
 
     ``job`` and ``logical`` are non-empty names without ``:`` or whitespace,
     and ``logical`` does not start with ``@``: a stage observation holds a
-    business dataset, never another observation. Anything else is a
-    ``ValueError``."""
+    business dataset, never another observation (the region files have
+    stage names of their own, ``region_stage_observation``). Anything else
+    is a ``ValueError``."""
     _stage_part(job, "the job of a stage observation")
     _stage_part(logical, "the logical dataset of a stage observation")
     if logical.startswith("@"):
@@ -466,6 +481,51 @@ def parse_after_job(key: Any) -> tuple[str, str] | None:
     return job, logical
 
 
+# The stage of a region stage observation -> the prefix of its name.
+_REGION_STAGE_PREFIXES = {"before": BEFORE_PREFIX, "after": AFTER_PREFIX}
+
+
+def region_stage_observation(stage: str, job: str) -> str:
+    """The region stage observation name: ``@BEFORE:<job>:@REGION-FILES``
+    for ``stage`` ``"before"`` (the region files just before job ``job`` of
+    the scenario's job chain is submitted) or ``@AFTER:<job>:@REGION-FILES``
+    for ``"after"`` (at the end of that job).
+
+    ``job`` is a non-empty name without ``:`` or whitespace. Any other
+    ``stage`` or ``job`` is a ``ValueError``."""
+    prefix = _REGION_STAGE_PREFIXES.get(stage) if isinstance(stage, str) else None
+    if prefix is None:
+        raise ValueError(
+            f"the stage of a region stage observation must be one of "
+            f"{', '.join(_REGION_STAGE_PREFIXES)}, got {stage!r}"
+        )
+    _stage_part(job, "the job of a region stage observation")
+    return f"{prefix}{job}:{REGION_FILES}"
+
+
+def parse_region_stage(key: Any) -> tuple[str, str] | None:
+    """``(stage, job)`` of a region stage observation name, the inverse of
+    ``region_stage_observation``; ``None`` for anything that is not a
+    well-formed ``@BEFORE:<JOB>:@REGION-FILES`` or
+    ``@AFTER:<JOB>:@REGION-FILES`` (another name, a value that is not a
+    string, a missing or malformed ``<JOB>``, a third part, a logical dataset
+    or any reserved name other than ``@REGION-FILES`` in place of it)."""
+    if not isinstance(key, str):
+        return None
+    for stage, prefix in _REGION_STAGE_PREFIXES.items():
+        if not key.startswith(prefix):
+            continue
+        job, separator, observed = key[len(prefix) :].partition(":")
+        if not separator or observed != REGION_FILES:
+            return None
+        try:
+            region_stage_observation(stage, job)
+        except ValueError:
+            return None
+        return stage, job
+    return None
+
+
 def observation_matches(key: str, patterns: Iterable[str]) -> bool:
     """Whether ``key`` (a logical dataset, a reserved observation, a reserved
     screen field or ``SCREENS``) is covered by the ``patterns`` an adapter's
@@ -474,13 +534,19 @@ def observation_matches(key: str, patterns: Iterable[str]) -> bool:
     * A logical dataset (no leading ``@``) matches ``BUSINESS_DATASETS`` or
       its own name.
     * ``@map`` and ``@text`` match ``SCREENS``.
-    * A reserved key matches an exact pattern, a pattern ending in ``*`` by
-      prefix (``"@AIX:*"``, ``"@AFTER:*"``), or a pattern ending in ``:``,
-      which names a whole family (``AIX_PREFIX`` covers every
+    * A region stage observation (``parse_region_stage``) matches exactly
+      when ``REGION_FILES`` does: it is the region file inquiry at another
+      point of the run, so a dataset-stage pattern such as ``"@AFTER:*"``
+      never covers it.
+    * Any other reserved key matches an exact pattern, a pattern ending in
+      ``*`` by prefix (``"@AIX:*"``, ``"@AFTER:*"``), or a pattern ending in
+      ``:``, which names a whole family (``AIX_PREFIX`` covers every
       ``@AIX:<path>``, ``AFTER_PREFIX`` every ``@AFTER:<JOB>:<LOGICAL>``)."""
     available = frozenset(patterns)
     if key in _SCREEN_FIELDS:
         return SCREENS in available
+    if parse_region_stage(key) is not None:
+        return observation_matches(REGION_FILES, available)
     if not key.startswith("@"):
         return BUSINESS_DATASETS in available or key in available
     if key in available:
@@ -619,13 +685,16 @@ class Adapter(abc.ABC):
         """The observation patterns this adapter can produce: any of
         ``BUSINESS_DATASETS``, ``CATALOG``, ``AIX_PREFIX + "*"``,
         ``AFTER_PREFIX + "*"``, ``REGION_FILES``, ``TDQ_JOBS`` and ``SCREENS``
-        (``observation_matches`` defines how they match)."""
+        (``observation_matches`` defines how they match; ``REGION_FILES``
+        also covers the region stage observations
+        ``@BEFORE:<JOB>:@REGION-FILES`` and ``@AFTER:<JOB>:@REGION-FILES``)."""
 
     @abc.abstractmethod
     def observation_gap(self, name: str) -> str | None:
         """The gap id to raise for an observation ``name`` this adapter
         cannot produce, or ``None`` for one it can. On ``unikix`` these are
-        GAP-MIS-011 for ``@REGION-FILES``, GAP-MIS-017 for ``@TDQ:JOBS`` and
+        GAP-MIS-011 for ``@REGION-FILES`` and its region stage observations
+        (``parse_region_stage``), GAP-MIS-017 for ``@TDQ:JOBS`` and
         GAP-MIS-007 for ``@CATALOG``, ``@AIX:<path>`` and dataset unloads."""
 
     @abc.abstractmethod
@@ -675,6 +744,9 @@ class Adapter(abc.ABC):
         return None
 
     def close(self) -> None:
-        """Release session-wide resources. Called once at session end; the
-        base adapter holds none."""
+        """Release session-wide resources. Called at session end; the base
+        adapter holds none. It may raise when a session resource could not
+        be released, which fails the session teardown rather than letting it
+        pass on leftover state; a later call attempts what is still
+        unreleased."""
         return None

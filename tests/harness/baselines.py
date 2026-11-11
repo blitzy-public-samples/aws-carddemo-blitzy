@@ -21,7 +21,8 @@ Every scenario has one baseline directory ``tests/baselines/<id>/``:
     ``expected.datasets`` or ``expected.file_state``, as the adapter returned
     them, exactly one file per such dataset; a missing or an extra ``.bin``
     is refused. Reserved observations (``@CATALOG``, ``@AIX:<path>``,
-    ``@AFTER:<JOB>:<LOGICAL>``, ...) have none.
+    ``@AFTER:<JOB>:<LOGICAL>``, ``@BEFORE:<JOB>:@REGION-FILES``, ...) have
+    none.
 
 Values in ``expected.yaml``
     ``return_code`` is an integer, or null for an abend. ``messages`` is the
@@ -39,7 +40,9 @@ Values in ``expected.yaml``
     map keyed as ``harness.codec.decode_record`` reports fields (a field path,
     a group, a dataset's own ``fields`` name or ``@raw`` also resolves), or a
     text line for ``TEXT/<n>`` layouts and the line observations
-    (``@CATALOG``, ``@REGION-FILES``, ``@TDQ:JOBS``). Only the fields a record
+    (``@CATALOG``, ``@REGION-FILES`` and its region stage observations
+    ``@BEFORE:<JOB>:@REGION-FILES`` and ``@AFTER:<JOB>:@REGION-FILES``,
+    ``@TDQ:JOBS``). Only the fields a record
     names are compared. ``screens`` holds one ``{field: value}`` map per step,
     ``@map`` and ``@text`` included. The top-level ``matchers`` maps a field
     name to a matcher wherever an expected record or screen names that field.
@@ -1256,7 +1259,9 @@ def _dataset_view(name: str, data: bytes | None) -> _View:
     if data is None:
         view.problem = f"{name} was not produced"
         return view
-    if name in _LINE_OBSERVATIONS:
+    # A region stage observation is @REGION-FILES at one point of the run,
+    # so it decodes as @REGION-FILES's lines do.
+    if name in _LINE_OBSERVATIONS or _base.parse_region_stage(name) is not None:
         lines = data.decode(_codec.ENCODINGS["ascii"]).split("\n")
         if lines and lines[-1] == "":
             lines.pop()
@@ -1364,8 +1369,10 @@ def decode_result(scenario: Any, result: _base.Result) -> dict:
     values (``harness.codec.to_plain``) or lines for ``TEXT/<n>`` layouts,
     indexed datasets in primary-key order, sequential ones and ``@AIX:<path>``
     as delivered, ``@AFTER:<JOB>:<LOGICAL>`` through the layout and in the
-    order of its ``<LOGICAL>``, ``@CATALOG`` and ``@REGION-FILES`` as their
-    lines. A dataset the result lacks is ``{"@missing": true}``; one that
+    order of its ``<LOGICAL>``, ``@CATALOG``, ``@REGION-FILES`` and its
+    region stage observations (``@BEFORE:<JOB>:@REGION-FILES``,
+    ``@AFTER:<JOB>:@REGION-FILES``) as their lines. A dataset the result
+    lacks is ``{"@missing": true}``; one that
     cannot be decoded is ``{"@error": <reason>}``. The result is plain
     YAML-safe data; raw bytes are never changed."""
     return _decode(scenario, result).decoded
@@ -2067,8 +2074,9 @@ def compare(
     is also compared byte for byte with its ``.bin`` (on an adapter whose
     clock is not fixed, without the bytes of matcher fields), and one without
     a ``.bin`` fails with reason ``error``; reserved observations
-    (``@CATALOG``, ``@AIX:<path>``, ``@AFTER:<JOB>:<LOGICAL>``, ...) hold no
-    ``.bin`` and are compared decoded only. Matchers resolve exactly on
+    (``@CATALOG``, ``@AIX:<path>``, ``@AFTER:<JOB>:<LOGICAL>``,
+    ``@BEFORE:<JOB>:@REGION-FILES``, ...) hold no ``.bin`` and are compared
+    decoded only. Matchers resolve exactly on
     ``FIXED_CLOCK_ADAPTERS`` and are judged against ``run_date`` elsewhere.
 
     ``("passed", None, "")`` when every check holds. Otherwise ``failing``

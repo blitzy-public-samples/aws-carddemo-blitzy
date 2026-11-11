@@ -111,12 +111,13 @@ preconditions:
   parameters:
     clock_mode: relative
   # after: 1 lets the one CARDDAT request before the failing step, the READ of
-  # 9100-GETCARD-BYACCTCARD in step 3, succeed. Step 4 issues no CARDDAT
-  # request, so the file goes out of service between steps 3 and 5 and the
-  # first request the fault meets is the READ UPDATE of 9200-WRITE-PROCESSING
-  # on PF5. The unikix adapter's default point, after the sign-on step, would
-  # fail the step-3 fetch instead. An adapter without a confirmed region file
-  # control raises MissingPrerequisite under GAP-MIS-011.
+  # 9100-GETCARD-BYACCTCARD in step 3, succeed. That count is first reached at
+  # the start of step 4, so the file goes out of service there; step 4 issues
+  # no CARDDAT request, and the first request the fault meets is the READ
+  # UPDATE of 9200-WRITE-PROCESSING on PF5. The unikix adapter's default point
+  # without `after`, after the sign-on step, would fail the step-3 fetch
+  # instead. An adapter without a confirmed region file control raises
+  # MissingPrerequisite under GAP-MIS-011.
   faults:
   - target: CARDDAT
     operation: read

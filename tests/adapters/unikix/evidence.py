@@ -19,8 +19,9 @@ Each scenario directory holds:
     ``@TDQ:JOBS`` -> ``_TDQ_JOBS.bin``); ``result.yaml`` maps each file name
     back to its name under ``capture_summary.datasets``.
 ``sysout/<path>``
-    BPE sysout, generated JCL, the scenario's command log and build-log
-    excerpts, unchanged. ``capture_summary.sysout`` maps each path back to
+    BPE sysout, generated JCL, the scenario's command log (without elapsed
+    times, ``env.CommandSet.render_evidence_log``) and build-log excerpts,
+    unchanged. ``capture_summary.sysout`` maps each path back to
     the name the adapter gave it.
 ``screens.txt``
     The screens for people to read: a ``--- step <n> session <s> @map <map>

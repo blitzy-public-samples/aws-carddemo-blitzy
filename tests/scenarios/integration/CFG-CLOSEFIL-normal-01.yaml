@@ -7,8 +7,9 @@
 # Only unikix can run the job: it acts on a CICS region, so the gnucobol-batch job driver has no step table
 # for it, and INV-CFG-033 is a JCL-semantics item. Before every scenario the adapter resets the test-owned
 # region and reopens and enables every file, so the state before the job is all 14 fct.lst files open and
-# enabled, which CFG-FCT-normal-01 asserts. The state after the job is the region file inquiry that follows,
-# @REGION-FILES (adapters.base.format_region_files): one line per file, '<name> open|closed
+# enabled, which CFG-FCT-normal-01 asserts. Both states are asserted through the region file inquiry
+# (adapters.base.format_region_files): @BEFORE:CLOSEFIL:@REGION-FILES, read just before the job is
+# submitted, and @REGION-FILES, read after it; each is one line per file, '<name> open|closed
 # enabled|disabled', sorted by name. The step return code says nothing about the region: the files are
 # observed only through that inquiry (GAP-MIS-011), and the job itself through BPE (GAP-MIS-006).
 #
@@ -16,17 +17,18 @@
 # it UNENABLED, which the inquiry reads as disabled (commands.yaml region_file_inquire: Une is disabled), so
 # the five files the job names end closed and disabled and the other nine stay open and enabled. The UniKix
 # copy's SDSF.cbl only displays 'DUMMY PROGRAM FOR SDSF' and returns (GAP-DOC-031): a UniKix run leaves all
-# 14 files open, and that record is behavior of the UniKix copy, which never verifies these app/ items.
+# 14 files open, so its two inquiries show the files unchanged, and that record is behavior of the UniKix
+# copy, which never verifies these app/ items.
 id: CFG-CLOSEFIL-normal-01
 level: integration
 type: normal
 description: >-
   CLOSEFIL runs its one SDSF step CLCIFIL, whose CEMT SET FIL(...) CLO commands close the region files
   TRANSACT, CCXREF, ACCTDAT, CXACAIX and USRSEC [app/jcl/CLOSEFIL.jcl:22-30]. Starting from the reset
-  region, every file open and enabled, the step ends RC 0 and the region file inquiry shows those five
-  files closed and disabled (CICS sets a file it closes UNENABLED) and the other nine fct.lst files still
-  open and enabled. The expectation is the app/ job's; on the UniKix copy SDSF.cbl is a no-op that leaves
-  every file open (GAP-DOC-031).
+  region, every file open and enabled as the region file inquiry just before the job lists them, the step
+  ends RC 0 and the region file inquiry after it shows those five files closed and disabled (CICS sets a
+  file it closes UNENABLED) and the other nine fct.lst files still open and enabled. The expectation is the
+  app/ job's; on the UniKix copy SDSF.cbl is a no-op that leaves every file open (GAP-DOC-031).
 inventory_ids:
 - INV-CFG-032  # CLOSEFIL job
 - INV-CFG-033  # CICS file close and open through the SDSF CEMT steps
@@ -53,8 +55,25 @@ expected:
   messages:
   - STEP CLCIFIL RC 0000
   file_state:
-    # The app/ intent for the 14 fct.lst region files, not the no-op UniKix copy's outcome (all open),
-    # because a UniKix record never verifies an item GAP-DOC-031 lists.
+    # Just before CLOSEFIL is submitted: the reset state, every fct.lst file open and enabled.
+    '@BEFORE:CLOSEFIL:@REGION-FILES':
+      records:
+      - 'ACCTDAT open enabled'
+      - 'CARDAIX open enabled'
+      - 'CARDDAT open enabled'
+      - 'CCXREF open enabled'
+      - 'CUSTDAT open enabled'
+      - 'CXACAIX open enabled'
+      - 'DISCGRP open enabled'
+      - 'TCATBALF open enabled'
+      - 'TRANCATG open enabled'
+      - 'TRANSACT open enabled'
+      - 'TRANSAIX open enabled'
+      - 'TRANTYPE open enabled'
+      - 'TRXFL open enabled'
+      - 'USRSEC open enabled'
+    # After CLOSEFIL: the app/ intent for the 14 fct.lst region files, not the no-op UniKix copy's outcome
+    # (all open), because a UniKix record never verifies an item GAP-DOC-031 lists.
     '@REGION-FILES':
       records:
       - 'ACCTDAT closed disabled'

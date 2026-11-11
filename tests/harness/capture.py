@@ -361,7 +361,8 @@ def raw_datasets(scenario: Any, result: Any) -> dict[str, bytes]:
     bytes of each business dataset the scenario's ``expected.datasets`` and
     ``expected.file_state`` name, exactly as the adapter returned them.
     Reserved observations (``@CATALOG``, ``@AIX:<path>``,
-    ``@AFTER:<JOB>:<LOGICAL>``) have none."""
+    ``@AFTER:<JOB>:<LOGICAL>``, ``@REGION-FILES`` and its region stage
+    observations) have none."""
     raw: dict[str, bytes] = {}
     for section in _SECTIONS:
         entries = scenario.expected.get(section)

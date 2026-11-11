@@ -15,9 +15,9 @@ Level ``integration``, area ``CFG``. One test, parametrized over
     through an SDSF step [app/jcl/OPENFIL.jcl:22-30]
     [app/jcl/CLOSEFIL.jcl:22-30]. On UniKix that step runs the copy's no-op
     ``SDSF.cbl`` (GAP-DOC-031), so a completed step proves nothing: each
-    scenario asserts ``@REGION-FILES``, the region file inquiry after the job
-    (the adapter keeps the inquiry before it in the evidence), which needs
-    GAP-MIS-011.
+    scenario asserts the region file inquiry just before the job is
+    submitted (``@BEFORE:<JOB>:@REGION-FILES``) and after it
+    (``@REGION-FILES``), which needs GAP-MIS-011.
 
 Only ``unikix`` can run them, because they act on a running CICS region: the
 ``gnucobol-batch`` job driver has no step table for them, and their JCL items

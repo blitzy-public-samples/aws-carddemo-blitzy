@@ -22,21 +22,29 @@ Observations
     declares every observation too, so that its GAP-MIS-004 cause is raised.
     Otherwise only those whose ``commands.yaml`` entries probed available
     are: datasets, ``@AIX:<path>``, ``@AFTER:<JOB>:<LOGICAL>`` and
-    ``@CATALOG`` through BPE jobs (GAP-MIS-007), ``@REGION-FILES`` through
-    ``region_file_inquire`` (GAP-MIS-011), ``@TDQ:JOBS`` through
-    ``jobs_capture`` (GAP-MIS-017) and screens through the checked loopback
-    listener and ``s3270`` (GAP-MIS-005). ``@AFTER:<JOB>:<LOGICAL>`` is
-    ``<LOGICAL>`` unloaded when ``<JOB>`` of the chain has completed, normally
-    or abended, and before the next job is submitted, with the region files
-    closed and then reopened; it is omitted when ``<JOB>`` never ran or the
-    catalog does not hold ``<LOGICAL>`` then, and a job the chain does not
-    run exactly once is a ``HarnessError`` before anything reaches the
-    region. ``@TDQ:JOBS`` is correlated within a window opened just
-    before the first step or job: no job ``jobs_capture`` lists then is ever
-    attributed to the run, and a new ``TRNRPT00`` job counts only when its
-    listed submission time, to the listing's precision, lies wholly within
-    the steps. A job the precision cannot place inside or outside the steps,
-    or a listing line that is not a job line, is GAP-MIS-017.
+    ``@CATALOG`` through BPE jobs (GAP-MIS-007), ``@REGION-FILES`` and its
+    region stage observations through ``region_file_inquire``
+    (GAP-MIS-011), ``@TDQ:JOBS`` through ``jobs_capture`` (GAP-MIS-017) and
+    screens through the checked loopback listener and ``s3270``
+    (GAP-MIS-005). ``@AFTER:<JOB>:<LOGICAL>`` is ``<LOGICAL>`` unloaded when
+    ``<JOB>`` of the chain has completed, normally or abended, and before the
+    next job is submitted, with the region files closed and then reopened;
+    it is omitted when ``<JOB>`` never ran or the catalog does not hold
+    ``<LOGICAL>`` then. ``@BEFORE:<JOB>:@REGION-FILES`` is the region file
+    inquiry just before ``<JOB>`` is submitted, and
+    ``@AFTER:<JOB>:@REGION-FILES`` the inquiry when ``<JOB>`` has completed,
+    made before that job's ``@AFTER:<JOB>:<LOGICAL>`` unloads close and
+    reopen the region files; both are omitted when ``<JOB>`` is never
+    reached. A stage observation of a job the chain does not run exactly
+    once is a ``HarnessError`` before anything reaches the region. The
+    region state before or after one job is thus asserted under its stage
+    name, never kept as evidence alone. ``@TDQ:JOBS`` is correlated within a
+    window opened just before the first step or job: no job ``jobs_capture``
+    lists then is ever attributed to the run, and a new ``TRNRPT00`` job
+    counts only when its listed submission time, to the listing's precision,
+    lies wholly within the steps. A job the precision cannot place inside or
+    outside the steps, or a listing line that is not a job line, is
+    GAP-MIS-017.
 Before each scenario
     Quiescence is confirmed (no active region task, no unfinished BPE job),
     then the region is reset: its files closed, every cluster of
@@ -58,6 +66,13 @@ Blocked session
     ended by ``AdapterUnavailable``, ``HarnessError`` or ``OSError`` raises
     GAP-MIS-004 for its own scenario too; one ended by a timeout or another
     error keeps that outcome.
+Session end
+    ``close`` ends every ``s3270`` session, then attempts both
+    ``region_stop`` and ``bpe_stop`` for what the session may have started.
+    A stop that is unavailable or fails is appended to
+    ``<deployment root>/logs/session-close.log`` and raised as
+    ``AdapterUnavailable`` with that entry's gap, which fails the session
+    teardown; a later ``close`` attempts the stops still owed again.
 Outcomes
     A command whose probe failed, that exits non-zero or exceeds its own
     ``timeout_s`` is ``AdapterUnavailable`` with its entry's gap; expiry of
@@ -106,6 +121,7 @@ import harness  # noqa: E402
 from adapters.base import (  # noqa: E402
     AFTER_PREFIX,
     AIX_PREFIX,
+    BEFORE_PREFIX,
     BUSINESS_DATASETS,
     CATALOG,
     REGION_FILES,
@@ -121,6 +137,7 @@ from adapters.base import (  # noqa: E402
     format_fixed_records,
     format_region_files,
     parse_after_job,
+    parse_region_stage,
     required_observations,
 )
 from adapters.unikix import bpe, deploy, evidence, tpe  # noqa: E402
@@ -177,9 +194,18 @@ _SESSION_STARTS = ("region_start", "bpe_start", "bpe_system")
 # The adapter attribute that flags what each session start may have started.
 _START_FLAGS = {"region_start": "_region_started", "bpe_start": "_bpe_started"}
 
-# An online fault without `after` is applied before this step index, i.e.
-# after the sign-on step (AAP 0.4.3 "Online fault mechanisms").
+# A fault's `after` is the number of its `operation` requests on its target
+# that succeed before it (AAP 0.4.1, `after?: <n operations>`); an online
+# fault is applied between steps, after sign-on and before the failing step
+# (AAP 0.4.3 "Online fault mechanisms"). Without `after` it is applied before
+# this step index, after the sign-on step; with `after` 0 before the first
+# step, so no request on the target succeeds. With `after` 1 or more it is
+# applied before the first step at whose start _REQUEST_COUNT shows that many
+# requests served since the first step began (_FaultPlacement); it counts the
+# requests of a region file only, and of the _COUNTED_OPERATIONS only.
 _DEFAULT_FAULT_STEP = 1
+_REQUEST_COUNT = "region_file_requests"
+_COUNTED_OPERATIONS = ("read", "write", "rewrite")
 _ONLINE_FAULT_GAPS = {"locked": _GAP_ONLINE_FAULT, "io-error": _GAP_ONLINE_FAULT,
                       "abend": _GAP_ONLINE_FAULT}
 
@@ -194,6 +220,11 @@ _JOBS_POLL_S = 1.0
 
 # The tail of each build log copied into a scenario's evidence.
 _BUILD_LOG_EXCERPT_BYTES = 4096
+
+# What a session close could not stop, appended in the deployment root's log
+# folder (UniKixEnvironment.log_dir) beside commands.log, never under
+# tests/reports/.
+_SESSION_CLOSE_LOG = "session-close.log"
 
 _INPUTS_DIR = "inputs"
 _DATASETS_FILE = "datasets.yaml"
@@ -483,13 +514,144 @@ def _screen_date(shown: str, today: _dt.date) -> _dt.date | None:
 
 @dataclass(frozen=True)
 class _OnlineFault:
-    """An online ``unavailable`` fault: ``entry`` run with
-    ``{placeholder: target}`` before step index ``step`` of every attempt."""
+    """An online ``unavailable`` ``operation`` fault on ``target``: ``entry``
+    run with ``{placeholder: target}`` at a step boundary of every attempt.
+    ``after`` is the scenario's count of ``operation`` requests on ``target``
+    that succeed first (``None`` when absent). ``step`` is the step index the
+    fault goes before when that is fixed (``after`` absent or 0); it is
+    ``None`` when ``after`` is 1 or more, and ``_FaultPlacement`` then finds
+    the boundary through ``_REQUEST_COUNT``."""
 
-    step: int
+    step: int | None
     target: str
     entry: str
     placeholder: str
+    operation: str
+    after: int | None = None
+
+    @property
+    def what(self) -> str:
+        return f"unavailable {self.operation} fault on {self.target}"
+
+
+class _FaultPlacement:
+    """The ``before_step`` callback of ``tpe.drive`` for a plan's online
+    faults, and ``finish``, the check made once it returns.
+
+    A fault with a fixed ``step`` is applied before that step. A counted one
+    (``after`` 1 or more) is placed by the requests its target has served:
+    before step 0 of every attempt, the first and each one ``tpe.drive``
+    makes after a restart (whose reset reopened and enabled every file),
+    ``count`` reads the baseline and every fault is unapplied again. Before
+    each later step ``count`` is read again for each counted fault not yet
+    applied, and ``served`` is the difference. ``served == after`` applies the
+    fault there. ``served > after`` means request ``after + 1`` was served
+    inside the previous step, where no boundary lies: ``MissingPrerequisite``.
+    A count below the baseline is no count of served requests:
+    ``AdapterUnavailable``, as ``count`` raises for output it cannot read, so
+    no outcome is ever inferred from it. ``apply(fault, index, detail)``
+    runs the fault's entry and notes it in the evidence."""
+
+    def __init__(
+        self,
+        faults: Sequence[_OnlineFault],
+        steps: int,
+        count: Callable[[_OnlineFault], int],
+        apply: Callable[[_OnlineFault, int, str], None],
+        note: Callable[[str], None],
+        gap: str,
+    ) -> None:
+        self._faults = list(faults)
+        self._steps = steps
+        self._count = count
+        self._apply = apply
+        self._note = note
+        self._gap = gap
+        self._baseline: dict[int, int] = {}
+        self._last: dict[int, int] = {}
+        self._applied: set[int] = set()
+        # The step index of the latest before_step call of the attempt.
+        self._reached = -1
+
+    def __call__(self, index: int) -> None:
+        if index == 0:
+            self._baseline.clear()
+            self._last.clear()
+            self._applied.clear()
+        self._reached = index
+        counts: dict[tuple[str, str], int] = {}
+        due: list[tuple[int, _OnlineFault, str]] = []
+        for number, fault in enumerate(self._faults):
+            if number in self._applied:
+                continue
+            if fault.step is not None:
+                if fault.step == index:
+                    due.append((number, fault, ""))
+                continue
+            key = (fault.target, fault.operation)
+            if key not in counts:
+                counts[key] = self._count(fault)
+            count = self._last[number] = counts[key]
+            if index == 0:
+                self._baseline[number] = count
+                continue
+            baseline, after = self._baseline[number], fault.after or 0
+            shown = f"{_REQUEST_COUNT} {baseline} before steps[0], {count} before steps[{index}]"
+            if count < baseline:
+                raise AdapterUnavailable(
+                    f"{_REQUEST_COUNT} for {fault.operation} requests on {fault.target} fell "
+                    f"from {baseline} before steps[0] to {count} before steps[{index}], so it is "
+                    "no count of the requests served",
+                    self._gap,
+                )
+            served = count - baseline
+            if served > after:
+                raise MissingPrerequisite(
+                    f"online {fault.what}: `after` {after} lets {after} {fault.operation} "
+                    f"request(s) succeed first, but {served} were served by the start of "
+                    f"steps[{index}] ({shown}), so request {after + 1} was served inside "
+                    f"steps[{index - 1}], where no step boundary lies",
+                    self._gap,
+                )
+            if served == after:
+                detail = f", after {served} {fault.operation} request(s) ({shown})"
+                due.append((number, fault, detail))
+        for number, fault, detail in due:
+            self._apply(fault, index, detail)
+            self._applied.add(number)
+
+    def finish(self) -> None:
+        """After ``tpe.drive`` returned: a counted fault left unapplied
+        although its last attempt reached the last step never found
+        ``after`` requests served at a step boundary, so it could not be
+        provided (``MissingPrerequisite``). An attempt that stopped before its
+        last step, at a screen other than the step's ``@map``, leaves the
+        screens it recorded to the comparison: the application took another
+        path before the boundary was reached."""
+        pending = [
+            (number, fault)
+            for number, fault in enumerate(self._faults)
+            if fault.step is None and number not in self._applied
+        ]
+        if not pending:
+            return
+        last = self._steps - 1
+        if self._reached < last:
+            for _, fault in pending:
+                self._note(
+                    f"not applied: {fault.what}, `after` {fault.after}; the steps stopped at "
+                    f"steps[{self._reached}], before the last step, steps[{last}]"
+                )
+            return
+        number, fault = pending[0]
+        baseline, count = self._baseline[number], self._last[number]
+        raise MissingPrerequisite(
+            f"online {fault.what}: `after` {fault.after} lets {fault.after} {fault.operation} "
+            f"request(s) succeed first, but only {count - baseline} were served by the start of "
+            f"the last step, steps[{last}] ({_REQUEST_COUNT} {baseline} before steps[0], {count} "
+            f"before steps[{last}]), so no step boundary follows {fault.after} of them",
+            self._gap,
+        )
 
 
 @dataclass
@@ -513,6 +675,11 @@ class _Plan:
     # The @AFTER:<JOB>:<LOGICAL> observations expected, by job: (name,
     # logical) pairs in name order (UniKixAdapter._stage_observations).
     stages: dict[str, list[tuple[str, str]]] = field(default_factory=dict)
+    # The region stage observations expected, job -> name:
+    # @BEFORE:<JOB>:@REGION-FILES and @AFTER:<JOB>:@REGION-FILES
+    # (UniKixAdapter._region_stage_observations).
+    regions_before: dict[str, str] = field(default_factory=dict)
+    regions_after: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -738,11 +905,19 @@ class UniKixAdapter(Adapter):
     def _can_close_region_cached(self) -> bool:
         return all(map(self._cached, _FILE_CONTROL)) or all(map(self._cached, _REGION_RESTART))
 
+    @staticmethod
+    def _acquired_as(name: str) -> str:
+        """The observation ``name`` is acquired as: a region stage observation
+        (``@BEFORE:<JOB>:@REGION-FILES``, ``@AFTER:<JOB>:@REGION-FILES``) is
+        the region file inquiry at one point of the run, so ``REGION_FILES``;
+        every other name is itself."""
+        return REGION_FILES if parse_region_stage(name) is not None else name
+
     def _observation_entries(self, name: str) -> tuple[str, ...]:
         """The ``commands.yaml`` entries observation ``name`` needs."""
         if name in _SCREEN_NAMES:
             return ()
-        if name == REGION_FILES:
+        if self._acquired_as(name) == REGION_FILES:
             return ("region_file_inquire",)
         if name == TDQ_JOBS:
             return ("jobs_capture",)
@@ -776,7 +951,7 @@ class UniKixAdapter(Adapter):
             return None
         if name in _SCREEN_NAMES:
             return _GAP_LISTENER
-        if name == REGION_FILES:
+        if self._acquired_as(name) == REGION_FILES:
             return _GAP_REGION_CONTROL
         if name == TDQ_JOBS:
             return _GAP_JOBS_CAPTURE
@@ -794,7 +969,9 @@ class UniKixAdapter(Adapter):
             for entry_id in self._observation_entries(name)
             if not self._cached(entry_id)
         ]
-        if name not in (REGION_FILES, TDQ_JOBS) and not self._can_close_region_cached():
+        # The region file inquiry and the JOBS capture need no closed region files.
+        acquired = self._acquired_as(name)
+        if acquired not in (REGION_FILES, TDQ_JOBS) and not self._can_close_region_cached():
             missing.append(
                 "the region files cannot be closed for BPE: neither region file control "
                 f"({', '.join(_FILE_CONTROL)}) nor {' and '.join(_REGION_RESTART)} is available"
@@ -1164,6 +1341,9 @@ class UniKixAdapter(Adapter):
         plan.stages = self._stage_observations(
             scenario.id, jobs, required_observations(scenario.expected)
         )
+        plan.regions_before, plan.regions_after = self._region_stage_observations(
+            scenario.id, jobs, required_observations(scenario.expected)
+        )
         unprovidable = self._plan_faults(scenario, plan)
         resources = self._batch.resources
         for logical, data in sorted(self._inputs(workdir).items()):
@@ -1229,24 +1409,57 @@ class UniKixAdapter(Adapter):
             if parsed is None:
                 continue
             job, logical = parsed
-            runs = jobs.count(job)
-            if runs != 1:
-                if not jobs:
-                    shown = f"the scenario runs no job, so no end of {job} exists"
-                elif runs == 0:
-                    shown = (
-                        f"inputs.job ({', '.join(jobs)}) does not run {job}, so no end of it exists"
-                    )
-                else:
-                    shown = (
-                        f"inputs.job ({', '.join(jobs)}) runs {job} {runs} times, so its end is "
-                        "not one point of the run"
-                    )
+            shown = UniKixAdapter._not_one_point(jobs, job, "end")
+            if shown is not None:
                 raise HarnessError(
                     f"{scenario_id}: expected names {name}, but {shown} to unload {logical} at"
                 )
             stages.setdefault(job, []).append((name, logical))
         return stages
+
+    @staticmethod
+    def _region_stage_observations(
+        scenario_id: str, jobs: tuple[str, ...], wanted: Iterable[str]
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        """The region stage observations ``expected`` names, as ``(before,
+        after)``: each job -> its ``@BEFORE:<JOB>:@REGION-FILES`` or
+        ``@AFTER:<JOB>:@REGION-FILES`` name. A name that is not a well-formed
+        region stage observation (``adapters.base.parse_region_stage``) is not
+        produced. One that names a job ``jobs`` (the scenario's ``inputs.job``;
+        empty for ``inputs.steps``) does not run, or runs more than once, has
+        no single start or end to read the region files at: the schema check
+        (``harness.scenarios.validate``) refuses both, and so does this guard,
+        with ``HarnessError``, before anything reaches the region."""
+        found: dict[str, dict[str, str]] = {"before": {}, "after": {}}
+        for name in sorted(wanted):
+            parsed = parse_region_stage(name)
+            if parsed is None:
+                continue
+            stage, job = parsed
+            shown = UniKixAdapter._not_one_point(jobs, job, "start" if stage == "before" else "end")
+            if shown is not None:
+                raise HarnessError(
+                    f"{scenario_id}: expected names {name}, but {shown} to read the region files at"
+                )
+            found[stage][job] = name
+        return found["before"], found["after"]
+
+    @staticmethod
+    def _not_one_point(jobs: tuple[str, ...], job: str, point: str) -> str | None:
+        """Why the ``point`` (``start`` or ``end``) of ``job`` is not one
+        point of a run of ``jobs``, or ``None`` when ``jobs`` runs it exactly
+        once."""
+        runs = jobs.count(job)
+        if runs == 1:
+            return None
+        if not jobs:
+            return f"the scenario runs no job, so no {point} of {job} exists"
+        if runs == 0:
+            return f"inputs.job ({', '.join(jobs)}) does not run {job}, so no {point} of it exists"
+        return (
+            f"inputs.job ({', '.join(jobs)}) runs {job} {runs} times, so its {point} is "
+            "not one point of the run"
+        )
 
     def _plan_faults(self, scenario: Any, plan: _Plan) -> MissingPrerequisite | None:
         """Put ``preconditions.faults`` into ``plan`` as the adapter can
@@ -1291,25 +1504,24 @@ class UniKixAdapter(Adapter):
             )
         if condition != "unavailable":
             raise HarnessError(f"{scenario_id}: faults[{index}] has the condition {condition!r}")
-        plan.online_faults.append(self._online_fault(scenario_id, plan, target, after, what))
+        plan.online_faults.append(
+            self._online_fault(scenario_id, plan, target, str(operation), after, what)
+        )
 
     def _online_fault(
-        self, scenario_id: str, plan: _Plan, target: str, after: Any, what: str
+        self, scenario_id: str, plan: _Plan, target: str, operation: str, after: Any, what: str
     ) -> _OnlineFault:
-        # `after` counts operations on the target, which no region command can
-        # count; the adapter applies the fault at a step boundary instead,
-        # before step index `after` (1 when absent: after the sign-on step), as
-        # the scenarios that set it describe. A count that reaches past the
-        # last step names no boundary, so that fault cannot be provided.
-        step = _DEFAULT_FAULT_STEP if after is None else after
-        if isinstance(step, bool) or not isinstance(step, int) or step < 0:
+        # `after` is the number of `operation` requests on the target that
+        # succeed before the fault (AAP 0.4.1), never a step index. The fault
+        # is applied between steps (AAP 0.4.3): absent, before the step after
+        # sign-on; 0, before the first step; 1 or more, before the first step
+        # at whose start the target has served that many such requests
+        # (_FaultPlacement), which needs _REQUEST_COUNT, a region file, one of
+        # _COUNTED_OPERATIONS and a boundary after the first step.
+        if after is not None and (
+            isinstance(after, bool) or not isinstance(after, int) or after < 0
+        ):
             raise HarnessError(f"{scenario_id}: the {what} has `after` {after!r}")
-        if step >= len(plan.steps):
-            raise MissingPrerequisite(
-                f"online {what}: applied only between steps, and `after` {step} places it past "
-                f"the last of {len(plan.steps)} step(s)",
-                _GAP_REGION_CONTROL,
-            )
         resources = self._batch.resources
         if target == resources.tdq:
             candidates, placeholder = ("tdq_disable",), "queue"
@@ -1323,13 +1535,46 @@ class UniKixAdapter(Adapter):
                 f"{scenario_id}: the {what} names neither a region file of "
                 f"{bpe.RESOURCES_FILE.name} nor the TDQ {resources.tdq}"
             )
-        for entry_id in candidates:
-            if self._have(entry_id):
-                return _OnlineFault(step, target, entry_id, placeholder)
-        raise MissingPrerequisite(
-            f"online {what}: {'; '.join(self._missing(entry).reason for entry in candidates)}",
-            _GAP_REGION_CONTROL,
-        )
+        counted = after is not None and after >= 1
+        step: int | None = None
+        if counted:
+            if placeholder == "queue":
+                raise MissingPrerequisite(
+                    f"online {what}: `after` {after} counts requests on the TDQ {target}, and "
+                    f"{_REQUEST_COUNT} counts those of a region file only, so no step boundary "
+                    "can be placed after them",
+                    _GAP_REGION_CONTROL,
+                )
+            if operation not in _COUNTED_OPERATIONS:
+                raise MissingPrerequisite(
+                    f"online {what}: `after` {after} counts {operation} requests, and "
+                    f"{_REQUEST_COUNT} counts only {', '.join(_COUNTED_OPERATIONS)} requests",
+                    _GAP_REGION_CONTROL,
+                )
+            if len(plan.steps) < 2:
+                raise MissingPrerequisite(
+                    f"online {what}: `after` {after} lets requests succeed first, and with "
+                    f"{len(plan.steps)} step(s) no step boundary follows the first step",
+                    _GAP_REGION_CONTROL,
+                )
+        else:
+            step = _DEFAULT_FAULT_STEP if after is None else 0
+            if step >= len(plan.steps):
+                placed = "after the sign-on step" if after is None else "with `after` 0"
+                raise MissingPrerequisite(
+                    f"online {what}: applied only between steps, before steps[{step}] ({placed}), "
+                    f"and the scenario has {len(plan.steps)} step(s)",
+                    _GAP_REGION_CONTROL,
+                )
+        missing = []
+        if counted and not self._have(_REQUEST_COUNT):
+            missing.append(self._missing(_REQUEST_COUNT).reason)
+        entry = next((entry_id for entry_id in candidates if self._have(entry_id)), None)
+        if entry is None:
+            missing.extend(self._missing(entry_id).reason for entry_id in candidates)
+        if entry is None or missing:
+            raise MissingPrerequisite(f"online {what}: {'; '.join(missing)}", _GAP_REGION_CONTROL)
+        return _OnlineFault(step, target, entry, placeholder, operation, after)
 
     # ------------------------------------------------------------ execute
 
@@ -1345,8 +1590,10 @@ class UniKixAdapter(Adapter):
         screens: list[dict[str, str]] = []
         messages: list[str] = []
         jobs_window: _JobsWindow | None = None
-        # The @AFTER:<JOB>:<LOGICAL> bytes acquired between the jobs; an
-        # online run has none (_stage_observations refused any).
+        # The @AFTER:<JOB>:<LOGICAL>, @BEFORE:<JOB>:@REGION-FILES and
+        # @AFTER:<JOB>:@REGION-FILES bytes acquired between the jobs; an online
+        # run has none (_stage_observations and _region_stage_observations
+        # refused any).
         staged: dict[str, bytes] = {}
         if plan.online:
             if TDQ_JOBS in expected:
@@ -1362,28 +1609,42 @@ class UniKixAdapter(Adapter):
                     if jobs_window is not None:
                         jobs_window = self._jobs_window()
 
+                placement = self._fault_applier(plan)
                 outcome = tpe.drive(
                     plan.steps,
                     plan.sessions,
                     self.time_left,
                     capture,
-                    self._fault_applier(plan),
+                    placement,
                     workdir=workdir,
                     address=self._address,
                     expected_screens=scenario.expected.get("screens"),
                     restart=restart,
                 )
+                if placement is not None:
+                    placement.finish()
                 screens, messages = list(outcome.screens), list(outcome.messages)
             # An empty steps list observes the region state the reset left.
         else:
-            if REGION_FILES in expected:
-                # The state before the jobs, beside the @REGION-FILES after them
-                # (CFG-OPENFIL-normal-01, CFG-CLOSEFIL-normal-01).
-                capture.sysout["adapter/region-files-before.txt"] = self._region_files()
             if TDQ_JOBS in expected:
                 jobs_window = self._jobs_window()
 
+            def region_stage(name: str | None) -> None:
+                # A region stage observation, kept in the evidence under its
+                # own name as soon as it is read.
+                if name is not None:
+                    staged[name] = self._region_files()
+                    self._keep(name, staged[name])
+
+            def before_job(position: int, job: str) -> None:
+                # The region files as the earlier jobs (or the reset) left
+                # them, just before this job is submitted.
+                region_stage(plan.regions_before.get(job))
+
             def after_job(position: int, job: str) -> None:
+                # The region files first, as the job just completed left them:
+                # the unloads of its dataset stages close and reopen them.
+                region_stage(plan.regions_after.get(job))
                 # The datasets as the job just completed left them, before a
                 # later job of the chain rewrites, deletes or rolls them.
                 staged.update(self._observe_stage(plan.stages.get(job, ())))
@@ -1392,7 +1653,8 @@ class UniKixAdapter(Adapter):
                 list(plan.jobs),
                 self.deadline,
                 dateparm=plan.dateparm,
-                after_job=after_job if plan.stages else None,
+                before_job=before_job if plan.regions_before else None,
+                after_job=after_job if plan.stages or plan.regions_after else None,
             )
             return_code, messages = batch.return_code, list(batch.messages)
             if batch.run_date is not None:
@@ -1411,27 +1673,54 @@ class UniKixAdapter(Adapter):
             elapsed_s=time.monotonic() - started,
         )
         # capture.datasets already holds each of these bytes (_observe,
-        # _observe_stage).
+        # _observe_stage, region_stage).
         capture.result = result
         capture.job_numbers.extend(self._batch.take_job_numbers())
         self._result = result
         return result
 
-    def _fault_applier(self, plan: _Plan) -> Callable[[int], None] | None:
-        """The ``before_step`` callback of ``tpe.drive``: each online fault is
-        applied before its step, in every attempt (a restart re-enables it)."""
-        by_step: dict[int, list[_OnlineFault]] = {}
-        for fault in plan.online_faults:
-            by_step.setdefault(fault.step, []).append(fault)
-        if not by_step:
+    def _fault_applier(self, plan: _Plan) -> _FaultPlacement | None:
+        """The ``before_step`` callback of ``tpe.drive`` for ``plan``'s online
+        faults, ``None`` when it has none: each is applied at its step
+        boundary in every attempt (a restart re-enables it), a counted one
+        where its target's requests served reach its ``after``
+        (``_FaultPlacement``)."""
+        if not plan.online_faults:
             return None
 
-        def before_step(index: int) -> None:
-            for fault in by_step.get(index, ()):
-                self._run(fault.entry, **{fault.placeholder: fault.target})
-                self._note("faults", f"before steps[{index}]: {fault.entry} {fault.target}")
+        def apply(fault: _OnlineFault, index: int, detail: str) -> None:
+            self._run(fault.entry, **{fault.placeholder: fault.target})
+            self._note("faults", f"before steps[{index}]: {fault.entry} {fault.target}{detail}")
 
-        return before_step
+        return _FaultPlacement(
+            plan.online_faults,
+            len(plan.steps),
+            self._request_count,
+            apply,
+            lambda text: self._note("faults", text),
+            _GAP_REGION_CONTROL,
+        )
+
+    def _request_count(self, fault: _OnlineFault) -> int:
+        """The number of ``fault.operation`` requests region file
+        ``fault.target`` has served, as ``_REQUEST_COUNT`` prints it. Output in
+        which ``parse.count`` does not find exactly one count of ASCII digits
+        is no count: ``AdapterUnavailable`` under the entry's gap, never an
+        inferred value."""
+        gap = self._commands.entry(_REQUEST_COUNT).gap
+        pattern = self._pattern(_REQUEST_COUNT, "count", ("count",))
+        output = self._run(_REQUEST_COUNT, file=fault.target, operation=fault.operation).stdout
+        counts = [(match.group("count") or "").strip() for match in pattern.finditer(output)]
+        if len(counts) != 1 or not (counts[0].isascii() and counts[0].isdigit()):
+            found = "no count"
+            if counts:
+                found = f"{len(counts)} count(s), {', '.join(map(repr, counts))}"
+            raise AdapterUnavailable(
+                f"{_REQUEST_COUNT} for {fault.operation} requests on {fault.target} printed "
+                f"{found}, not exactly one count of digits that parse.count reads",
+                gap,
+            )
+        return int(counts[0])
 
     def _observe(self, names: Iterable[str], window: _JobsWindow | None) -> dict[str, bytes]:
         """Every observation ``expected`` names after the last step or job
@@ -1440,10 +1729,15 @@ class UniKixAdapter(Adapter):
         which are reopened after. Each observation goes into the evidence as
         soon as it is acquired (``_keep``), so a later failure leaves the bytes
         read before it there; the ones returned are those same bytes. The
-        ``@AFTER:<JOB>:<LOGICAL>`` names are acquired at the end of their job
-        (``_observe_stage``), never here; a malformed one is not produced."""
+        stage names are acquired around their job, never here: the
+        ``@AFTER:<JOB>:<LOGICAL>`` names at its end (``_observe_stage``),
+        ``@BEFORE:<JOB>:@REGION-FILES`` and ``@AFTER:<JOB>:@REGION-FILES``
+        just before it is submitted and at its end (``execute``); a malformed
+        one is not produced."""
         wanted = sorted(
-            name for name in set(names) - _SCREEN_NAMES if not name.startswith(AFTER_PREFIX)
+            name
+            for name in set(names) - _SCREEN_NAMES
+            if not name.startswith((AFTER_PREFIX, BEFORE_PREFIX))
         )
         found: dict[str, bytes] = {}
         if REGION_FILES in wanted:
@@ -1760,7 +2054,8 @@ class UniKixAdapter(Adapter):
         if isinstance(program, str) and index.program(program):
             units.add(index.program(program))
         observed = required_observations(scenario.expected)
-        if REGION_FILES in observed:
+        if any(self._acquired_as(name) == REGION_FILES for name in observed):
+            # @REGION-FILES and its region stage observations list the fct.lst files.
             units.add(_APP + "catlg/tpe/fct.lst")
         if TDQ_JOBS in observed:
             units.add(_APP + "catlg/tpe/dct.lst")
@@ -1891,7 +2186,10 @@ class UniKixAdapter(Adapter):
         capture.environment = self._environment_record()
         records = self._commands.log_since(self._log_mark)
         if records:
-            capture.sysout["adapter/commands.log"] = unikix_env.CommandSet.render_log(records)
+            # Without elapsed times: they go only to tests/reports/runtime/.
+            capture.sysout["adapter/commands.log"] = unikix_env.CommandSet.render_evidence_log(
+                records
+            )
         capture.sysout.update(self._build_logs(scenario))
         self._capture, self._capture_id = None, None
         return evidence.EvidenceWriter(harness.TESTS_ROOT, self.execution_id).write(
@@ -1900,19 +2198,26 @@ class UniKixAdapter(Adapter):
 
     # -------------------------------------------------------------- close
 
-    def _stop_started(self) -> list[str]:
-        """Stop the region, unless the adapter has stopped it since, and BPE
-        where the session may have started them, through ``region_stop`` and
-        ``bpe_stop`` bounded by their own ``timeout_s``. Best effort: a stop
-        that is unavailable or fails does not keep the other from running.
-        Returns what could not be stopped, one line each."""
+    def _pending_stops(self) -> list[str]:
+        """The stops the session still owes, in the order they run:
+        ``region_stop`` while the region it may have started is not known
+        stopped, ``bpe_stop`` while BPE it may have started is not."""
         stops = []
         if self._region_started and not self._region_down:
             stops.append("region_stop")
         if self._bpe_started:
             stops.append("bpe_stop")
+        return stops
+
+    def _stop_started(self) -> list[str]:
+        """Stop the region, unless the adapter has stopped it since, and BPE
+        where the session may have started them, through ``region_stop`` and
+        ``bpe_stop`` bounded by their own ``timeout_s``. Best effort: a stop
+        that is unavailable or fails does not keep the other from running.
+        Returns what could not be stopped, one line each; such a stop stays
+        in ``_pending_stops``, and one that ran is taken out of it."""
         problems: list[str] = []
-        for entry_id in stops:
+        for entry_id in self._pending_stops():
             try:
                 if not self._commands.available(entry_id):
                     reason = self._commands.probe_reason(entry_id) or "its probe failed"
@@ -1928,12 +2233,54 @@ class UniKixAdapter(Adapter):
                 self._bpe_started = False
         return problems
 
+    def _keep_close_diagnostics(self, problems: Sequence[str]) -> str:
+        """Append ``problems`` to ``_SESSION_CLOSE_LOG`` in the deployment
+        root's log folder, one line each: the UTC time, the execution id and
+        the problem with its whitespace runs, line breaks included, made one
+        space (the full command records are in ``commands.log``). Best
+        effort: returns where they were appended, or why they could not be."""
+        where: Any = _SESSION_CLOSE_LOG
+        try:
+            where = Path(self._env.log_dir) / _SESSION_CLOSE_LOG
+            stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            lines = "".join(
+                f"{stamp} {self.execution_id} {' '.join(problem.split())}\n" for problem in problems
+            )
+            where.parent.mkdir(parents=True, exist_ok=True)
+            with open(where, "a", encoding="utf-8", newline="\n") as handle:
+                handle.write(lines)
+        except Exception as exc:  # the stop failures are raised whatever the write did
+            return f"the diagnostics could not be appended to {where}: {exc}"
+        return f"diagnostics appended to {where}"
+
     def close(self) -> None:
-        """Stop the region and BPE and end every ``s3270`` session, best
-        effort; the deployment root stays in the work root (AAP 0.4.6)."""
+        """End every ``s3270`` session, then stop the region and BPE where
+        the session may have started them, attempting each stop whatever the
+        other did (``_stop_started``); the deployment root stays in the work
+        root (AAP 0.4.6). Returns ``None`` when nothing is left to stop, as
+        for a session that never started.
+
+        A stop that is unavailable or fails leaves a region or BPE that may
+        still run and that no scenario is left to report, so the shutdown
+        never passes as successful: every problem is appended to
+        ``<deployment root>/logs/session-close.log`` (outside
+        ``tests/reports/``, best effort), then ``AdapterUnavailable`` is
+        raised with the ``commands.yaml`` gap of the first stop that could
+        not stop, its reason listing every problem and where they were
+        appended, or why they could not be. The session teardown fails with
+        it. Those stops stay owed, so a later ``close`` attempts them again."""
         tpe.close_all()
         if self._commands is None or self._env is None:
             return
-        # close is best effort and never raises: what could not be stopped
-        # has no scenario left to report it.
-        self._stop_started()
+        problems = self._stop_started()
+        if not problems:
+            return
+        # A stop that did not succeed is still owed, so the first owed stop
+        # is the first one that could not stop.
+        entry_id = self._pending_stops()[0]
+        kept = self._keep_close_diagnostics(problems)
+        raise AdapterUnavailable(
+            f"closing unikix session {self.execution_id} could not stop what it started: "
+            f"{'; '.join(problems)}; {kept}",
+            self._commands.entry(entry_id).gap,
+        )

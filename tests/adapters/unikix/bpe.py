@@ -1801,6 +1801,7 @@ class BatchService:
         deadline: float | None = None,
         *,
         dateparm: str | None = None,
+        before_job: Callable[[int, str], None] | None = None,
         after_job: Callable[[int, str], None] | None = None,
     ) -> BatchOutcome:
         """Run a scenario's ``inputs.job``: one job, or an ordered list (a
@@ -1808,6 +1809,15 @@ class BatchService:
         the first job in which a step abended. ``TRNRPT00`` is rendered with
         ``trnrpt00_jcl`` from ``dateparm`` (``preconditions.parameters.DATEPARM``,
         ``"YYYY-MM-DD YYYY-MM-DD"``).
+
+        ``before_job``, when given, is called once for each job the chain
+        reaches, as ``before_job(position, job)`` with the job's 0-based
+        position in ``jobs``: just before the job is submitted, and after the
+        previous job's ``after_job`` call, so it sees the region as the
+        previous jobs left it (the adapter's ``@BEFORE:<JOB>:@REGION-FILES``
+        observations). A job that is never reached, because an earlier one
+        abended, gets no call. What the call raises ends the run before the
+        job is submitted.
 
         ``after_job``, when given, is called once for each job whose wait
         returned, as ``after_job(position, job)`` with the job's 0-based
@@ -1839,6 +1849,10 @@ class BatchService:
                         f"'YYYY-MM-DD YYYY-MM-DD', got {dateparm!r}"
                     )
                 jcl_text = trnrpt00_jcl(parts[0], parts[1], self.resources)
+            if before_job is not None:
+                # Every earlier job has completed and been observed, and this
+                # one is not submitted yet.
+                before_job(position, name)
             run = self._submit(name, jcl_text, "bpe_submit", budget)
             runs.append(self._wait(run, budget))
             if after_job is not None:

@@ -76,6 +76,7 @@ __all__ = [
     "DEPLOYMENT_PATH_VARS",
     "ENV_VARIABLE",
     "INSTALLATION_VARS",
+    "LOG_ELAPSED_KEY",
     "LOG_LIMIT_BYTES",
     "PROBE_TIMEOUT_CAP_S",
     "REQUIRED_INSTALLATION_VARS",
@@ -134,6 +135,11 @@ VERSION_ENTRIES = (
 SOURCE_TIMEOUT_S = 60
 PROBE_TIMEOUT_CAP_S = 30
 LOG_LIMIT_BYTES = 64 * 1024
+# The key of a log entry's elapsed seconds. The in-memory log and
+# <deployment root>/logs/commands.log keep it; the copy in a scenario's
+# committed evidence leaves it out (render_evidence_log), because elapsed
+# times go only to the git-ignored tests/reports/runtime/ (AAP 0.4.6).
+LOG_ELAPSED_KEY = "elapsed_s"
 
 _COMMAND_STATUSES = ("confirmed", "unconfirmed")
 _ENTRY_ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -1478,7 +1484,8 @@ class CommandSet:
     holds every probe and every run, and every refused run too, in order.
     It is kept in memory and appended to ``<deployment root>/logs/commands.log``
     as YAML documents. ``mark`` and ``log_since`` select the entries of one
-    scenario. Calls may come from several threads."""
+    scenario, and ``render_evidence_log`` renders them for its evidence
+    without their elapsed times. Calls may come from several threads."""
 
     def __init__(self, entries: Mapping[str, CommandEntry], path: Path) -> None:
         self.path = path
@@ -1832,6 +1839,20 @@ class CommandSet:
         """``records`` as the YAML documents ``commands.log`` holds."""
         return "".join(f"---\n{dump_yaml(record)}" for record in records)
 
+    @staticmethod
+    def render_evidence_log(records: list[dict[str, Any]]) -> str:
+        """``records`` as the YAML documents of the ``commands.log`` copy in a
+        scenario's evidence: ``render_log`` of each record without its
+        ``LOG_ELAPSED_KEY``, every other field kept. The evidence is
+        committed, and elapsed times go only to the git-ignored
+        ``tests/reports/runtime/`` (AAP 0.4.6). ``records`` is not changed."""
+        return CommandSet.render_log(
+            [
+                {key: value for key, value in record.items() if key != LOG_ELAPSED_KEY}
+                for record in records
+            ]
+        )
+
     def _record(
         self,
         env: Any,
@@ -1859,7 +1880,7 @@ class CommandSet:
             "rc": returncode,
             "outcome": outcome,
             # dump_yaml refuses floats: elapsed time is text with millisecond scale.
-            "elapsed_s": f"{elapsed_s:.3f}",
+            LOG_ELAPSED_KEY: f"{elapsed_s:.3f}",
             "stdout": out,
             "stderr": err,
         }

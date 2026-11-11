@@ -240,6 +240,9 @@ def carddemo_adapter(carddemo_adapter_name: str, carddemo_work_root: Path) -> It
             f"not {carddemo_adapter_name!r}"
         )
     yield adapter
+    # Not guarded: a close that raises (a region or BPE left running on
+    # unikix) fails the session teardown, which pytest reports as an error
+    # at the teardown of the last test and as a failed exit status.
     adapter.close()
 
 

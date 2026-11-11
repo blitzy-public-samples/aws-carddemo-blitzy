@@ -178,7 +178,8 @@ _TIMEOUT_ERRORS = (_base.ScenarioTimeout, TimeoutError, subprocess.TimeoutExpire
 
 # The gap an observation is blocked under when the adapter names none:
 # unloads, @CATALOG and @AIX:<path> GAP-MIS-007; region file inquiry
-# GAP-MIS-011; the JOBS capture GAP-MIS-017; 3270 screens GAP-MIS-005.
+# GAP-MIS-011 (@REGION-FILES and its region stage observations); the JOBS
+# capture GAP-MIS-017; 3270 screens GAP-MIS-005.
 _DEFAULT_OBSERVATION_GAPS = {
     _base.REGION_FILES: "GAP-MIS-011",
     _base.TDQ_JOBS: "GAP-MIS-017",
@@ -619,6 +620,9 @@ def _observation_gap(adapter: Any, observation: str) -> str:
     gap = hook(observation) if callable(hook) else None
     if isinstance(gap, str) and _base.GAP_ID_RE.fullmatch(gap):
         return gap
+    if _base.parse_region_stage(observation) is not None:
+        # The region files at one point of a job chain: the region file inquiry.
+        observation = _base.REGION_FILES
     return _DEFAULT_OBSERVATION_GAPS.get(observation, _DEFAULT_DATASET_GAP)
 
 

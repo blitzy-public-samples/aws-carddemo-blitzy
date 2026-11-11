@@ -43,7 +43,11 @@ Schema (``validate`` is the authority; every key not listed here is refused)
     ``DATEPARM`` (the 80-byte ``YYYY-MM-DD YYYY-MM-DD`` record),
     ``sessions`` (1 or 2), ``ceedays_feedback`` (4 hex digits). ``faults``:
     ``[{target, operation, condition, after?}]`` whose target is a logical
-    dataset, a region file or the TDQ of ``tests/adapters/unikix/resources.yaml``.
+    dataset, a region file or the TDQ of ``tests/adapters/unikix/resources.yaml``,
+    and whose ``after`` is the number of the fault's ``operation`` requests on
+    the target that succeed before it (0 or more), never a step index: ``read``
+    counts READ, READ UPDATE, STARTBR, READNEXT and READPREV, ``write`` WRITE
+    and ``rewrite`` REWRITE.
 ``inputs``
     Exactly one of ``program`` (unit level; an ``app/cbl`` member),
     ``job`` (integration level; an ``app/jcl`` member or ``TRNRPT00``, or an
@@ -67,7 +71,11 @@ Schema (``validate`` is the authority; every key not listed here is refused)
     a whole-line matcher; ``@AFTER:<JOB>:<LOGICAL>`` is logical dataset
     ``<LOGICAL>`` of ``tests/fixtures/datasets.yaml`` at the end of job
     ``<JOB>``, which ``inputs.job`` runs exactly once, and its records are
-    those of ``<LOGICAL>``),
+    those of ``<LOGICAL>``; ``@BEFORE:<JOB>:@REGION-FILES`` and
+    ``@AFTER:<JOB>:@REGION-FILES`` are ``@REGION-FILES`` just before job
+    ``<JOB>`` is submitted and at its end, which also needs a ``<JOB>`` that
+    ``inputs.job`` runs exactly once, and their records are lines as those
+    of ``@REGION-FILES``),
     ``screens`` (one field map per step, each naming ``@map``; ``@text``, the
     full screen as one string, 24 rows of 80 characters joined by line breaks
     with every space kept (``adapters.base.screen_text``), only with
@@ -230,8 +238,12 @@ OBS_TDQ_JOBS = "@TDQ:JOBS"
 OBS_AIX_PREFIX = "@AIX:"
 # @AFTER:<JOB>:<LOGICAL>: logical dataset <LOGICAL> at the end of job <JOB> of the chain.
 OBS_AFTER_PREFIX = "@AFTER:"
+# @BEFORE:<JOB>:@REGION-FILES and @AFTER:<JOB>:@REGION-FILES: the region files
+# just before job <JOB> of the chain is submitted and at its end.
+OBS_BEFORE_PREFIX = "@BEFORE:"
 RESERVED_OBSERVATIONS = (
-    OBS_CATALOG, OBS_REGION_FILES, OBS_TDQ_JOBS, OBS_AIX_PREFIX + "<path>", OBS_AFTER_PREFIX + "<JOB>:<LOGICAL>"
+    OBS_CATALOG, OBS_REGION_FILES, OBS_TDQ_JOBS, OBS_AIX_PREFIX + "<path>", OBS_AFTER_PREFIX + "<JOB>:<LOGICAL>",
+    OBS_BEFORE_PREFIX + "<JOB>:" + OBS_REGION_FILES, OBS_AFTER_PREFIX + "<JOB>:" + OBS_REGION_FILES,
 )
 # Observations whose lines are platform text (catalog entries, the JCL of the
 # job the region wrote to JOBS): they hold DSNs by nature, so the platform
@@ -2023,10 +2035,22 @@ def _stage_logical(problems: _Problems, where: str, name: str, jobs: tuple[str, 
         problems.add(
             where,
             f"is not a stage observation {OBS_AFTER_PREFIX}<JOB>:<LOGICAL>: <JOB> and <LOGICAL> are "
-            "non-empty names without ':' or whitespace, and <LOGICAL> does not start with '@'",
+            "non-empty names without ':' or whitespace, and <LOGICAL> does not start with '@' "
+            f"(the region files at the end of a job are {OBS_AFTER_PREFIX}<JOB>:{OBS_REGION_FILES})",
         )
         return None
     job, logical = parsed
+    once = _stage_job(problems, where, job, jobs, "end")
+    known = _member(logical, _datasets())
+    if not known:
+        problems.add(where, f"names {logical!r}, which is not a logical dataset of tests/fixtures/datasets.yaml")
+    return logical if once and known else None
+
+
+def _stage_job(problems: _Problems, where: str, job: str, jobs: tuple[str, ...], point: str) -> bool:
+    """Whether ``inputs.job`` (``jobs``) runs ``job`` exactly once, so that
+    its ``point`` (``start`` or ``end``) is one point of the run, as a stage
+    observation of ``job`` needs; adds the problem when it does not."""
     runs = jobs.count(job)
     if runs == 0:
         ran = f"inputs.job runs {', '.join(jobs)}" if jobs else "the scenario runs no job"
@@ -2034,13 +2058,32 @@ def _stage_logical(problems: _Problems, where: str, name: str, jobs: tuple[str, 
     elif runs > 1:
         problems.add(
             where,
-            f"names job {job}, which inputs.job lists {runs} times, so the end of {job} is not one point "
+            f"names job {job}, which inputs.job lists {runs} times, so the {point} of {job} is not one point "
             "of the run; a stage observation needs a job the chain runs exactly once",
         )
-    known = _member(logical, _datasets())
-    if not known:
-        problems.add(where, f"names {logical!r}, which is not a logical dataset of tests/fixtures/datasets.yaml")
-    return logical if runs == 1 and known else None
+    return runs == 1
+
+
+def _region_stage_job(problems: _Problems, where: str, name: str, jobs: tuple[str, ...]) -> bool:
+    """Whether a region stage observation ``@BEFORE:<JOB>:@REGION-FILES`` or
+    ``@AFTER:<JOB>:@REGION-FILES`` that ``expected.file_state`` names is well
+    formed and names a ``<JOB>`` that ``inputs.job`` (``jobs``) runs exactly
+    once, so the start or end of ``<JOB>`` is one point of the run; adds the
+    problems otherwise. Well-formedness is
+    ``adapters.base.parse_region_stage``'s, the rule the adapters read the
+    name by."""
+    from adapters.base import parse_region_stage  # adapters.base imports this module
+
+    parsed = parse_region_stage(name)
+    if parsed is None:
+        problems.add(
+            where,
+            f"is not a region stage observation {OBS_BEFORE_PREFIX}<JOB>:{OBS_REGION_FILES} or "
+            f"{OBS_AFTER_PREFIX}<JOB>:{OBS_REGION_FILES}: <JOB> is a non-empty name without ':' or whitespace",
+        )
+        return False
+    stage, job = parsed
+    return _stage_job(problems, where, job, jobs, "start" if stage == "before" else "end")
 
 
 def _check_expected_dataset(
@@ -2049,8 +2092,8 @@ def _check_expected_dataset(
     """One ``expected.datasets`` or ``expected.file_state`` entry.
     ``reserved_ok`` admits the reserved observations (``file_state`` only);
     ``jobs`` is the scenario's ``inputs.job`` in order (``job_names``), which
-    a stage observation ``@AFTER:<JOB>:<LOGICAL>`` must run ``<JOB>`` of
-    exactly once."""
+    a stage observation ``@AFTER:<JOB>:<LOGICAL>``, ``@BEFORE:<JOB>:@REGION-FILES``
+    or ``@AFTER:<JOB>:@REGION-FILES`` must run ``<JOB>`` of exactly once."""
     datasets = _datasets()
     spec: dict | None = None
     text_ok = lines_only = False
@@ -2067,6 +2110,15 @@ def _check_expected_dataset(
             return
         # Records read through an alternate-index path are the base dataset's records.
         spec = datasets[base]
+    elif reserved_ok and isinstance(name, str) and (
+        name.startswith(OBS_BEFORE_PREFIX)
+        or (name.startswith(OBS_AFTER_PREFIX) and name.endswith(":" + OBS_REGION_FILES))
+    ):
+        # A region stage observation is @REGION-FILES at one point of the
+        # run, so its records are lines as @REGION-FILES's are; they are
+        # checked even when the job is not one point, which is reported apart.
+        _region_stage_job(problems, where, name, jobs)
+        text_ok = lines_only = True
     elif reserved_ok and isinstance(name, str) and name.startswith(OBS_AFTER_PREFIX):
         logical = _stage_logical(problems, where, name, jobs)
         if logical is None:

@@ -28,8 +28,9 @@ produced only for a job scenario whose ``expected`` names it: ``<LOGICAL>``
 read as ``Catalog.read_logical`` reads it, at the end of ``<JOB>``, before
 the next job starts (``jobs.run_jobs``'s ``after_job``); it is omitted when
 ``<JOB>`` never ran or ``<LOGICAL>`` had no file then. Screens,
-``@REGION-FILES`` and ``@TDQ:JOBS`` need a UniKix region and are never
-produced here.
+``@REGION-FILES`` with its region stage observations
+(``@BEFORE:<JOB>:@REGION-FILES``, ``@AFTER:<JOB>:@REGION-FILES``) and
+``@TDQ:JOBS`` need a UniKix region and are never produced here.
 
 Faults: an ``open`` fault with condition ``unavailable`` leaves its dataset
 out, so the program's OPEN fails with status 35; every other fault raises
@@ -92,6 +93,7 @@ from adapters.base import (
     MissingPrerequisite,
     Result,
     parse_after_job,
+    parse_region_stage,
     required_observations,
 )
 from adapters.gnucobol_batch import build as _build
@@ -388,7 +390,7 @@ class GnuCOBOLBatchAdapter(Adapter):
     def observation_gap(self, name: str) -> str | None:
         if self.can_observe(name):
             return None
-        if name == REGION_FILES:
+        if name == REGION_FILES or parse_region_stage(name) is not None:
             return _GAP_REGION_FILES
         if name == TDQ_JOBS:
             return _GAP_JOBS_CAPTURE

@@ -8,10 +8,10 @@
 # On UniKix the copy's SDSF.cbl only displays 'DUMMY PROGRAM FOR SDSF' and returns
 # [samples/m2/unikix/UniKix_CardDemo_runtime_v1.zip:migrated_app/cbl/SDSF.cbl:13], so the CEMT commands are
 # never performed (GAP-DOC-031). A completed OPCIFIL step is therefore no evidence about the region files.
-# The outcome is the region file inquiry after the job, @REGION-FILES (adapters.base.format_region_files):
-# one line per fct.lst file, '<name> open|closed enabled|disabled', sorted by name. The adapter also keeps
-# the inquiry made just before the job in the evidence (adapter/region-files-before.txt), so the record
-# shows the state before and after the job. No confirmed UniKix command inquires or controls region files
+# The outcome is the region file inquiry just before the job is submitted, @BEFORE:OPENFIL:@REGION-FILES,
+# and the one after the job, @REGION-FILES (adapters.base.format_region_files): one line per fct.lst file,
+# '<name> open|closed enabled|disabled', sorted by name. Both are asserted, so the run compares the state
+# before and after the job. No confirmed UniKix command inquires or controls region files
 # (GAP-MIS-011) and BPE submission is unconfirmed (GAP-MIS-006): the observation rule blocks the scenario
 # until an operator confirms them, and the file state is never inferred from the job's return code.
 #
@@ -27,10 +27,11 @@ type: normal
 description: >-
   OPENFIL runs its SDSF step OPCIFIL, whose CEMT SET FIL commands open the region files TRANSACT, CCXREF,
   ACCTDAT, CXACAIX and USRSEC [app/jcl/OPENFIL.jcl:22-30], against the test-owned region as the reset leaves
-  it, with all 14 fct.lst files open and enabled. The step ends with return code 0, and the region file
-  inquiry after the job lists all 14 files open and enabled: app/ opens five files that are already open,
-  and the UniKix copy's SDSF.cbl only displays 'DUMMY PROGRAM FOR SDSF' (GAP-DOC-031), so the files are
-  left unchanged on both. The expectation is derived, never observed.
+  it, with all 14 fct.lst files open and enabled, as the region file inquiry just before the job lists them.
+  The step ends with return code 0, and the region file inquiry after the job lists the same 14 files open
+  and enabled: app/ opens five files that are already open, and the UniKix copy's SDSF.cbl only displays
+  'DUMMY PROGRAM FOR SDSF' (GAP-DOC-031), so the files are left unchanged on both. The expectation is
+  derived, never observed.
 inventory_ids:
 - INV-CFG-031  # OPENFIL job
 - INV-CFG-033  # CICS file close and open through the SDSF CEMT steps (JCL semantics)
@@ -63,6 +64,24 @@ expected:
   messages:
   - STEP OPCIFIL RC 0000
   file_state:
+    # Just before OPENFIL is submitted: the reset state, every fct.lst file open and enabled.
+    '@BEFORE:OPENFIL:@REGION-FILES':
+      records:
+      - 'ACCTDAT open enabled'
+      - 'CARDAIX open enabled'
+      - 'CARDDAT open enabled'
+      - 'CCXREF open enabled'
+      - 'CUSTDAT open enabled'
+      - 'CXACAIX open enabled'
+      - 'DISCGRP open enabled'
+      - 'TCATBALF open enabled'
+      - 'TRANCATG open enabled'
+      - 'TRANSACT open enabled'
+      - 'TRANSAIX open enabled'
+      - 'TRANTYPE open enabled'
+      - 'TRXFL open enabled'
+      - 'USRSEC open enabled'
+    # After OPENFIL: the same 14 lines, every file left as it was.
     '@REGION-FILES':
       records:
       - 'ACCTDAT open enabled'

@@ -6,7 +6,8 @@
 # can run it: CLOSEFIL and OPENFIL act on the CICS region, and the gnucobol-batch job
 # driver has no step table for them. A run needs BPE job submission and step return codes
 # (GAP-MIS-006), the post-run unloads (GAP-MIS-007) and the region file inquiry behind
-# @REGION-FILES (GAP-MIS-011), none of them confirmed, so nothing here was captured.
+# @AFTER:CLOSEFIL:@REGION-FILES and @REGION-FILES (GAP-MIS-011), none of them confirmed,
+# so nothing here was captured.
 # TRANBKP runs a second time between INTCALC and COMBTRAN, where the README places it
 # (GAP-DOC-015): the first run backs up TRANSACT-INIT's record and redefines TRANSACT
 # empty, the second backs up the 262 posted records to the generation COMBTRAN reads as
@@ -34,6 +35,11 @@
 #   counts, CBACT04C's 100 category balances each with the DEFAULT group fallback
 #   (GAP-DEF-005), and CBSTM03A's 'Running JCL : CREASTMT Step STEP040' with STEP040's
 #   DD list in JCL order.
+# - file_state @AFTER:CLOSEFIL:@REGION-FILES: the inquiry when CLOSEFIL, the first job,
+#   has completed and before ACCTFILE is submitted, as CFG-CLOSEFIL-normal-01's: from the
+#   reset state, every file open and enabled, CLOSEFIL leaves ACCTDAT, CCXREF, CXACAIX,
+#   TRANSACT and USRSEC closed and disabled (CEMT SET FILE CLOSED leaves a file
+#   unenabled) and the other nine fct.lst files open and enabled.
 # - file_state @REGION-FILES: the inquiry after OPENFIL, the 14 fct.lst files open and
 #   enabled, as adapters.base.format_region_files writes them (CFG-OPENFIL-normal-01's).
 # - file_state ACCTDATA: BAT-CHAIN-normal-01's, the 50 accounts as INTCALC leaves them,
@@ -12688,6 +12694,21 @@ datasets:
     TRAN-SOURCE: 'System    '
     TRAN-TYPE-CD: '01'
 file_state:
+  '@AFTER:CLOSEFIL:@REGION-FILES':
+  - ACCTDAT closed disabled
+  - CARDAIX open enabled
+  - CARDDAT open enabled
+  - CCXREF closed disabled
+  - CUSTDAT open enabled
+  - CXACAIX closed disabled
+  - DISCGRP open enabled
+  - TCATBALF open enabled
+  - TRANCATG open enabled
+  - TRANSACT closed disabled
+  - TRANSAIX open enabled
+  - TRANTYPE open enabled
+  - TRXFL open enabled
+  - USRSEC closed disabled
   '@REGION-FILES':
   - ACCTDAT open enabled
   - CARDAIX open enabled

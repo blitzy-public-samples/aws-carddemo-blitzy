@@ -13,7 +13,8 @@
 #   PARMFILES, SEQFILES, MIGAPP_DIR and COBCPY, the installation variables UNIKIX, INSTEBM, VCOBOL, KIXLICDIR
 #   and JAVA_HOME, and MBMSUB once batchenv has been sourced. It runs in the entry's `cwd` or, when absent,
 #   in the default directory: $PROJECT_ROOT once it exists, else the deployment root.
-# - Placeholders in {braces} (member, map, job, file, queue, dsn, clock, job_number) are filled by the caller.
+# - Placeholders in {braces} (member, map, job, file, operation, queue, dsn, clock, job_number) are filled by
+#   the caller.
 #   In `command` each value is shell-quoted and $VAR is expanded by bash; `cwd` is filled and expanded by
 #   env.py instead (below). Neither holds other braces: write $VAR, never ${VAR}.
 # - Shell quoting keeps a value one word of data only where its placeholder stands unquoted, as a whole word
@@ -782,6 +783,26 @@ entries:
       Must print one line per region file, which parse.file reads, as CEMT INQUIRE FILE shows it
       (Fil(ACCTDAT ) Vsa Ope Ena ...). Values compare case-insensitively: open Ope means open and Clo closed;
       enabled Ena means enabled, Dis or Une disabled. Produces @REGION-FILES for the 14 fct.lst files.
+
+  region_file_requests:
+    action: count the requests a region file has served
+    command: null
+    probe: 'false'
+    timeout_s: 60
+    gap: GAP-MIS-011
+    status: unconfirmed
+    source: none; no public source names a CICS file statistics equivalent
+    parse:
+      count: '(?im)^[ \t]*requests[ \t]+(?P<count>[0-9]+)[ \t]*$'
+    notes: >-
+      Must print the number of {operation} requests region file {file} has served, on one line that parse.count
+      reads (requests <n>): a count that only grows while the region runs, since the adapter uses differences.
+      read counts READ (with or without UPDATE), STARTBR, READNEXT and READPREV; write counts WRITE; rewrite
+      counts REWRITE; ENDBR, RESETBR and UNLOCK are not counted. Used to place an online `unavailable` fault
+      whose `after` is 1 or more: the adapter reads the count before each step until the fault is applied, and
+      applies it before the first step at whose start {file} has served `after` such requests since the first
+      step began. Output in which parse.count does not find exactly one count, or a count lower than before the
+      first step, blocks GAP-MIS-011. Without it such a case stays implemented-unexecuted.
 
   tdq_empty:
     action: empty a transient data queue

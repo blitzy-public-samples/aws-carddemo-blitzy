@@ -14,18 +14,33 @@
 # DISPLAY of SDSF.cbl reaches a sysout file BPE gives the step, which declares no
 # //SYSOUT DD, is an installation detail, not an outcome of the job, so a complete
 # exact list is not pinned.
-# file_state @REGION-FILES: the region file inquiry after the job, as
-# adapters.base.format_region_files writes it (GAP-MIS-011). The scenario closes no file
-# first, so the state before the job is the reset state, every fct.lst file open and
-# enabled; the adapter keeps that inquiry in the evidence
-# (adapter/region-files-before.txt), and no expected key carries it. The no-op step
-# touches no file, so the state after equals the state before: that equality is the
-# evidence of no change. Job submission is unconfirmed (GAP-MIS-006).
+# file_state @BEFORE:OPENFIL:@REGION-FILES and @REGION-FILES: the region file inquiry
+# just before the job is submitted and after it, as adapters.base.format_region_files
+# writes them (GAP-MIS-011). The scenario closes no file first, so the state before the
+# job is the reset state, every fct.lst file open and enabled. The step opens only files
+# that are already open, and the no-op SDSF.cbl touches none, so the state after equals
+# the state before: that equality is the evidence of no change. Job submission is
+# unconfirmed (GAP-MIS-006).
 # A UniKix record of this scenario runs the copy's SDSF.cbl: it is reported as
 # UniKix-copy behaviour and never verifies the app/ OPENFIL items. Only
 # `report.py --import-unikix` replaces this file: MINOR on an equal decoded outcome,
 # MAJOR on a different one.
 file_state:
+  '@BEFORE:OPENFIL:@REGION-FILES':
+  - ACCTDAT open enabled
+  - CARDAIX open enabled
+  - CARDDAT open enabled
+  - CCXREF open enabled
+  - CUSTDAT open enabled
+  - CXACAIX open enabled
+  - DISCGRP open enabled
+  - TCATBALF open enabled
+  - TRANCATG open enabled
+  - TRANSACT open enabled
+  - TRANSAIX open enabled
+  - TRANTYPE open enabled
+  - TRXFL open enabled
+  - USRSEC open enabled
   '@REGION-FILES':
   - ACCTDAT open enabled
   - CARDAIX open enabled

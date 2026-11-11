@@ -44,16 +44,20 @@
 # Region files. CLOSEFIL closes TRANSACT, CCXREF, ACCTDAT, CXACAIX and USRSEC
 # and OPENFIL opens them again [app/jcl/CLOSEFIL.jcl:22-28]
 # [app/jcl/OPENFIL.jcl:22-30]. CARDFILE and CUSTFILE close and reopen
-# CARDDAT, CARDAIX and CUSTDAT around their loads. The harness observes
-# @REGION-FILES only at the end of the run, because stage observations hold
-# datasets only, so the state between CLOSEFIL and OPENFIL is not asserted.
-# The adapter keeps the state before the jobs as evidence only. At the end
-# all 14 region files are open and enabled, both when the CEMT commands run
-# (app/: an explicit open enables again a file the close left unenabled, the
-# state CFG-CLOSEFIL-normal-01 asserts) and when SDSF.cbl does nothing (the
-# UniKix copy). Region state is
-# never read from job return codes. No UniKix command that inquires the
-# region files is confirmed, so the scenario stays blocked under GAP-MIS-011.
+# CARDDAT, CARDAIX and CUSTDAT around their loads. Two region file
+# inquiries are asserted: @AFTER:CLOSEFIL:@REGION-FILES, read when CLOSEFIL
+# has completed and before ACCTFILE is submitted, and @REGION-FILES at the
+# end of the run, after OPENFIL. CLOSEFIL is the first job, so it starts from
+# the reset region, every file open and enabled; CEMT SET FILE CLOSED leaves
+# the five files it names closed and unenabled, which the inquiry reads as
+# disabled, and the other nine open and enabled, as CFG-CLOSEFIL-normal-01
+# pins it. At the end all 14 region files are open and enabled: an explicit
+# open enables again a file the close left unenabled, as CFG-OPENFIL-normal-01
+# pins it. These are the app/ outcomes; on the UniKix copy SDSF.cbl does
+# nothing, so both inquiries there list all 14 files open and enabled
+# (GAP-DOC-031). Region state is never read from job return codes. No UniKix
+# command that inquires the region files is confirmed, so the scenario stays
+# blocked under GAP-MIS-011.
 #
 # End state. No job after INTCALC writes ACCTDATA, and TRANIDX only adds the
 # alternate index to the TRANSACT that COMBTRAN loaded. ACCTDATA and TRANSACT
@@ -79,7 +83,9 @@ description: >-
   The README full batch order from CLOSEFIL to OPENFIL, run on unikix against
   one catalog on the repository fixtures, with TRANSACT holding the
   TRANSACT-INIT seed. Every step ends with return code 0 except POSTTRAN
-  STEP15, which ends with 4 after rejecting 38 of 300 daily transactions. At
+  STEP15, which ends with 4 after rejecting 38 of 300 daily transactions.
+  After CLOSEFIL the region files TRANSACT, CCXREF, ACCTDAT, CXACAIX and
+  USRSEC are closed and disabled and the other nine open and enabled. At
   the end the 14 region files are open and enabled, ACCTDATA holds the
   postings and interest of accounts 1 to 49 and the postings alone of
   account 50, TRANSACT holds the 262 posted and 50 interest transactions, and
@@ -213,6 +219,25 @@ expected:
   # OPENFIL
   - 'STEP OPCIFIL RC 0000'
   file_state:
+    # The region file inquiry when CLOSEFIL has completed, before ACCTFILE is
+    # submitted: the five files CLOSEFIL names closed and disabled, the other
+    # nine fct.lst files open and enabled, sorted by name.
+    '@AFTER:CLOSEFIL:@REGION-FILES':
+      records:
+      - 'ACCTDAT closed disabled'
+      - 'CARDAIX open enabled'
+      - 'CARDDAT open enabled'
+      - 'CCXREF closed disabled'
+      - 'CUSTDAT open enabled'
+      - 'CXACAIX closed disabled'
+      - 'DISCGRP open enabled'
+      - 'TCATBALF open enabled'
+      - 'TRANCATG open enabled'
+      - 'TRANSACT closed disabled'
+      - 'TRANSAIX open enabled'
+      - 'TRANTYPE open enabled'
+      - 'TRXFL open enabled'
+      - 'USRSEC closed disabled'
     # The region file inquiry after OPENFIL: the 14 fct.lst files, one line
     # each, '<name> open|closed enabled|disabled', sorted by name
     # (adapters.base.format_region_files).

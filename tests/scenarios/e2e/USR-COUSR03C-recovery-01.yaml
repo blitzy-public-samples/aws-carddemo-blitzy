@@ -71,7 +71,7 @@ preconditions:
   # by user id) succeed and takes the file out of service before the option
   # step, which is also the unikix adapter's default for an online fault. The
   # option step touches no file, so the first USRSEC operation the fault meets
-  # is the READ UPDATE of step 3, whether `after` counts operations or steps.
+  # is the READ UPDATE of step 3 [app/cbl/COUSR03C.cbl:267-278].
   # An adapter without a confirmed region file control raises
   # MissingPrerequisite under GAP-MIS-011.
   faults:

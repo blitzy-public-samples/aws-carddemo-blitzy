@@ -16,7 +16,7 @@
 # filter is set, so every record is kept and the first seven cards of the
 # CARDDATA fixture in key order fill rows 1-7 [app/cbl/COCRDLIC.cbl:1123-1187,
 # 1382-1407]. At the seventh row the program issues one more READNEXT to learn
-# whether a next page exists [app/cbl/COCRDLIC.cbl:1191-1205]. That eighth read
+# whether a next page exists [app/cbl/COCRDLIC.cbl:1191-1205]. That eighth READNEXT
 # answers IOERR, so its WHEN OTHER branch moves 'READ' to ERROR-OPNAME, 'CARDDAT '
 # to ERROR-FILE and the RESP and RESP2 values to ERROR-RESP and ERROR-RESP2, and
 # moves the 80-byte WS-FILE-ERROR-MESSAGE into the 75-byte WS-ERROR-MSG,
@@ -100,15 +100,17 @@ preconditions:
     CARDDATA: {base: CARDDATA}
   parameters:
     clock_mode: relative
-  # after: 7 lets the seven READNEXT that fill rows 1-7 succeed (STARTBR only
-  # positions the browse), so the eighth read, the look-ahead READNEXT, fails.
-  # No step reads CARDDAT before step 2. An adapter without a way to return
-  # IOERR raises MissingPrerequisite under GAP-MIS-014.
+  # after: 8 counts the CARDDAT read requests that succeed first: the STARTBR
+  # of 9000-READ-FORWARD and the seven READNEXT that fill rows 1-7
+  # [app/cbl/COCRDLIC.cbl:1129-1191]. The ninth, the look-ahead READNEXT, fails
+  # [app/cbl/COCRDLIC.cbl:1197-1205]. No step reads CARDDAT before step 2. An
+  # adapter without a way to return IOERR raises MissingPrerequisite under
+  # GAP-MIS-014.
   faults:
   - target: CARDDAT
     operation: read
     condition: io-error
-    after: 7
+    after: 8
 # PASSWORD is the README's documented demo password, not a secret: the scenario
 # schema accepts no other sign-on password.
 inputs:
