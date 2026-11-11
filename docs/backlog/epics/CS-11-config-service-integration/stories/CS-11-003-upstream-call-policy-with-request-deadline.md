@@ -76,6 +76,8 @@ Parent epic: [CS-11 Config Service Integration](../README.md)
 > - Stub failure injection and the stub request log (CS-11-002).
 > - Per-client degrade or fail-hard handling of a returned status (CS-09-005, CS-10-006, CS-11-006, CS-12-002, CS-13-003).
 > - Endpoint deadline outcomes, including starting the request deadline at receipt and marking the cut-off (CS-05-005, CS-06-002, CS-07-002, CS-08-002).
+>   > SCOPE-QUESTION (Resolved): The Stage 0 hook extension of the balance summary REST and gRPC endpoints story (CS-05-006) starts the request deadline at receipt, ahead of Stage 0 validation, on every route the validator declares, the routes of all four endpoints included, and on both protocols, and attaches it to the request. The account access guard (CS-12-003) and the four retrieval stories (CS-05-005, CS-06-002, CS-07-002 and CS-08-002) run under that one deadline, each retrieval story taking the deadline the guard ran under. The retrieval stories keep the endpoint deadline outcomes this bullet gives them, marking the cut-off after an allow and completing the deadline, with the category balances cut-off exception the following note states.
+>   >
 >   > SCOPE-QUESTION (Resolved): On the category balances route the cut-off after an allow is marked by the category balance REST and gRPC endpoints story (CS-06-003), whose adapters mark it right after the Stage 3 unknown-`typeCode` check, while the retrieval story (CS-06-002) marks it only for its own 404, 503 and 504 and keeps the endpoint deadline outcomes.
 > - The real-channel proof of this policy (CS-09-006, CS-10-007, CS-11-007, CS-12-005, CS-13-004).
 >
@@ -228,7 +230,7 @@ Settled assumptions:
 - With no configuration snapshot, the timeout setting is 300 ms, the retry cap 2 and the deadline setting 900 ms.
 - The deadline setting never comes from the configuration service.
 - The error-object story maps the unavailable status to 503 and the deadline-exceeded status to 504 with the trace identifier.
-- Each endpoint story starts the request deadline at receipt.
+- The shared receipt stage starts the request deadline once per request, ahead of the parameter check, on every route.
 
 Open assumptions:
 

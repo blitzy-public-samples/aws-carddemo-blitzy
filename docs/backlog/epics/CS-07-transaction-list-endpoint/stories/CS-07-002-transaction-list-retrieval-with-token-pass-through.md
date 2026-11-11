@@ -148,13 +148,12 @@ Rationale: the transaction source owns the cursor, so the service passes its tok
 ```mermaid
 sequenceDiagram
     participant Caller
-    participant Service
     participant G as Access guard
+    participant Service
     participant Cache
     participant T as Transaction source
-    Caller->>Service: list request with page token
-    Service->>G: check account access
-    G-->>Service: access allowed
+    Caller->>G: list request with page token
+    G->>Service: access allowed
     Service->>Cache: look up the page
     Cache-->>Service: miss
     Service->>T: one list call, token unchanged
