@@ -12,9 +12,12 @@ Process helpers
     leader's pid, alive or a zombie, then reserves the group id; the check
     and the signal hold one lock that every reap of a leader holds too, and
     once the leader is reaped the group is only probed, so no signal reaches
-    a group that has since been given the id. ``kill_all``, for
-    ``Adapter.cleanup``, ends the groups still registered and raises
-    ``DatasetError`` for any it cannot confirm, which stay registered.
+    a group that has since been given the id. ``kill_all`` ends the groups
+    still registered: every one for ``Adapter.close``, and for
+    ``Adapter.cleanup`` only those started in the scenario's working
+    directory or below it (``within``), so one scenario's cleanup never ends
+    another's programs. It raises ``DatasetError`` for any group of its scope
+    it cannot confirm, which stays registered.
     ``runtime_env`` builds the fresh environment every program, loader and
     unloader runs with; nothing of the caller's environment is inherited,
     and ``COB_FILE_PATH`` is never set, so the absolute ``DD_<ddname>``
@@ -256,8 +259,13 @@ class ProcessTimeout(ScenarioTimeout):
 # is free for any new process as soon as the last member ends, so the group
 # is only probed. A new leader given a registered id replaces that entry,
 # which proves the old group ended: the kernel reuses a pid only once no
-# process has it as its pid, group id or session id.
+# process has it as its pid, group id or session id. _LIVE_CWD holds, by the
+# same id, the real path of the working directory run_process started the
+# group in; it is set, replaced and dropped with the _LIVE entry under
+# _LIVE_LOCK, so kill_all(within=...) can end only the groups started in one
+# scenario's working directory.
 _LIVE: dict[int, subprocess.Popen[bytes]] = {}
+_LIVE_CWD: dict[int, Path] = {}
 _LIVE_LOCK = threading.Lock()
 # Held by every reap of a run_process leader (_reap) and by every signal to
 # its group (_kill_unreaped), so the check that the leader is unreaped and
@@ -267,11 +275,12 @@ _REAP_LOCK = threading.Lock()
 
 
 def _release(pgid: int, process: subprocess.Popen[bytes]) -> None:
-    """Drop the confirmed group of ``process`` from ``_LIVE``, unless a newer
-    leader holds its id."""
+    """Drop the confirmed group of ``process`` from ``_LIVE``, with its
+    working directory, unless a newer leader holds its id."""
     with _LIVE_LOCK:
         if _LIVE.get(pgid) is process:
             del _LIVE[pgid]
+            del _LIVE_CWD[pgid]
 
 
 def _owns(pgid: int, process: subprocess.Popen[bytes]) -> bool:
@@ -503,9 +512,11 @@ def run_process(
 
     The group is registered in ``_LIVE`` from the start until its leader is
     reaped and the group is confirmed empty, so ``kill_all`` can end it from
-    another thread or retry a teardown that failed. The leader's exit is
-    awaited without reaping it, so its pid keeps reserving the group id. A
-    teardown (``_terminate``) kills the group with SIGKILL while the leader
+    another thread or retry a teardown that failed. It is registered with the
+    real path of ``cwd``, so ``kill_all(within=...)`` ends it only for a
+    directory that is ``cwd`` or holds it. The leader's exit is awaited
+    without reaping it, so its pid keeps reserving the group id. A teardown
+    (``_terminate``) kills the group with SIGKILL while the leader
     is unreaped, reaps the leader and then only probes the group until it is
     empty, within ``_REAP_TIMEOUT_S``, and never raises:
 
@@ -524,6 +535,7 @@ def run_process(
         raise DatasetError("run_process needs a command")
     environment = {str(key): str(value) for key, value in env.items()}
     environment.setdefault("HOME", os.fspath(cwd))
+    where = Path(os.path.realpath(os.fspath(cwd)))
     name = Path(args[0]).name
     started = time.monotonic()
     limit = deadline if deadline is not None else started + DEFAULT_DEADLINE_S
@@ -544,6 +556,7 @@ def run_process(
     pgid = process.pid
     with _LIVE_LOCK:
         _LIVE[pgid] = process
+        _LIVE_CWD[pgid] = where
     output: dict[str, list[bytes]] = {"stdout": [], "stderr": []}
     try:
         finished = _pump(process, output, limit, stdin_bytes or b"") and _exited(process, limit)
@@ -607,23 +620,31 @@ def run_process(
     )
 
 
-def kill_all() -> None:
-    """End every process group ``run_process`` registered: one still running
-    in another thread, or one whose teardown could not be confirmed. Each is
-    torn down as ``_terminate`` does, within ``_REAP_TIMEOUT_S``, and
+def kill_all(within: str | os.PathLike[str] | None = None) -> None:
+    """End the process groups ``run_process`` registered: one still running
+    in another thread, or one whose teardown could not be confirmed.
+    Without ``within`` that is every registered group (``Adapter.close``).
+    With it, only the groups started in the directory ``within`` names or
+    below it, both compared as real paths, so a cleanup given one scenario's
+    working directory never ends another scenario's group or one started in
+    a directory above it (``Adapter.cleanup``).
+
+    Each is torn down as ``_terminate`` does, within ``_REAP_TIMEOUT_S``, and
     released: killed only while its leader is unreaped, its leader reaped,
     and the group confirmed empty; the group of a leader already reaped is
     only probed, never signalled. An entry of the snapshot that its process
     no longer holds, because its run released it or a newer leader was
     given the id, has ended and is skipped. A group that cannot be confirmed
-    stays registered for a later call, and once every group has been tried,
-    ``DatasetError`` names each with its id, program and problems. With no
-    group registered it does nothing; ``Adapter.cleanup`` and
-    ``Adapter.close`` call it."""
+    stays registered for a later call, and once every group in scope has
+    been tried, ``DatasetError`` names each with its id, program and
+    problems. With no group in scope it does nothing."""
+    scope = None if within is None else Path(os.path.realpath(os.fspath(within)))
     with _LIVE_LOCK:
-        live = list(_LIVE.items())
+        live = [(pgid, process, _LIVE_CWD[pgid]) for pgid, process in _LIVE.items()]
     unconfirmed: list[str] = []
-    for pgid, process in live:
+    for pgid, process, where in live:
+        if scope is not None and where != scope and scope not in where.parents:
+            continue
         if not _owns(pgid, process):
             continue
         problems = _terminate(process, pgid)
@@ -632,8 +653,9 @@ def kill_all() -> None:
         else:
             _release(pgid, process)
     if unconfirmed:
+        shown = "" if scope is None else f" started in {scope}"
         raise DatasetError(
-            "kill_all could not confirm the end of these process groups, which stay "
+            f"kill_all could not confirm the end of these process groups{shown}, which stay "
             "registered: " + " | ".join(unconfirmed)
         )
 

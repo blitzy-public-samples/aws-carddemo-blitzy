@@ -10,21 +10,31 @@ Program runs (``run_program``)
     when a scenario injects a token (GAP-STB-002), and, for the unit
     ``programs.yaml`` gives a ``tiot`` (CBSTM03A) and no other,
     ``LD_PRELOAD`` of the page-zero shim with ``CARDDEMO_JOB``,
-    ``CARDDEMO_STEP`` and ``CARDDEMO_DDS`` (GAP-STB-003). The unit is
-    launched as ``programs.yaml`` ``run`` says: its executable, ``PARMDRV
-    <unit> <parm>`` (GAP-STB-004) or ``DTCDRV``. The deadline kills the group
-    (``datasets.ProcessTimeout``, a ``ScenarioTimeout``).
+    ``CARDDEMO_STEP`` and ``CARDDEMO_DDS`` (GAP-STB-003); ``LD_PRELOAD``
+    names the shim relative to the working directory, because ld.so splits
+    it at every space and colon, which the work root's path may hold. The
+    unit is launched as ``programs.yaml`` ``run`` says: its executable,
+    ``PARMDRV <unit> <parm>`` (GAP-STB-004) or ``DTCDRV``. The deadline kills
+    the group (``datasets.ProcessTimeout``, a ``ScenarioTimeout``).
 
     ``return_code`` is the exit status, or ``None`` when the program abended:
     the ``CEE3ABD`` stub wrote ``CARDDEMO-ABEND CEE3ABD`` on stderr
-    (GAP-STB-001), or a signal ended the process. ``messages`` are the
-    program's ``DISPLAY`` lines in order, followed by the marker after a
-    ``CEE3ABD`` abend; lines beginning ``libcob:`` stay in the raw evidence.
-    A driver or stub that reports its own failure (``CARDDEMO-PARMDRV``,
-    ``CARDDEMO-DTCDRV``, ``CARDDEMO-CEEDAYS``, ``CARDDEMO-SHIM``) is a harness
-    problem, never program behaviour: ``HarnessError``, or
-    ``AdapterUnavailable`` under GAP-MIS-002 when the shim cannot map page
-    zero.
+    (GAP-STB-001), a signal ended the process, or libcob ended it, with a
+    nonzero exit status, on the fatal error (``libcob: error: ...``, or
+    ``libcob: <source>:<line>: error: ...`` under -debug) it reports for an
+    I/O condition on a file that declares no FILE STATUS (``(status = nn)
+    for file ...``), which Language Environment ends with an abend.
+    ``messages`` are the program's ``DISPLAY`` lines in order, followed by
+    the marker after a ``CEE3ABD`` abend; lines beginning ``libcob:`` stay in
+    the raw evidence, where ``command.yaml`` names the fatal one as
+    ``libcob_error``. libcob warnings never end a run. A driver or stub that
+    reports its own failure (``CARDDEMO-PARMDRV``, ``CARDDEMO-DTCDRV``,
+    ``CARDDEMO-CEEDAYS``, ``CARDDEMO-SHIM``), a shim ld.so did not preload,
+    and every other fatal libcob error, such as a module or entry point not
+    found, are harness problems, never program behaviour: ``HarnessError``,
+    or ``AdapterUnavailable`` under GAP-MIS-002 when the shim cannot map page
+    zero. They are raised once the raw evidence is written, so neither a
+    later step nor a normal-end disposition follows.
 
 Job runs (``run_jobs``)
     Each job of ``inputs.job`` runs from its ``jobs.yaml`` step table, in JCL
@@ -139,6 +149,16 @@ LIBCOB_PREFIX = "libcob:"
 # Lines a driver or stub writes on stderr about its own failure.
 _HARNESS_MARKERS = ("CARDDEMO-PARMDRV", "CARDDEMO-DTCDRV", "CARDDEMO-CEEDAYS", "CARDDEMO-SHIM")
 _SHIM_MMAP_RE = re.compile(r"CARDDEMO-SHIM page0 mmap failed errno=([0-9]+)")
+# ld.so's report of an LD_PRELOAD object it could not load, on stderr.
+_PRELOAD_FAILED_RE = re.compile(
+    r"ERROR: ld\.so: object '.*' from LD_PRELOAD cannot be preloaded \(.*\): ignored\."
+)
+# A fatal libcob runtime error on stderr, with the source location libcob adds
+# under -debug; libcob then ends the run with exit status 1. Warnings never end it.
+_LIBCOB_ERROR_RE = re.compile(r"libcob: (?:\S+:[0-9]+: )?error: .*")
+# The fatal error libcob reports for an I/O condition on a file that declares no
+# FILE STATUS, which Language Environment ends with an abend.
+_LIBCOB_FILE_STATUS_RE = re.compile(r"\(status = [0-9]{2}\) for file ")
 
 DATEPARM = "DATEPARM"
 DATEPARM_RECORD_LENGTH = 80
@@ -375,7 +395,8 @@ class ProgramOutcome:
     """One finished program run.
 
     ``return_code`` is the exit status, ``None`` when the program abended;
-    ``abended`` is true after the ``CEE3ABD`` marker or a signal, and
+    ``abended`` is true after the ``CEE3ABD`` marker, a signal, or the fatal
+    libcob error of an I/O condition on a file without FILE STATUS, and
     ``signal`` names the signal that ended the process, if any. ``messages``
     are the ``DISPLAY`` lines followed by the ``CEE3ABD`` marker when it was
     written; ``displays`` the ``DISPLAY`` lines alone. ``stdout`` and
@@ -463,11 +484,18 @@ def _dd_environment(
 
 
 def _tiot_environment(
-    cache: BuildCache, unit: str, config: Mapping[str, Any], tiot: Mapping[str, Any] | None
+    cache: BuildCache,
+    unit: str,
+    config: Mapping[str, Any],
+    tiot: Mapping[str, Any] | None,
+    root: Path,
 ) -> dict[str, str]:
     """The shim's environment, for the unit ``programs.yaml`` gives a
     ``tiot`` (CBSTM03A): ``LD_PRELOAD`` applies to every process started with
-    it, so no other unit gets it."""
+    it, so no other unit gets it. ``LD_PRELOAD`` names the shim relative to
+    ``root``, the run's ``cwd``, because ld.so splits it at every space and
+    colon, which the work root's path may hold; a relative path that still
+    holds one is refused."""
     declared = config.get("tiot")
     if declared is None:
         if tiot is not None:
@@ -491,8 +519,17 @@ def _tiot_environment(
         raise HarnessError(
             f"the tiot dds of {unit} must be a non-empty list of ddnames, got {dds!r}"
         )
+    shim = os.path.relpath(os.path.realpath(cache.shim), root)
+    if os.sep not in shim:
+        shim = os.path.join(os.curdir, shim)  # without a slash ld.so would search for the name
+    if any(character.isspace() or character == ":" for character in shim):
+        raise HarnessError(
+            f"{unit}: the page-zero shim's path from the working directory, {shim!r}, holds a "
+            f"space or a colon, at which ld.so splits LD_PRELOAD; keep the build cache under "
+            f"the work root or on a path without them"
+        )
     return {
-        "LD_PRELOAD": os.fspath(cache.shim),
+        "LD_PRELOAD": shim,
         "CARDDEMO_JOB": job,
         "CARDDEMO_STEP": step,
         "CARDDEMO_DDS": ",".join(dds),
@@ -520,10 +557,33 @@ def _write_program_evidence(
     write_text(evidence / "command.yaml", dump_yaml(command))
 
 
+def _libcob_error(stderr_lines: Iterable[str], process: ProcessResult, marker: bool) -> str | None:
+    """The first fatal libcob error line of a run libcob ended: one with a
+    nonzero exit status, no signal and no ``CEE3ABD`` marker. ``None`` for
+    any other run, whatever libcob warned."""
+    if marker or process.signal is not None or not process.returncode:
+        return None
+    for line in stderr_lines:
+        if _LIBCOB_ERROR_RE.fullmatch(line.rstrip()):
+            return line.rstrip()
+    return None
+
+
 def _harness_failure(
-    unit: str, stderr_lines: Iterable[str], process: ProcessResult, shown: str
+    unit: str,
+    stderr_lines: Iterable[str],
+    process: ProcessResult,
+    shown: str,
+    libcob_error: str | None,
 ) -> None:
-    """Raise for a driver or stub reporting its own failure on stderr."""
+    """Raise for a driver or stub reporting its own failure on stderr, for a
+    page-zero shim ld.so did not preload, and for a fatal libcob error that
+    is no program behaviour: every one but an I/O condition on a file
+    without FILE STATUS, such as a module or entry point not found."""
+    status = (
+        f"signal {process.signal}" if process.signal is not None
+        else f"exit status {process.returncode}"
+    )
     for line in stderr_lines:
         mmap = _SHIM_MMAP_RE.match(line)
         if mmap is not None:
@@ -532,12 +592,19 @@ def _harness_failure(
                 f"it in the {unit} run (evidence {shown})",
                 "GAP-MIS-002",
             )
-        if line.startswith(_HARNESS_MARKERS):
-            status = (
-                f"signal {process.signal}" if process.signal is not None
-                else f"exit status {process.returncode}"
+        if _PRELOAD_FAILED_RE.match(line):
+            raise HarnessError(
+                f"{unit}: the page-zero shim was not preloaded: {line.rstrip()} ({status}; "
+                f"evidence {shown})"
             )
+        if line.startswith(_HARNESS_MARKERS):
             raise HarnessError(f"{unit}: {line.rstrip()} ({status}; evidence {shown})")
+    if libcob_error is not None and _LIBCOB_FILE_STATUS_RE.search(libcob_error) is None:
+        raise HarnessError(
+            f"{unit}: libcob ended the run: {libcob_error} ({status}; evidence {shown}); a "
+            f"module or entry point the build cache supplies is missing, or the runtime failed "
+            f"in a way that is no program behaviour"
+        )
 
 
 def run_program(
@@ -571,8 +638,11 @@ def run_program(
 
     Raises ``ProcessTimeout`` (a ``ScenarioTimeout``) at the deadline,
     ``AdapterUnavailable`` under GAP-MIS-002 when the shim cannot map page
-    zero, and ``HarnessError`` for a configuration the run cannot have or a
-    driver or stub that reports its own failure."""
+    zero, and ``HarnessError`` for a configuration the run cannot have, a
+    driver or stub that reports its own failure, a shim ld.so did not
+    preload, or a fatal libcob error other than the I/O condition of a file
+    without FILE STATUS (a module or entry point not found, for one), each
+    after the evidence is written."""
     config = unit_config(unit)
     root = _checked_workdir(workdir)
     evidence = _inside(
@@ -589,10 +659,16 @@ def run_program(
                 f"ceedays_feedback must be 4 hex digits, quoted, got {ceedays_feedback!r}"
             )
         extra["CARDDEMO_CEEDAYS_FEEDBACK"] = ceedays_feedback
-    extra.update(_tiot_environment(cache, unit, config, tiot))
+    extra.update(_tiot_environment(cache, unit, config, tiot, root))
     env = runtime_env(cache, extra)
+    build = os.fspath(Path(cache.dir).resolve())
+    # The build cache from the working directory too, as LD_PRELOAD names it.
     prefixes = sorted(
-        ((os.fspath(root), ""), (os.fspath(Path(cache.dir).resolve()), _BUILD_LABEL)),
+        (
+            (os.fspath(root), ""),
+            (build, _BUILD_LABEL),
+            (os.path.relpath(build, root), _BUILD_LABEL),
+        ),
         key=lambda item: len(item[0]),
         reverse=True,
     )
@@ -617,12 +693,27 @@ def run_program(
         raise
     stderr_lines = _lines(process.stderr)
     marker = any(line.rstrip() == ABEND_MARKER for line in stderr_lines)
-    abended = marker or process.signal is not None or process.returncode is None
+    libcob_error = _libcob_error(stderr_lines, process, marker)
+    if libcob_error is not None:
+        libcob_error = _shown(libcob_error, prefixes)
+    # A fatal libcob error that _harness_failure lets through is the I/O
+    # condition of a file without FILE STATUS: an abend, as on z/OS.
+    abended = (
+        marker
+        or process.signal is not None
+        or process.returncode is None
+        or libcob_error is not None
+    )
     _write_program_evidence(
         evidence, prefixes, argv, env, process.stdout, process.stderr,
-        {"returncode": process.returncode, "signal": process.signal, "cee3abd_marker": marker},
+        {
+            "returncode": process.returncode,
+            "signal": process.signal,
+            "cee3abd_marker": marker,
+            "libcob_error": libcob_error,
+        },
     )
-    _harness_failure(unit, stderr_lines, process, shown)
+    _harness_failure(unit, stderr_lines, process, shown, libcob_error)
     displays = [line for line in _lines(process.stdout) if not line.startswith(LIBCOB_PREFIX)]
     return ProgramOutcome(
         return_code=None if abended else process.returncode,

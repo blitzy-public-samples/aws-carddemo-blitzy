@@ -24,6 +24,24 @@ must succeed, and the folder must hold its files alone. An id outside the
 scenario id manifest is refused by ``write`` and ``evidence_path``, and a
 record that breaks the result record contract by ``write``, before any folder
 is created; a conforming record must read back field-equal.
+
+Program launch: ``jobs.run_program``, on a build cache of the case's own whose
+units are shell scripts writing what libcob and ld.so write, must raise
+``HarnessError`` once the evidence is written for a fatal libcob error that is
+no program behaviour (a module not found, with or without the source location)
+and for a page-zero shim ld.so did not preload; it must end an I/O condition
+on a file without FILE STATUS as an abend whose messages are the DISPLAY lines
+alone, and keep a business return code with libcob warnings. Under a work root
+whose path holds a space or a colon, ``LD_PRELOAD`` must name the shim from
+the working directory without either, and ``command.yaml`` show it under
+``<build>``; a shim whose path from there still holds one is refused unrun.
+
+Process-group scope: ``datasets.kill_all(within=...)`` must end only the
+process groups ``run_process`` started in that directory or below it, as real
+paths, and ``GnuCOBOLBatchAdapter.cleanup`` only those of the scenario's own
+working directory, never another scenario's, the work root's or one outside
+it, while the other programs run on to their own end; ``kill_all()`` and
+``close`` end every group.
 """
 
 from __future__ import annotations
@@ -33,9 +51,12 @@ import datetime
 import functools
 import os
 import shutil
+import signal
+import subprocess
 import sys
 import tempfile
 import threading
+import time
 from collections.abc import Iterator, Mapping
 from decimal import Decimal
 from pathlib import Path
@@ -48,6 +69,8 @@ if _TESTS_ROOT not in sys.path:
     sys.path.insert(0, _TESTS_ROOT)
 
 from adapters import base  # noqa: E402
+from adapters.gnucobol_batch import datasets, jobs  # noqa: E402
+from adapters.gnucobol_batch.adapter import GnuCOBOLBatchAdapter  # noqa: E402
 from adapters.unikix import evidence, tpe  # noqa: E402
 from harness import (  # noqa: E402
     HarnessError,
@@ -826,3 +849,436 @@ def test_evidence_writer_writes_a_conforming_record_that_reads_back_equal(
     fields = {name: written.get(name) for name in results.RECORD_FIELDS}
     assert fields == record
     assert results.record_problems(fields) == []
+
+
+# jobs.run_program cases: a scenario working directory and a build cache under
+# a work root of each case's own (launch_root); the units are /bin/sh scripts.
+LAUNCH_ROOT_PREFIX = "unit-launch-"
+LAUNCH_WORK_ROOT = "work"
+LAUNCH_SCENARIO = "SCN-LAUNCH"
+LAUNCH_BUILD_KEY = "0" * 64
+LAUNCH_DEADLINE_S = 60
+LAUNCH_DISPLAYS = (
+    "START OF EXECUTION OF PROGRAM CBACT01C",
+    "END OF EXECUTION OF PROGRAM CBACT01C",
+)
+
+# Runs that end in HarnessError: the unit, its stderr as libcob 3.2 or ld.so
+# writes it, how the script ends, what the error says, the stderr line the
+# evidence keeps, and command.yaml's ending.libcob_error. CBACT01C calls
+# CEE3ABD at line 173 [app/cbl/CBACT01C.cbl:173].
+LAUNCH_HARNESS_FAILURES = [
+    pytest.param(
+        "CBACT01C",
+        "libcob: error: module 'CEE3ABD' not found\n",
+        "exit 1",
+        "CBACT01C: libcob ended the run: libcob: error: module 'CEE3ABD' not found "
+        "(exit status 1; evidence evidence)",
+        "libcob: error: module 'CEE3ABD' not found",
+        "libcob: error: module 'CEE3ABD' not found",
+        id="module-not-found",
+    ),
+    pytest.param(
+        "CBACT01C",
+        "libcob: CBACT01C.cbl:173: error: module 'CEE3ABD' not found\n\n"
+        ' Last statement of "CBACT01C" was CALL at line 173 of CBACT01C.cbl\n',
+        "exit 1",
+        "CBACT01C: libcob ended the run: libcob: CBACT01C.cbl:173: error: module 'CEE3ABD' "
+        "not found (exit status 1; evidence evidence)",
+        "libcob: CBACT01C.cbl:173: error: module 'CEE3ABD' not found",
+        "libcob: CBACT01C.cbl:173: error: module 'CEE3ABD' not found",
+        id="module-not-found-with-location",
+    ),
+    # No shim is built, so ld.so itself reports the LD_PRELOAD object it cannot
+    # load; the script then dies on a signal, as CBSTM03A faults without it.
+    pytest.param(
+        "CBSTM03A",
+        "",
+        "kill -9 $$",
+        f"CBSTM03A: the page-zero shim was not preloaded: ERROR: ld.so: object "
+        f"'../_build/{LAUNCH_BUILD_KEY}/lib/psa_tiot_shim.so' from LD_PRELOAD cannot be "
+        f"preloaded",
+        "from LD_PRELOAD cannot be preloaded",
+        None,
+        id="shim-not-preloaded",
+    ),
+]
+
+# Work roots whose path holds a separator ld.so splits LD_PRELOAD at.
+LAUNCH_SEPARATOR_ROOTS = [
+    pytest.param("work root", id="space"),
+    pytest.param("work:root", id="colon"),
+]
+LAUNCH_CC_TIMEOUT_S = 120
+
+# Runs that end as the program ended: stderr ({workdir} is the working
+# directory), exit status, then return code, abended, and the libcob_error
+# command.yaml shows. CBACT01C's OPEN and its other file verbs check a FILE
+# STATUS, so the first case stands for a unit whose file declares none, as
+# CBSTM03A's STMTFILE and HTMLFILE do [app/cbl/CBSTM03A.CBL:39-40].
+LAUNCH_PROGRAM_ENDINGS = [
+    pytest.param(
+        "libcob: error: permanent file error (status = 30) for file ACCTFILE-FILE "
+        "('DD_ACCTFILE' => {workdir}/data/ACCTFILE)\n",
+        1,
+        None,
+        True,
+        "libcob: error: permanent file error (status = 30) for file ACCTFILE-FILE "
+        "('DD_ACCTFILE' => data/ACCTFILE)",
+        id="file-without-file-status-abends",
+    ),
+    pytest.param(
+        "libcob: warning: implicit CLOSE of ACCTFILE-FILE ('ACCTFILE')\n",
+        4,
+        4,
+        False,
+        None,
+        id="business-return-code-with-a-warning",
+    ),
+]
+
+
+@pytest.fixture
+def launch_root() -> Iterator[Path]:
+    """A fresh directory of this case's own inside the work root, never under
+    pytest's basetemp, given by its real path. A configured work root is
+    created when missing and kept; the directory is removed afterwards, with
+    the default root when this fixture made it."""
+    configured = os.environ.get(WORK_ROOT_ENV, "")
+    made = None if configured.strip() else Path(tempfile.mkdtemp(prefix=DEFAULT_WORK_ROOT_PREFIX))
+    try:
+        root = Path(configured) if made is None else made
+        root.mkdir(parents=True, exist_ok=True)
+        directory = Path(tempfile.mkdtemp(prefix=LAUNCH_ROOT_PREFIX, dir=root)).resolve()
+        try:
+            yield directory
+        finally:
+            shutil.rmtree(directory)
+    finally:
+        if made is not None:
+            shutil.rmtree(made)
+
+
+class _LaunchCache:
+    """The parts of a build cache ``jobs.run_program`` reads, laid out as
+    ``build.py`` lays them out under ``<work root>/_build/<key>/``. Each
+    unit's executable is a /bin/sh script that prints ``<unit>.stdout`` and
+    ``<unit>.stderr`` beside it, then runs its ending; no shim is built."""
+
+    clock_fraction_mode = "hundredths"
+    cobc_bin_dir = Path("/usr/bin")
+    lib_dirs: tuple[Path, ...] = ()
+
+    def __init__(self, work_root: Path) -> None:
+        self.dir = work_root / "_build" / LAUNCH_BUILD_KEY
+        self.module_dir = self.dir / "modules"
+        self.parmdrv = self.dir / "bin" / "PARMDRV"
+        self.dtcdrv = self.dir / "bin" / "DTCDRV"
+        self.shim = self.dir / "lib" / "psa_tiot_shim.so"
+
+    def executable(self, unit: str) -> Path:
+        return self.dir / "bin" / unit
+
+    def script(self, unit: str, stdout: str, stderr: str, ending: str) -> None:
+        path = self.executable(unit)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.with_name(f"{unit}.stdout").write_text(stdout, encoding="latin-1")
+        path.with_name(f"{unit}.stderr").write_text(stderr, encoding="latin-1")
+        path.write_text(f'#!/bin/sh\ncat "$0.stdout"\ncat "$0.stderr" >&2\n{ending}\n')
+        path.chmod(0o755)
+
+
+def _launch_case(launch_root: Path, work_root_name: str) -> tuple[_LaunchCache, Path]:
+    """The build cache and the scenario working directory of a work root
+    named ``work_root_name`` inside ``launch_root``."""
+    work_root = launch_root / work_root_name
+    workdir = work_root / LAUNCH_SCENARIO
+    workdir.mkdir(parents=True)
+    return _LaunchCache(work_root), workdir
+
+
+def _launch(cache: _LaunchCache, unit: str, workdir: Path) -> jobs.ProgramOutcome:
+    """Run ``unit`` with a path in ``<workdir>/data`` for every dd it and the
+    units it calls declare, none of which exists."""
+    config = jobs.unit_config(unit)
+    dd_paths = {
+        ddname: workdir / "data" / ddname
+        for ddname, _ in datasets.program_dds(config, jobs.called_configs(unit))
+    }
+    return jobs.run_program(
+        cache, unit, dd_paths, workdir=workdir, deadline=time.monotonic() + LAUNCH_DEADLINE_S
+    )
+
+
+def _command(workdir: Path) -> dict:
+    return load_yaml(workdir / jobs.EVIDENCE_SUBDIR / "command.yaml")
+
+
+@pytest.mark.parametrize(
+    ("unit", "stderr", "ending", "raised", "kept", "libcob_error"), LAUNCH_HARNESS_FAILURES
+)
+def test_run_program_raises_for_a_harness_failure_once_the_evidence_is_written(
+    launch_root: Path,
+    unit: str,
+    stderr: str,
+    ending: str,
+    raised: str,
+    kept: str,
+    libcob_error: str | None,
+) -> None:
+    cache, workdir = _launch_case(launch_root, LAUNCH_WORK_ROOT)
+    cache.script(unit, "".join(f"{line}\n" for line in LAUNCH_DISPLAYS), stderr, ending)
+    with pytest.raises(HarnessError) as failure:
+        _launch(cache, unit, workdir)
+    assert raised in str(failure.value)
+    evidence = workdir / jobs.EVIDENCE_SUBDIR
+    assert kept in (evidence / "stderr.txt").read_text(encoding="latin-1")
+    assert _command(workdir)["ending"]["libcob_error"] == libcob_error
+
+
+@pytest.mark.parametrize(
+    ("stderr", "status", "return_code", "abended", "libcob_error"), LAUNCH_PROGRAM_ENDINGS
+)
+def test_run_program_ends_a_run_as_the_program_ended(
+    launch_root: Path,
+    stderr: str,
+    status: int,
+    return_code: int | None,
+    abended: bool,
+    libcob_error: str | None,
+) -> None:
+    cache, workdir = _launch_case(launch_root, LAUNCH_WORK_ROOT)
+    displays = "".join(f"{line}\n" for line in LAUNCH_DISPLAYS)
+    cache.script("CBACT01C", displays, stderr.format(workdir=workdir), f"exit {status}")
+    outcome = _launch(cache, "CBACT01C", workdir)
+    assert (outcome.return_code, outcome.abended, outcome.signal) == (return_code, abended, None)
+    assert outcome.messages == outcome.displays == list(LAUNCH_DISPLAYS)
+    command = _command(workdir)
+    assert command["ending"] == {
+        "cee3abd_marker": False,
+        "libcob_error": libcob_error,
+        "returncode": status,
+        "signal": None,
+    }
+    assert "LD_PRELOAD" not in command["env"]
+
+
+def _build_empty_library(path: Path) -> None:
+    """An empty shared library at ``path``, which preloading leaves without
+    effect, built with ``cc`` as ``build.py`` builds the real shim."""
+    compiler = shutil.which("cc")
+    assert compiler is not None, "cc, which builds the stubs, is not on PATH"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    source = path.with_suffix(".c")
+    source.write_text("int carddemo_unit_preloaded;\n")
+    subprocess.run(
+        [compiler, "-shared", "-fPIC", "-o", os.fspath(path), os.fspath(source)],
+        check=True,
+        capture_output=True,
+        timeout=LAUNCH_CC_TIMEOUT_S,
+    )
+
+
+@pytest.mark.parametrize("work_root_name", LAUNCH_SEPARATOR_ROOTS)
+def test_run_program_preloads_the_shim_by_a_path_ld_so_keeps_whole(
+    launch_root: Path, work_root_name: str
+) -> None:
+    cache, workdir = _launch_case(launch_root, work_root_name)
+    _build_empty_library(cache.shim)
+    cache.script("CBSTM03A", "", "", 'printf "%s\\n" "$LD_PRELOAD"')
+    outcome = _launch(cache, "CBSTM03A", workdir)
+    assert (outcome.return_code, outcome.abended, outcome.stderr) == (0, False, b"")
+    [preload] = outcome.displays
+    assert "/" in preload and ":" not in preload and not any(c.isspace() for c in preload)
+    assert (workdir / preload).resolve() == cache.shim.resolve()
+    command = _command(workdir)
+    assert command["env"]["LD_PRELOAD"] == "<build>/lib/psa_tiot_shim.so"
+    text = (workdir / jobs.EVIDENCE_SUBDIR / "command.yaml").read_text()
+    assert os.fspath(launch_root) not in text
+
+
+@pytest.mark.parametrize("cache_root_name", LAUNCH_SEPARATOR_ROOTS)
+def test_run_program_refuses_a_shim_path_ld_so_would_split(
+    launch_root: Path, cache_root_name: str
+) -> None:
+    """A build cache outside the work root, on a path with a separator, leaves
+    one in the shim's path from the working directory: refused unrun."""
+    _, workdir = _launch_case(launch_root, LAUNCH_WORK_ROOT)
+    cache = _LaunchCache(launch_root / cache_root_name)
+    with pytest.raises(HarnessError, match="at which ld.so splits LD_PRELOAD"):
+        _launch(cache, "CBSTM03A", workdir)
+    assert not (workdir / jobs.EVIDENCE_SUBDIR).exists()
+
+
+PROCESS_SCOPE_ROOT_PREFIX = "unit-process-scope-"
+# The whole environment of the cases' shell groups; run_process adds HOME.
+PROCESS_SCOPE_ENV = {"PATH": "/usr/bin:/bin"}
+# Each group prints START, waits for a "release" file in its working
+# directory, then prints END and exits 0, so whether it ends by itself or is
+# killed never depends on timing.
+PROCESS_SCOPE_RELEASE = "release"
+PROCESS_SCOPE_SCRIPT = (
+    f"echo START; until [ -e {PROCESS_SCOPE_RELEASE} ]; do sleep 0.05; done; echo END"
+)
+PROCESS_SCOPE_DEADLINE_S = 30
+PROCESS_SCOPE_WAIT_S = 10  # bound of the wait for a registration and for a group's thread
+PROCESS_SCOPE_POLL_S = 0.01
+
+
+@pytest.fixture
+def process_scope_root() -> Iterator[Path]:
+    """A fresh directory of this case's own inside the work root, never under
+    pytest's basetemp, given by its real path. A configured work root is
+    created when missing and kept. Afterwards every process group still
+    registered is ended, and the directory is removed, with the default root
+    when this fixture made it."""
+    configured = os.environ.get(WORK_ROOT_ENV, "")
+    made = None if configured.strip() else Path(tempfile.mkdtemp(prefix=DEFAULT_WORK_ROOT_PREFIX))
+    try:
+        root = Path(configured) if made is None else made
+        root.mkdir(parents=True, exist_ok=True)
+        directory = Path(tempfile.mkdtemp(prefix=PROCESS_SCOPE_ROOT_PREFIX, dir=root)).resolve()
+        try:
+            yield directory
+        finally:
+            try:
+                datasets.kill_all()
+            finally:
+                shutil.rmtree(directory)
+    finally:
+        if made is not None:
+            shutil.rmtree(made)
+
+
+class _Group:
+    """A ``PROCESS_SCOPE_SCRIPT`` process group that ``datasets.run_process``
+    runs in ``cwd``, created when missing, on a thread of its own; ``outcome``
+    is its ``ProcessResult`` or what the run raised."""
+
+    def __init__(self, cwd: Path) -> None:
+        cwd.mkdir(parents=True, exist_ok=True)
+        self.cwd = Path(os.path.realpath(cwd))
+        self.outcome: datasets.ProcessResult | BaseException | None = None
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self) -> None:
+        try:
+            self.outcome = datasets.run_process(
+                ["/bin/sh", "-c", PROCESS_SCOPE_SCRIPT],
+                env=PROCESS_SCOPE_ENV,
+                cwd=self.cwd,
+                deadline=time.monotonic() + PROCESS_SCOPE_DEADLINE_S,
+            )
+        except BaseException as exc:
+            self.outcome = exc
+
+    @property
+    def running(self) -> bool:
+        return self._thread.is_alive()
+
+    def release(self) -> None:
+        (self.cwd / PROCESS_SCOPE_RELEASE).touch()
+
+    def result(self) -> datasets.ProcessResult:
+        self._thread.join(PROCESS_SCOPE_WAIT_S)
+        assert not self._thread.is_alive(), f"the group in {self.cwd} is still running"
+        assert isinstance(self.outcome, datasets.ProcessResult), self.outcome
+        return self.outcome
+
+
+def _registered_dirs() -> list[Path]:
+    """The working directory of every process group ``run_process`` holds
+    registered."""
+    with datasets._LIVE_LOCK:
+        return list(datasets._LIVE_CWD.values())
+
+
+def _await_registered(*groups: _Group) -> None:
+    until = time.monotonic() + PROCESS_SCOPE_WAIT_S
+    while not all(group.cwd in _registered_dirs() for group in groups):
+        if time.monotonic() >= until or not all(group.running for group in groups):
+            pytest.fail(
+                "process groups not registered: "
+                + "; ".join(f"{group.cwd}: {group.outcome!r}" for group in groups)
+            )
+        time.sleep(PROCESS_SCOPE_POLL_S)
+
+
+def _assert_killed(group: _Group) -> None:
+    outcome = group.result()
+    assert (outcome.returncode, outcome.signal) == (None, signal.SIGKILL), outcome
+    assert b"END" not in outcome.stdout
+
+
+def test_kill_all_within_a_directory_ends_only_the_groups_started_there(
+    process_scope_root: Path,
+) -> None:
+    scope = process_scope_root / "SCN-1"
+    ended = _Group(scope / "data")
+    kept = _Group(process_scope_root / "SCN-10")  # its path text begins with the scope's
+    above = _Group(process_scope_root)
+    link = process_scope_root / "link-to-SCN-1"
+    link.symlink_to(scope, target_is_directory=True)
+    _await_registered(ended, kept, above)
+    datasets.kill_all(within=link)
+    _assert_killed(ended)
+    assert kept.running and above.running
+    assert {kept.cwd, above.cwd} == set(_registered_dirs())
+    datasets.kill_all(within=scope)  # nothing of the scope is left: nothing happens
+    datasets.kill_all(within=process_scope_root / "SCN-2")  # never created
+    assert kept.running and above.running
+    kept.release()
+    finished = kept.result()
+    assert (finished.returncode, finished.signal, finished.stdout) == (0, None, b"START\nEND\n")
+    datasets.kill_all()
+    _assert_killed(above)
+    assert datasets._LIVE == {} and datasets._LIVE_CWD == {}
+
+
+def test_gnucobol_batch_cleanup_ends_only_its_own_scenarios_groups(
+    monkeypatch: pytest.MonkeyPatch, process_scope_root: Path
+) -> None:
+    work_root = process_scope_root / "work-root"
+    adapter = GnuCOBOLBatchAdapter(work_root=work_root)
+    own = [_Group(work_root / "SCN-B"), _Group(work_root / "SCN-B" / "data")]
+    prepared = _Group(work_root / "SCN-C")
+    others = [
+        _Group(work_root / "SCN-A"),  # another scenario's program
+        _Group(work_root),  # session work, as the page-zero probe runs
+        _Group(process_scope_root / "outside"),
+    ]
+    _await_registered(*own, prepared, *others)
+    # No scope of a scenario: the work root itself, a directory above it or
+    # outside it, a working directory never created, odd scenarios and odd
+    # working directories. None of these ends a group or raises.
+    for scenario, workdir in (
+        ({"id": "SCN-X"}, work_root),
+        ({"id": "SCN-X"}, process_scope_root),
+        ({"id": "SCN-X"}, process_scope_root / "outside"),
+        ({"id": "SCN-X"}, work_root / "SCN-X"),
+        ({"id": "SCN-X"}, "bad\0path"),
+        ({"id": 7}, 42),
+        (object(), None),
+    ):
+        adapter.cleanup(scenario, workdir)
+    monkeypatch.delenv(WORK_ROOT_ENV, raising=False)
+    rootless = GnuCOBOLBatchAdapter()
+    rootless.cleanup({"id": "SCN-B"}, work_root / "SCN-B")  # creates no work root either
+    assert rootless._work_root is None
+    assert all(group.running for group in (*own, prepared, *others))
+    adapter.cleanup({"id": "SCN-B"}, work_root / "SCN-B")
+    for group in own:
+        _assert_killed(group)
+    adapter.cleanup({"id": "SCN-B"}, work_root / "SCN-B")  # idempotent
+    # What prepare laid out names the scope, whatever directory cleanup gets.
+    adapter._states["SCN-C"] = SimpleNamespace(workdir=prepared.cwd)
+    adapter.cleanup(SimpleNamespace(id="SCN-C"), work_root)
+    _assert_killed(prepared)
+    assert "SCN-C" not in adapter._states
+    assert all(group.running for group in others)
+    assert {group.cwd for group in others} == set(_registered_dirs())
+    adapter.close()
+    for group in others:
+        _assert_killed(group)
+    assert datasets._LIVE == {} and datasets._LIVE_CWD == {}

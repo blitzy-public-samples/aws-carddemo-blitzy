@@ -680,11 +680,30 @@ class GnuCOBOLBatchAdapter(Adapter):
         if scenario_id is None and isinstance(scenario, Mapping):
             scenario_id = scenario.get("id")
         with self._lock:
-            if isinstance(scenario_id, str):
-                self._states.pop(scenario_id, None)
-        # Ends any process group still registered, a timed-out or interrupted
-        # program's included; with none it does nothing.
-        _datasets.kill_all()
+            state = self._states.pop(scenario_id, None) if isinstance(scenario_id, str) else None
+            work_root = self._work_root  # never the property, which would create a root
+        scope = state.workdir if state is not None else self._cleanup_scope(workdir, work_root)
+        # Ends the process groups still registered that were started in this
+        # scenario's working directory or below it, a timed-out or interrupted
+        # program's included. Another scenario's groups and the session's
+        # probe, run in the work root, are left running; close ends every
+        # group. Without a scope nothing of this scenario can have run.
+        if scope is not None:
+            _datasets.kill_all(within=scope)
+
+    @staticmethod
+    def _cleanup_scope(workdir: Any, work_root: Path | None) -> Path | None:
+        """``workdir`` resolved, when it lies strictly below the work root, as
+        every working directory ``prepare`` accepts does; ``None`` when no
+        work root exists yet, ``workdir`` is not a path or cannot be resolved,
+        or it is the work root itself or lies outside it."""
+        if work_root is None or not isinstance(workdir, (str, os.PathLike)):
+            return None
+        try:
+            root, base = Path(workdir).resolve(), work_root.resolve()
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return None
+        return root if base in root.parents else None
 
     def close(self) -> None:
         with self._lock:
