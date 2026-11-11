@@ -1,0 +1,276 @@
+# The README's "Running full batch" order [README.md:161-183], seventeen job
+# runs submitted in turn against one catalog: CLOSEFIL, ACCTFILE, CARDFILE,
+# XREFFILE, CUSTFILE, TRANBKP, DISCGRP, TCATBALF, TRANTYPE, DUSRSECJ,
+# POSTTRAN, INTCALC, TRANBKP, COMBTRAN, CREASTMT, TRANIDX, OPENFIL. TRANBKP runs
+# twice, first as "Creates Transaction database" and then as "Backup
+# Transaction database"; TRANFILE, TRANCATG, DEFGDGB and TRANREPT are not in
+# the order. The scenario is named after the run order because it runs no
+# single job.
+#
+# Only unikix can run it: CLOSEFIL and OPENFIL act on the CICS region, and the
+# gnucobol-batch job driver has no step table for them. The baseline is
+# therefore derived, never observed (GAP-INF-011): it is authored from the job
+# sources and from the gnucobol-batch observations of the same programs on the
+# same inputs (BAT-CHAIN-normal-01, BAT-POSTINT-normal-01). It pins the
+# behaviour of app/. The unikix adapter deploys the UniKix copy (GAP-MIS-008),
+# whose SDSF.cbl is a no-op (GAP-DOC-031), whose CBSTM03A writes no job, step
+# or DD list (GAP-DOC-020), and whose CREASTMT and COMBTRAN sort differently
+# (GAP-DOC-026, GAP-DOC-029). A UniKix run of this item is therefore reported
+# as UniKix-copy behaviour and never replaces the baseline.
+#
+# Preconditions. Each load job reads its sequential -PS dataset, so those are
+# the repository files, and POSTTRAN reads DALYTRAN. TRANSACT holds the
+# TRANSACT-INIT seed record, the load TRANFILE would have made before this
+# order runs [app/jcl/TRANFILE.jcl:67-74]: the first TRANBKP backs the loaded
+# cluster up to a new TRANSACT-BKUP generation, then deletes it and defines
+# it again empty [app/jcl/TRANBKP.jcl:23-67], so POSTTRAN loads the posted
+# transactions into an empty cluster. A cluster that was never loaded cannot
+# be opened by that REPRO, whose failure would let COND=(4,LT) skip the
+# DEFINE. DUSRSECJ builds USRSEC from its in-stream users, and no job here
+# reads TRANCATG. The unikix reset loads every other cluster empty, and each
+# load job deletes and redefines its own cluster anyway. The GDG bases come
+# from the catalog snapshot taken at deployment, since DEFGDGB is not in the
+# order.
+#
+# Return codes, derived from the JCL. Every IDCAMS DELETE is followed by IF
+# MAXCC LE 08 THEN SET MAXCC = 0 or SET MAXCC = 0, so a missing cluster or
+# alternate index leaves RC 0. DUSRSECJ STEP02 deletes USRSEC before it
+# defines it. TRANBKP STEP10's COND=(4,LT) is not met after STEP05R and
+# STEP05 end with 0. POSTTRAN STEP15 ends with 4 because CBTRN02C rejects 38
+# records [app/cbl/CBTRN02C.cbl:227-231], and every other step ends with 0, so
+# the run's return code is 4. Job runs write no line of their own, so each
+# job's return code is the highest of its STEP lines.
+#
+# Region files. CLOSEFIL closes TRANSACT, CCXREF, ACCTDAT, CXACAIX and USRSEC
+# and OPENFIL opens them again [app/jcl/CLOSEFIL.jcl:22-28]
+# [app/jcl/OPENFIL.jcl:22-30]. CARDFILE and CUSTFILE close and reopen
+# CARDDAT, CARDAIX and CUSTDAT around their loads. The harness observes
+# @REGION-FILES only at the end of the run, because stage observations hold
+# datasets only, so the state between CLOSEFIL and OPENFIL is not asserted.
+# The adapter keeps the state before the jobs as evidence only. At the end
+# all 14 region files are open and enabled, both when the CEMT commands run
+# (app/: an explicit open enables again a file the close left unenabled, the
+# state CFG-CLOSEFIL-normal-01 asserts) and when SDSF.cbl does nothing (the
+# UniKix copy). Region state is
+# never read from job return codes. No UniKix command that inquires the
+# region files is confirmed, so the scenario stays blocked under GAP-MIS-011.
+#
+# End state. No job after INTCALC writes ACCTDATA, and TRANIDX only adds the
+# alternate index to the TRANSACT that COMBTRAN loaded. ACCTDATA and TRANSACT
+# at the end are therefore the states INTCALC and COMBTRAN leave. The
+# statements are those CREASTMT writes. Every interest lookup falls back to
+# the DEFAULT disclosure group (GAP-DEF-005). Accounts 1 to 49 carry their
+# postings and interest with zero cycle totals; account 50 keeps POSTTRAN's
+# balance and cycle totals, because INTCALC's end-of-file rewrite is
+# unreachable (GAP-DEF-003). Which purchases are rejected follows the
+# accumulating over-limit test (GAP-UNC-011), interest is truncated
+# (GAP-UNC-008), and the interest descriptions end in never-initialized
+# working storage (GAP-UNC-009). Each is pinned as derived, never fixed. The
+# derived baseline holds every value; the inline values below are the
+# outcomes that state the run.
+#
+# unikix cannot fix its clock (GAP-MIS-015), so clock_mode is relative and
+# the timestamps POSTTRAN and INTCALC take from the run clock are
+# run-timestamp matchers.
+id: BAT-RUNORDER-normal-01
+level: integration
+type: normal
+description: >-
+  The README full batch order from CLOSEFIL to OPENFIL, run on unikix against
+  one catalog on the repository fixtures, with TRANSACT holding the
+  TRANSACT-INIT seed. Every step ends with return code 0 except POSTTRAN
+  STEP15, which ends with 4 after rejecting 38 of 300 daily transactions. At
+  the end the 14 region files are open and enabled, ACCTDATA holds the
+  postings and interest of accounts 1 to 49 and the postings alone of
+  account 50, TRANSACT holds the 262 posted and 50 interest transactions, and
+  the statements cover all 50 cards.
+inventory_ids:
+- INV-BAT-002  # BAT README full batch run order CLOSEFIL to OPENFIL (job)
+tags:
+- inferred-not-observed
+- suspected-defect
+- observed-only
+gap_ids:
+- GAP-INF-011  # the JCL-semantics and README run-order baselines are derived, never observed
+- GAP-MIS-011  # no confirmed UniKix region file control or inquiry, so @REGION-FILES is unavailable
+- GAP-MIS-006  # BPE job submission, completion and step return codes unconfirmed
+- GAP-MIS-007  # UniKix dataset load, unload and catalog listing unconfirmed
+- GAP-MIS-008  # app/ is not built on UniKix; the adapter deploys the UniKix copy
+- GAP-DOC-009  # README and tech spec call CLOSEFIL/OPENFIL IEFBR14 jobs; they run SDSF CEMT steps
+- GAP-DOC-015  # the README runs TRANBKP between INTCALC and COMBTRAN
+- GAP-DOC-020  # the UniKix CBSTM03A shows no job, step or DD list
+- GAP-DOC-026  # the UniKix CREASTMT sort pads TRXFL differently
+- GAP-DOC-029  # the UniKix COMBTRAN gives TRANSACT-COMBINED other attributes
+- GAP-DOC-031  # the UniKix SDSF.cbl is a no-op, so no CEMT SET FIL is performed
+- GAP-DEF-003  # INTCALC never rewrites the last account
+- GAP-DEF-005  # ACCT-GROUP-ID is blank, so every DISCGRP lookup falls back to DEFAULT
+- GAP-UNC-011  # the over-limit test accumulates the cycle totals through the run
+- GAP-UNC-008  # interest is truncated, not rounded
+- GAP-UNC-009  # the never-initialized fill after 'Int. for a/c <account>'
+preconditions:
+  datasets:
+    ACCTDATA-PS: {base: ACCTDATA-PS}
+    CARDDATA-PS: {base: CARDDATA-PS}
+    CARDXREF-PS: {base: CARDXREF-PS}
+    CUSTDATA-PS: {base: CUSTDATA-PS}
+    DISCGRP-PS: {base: DISCGRP-PS}
+    TCATBALF-PS: {base: TCATBALF-PS}
+    TRANTYPE-PS: {base: TRANTYPE-PS}
+    DALYTRAN: {base: DALYTRAN}
+    TRANSACT: {base: TRANSACT-INIT}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  job: [CLOSEFIL, ACCTFILE, CARDFILE, XREFFILE, CUSTFILE, TRANBKP, DISCGRP, TCATBALF, TRANTYPE, DUSRSECJ,
+        POSTTRAN, INTCALC, TRANBKP, COMBTRAN, CREASTMT, TRANIDX, OPENFIL]
+expected:
+  # The highest step return code of the run: POSTTRAN STEP15's 4.
+  return_code: 4
+  # An ordered subsequence: every STEP line in run order, with each job's
+  # steps in JCL order as tests/adapters/unikix/resources.yaml names them, and
+  # the DISPLAY lines of CBTRN02C and CBACT04C that frame and count their run.
+  # The derived baseline holds the complete list, CBTRN02C's TCATBAL creation
+  # lines, CBACT04C's display of each category balance and its 100 DEFAULT
+  # group fallbacks, and CBSTM03A's job, step and DD list included.
+  messages:
+  # CLOSEFIL
+  - 'STEP CLCIFIL RC 0000'
+  # ACCTFILE
+  - 'STEP STEP05 RC 0000'
+  - 'STEP STEP10 RC 0000'
+  - 'STEP STEP15 RC 0000'
+  # CARDFILE
+  - 'STEP CLCIFIL RC 0000'
+  - 'STEP STEP05 RC 0000'
+  - 'STEP STEP10 RC 0000'
+  - 'STEP STEP15 RC 0000'
+  - 'STEP STEP40 RC 0000'
+  - 'STEP STEP50 RC 0000'
+  - 'STEP STEP60 RC 0000'
+  - 'STEP OPCIFIL RC 0000'
+  # XREFFILE
+  - 'STEP STEP05 RC 0000'
+  - 'STEP STEP10 RC 0000'
+  - 'STEP STEP15 RC 0000'
+  - 'STEP STEP20 RC 0000'
+  - 'STEP STEP25 RC 0000'
+  - 'STEP STEP30 RC 0000'
+  # CUSTFILE
+  - 'STEP CLCIFIL RC 0000'
+  - 'STEP STEP05 RC 0000'
+  - 'STEP STEP10 RC 0000'
+  - 'STEP STEP15 RC 0000'
+  - 'STEP OPCIFIL RC 0000'
+  # TRANBKP, first run: backs up the TRANSACT-INIT record and redefines TRANSACT
+  - 'STEP STEP05R.PRC001 RC 0000'
+  - 'STEP STEP05 RC 0000'
+  - 'STEP STEP10 RC 0000'
+  # DISCGRP
+  - 'STEP STEP05 RC 0000'
+  - 'STEP STEP10 RC 0000'
+  - 'STEP STEP15 RC 0000'
+  # TCATBALF
+  - 'STEP STEP05 RC 0000'
+  - 'STEP STEP10 RC 0000'
+  - 'STEP STEP15 RC 0000'
+  # TRANTYPE
+  - 'STEP STEP05 RC 0000'
+  - 'STEP STEP10 RC 0000'
+  - 'STEP STEP15 RC 0000'
+  # DUSRSECJ
+  - 'STEP PREDEL RC 0000'
+  - 'STEP STEP01 RC 0000'
+  - 'STEP STEP02 RC 0000'
+  - 'STEP STEP03 RC 0000'
+  # POSTTRAN
+  - 'STEP STEP15 RC 0004'
+  - 'START OF EXECUTION OF PROGRAM CBTRN02C'
+  - 'TRANSACTIONS PROCESSED :000000300'
+  - 'TRANSACTIONS REJECTED  :000000038'
+  - 'END OF EXECUTION OF PROGRAM CBTRN02C'
+  # INTCALC
+  - 'STEP STEP15 RC 0000'
+  - 'START OF EXECUTION OF PROGRAM CBACT04C'
+  - 'END OF EXECUTION OF PROGRAM CBACT04C'
+  # TRANBKP, second run: backs up the 262 posted records and redefines TRANSACT
+  - 'STEP STEP05R.PRC001 RC 0000'
+  - 'STEP STEP05 RC 0000'
+  - 'STEP STEP10 RC 0000'
+  # COMBTRAN
+  - 'STEP STEP05R RC 0000'
+  - 'STEP STEP10 RC 0000'
+  # CREASTMT
+  - 'STEP DELDEF01 RC 0000'
+  - 'STEP STEP010 RC 0000'
+  - 'STEP STEP020 RC 0000'
+  - 'STEP STEP030 RC 0000'
+  - 'STEP STEP040 RC 0000'
+  # TRANIDX
+  - 'STEP STEP20 RC 0000'
+  - 'STEP STEP25 RC 0000'
+  - 'STEP STEP30 RC 0000'
+  # OPENFIL
+  - 'STEP OPCIFIL RC 0000'
+  file_state:
+    # The region file inquiry after OPENFIL: the 14 fct.lst files, one line
+    # each, '<name> open|closed enabled|disabled', sorted by name
+    # (adapters.base.format_region_files).
+    '@REGION-FILES':
+      records:
+      - 'ACCTDAT open enabled'
+      - 'CARDAIX open enabled'
+      - 'CARDDAT open enabled'
+      - 'CCXREF open enabled'
+      - 'CUSTDAT open enabled'
+      - 'CXACAIX open enabled'
+      - 'DISCGRP open enabled'
+      - 'TCATBALF open enabled'
+      - 'TRANCATG open enabled'
+      - 'TRANSACT open enabled'
+      - 'TRANSAIX open enabled'
+      - 'TRANTYPE open enabled'
+      - 'TRXFL open enabled'
+      - 'USRSEC open enabled'
+    # The 50 accounts as INTCALC leaves them, in key order: account 1 with its
+    # postings and interest and zeroed cycle totals, account 50 with its
+    # postings and POSTTRAN's cycle totals (GAP-DEF-003).
+    ACCTDATA:
+      count: 50
+      contains:
+      - {ACCT-ID: '1', ACCT-CURR-BAL: '1302.66', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '50', ACCT-CURR-BAL: '1945.87', ACCT-CURR-CYC-CREDIT: '1501.75', ACCT-CURR-CYC-DEBIT: '-47.88'}
+  datasets:
+    # COMBTRAN's load in TRAN-ID order: the 262 posted records, the first and
+    # last of them inline, then the 50 interest records, the first and last
+    # of them inline. The TRANSACT-INIT record is gone: the first TRANBKP
+    # backed it up and redefined the cluster. POSTTRAN stamps TRAN-PROC-TS
+    # from the run clock [app/cbl/CBTRN02C.cbl:438], and INTCALC both
+    # timestamps [app/cbl/CBACT04C.cbl:496-498].
+    TRANSACT:
+      count: 312
+      contains:
+      - {TRAN-ID: '0000000000683580', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '1', TRAN-SOURCE: 'POS TERM  ', TRAN-CARD-NUM: '4859452612877065', TRAN-AMT: '504.77', TRAN-PROC-TS: {match: run-timestamp}}
+      - {TRAN-ID: '0000000996722787', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '1', TRAN-SOURCE: 'POS TERM  ', TRAN-CARD-NUM: '3260763612337560', TRAN-AMT: '603.22', TRAN-PROC-TS: {match: run-timestamp}}
+      - {TRAN-ID: '2022071800000001', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '9680294154603697', TRAN-AMT: '14.56', TRAN-ORIG-TS: {match: run-timestamp}, TRAN-PROC-TS: {match: run-timestamp}}
+      - {TRAN-ID: '2022071800000050', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '0500024453765740', TRAN-AMT: '18.77', TRAN-ORIG-TS: {match: run-timestamp}, TRAN-PROC-TS: {match: run-timestamp}}
+    # One text statement per card, 19 lines plus one per transaction. The
+    # first, for card 0500024453765740 and account 00000000050, shows the
+    # balance without interest (GAP-DEF-003) and a total that includes it.
+    STMTFILE:
+      count: 1262
+      contains:
+      - '*******************************START OF STATEMENT*******************************'
+      - 'Account ID         :00000000050                                                 '
+      - 'Current Balance    :000001945.87                                                '
+      - 'Total EXP:                                                        $     1472.64 '
+      - '********************************END OF STATEMENT********************************'
+    # One HTML statement per card, 64 lines plus 11 per transaction: the
+    # first statement's heading, account, balance and interest row.
+    HTMLFILE:
+      count: 6632
+      contains:
+      - '<h3>Statement for Account Number: 00000000050         </h3>                                         '
+      - '<p>Account ID         : 00000000050         </p>                                                    '
+      - '<p>Current Balance    : 000001945.87 </p>                                                           '
+      - '<p>2022071800000050</p>                                                                             '
