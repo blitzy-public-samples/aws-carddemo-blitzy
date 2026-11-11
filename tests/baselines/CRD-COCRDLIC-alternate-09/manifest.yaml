@@ -1,0 +1,34 @@
+# Manifest of the derived baseline of CRD-COCRDLIC-alternate-09: CCLI entered
+# directly, with no COMMAREA and no sign-on, starts COCRDLIC's own COCRDLI card
+# list, and ENTER on it resends page 1 (GAP-UNC-010). Only unikix can run the
+# scenario, so expected.yaml was authored from the source, not captured
+# (inferred-not-observed). It names no execution_id or execution_fingerprint
+# and holds no datasets/ until an eligible UniKix run is imported with
+# report.py --import-unikix (GAP-INF-006, GAP-INF-012).
+#
+# source_identity.units are COCRDLIC's COPY closure, as
+# harness.inventory_tools.copy_closure resolves it (the symbolic map COCRDLI
+# included), plus the BMS source of its map COCRDLI. No other program runs:
+# both tasks of the step are COCRDLIC's. CSMSG02Y is not a unit because its
+# COPY is commented out [app/cbl/COCRDLIC.cbl:283]; DFHAID and DFHBMSCA are
+# CICS-supplied and not in the repository. source_commit is HEAD at authoring;
+# app/ is byte-identical to the suite's starting commit.
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: derived
+source_commit: 6fb7b1d668ffe1aaf040c8a9acc75e0e001bb6a3
+source_identity:
+  commit: 6fb7b1d668ffe1aaf040c8a9acc75e0e001bb6a3
+  tree: app
+  units:
+    app/bms/COCRDLI.bms: b73a1ebb2ec327db220a4df272a6766ddd809ebf0db378dcc9a3c83ec2506343
+    app/cbl/COCRDLIC.cbl: d6a9210ad3062bd657881fc3f0d2a7368db3ff4869594e0d6a878d8f410d87b6
+    app/cpy-bms/COCRDLI.CPY: f5029dc12e672443e8fa33b764f60bf7db2e7ecfbc57d733289d70b382d995af
+    app/cpy/COCOM01Y.cpy: 77097557ee4c365f62138328d3e280ce7aba5f81d418c6f16434f0fbb2aafa6c
+    app/cpy/COTTL01Y.cpy: 5032bfa9428354bb4a62e8c82ba1efa7dcf6b80f27544ad99a81c8a8df8ed41b
+    app/cpy/CSDAT01Y.cpy: 61dd7b01d974c13cd47f71774c613dd67996418a22fae730d09b246c0b710ad7
+    app/cpy/CSMSG01Y.cpy: ef8ce44572885d63e46a02516f992cabbbc57ea94235000fd376325750e26eda
+    app/cpy/CSSTRPFY.cpy: 751bc1a625114a8660ee2172b70cdea135c259652d2305a2bfda25ff4cf34853
+    app/cpy/CSUSR01Y.cpy: 37c34094dc4124bc6255e0b06a0387442f4f0dd9d51dd6623b559d370aa0d2cb
+    app/cpy/CVACT02Y.cpy: 9f1c62ef31b9d541712f1ed28f79e011ea7338611f5e0f30f2e1cbf624181223
+    app/cpy/CVCRD01Y.cpy: 52b6dbe09f7648f3fdbd7c00f4683d434fe6b631f6c8854466a24f42c1c92445
