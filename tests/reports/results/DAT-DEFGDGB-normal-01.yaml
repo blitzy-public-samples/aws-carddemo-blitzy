@@ -1,0 +1,27 @@
+adapter: gnucobol-batch
+baseline_version: 1.0.0
+decoded:
+  file_state:
+    '@CATALOG':
+    - AWS.M2.CARDDEMO.SYSTRAN GDG -
+    - AWS.M2.CARDDEMO.TCATBALF.BKUP GDG -
+    - AWS.M2.CARDDEMO.TRANREPT GDG -
+    - AWS.M2.CARDDEMO.TRANSACT.BKUP GDG -
+    - AWS.M2.CARDDEMO.TRANSACT.COMBINED GDG -
+    - AWS.M2.CARDDEMO.TRANSACT.DALY GDG -
+  messages:
+  - STEP STEP05 RC 0000
+  return_code: 0
+evidence_path: tests/reports/results/DAT-DEFGDGB-normal-01.yaml
+execution_fingerprint: ba681f2caf1a95920947ac16899aad5ba8d23daf7941c1fdfe8528c8c7c54056
+execution_id: gnucobol-batch-53b4c488f03d9932
+gap_id: null
+reason: null
+scenario_digest: f400c60f371d5b42d6bd95cda82a669b95e46a2bf7bfaf28363217e701e9eca3
+scenario_id: DAT-DEFGDGB-normal-01
+source_identity:
+  commit: b9ac7e7dcb059d7691ba5147bc3b18a17666a4a5
+  tree: app
+  units:
+    app/jcl/DEFGDGB.jcl: 4e515d5e5fa999382ff2852897ec21a14ff707133fef2e2246976aac789285c0
+status: passed
