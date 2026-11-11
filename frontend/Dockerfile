@@ -92,10 +92,10 @@ ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
 # Opt out of Next.js anonymous telemetry during the image build.
 ENV NEXT_TELEMETRY_DISABLED=1
 
-# Guarantee a public/ directory exists so the runner's COPY of it never fails,
-# even though this greenfield frontend currently ships no static assets. The
-# build then emits .next/standalone and .next/static because next.config.js sets
-# output:'standalone'.
+# Guarantee a public/ directory exists so the runner's COPY of it never fails;
+# it is normally already present from COPY above, holding the static brand logo
+# (public/blitzy-logo.svg). The build then emits .next/standalone and
+# .next/static because next.config.js sets output:'standalone'.
 RUN mkdir -p public \
     && npm run build
 

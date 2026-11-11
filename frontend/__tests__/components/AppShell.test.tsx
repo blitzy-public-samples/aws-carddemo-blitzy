@@ -198,7 +198,7 @@ describe('AppShell', () => {
         // MUI `AppBar` renders a `<header>` whose implicit landmark role is
         // `banner`; the brand text comes from `app/cpy/COTTL01Y.cpy`.
         expect(screen.getByRole('banner')).toBeInTheDocument();
-        expect(screen.getByText('CardDemo')).toBeInTheDocument();
+        expect(screen.getByText('Blitzy')).toBeInTheDocument();
     });
 
     it('renders the navigation drawer with the regular-user items', () => {
@@ -369,7 +369,7 @@ describe('AppShell', () => {
         expect(screen.getByText('Signon Page')).toBeInTheDocument();
         // No AppBar, no brand, and no navigation are rendered on the signon page.
         expect(screen.queryByRole('banner')).not.toBeInTheDocument();
-        expect(screen.queryByText('CardDemo')).not.toBeInTheDocument();
+        expect(screen.queryByText('Blitzy')).not.toBeInTheDocument();
         expect(screen.queryByRole('link', { name: 'Menu' })).not.toBeInTheDocument();
     });
 

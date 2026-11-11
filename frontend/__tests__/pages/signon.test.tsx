@@ -161,7 +161,7 @@ describe('SignonPage', () => {
         // single, correct document title anchor (QA N-01, "H1 hierarchy").
         const headings = screen.getAllByRole('heading', { level: 1 });
         expect(headings).toHaveLength(1);
-        expect(headings[0]).toHaveTextContent(/card\s*demo sign on/i);
+        expect(headings[0]).toHaveTextContent(/blitzy sign on/i);
 
         // Identity fields carry the semantic autocomplete tokens so browsers and
         // password managers offer the right credentials (QA N-01, "autocomplete").

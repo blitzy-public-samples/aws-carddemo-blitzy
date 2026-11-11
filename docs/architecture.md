@@ -203,7 +203,8 @@ The frontend is organized as follows:
 
 - `src/app/` — the root `layout.tsx`, the MUI `theme.ts`, and one `page.tsx`
   per route (17 pages).
-- `src/components/` — shared building blocks: `AppShell`, `DataTable`,
+- `src/components/` — shared building blocks: `AppShell`, `BrandLogo` (the
+  Blitzy logo shown in the header and on the signon page), `DataTable`,
   `FormField`, `ConfirmDialog`, and `ErrorAlert`.
 - `src/lib/` — `apiClient.ts` (the axios instance with an auth interceptor) and
   `auth.ts` (client-side auth helpers).

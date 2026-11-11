@@ -31,6 +31,7 @@ import Typography from '@mui/material/Typography';
 import CircularProgress from '@mui/material/CircularProgress';
 import { visuallyHidden } from '@mui/utils';
 
+import { BrandLogo } from '@/components/BrandLogo';
 import { FormField } from '@/components/FormField';
 import { ErrorAlert } from '@/components/ErrorAlert';
 import { Login } from '@/lib/auth';
@@ -79,7 +80,7 @@ const ADMIN_USER_TYPE = 'A';
 /* ------------------------------------------------------------------------- */
 
 /**
- * Renders the centered CardDemo signon form and drives the login flow.
+ * Renders the centered Blitzy signon form and drives the login flow.
  *
  * Behavior (ported 1:1 from COSGN00C): required-field validation runs User ID
  * first then Password with the verbatim legacy messages; a valid submit calls
@@ -209,8 +210,11 @@ export default function SignonPage() {
                     <CardContent>
                         <Box component="form" onSubmit={HandleSubmit} noValidate>
                             <Stack spacing={3}>
+                                <Box sx={{ display: 'flex', justifyContent: 'center' }}>
+                                    <BrandLogo placement="signon" />
+                                </Box>
                                 <Typography variant="h5" component="h1" align="center">
-                                    CardDemo Sign On
+                                    Blitzy Sign On
                                 </Typography>
                                 <FormField
                                     name="userId"

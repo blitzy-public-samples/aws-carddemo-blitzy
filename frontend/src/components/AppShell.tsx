@@ -13,7 +13,8 @@
  *   - `COADM01C` / map `app/cpy-bms/COADM01.CPY` — the admin menu; its options live
  *     in `app/cpy/COADM02Y.cpy` (User List/Add/Update/Delete = `COUSR00C`–`COUSR03C`)
  *     and collapse into the two `adminOnly` entries (Admin, Users).
- * The header title text corresponds to `app/cpy/COTTL01Y.cpy` ('CardDemo').
+ * The header brand is the Blitzy logo (`BrandLogo`) followed by the Blitzy brand
+ * name ('Blitzy').
  *
  * TRACEABILITY — identity / role (COMMAREA → stateless auth, AAP §0.5.5): on the
  * mainframe the signed-on user id and role (`CDEMO-USER-ID`, `CDEMO-USER-TYPE`
@@ -58,6 +59,7 @@ import {
     Divider,
     IconButton,
     Button,
+    Stack,
 } from '@mui/material';
 import {
     Dashboard,
@@ -77,6 +79,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
 
 import { GetCurrentUser, IsAdmin, Logout } from '@/lib/auth';
+import { BrandLogo } from '@/components/BrandLogo';
 import { ErrorAlert } from '@/components/ErrorAlert';
 import type { CurrentUser } from '@/types';
 
@@ -93,8 +96,8 @@ import type { CurrentUser } from '@/types';
  * layout literal is hardcoded here.
  */
 
-/** Header title shown in the AppBar. Source: `app/cpy/COTTL01Y.cpy`. */
-const APP_TITLE = 'CardDemo';
+/** Header title shown in the AppBar, right of the logo: the Blitzy brand name. */
+const APP_TITLE = 'Blitzy';
 
 /**
  * The pre-authentication signon route (`COSGN00`, CICS tx CC00). The shell is
@@ -702,9 +705,18 @@ export function AppShell(props: AppShellProps) {
                         onClick={() => HandleNavigate(HOME_ROUTE)}
                         sx={{ textTransform: 'none' }}
                     >
-                        <Typography variant="h6" component="span">
-                            {APP_TITLE}
-                        </Typography>
+                        {/* A `span` row keeps the button's content phrasing-only. */}
+                        <Stack
+                            component="span"
+                            direction="row"
+                            spacing={1}
+                            sx={{ alignItems: 'center' }}
+                        >
+                            <BrandLogo placement="header" />
+                            <Typography variant="h6" component="span">
+                                {APP_TITLE}
+                            </Typography>
+                        </Stack>
                     </Button>
                     <Box sx={{ flexGrow: 1 }} />
                     {currentUser ? (
