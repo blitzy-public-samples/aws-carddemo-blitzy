@@ -19,6 +19,8 @@
 # It needs no credentials and is run with no secrets in its environment, because it
 # installs and renders from repository content, which in a CI pull-request stage is
 # the pull request's own content.
+# TMPDIR, or /tmp when it is unset or empty, must name an existing directory outside
+# the repository. It is checked before any setup step, and the run stops there when not.
 # Chrome, started by mmdc in check-diagrams, aborts with "Socket path too long" under
 # a long TMPDIR, so run with a short TMPDIR (the default /tmp is fine).
 #
@@ -81,6 +83,40 @@ readonly -a CHECKS=(
   check-dependency-order
   check-reachability
 )
+
+# The temporary directory is checked before any other setup step, because mktemp,
+# npm's compile cache, puppeteer and mmdc all write into it, and one inside the
+# checkout would leave untracked files there. It is mktemp's choice, TMPDIR or /tmp,
+# with a relative TMPDIR taken from the repository root, and its physical path must
+# lie outside the physical repository root (both paths end in / for the comparison,
+# so a sibling such as <root>x is not inside <root>). A missing directory or one
+# inside the repository stops the run before anything is written. The checked
+# directory is exported as TMPDIR in its absolute spelling, not its physical path,
+# so a short symlinked path stays short for Chrome's socket path limit, and no tool
+# falls back to TMP or TEMP or resolves a relative TMPDIR from its own directory.
+# A spelling with a . or .. component is exported as its physical path instead,
+# because Node joins paths lexically: it reads <link>/.. as the directory that holds
+# the link, where the kernel reads it as the parent of the link's target, so npm's
+# compile cache could land inside the checkout although the check above passed.
+echo "== setup: temporary directory =="
+tmp_dir="${TMPDIR:-/tmp}"
+if [[ "$tmp_dir" != /* ]]; then
+  tmp_dir="${ROOT%/}/${tmp_dir}"
+fi
+if ! tmp_dir_physical="$(cd -P -- "$tmp_dir" 2>/dev/null && pwd -P)" || [[ -z "$tmp_dir_physical" ]]; then
+  echo "run-all: TMPDIR does not name an existing directory; set it to a directory outside the repository" >&2
+  echo "FAIL setup: temporary directory"
+  exit 1
+fi
+if [[ "${tmp_dir_physical}/" == "${ROOT%/}/"* ]]; then
+  echo "run-all: TMPDIR resolves inside the repository; set it to a directory outside it" >&2
+  echo "FAIL setup: temporary directory"
+  exit 1
+fi
+if [[ "/${tmp_dir}/" == *"/./"* || "/${tmp_dir}/" == *"/../"* ]]; then
+  tmp_dir="$tmp_dir_physical"
+fi
+export TMPDIR="$tmp_dir"
 
 if ! tmp="$(mktemp)"; then
   echo "run-all: cannot create a temporary file" >&2
@@ -293,10 +329,10 @@ fi
 # puppeteer loads a configuration file as code from its working directory and every
 # directory above it: run inside the repository, it would run any .puppeteerrc.cjs or
 # puppeteer.config.js the repository holds, and take its cache directory and download
-# host from it. The directory is verified to be outside the repository before the CLI
-# starts; a TMPDIR that resolves inside it fails this step and starts no CLI. This is
-# the only setup step that needs the browser download host, and only while that build
-# is not yet in the cache.
+# host from it. The directory itself is verified to be outside the repository before
+# the CLI starts, and one that resolves inside it fails this step and starts no CLI.
+# This is the only setup step that needs the browser download host, and only while
+# that build is not yet in the cache.
 echo "== setup: chrome-headless-shell install =="
 if ! (
   cd tests/validation || exit 1
