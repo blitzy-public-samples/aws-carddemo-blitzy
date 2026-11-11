@@ -83,7 +83,7 @@ gap_ids:
 - GAP-UNC-008  # interest is truncated, not rounded
 - GAP-UNC-009  # the x'00' after 'Int. for a/c <account>'
 - GAP-STB-004  # PARMDRV in place of the z/OS EXEC PARM linkage
-- GAP-STB-007  # DISP=(NEW,CATLG,DELETE) of DALYREJS(+1) and SYSTRAN(+1) recorded, not evaluated
+- GAP-STB-007  # normal-end CATLG of DALYREJS(+1) and SYSTRAN(+1) applied; their abnormal-termination DELETE recorded, not evaluated
 - GAP-STB-009  # the catalog and GDG emulation behind DALYREJS(+1) and SYSTRAN(+1)
 - GAP-STB-010  # Berkeley DB indexed files; OPEN OUTPUT recreates TRANSACT
 - GAP-STB-011  # GnuCOBOL compile and runtime options; the x'00' description fill

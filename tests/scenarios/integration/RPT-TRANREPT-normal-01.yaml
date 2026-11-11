@@ -61,7 +61,7 @@ gap_ids:
 - GAP-MIS-001  # no job or data file creates DATEPARM, so it is a parameter here
 - GAP-STB-005  # IDCAMS REPRO replacement for the REPROC step
 - GAP-STB-006  # SORT replacement for the INCLUDE window and the card sort
-- GAP-STB-007  # DISP recorded, not evaluated, on the NEW,CATLG,DELETE outputs
+- GAP-STB-007  # normal-end CATLG of TRANSACT.BKUP(+1), TRANSACT.DALY(+1) and TRANREPT(+1) applied; abnormal-termination DELETE recorded, not evaluated
 - GAP-STB-009  # catalog and GDG emulation for the (+1) generations
 - GAP-STB-010  # Berkeley DB indexed files in place of the VSAM KSDS
 - GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE

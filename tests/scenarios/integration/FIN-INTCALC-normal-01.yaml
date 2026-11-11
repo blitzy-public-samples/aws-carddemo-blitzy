@@ -62,7 +62,7 @@ gap_ids:
 - GAP-UNC-008  # interest truncated, no ROUNDED
 - GAP-UNC-009  # TRAN-DESC filled from uninitialized working storage
 - GAP-STB-004  # PARMDRV in place of the z/OS EXEC PARM linkage
-- GAP-STB-007  # DISP=(NEW,CATLG,DELETE) of the new SYSTRAN generation recorded, not evaluated
+- GAP-STB-007  # normal-end CATLG of the new SYSTRAN generation applied; its abnormal-termination DELETE recorded, not evaluated
 - GAP-STB-009  # catalog and GDG emulation: the new SYSTRAN generation
 - GAP-STB-010  # Berkeley DB indexed files in place of the VSAM KSDS
 - GAP-STB-011  # GnuCOBOL compile and runtime options; the x'00' description fill

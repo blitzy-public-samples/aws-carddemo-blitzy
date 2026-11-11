@@ -33,7 +33,7 @@ tags: []
 gap_ids:
 - GAP-STB-005  # IDCAMS REPRO emulated on gnucobol-batch
 - GAP-STB-006  # SORT emulated on gnucobol-batch (DFSORT subset, ASCII collating sequence)
-- GAP-STB-007  # DISP=(NEW,CATLG,DELETE) of the new TRANSACT-COMBINED generation recorded, not evaluated
+- GAP-STB-007  # normal-end CATLG of the new TRANSACT-COMBINED generation applied; its abnormal-termination DELETE recorded, not evaluated
 - GAP-STB-009  # GDG generations and cataloguing emulated on gnucobol-batch
 - GAP-STB-010  # Berkeley DB indexed files in place of the VSAM KSDS
 - GAP-DOC-029  # the UniKix copy's sort output DCB differs from DCB=(*.SORTIN)

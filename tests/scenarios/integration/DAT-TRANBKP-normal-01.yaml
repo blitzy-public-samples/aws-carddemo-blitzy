@@ -36,7 +36,7 @@ inventory_ids:
 tags: []
 gap_ids:
 - GAP-STB-005  # IDCAMS replacement for REPRO, DELETE, DEFINE CLUSTER and the MAXCC reset
-- GAP-STB-007  # DISP of the backup generation recorded, not evaluated
+- GAP-STB-007  # normal-end CATLG of the new TRANSACT-BKUP generation applied; its abnormal-termination DELETE recorded, not evaluated
 - GAP-STB-009  # catalog and GDG emulation of the backup generation
 - GAP-STB-010  # Berkeley DB indexed file in place of the VSAM KSDS
 preconditions:

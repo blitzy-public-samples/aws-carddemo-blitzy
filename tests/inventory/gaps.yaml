@@ -1996,7 +1996,7 @@ gaps:
     - tests/adapters/gnucobol_batch/utilities.py
     replaces: IEBGENER, IEFBR14 and DISP
   status: open
-  unknown: 'The IEBGENER and IEFBR14 replacements in tests/adapters/gnucobol_batch/utilities.py copy data and run empty steps without the z/OS allocation, space and catalog semantics. DISP is recorded in the step tables of tests/adapters/gnucobol_batch/jobs.yaml but not evaluated on gnucobol-batch, because COND and DISP are JCL-semantics items run only on unikix: a dataset a step creates stays available to later steps as at a normal step end, and the abnormal-termination disposition (the DELETE of DISP=(NEW,CATLG,DELETE)) is never applied.'
+  unknown: 'The IEBGENER and IEFBR14 replacements in tests/adapters/gnucobol_batch/utilities.py copy data and run empty steps without the z/OS allocation, space and catalog semantics. When a step ends normally, utilities.py applies the normal-end DISP of each of its datasets: CATLG catalogues a dataset the step wrote, a relative generation as its generation with the GDG roll-off; DELETE removes it; UNCATLG drops the catalog entry and keeps the file; KEEP and PASS change nothing; an omitted disposition is DELETE for a new dataset and KEEP otherwise. COND and the abnormal-termination disposition (for example the DELETE of DISP=(NEW,CATLG,DELETE)) are recorded in the step tables of tests/adapters/gnucobol_batch/jobs.yaml but never evaluated on gnucobol-batch, because they are JCL-semantics items run only on unikix, and a step that abends gets no disposition.'
 - affected:
   - via_scenarios: true
   affected_inventory_ids:

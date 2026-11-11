@@ -42,8 +42,14 @@
 #   probes of the deployed tree ($MBMSUB, $EBMHOME/batchenv, sysoutdir, unikixrc.cfg) run again against it.
 #   A failed probe refuses every run of the entry until the next generation; probe_all(refresh=True) and
 #   probe(refresh=True) probe again.
-# - `command: null` means no public source names a command. Its probe is "false", so every scenario that
-#   depends on the entry is blocked under the entry's `gap`.
+# - `command: null` means no public source names a command, so the entry ships the probe "false". A scenario
+#   that needs the entry is blocked under the entry's `gap` unless the adapter has an available fallback for
+#   it (the entries' notes and tests/README.md, UniKix operator procedure step 4): a region stop and restart
+#   (region_stop, region_start) for region_file_close, region_file_open, region_file_enable, tdq_empty,
+#   tdq_enable and region_quiesce_query; a BPE restart (bpe_stop, which ships null as well, then bpe_start)
+#   for bpe_active_jobs; a generated IDCAMS job submitted through bpe_submit for catalog_reset; and
+#   region_file_close for region_file_disable. An online `unavailable` fault that no available entry can
+#   place leaves its scenario implemented-unexecuted under GAP-MIS-011, not blocked.
 # - `timeout_s` bounds the control action itself; the caller caps it at the time left before the scenario
 #   deadline. Waiting for application work (a job to complete, a screen to unlock) is not bounded here.
 # - `gap` is the open missing-input entry of tests/inventory/gaps.yaml that the entry settles once confirmed.
