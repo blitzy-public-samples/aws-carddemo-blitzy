@@ -11,13 +11,13 @@
 # seed record: the stale transaction 9999999999999903 is absent.
 #
 # The seed record is not x'00' throughout (GAP-DOC-018): bytes 1-342 are x'00'
-# and bytes 343-350, inside the trailing TRAN-RECORD FILLER [app/cpy/CVTRA05Y.cpy:18],
-# are cp037 '00000100', which the fixture carries as ASCII text. The record
-# is pinned as the repository holds it, not as the "350 x'00' bytes" the test
-# plan describes. Decoded through CVTRA05Y its text fields are strings of
-# x'00', written below as YAML "\0" escapes, and its three numeric fields hold
-# invalid zoned bytes, written as {raw: <hex>}. Its primary key is 16 x'00'
-# bytes, and its alternate key TRAN-PROC-TS is 26 x'00' bytes.
+# and bytes 343-350, inside the trailing TRAN-RECORD FILLER
+# [app/cpy/CVTRA05Y.cpy:18], are cp037 '00000100', which the fixture carries
+# as ASCII text. The record is pinned as the repository holds it. Decoded
+# through CVTRA05Y its text fields are strings of x'00', written below as YAML
+# "\0" escapes, and its three numeric fields hold invalid zoned bytes, written
+# as {raw: <hex>}. Its primary key is 16 x'00' bytes, and its alternate key
+# TRAN-PROC-TS is 26 x'00' bytes.
 #
 # The job is in both adapters' mapping files, so both can run it; on
 # gnucobol-batch its IDCAMS steps run through the utility replacements

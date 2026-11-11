@@ -74,6 +74,7 @@ gap_ids:
 - GAP-DEF-008  # the TRANREPT proc begins '//REPROC PROC'; its resolution is verified only on unikix
 - GAP-DEF-012  # the doubled last amount and the missing last account total
 - GAP-DOC-028  # the UniKix copy's TRANREPT proc header and REPROC call differ
+- GAP-MIS-001  # no job or data file creates the DATEPARM dataset of the TRANREPT proc; the window is a parameter here
 - GAP-STB-005  # IDCAMS REPRO with REPROCT emulated on gnucobol-batch
 - GAP-STB-006  # DFSORT INCLUDE and SORT with SYMNAMES emulated, ASCII collating sequence
 - GAP-STB-007  # DISP=(NEW,CATLG,DELETE) of the three new datasets emulated
