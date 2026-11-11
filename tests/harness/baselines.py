@@ -93,21 +93,32 @@ root that is not the top level of a git work tree, or git failing. A
 directory whose ``manifest.yaml`` is missing at ``<revision>`` had no version
 there, so it is judged as new.
 
-The module writes only under ``tests/baselines/<id>/`` (``write``).
+The module writes only under ``tests/baselines/``: ``write`` builds ``<id>/``
+complete in a staging directory ``.<id>.<pid>.<8 hex>.new`` beside it and
+swaps it in (by way of a pre-image ``.<id>.<pid>.<8 hex>.old`` where the
+kernel cannot exchange two names), holding an exclusive ``flock`` on
+``tests/baselines/`` itself, which ``load`` and the bump check hold shared. A
+writer that dies leaves such directories behind; the next ``write``, or a
+``load`` that finds ``<id>`` missing beside its pre-image, puts the pre-image
+back or removes them, and the bump check passes over them.
 """
 
 from __future__ import annotations
 
 import argparse
 import calendar
+import contextlib
 import copy
+import ctypes
 import datetime as _dt
 import difflib
 import errno
+import fcntl
 import functools
 import hashlib
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -115,7 +126,7 @@ import tempfile
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 _TESTS_ROOT = str(Path(__file__).resolve().parents[1])
 if _TESTS_ROOT not in sys.path:
@@ -132,7 +143,6 @@ from harness import (  # noqa: E402
     dump_yaml,
     load_yaml,
     usable_work_root,
-    write_text,
 )
 from harness import codec as _codec  # noqa: E402
 from harness import fixtures as _fixtures  # noqa: E402
@@ -149,8 +159,11 @@ __all__ = [
     "Baseline",
     "BaselineError",
     "BumpCheckError",
+    "BumpNeed",
     "Matcher",
+    "bind_matchers",
     "bump",
+    "bump_needed",
     "check_bumps",
     "check_matcher",
     "compare",
@@ -953,60 +966,128 @@ def _read_yaml(path: Path) -> Any:
         raise BaselineError(str(exc)) from None
 
 
-# The names a writer gives its temp files, ``.<file>.<pid>.<8 hex>.tmp``:
-# ``_write_bytes`` for ``<LOGICAL>.bin`` (``_RAW_TEMP_RE``), and
-# ``harness.write_text`` for the YAML files (``_TEMP_RE`` covers all three).
-# Group 1 is the writer's pid.
+# The names a file-by-file writer (``harness.write_text`` and the like) gives
+# its temp files, ``.<file>.<pid>.<8 hex>.tmp``: ``_RAW_TEMP_RE`` for a
+# ``<LOGICAL>.bin``, and ``_TEMP_RE`` for any of the three artifacts. ``load``
+# ignores the raw ones in ``datasets/``; ``write`` accepts both in the
+# directory it replaces and leaves them out of the new one.
 _TEMP_TAIL = r"\.([0-9]+)\.[0-9a-f]{8}\.tmp"
 _RAW_NAME = r"[A-Z][A-Z0-9-]*" + re.escape(RAW_SUFFIX)
+_RAW_FILE_RE = re.compile(_RAW_NAME)
 _RAW_TEMP_RE = re.compile(rf"\.{_RAW_NAME}{_TEMP_TAIL}")
 _TEMP_RE = re.compile(rf"\.(?:{re.escape(EXPECTED_FILE)}|{re.escape(MANIFEST_FILE)}|{_RAW_NAME}){_TEMP_TAIL}")
 
+# A writer's publication directories beside the baselines:
+# ``.<id>.<pid>.<8 hex>.new`` stages the new baseline, and
+# ``.<id>.<pid>.<8 hex>.old`` holds the one it replaces while a fallback swap
+# runs. No scenario id starts with a dot, so neither can be taken for a
+# baseline. Group 1 is the id, group 2 the kind.
+_PUBLICATION_RE = re.compile(r"\.([^./]+)\.[0-9]+\.[0-9a-f]{8}\.(new|old)")
 
-def _writer_alive(pid: int) -> bool:
-    """Whether the process named in a temp file may still be writing it: one
-    that exists, or that this user may not signal, is alive; a pid no process
-    can have is not."""
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OverflowError:
-        return False
-    return True
+# flock is not supported there: a reader goes on unlocked, a writer is refused.
+_NO_FLOCK = (errno.ENOLCK, errno.EOPNOTSUPP)
+# What a reader can find instead of a baselines folder to lock (nothing, a
+# symbolic link, a file); it reads unlocked, and its own checks report them.
+_NOTHING_TO_LOCK = (errno.ENOENT, errno.ELOOP, errno.ENOTDIR)
+
+_RENAME_EXCHANGE = 2  # the renameat2 flag of <linux/fs.h> that swaps two names
 
 
 def _entries(folder: Path) -> list[Path]:
-    """The entries of ``folder`` in name order; none once a concurrent writer
-    has removed it."""
+    """The entries of ``folder`` in name order; none when it does not
+    exist."""
     try:
         return sorted(folder.iterdir())
     except FileNotFoundError:
         return []
 
 
-def _remove_stale_temps(directory: Path) -> None:
-    """Remove the temp files that writers which no longer run (an interrupted
-    ``write``) left in the baseline ``directory`` or its ``datasets/``. A
-    live writer's temp file is left alone, and symbolic links and anything
-    not named as a writer's temp file are never touched."""
-    for folder, pattern in ((directory, _TEMP_RE), (directory / DATASETS_DIR, _RAW_TEMP_RE)):
-        if folder.is_symlink() or not folder.is_dir():
+def _publication(name: str) -> tuple[str, str] | None:
+    """``(id, kind)`` when ``name`` is a writer's staging (``new``) or
+    pre-image (``old``) directory name, else ``None``."""
+    match = _PUBLICATION_RE.fullmatch(name)
+    if match is None or not _scenarios.ID_RE.fullmatch(match.group(1)):
+        return None
+    return match.group(1), match.group(2)
+
+
+@contextlib.contextmanager
+def _locked(root: Path, exclusive: bool, error: type[HarnessError] = BaselineError) -> Iterator[int | None]:
+    """Hold ``flock`` on the baselines folder ``root`` itself, so no lock file
+    is created: exclusive for a writer, which publishes only while it holds
+    it, and shared for a reader, so that it never reads across a publication.
+    Yields the folder's descriptor, which the writer names its staging and
+    pre-image directories relative to, or ``None`` for a reader that finds
+    no folder there (nothing, a symbolic link or a file). A reader on a
+    filesystem without ``flock`` goes on unlocked; a writer that cannot lock
+    raises ``error`` before anything is written. A process holding the
+    exclusive lock must not ask for the shared one: ``flock`` would wait
+    forever."""
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError as exc:
+        if exclusive or exc.errno not in _NOTHING_TO_LOCK:
+            raise error(f"cannot lock {display_path(root)}: {exc.strerror or exc}") from None
+    if descriptor is None:
+        yield None
+        return
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        except OSError as exc:
+            if exclusive or exc.errno not in _NO_FLOCK:
+                raise error(f"cannot lock {display_path(root)}: {exc.strerror or exc}") from None
+        yield descriptor
+    finally:
+        os.close(descriptor)  # closing the descriptor releases the lock
+
+
+def _remove_entry(descriptor: int, name: str) -> None:
+    """Remove the entry ``name`` of the locked baselines folder: a directory
+    with everything in it, anything else (a symbolic link included) as the
+    entry itself. A link is never followed."""
+    try:
+        mode = os.stat(name, dir_fd=descriptor, follow_symlinks=False).st_mode
+    except FileNotFoundError:
+        return
+    if stat.S_ISDIR(mode):
+        shutil.rmtree(name, dir_fd=descriptor)
+    else:
+        os.unlink(name, dir_fd=descriptor)
+
+
+def _recover(descriptor: int) -> None:
+    """Undo what writers that died left in the locked baselines folder. Only
+    a writer holding the exclusive lock has staging or pre-image
+    directories, so under that lock every one was left by a writer that
+    died: a pre-image whose ``<id>`` is missing (a fallback swap killed
+    between its two renames) is renamed back, so ``<id>`` is again the last
+    complete baseline, and every other one (an unfinished publication, or
+    the replaced baseline a finished one had yet to remove) is removed."""
+    names = set(os.listdir(descriptor))
+    for name in sorted(names):
+        owner = _publication(name)
+        if owner is None:
             continue
-        for entry in _entries(folder):
-            match = pattern.fullmatch(entry.name)
-            if match is None:
+        baseline_id, kind = owner
+        if kind == "old" and baseline_id not in names:
+            if stat.S_ISDIR(os.stat(name, dir_fd=descriptor, follow_symlinks=False).st_mode):
+                os.rename(name, baseline_id, src_dir_fd=descriptor, dst_dir_fd=descriptor)
+                names.add(baseline_id)
                 continue
-            try:
-                mode = entry.lstat().st_mode
-            except FileNotFoundError:
-                continue
-            if stat.S_ISREG(mode) and not _writer_alive(int(match.group(1))):
-                entry.unlink(missing_ok=True)
+        _remove_entry(descriptor, name)
+
+
+def _interrupted(descriptor: int, baseline_id: str) -> bool:
+    """Whether a writer died between the two renames of a fallback swap of
+    ``baseline_id``: ``<id>`` is missing beside its pre-image."""
+    try:
+        os.stat(baseline_id, dir_fd=descriptor, follow_symlinks=False)
+        return False
+    except FileNotFoundError:
+        pass
+    return any(_publication(name) == (baseline_id, "old") for name in os.listdir(descriptor))
 
 
 def _read_datasets(folder: Path) -> dict[str, bytes]:
@@ -1040,14 +1121,31 @@ def load(
     a float in ``expected.yaml``, a file in ``datasets/`` that is not
     ``<LOGICAL>.bin``, a symbolic link) always raises ``BaselineError``.
 
-    A writer's temp file ``.<LOGICAL>.bin.<pid>.<8 hex>.tmp`` in
-    ``datasets/`` is ignored, not refused, so an unfinished or interrupted
-    ``write`` never makes the baseline unreadable. ``write`` keeps its temp
-    files in the baseline directory, where ``load`` reads nothing but
-    ``expected.yaml``, ``manifest.yaml`` and ``datasets/``, and removes the
-    stale ones."""
+    The read holds the shared lock on ``<baselines_dir>`` (``_locked``), so
+    it never overlaps a ``write``'s publication and sees each baseline
+    whole. When ``<id>`` is missing beside a pre-image
+    ``.<id>.<pid>.<8 hex>.old`` (a writer died between the two renames of
+    its fallback swap), it takes the exclusive lock instead, puts the
+    pre-image back (``_recover``) and reads that last complete baseline.
+    Staging and pre-image directories are never read, and a temp file
+    ``.<LOGICAL>.bin.<pid>.<8 hex>.tmp`` in ``datasets/`` is ignored, not
+    refused."""
     root = Path(baselines_dir)
     directory = root / _check_id(baseline_id)
+    _refuse_links((root, directory), directory)
+    with _locked(root, exclusive=False) as descriptor:
+        if descriptor is None or not _interrupted(descriptor, baseline_id):
+            return _read(root, baseline_id, missing_ok)
+    with _locked(root, exclusive=True) as descriptor:
+        _recover(descriptor)
+        return _read(root, baseline_id, missing_ok)
+
+
+def _read(root: Path, baseline_id: str, missing_ok: bool) -> Baseline | None:
+    """``load`` without the lock, for a caller that holds it: ``write``
+    reads back under its exclusive lock, on which a shared one would wait
+    forever."""
+    directory = root / baseline_id
     _refuse_links((root, directory), directory)
     if not directory.exists():
         if missing_ok:
@@ -1061,45 +1159,181 @@ def load(
     return Baseline(baseline_id, expected, manifest, datasets, directory)
 
 
-def _write_bytes(path: Path, data: bytes, temp_folder: Path) -> bool:
-    """Write ``data`` exactly to ``path``, atomically: the bytes go to a new
-    file ``.<name>.<pid>.<8 hex>.tmp`` in ``temp_folder`` (the baseline
-    directory: the same filesystem, outside the ``datasets/`` folder ``load``
-    reads), and ``os.replace`` swaps it in once ``path``'s folder exists,
-    creating that folder again should a concurrent writer remove it in
-    between. An identical file is left untouched, and the new file is removed
-    when anything fails. Returns whether the file was written."""
+@dataclass(frozen=True)
+class _Held:
+    """A file of the baseline directory a ``write`` replaces."""
+
+    path: Path
+    status: os.stat_result
+    data: bytes
+
+
+@dataclass(frozen=True)
+class _Current:
+    """The baseline directory a ``write`` replaces: the permission bits of
+    the directory (``None`` when there is none yet) and of its ``datasets/``
+    (``None`` without one), its artifacts by their path inside it, and
+    whether it holds temp files the new directory leaves out."""
+
+    mode: int | None = None
+    raw_mode: int | None = None
+    files: dict = field(default_factory=dict)
+    temps: bool = False
+
+    def holds(self, files: Mapping[str, bytes]) -> bool:
+        """Whether the directory holds exactly ``files``, byte for byte, and
+        nothing else."""
+        has_raw = any(name.startswith(DATASETS_DIR + "/") for name in files)
+        return (
+            self.mode is not None
+            and not self.temps
+            and (self.raw_mode is not None) == has_raw
+            and set(self.files) == set(files)
+            and all(self.files[name].data == data for name, data in files.items())
+        )
+
+
+def _foreign(directory: Path, entry: Path, mode: int) -> BaselineError:
+    """The refusal to replace ``directory`` because of ``entry``."""
+    what = "a symbolic link" if stat.S_ISLNK(mode) else "not part of a baseline"
+    return BaselineError(
+        f"{display_path(directory)} is not replaced: {display_path(entry)} is {what}; a baseline directory holds "
+        f"only {EXPECTED_FILE}, {MANIFEST_FILE} and {DATASETS_DIR}/<LOGICAL>{RAW_SUFFIX}, so move it away first"
+    )
+
+
+def _current(directory: Path) -> _Current:
+    """What the baseline ``directory`` holds, read under the exclusive lock.
+    Anything but its artifacts and writers' temp files is refused, so a
+    ``write`` never drops a file it does not own."""
     try:
-        if path.read_bytes() == data:
-            return False
+        status = directory.lstat()
     except FileNotFoundError:
-        pass
-    temp_folder.mkdir(parents=True, exist_ok=True)
-    while True:
-        temp_path = temp_folder / f".{path.name}.{os.getpid()}.{os.urandom(4).hex()}.tmp"
+        return _Current()
+    if not stat.S_ISDIR(status.st_mode):
+        what = "a symbolic link" if stat.S_ISLNK(status.st_mode) else "not a baseline directory"
+        raise BaselineError(f"{display_path(directory)} is not replaced: it is {what}")
+    files: dict[str, _Held] = {}
+    raw_mode: int | None = None
+    temps = False
+    for entry in _entries(directory):
+        held = entry.lstat()
+        if entry.name in (EXPECTED_FILE, MANIFEST_FILE) and stat.S_ISREG(held.st_mode):
+            files[entry.name] = _Held(entry, held, entry.read_bytes())
+        elif entry.name == DATASETS_DIR and stat.S_ISDIR(held.st_mode):
+            raw_mode = stat.S_IMODE(held.st_mode)
+            for raw in _entries(entry):
+                raw_held = raw.lstat()
+                if not stat.S_ISREG(raw_held.st_mode):
+                    raise _foreign(directory, raw, raw_held.st_mode)
+                if _RAW_FILE_RE.fullmatch(raw.name):
+                    files[f"{DATASETS_DIR}/{raw.name}"] = _Held(raw, raw_held, raw.read_bytes())
+                elif _RAW_TEMP_RE.fullmatch(raw.name):
+                    temps = True
+                else:
+                    raise _foreign(directory, raw, raw_held.st_mode)
+        elif stat.S_ISREG(held.st_mode) and _TEMP_RE.fullmatch(entry.name):
+            temps = True
+        else:
+            raise _foreign(directory, entry, held.st_mode)
+    return _Current(stat.S_IMODE(status.st_mode), raw_mode, files, temps)
+
+
+def _stage_file(target: Path, data: bytes, held: _Held | None) -> None:
+    """Put ``data`` at ``target`` in a staging directory. A file the replaced
+    directory ``held`` with exactly these bytes is hard-linked, so it keeps
+    its inode and modification time; where no link can be made, a copy gets
+    the old modification time back. A changed file keeps the old file's
+    permission bits, a new one gets the mode the umask allows."""
+    if held is not None and held.data == data:
         try:
-            descriptor = os.open(temp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+            os.link(held.path, target, follow_symlinks=False)
+            return
+        except OSError:
+            pass  # no hard link here (a filesystem without them, a link limit): copy the file
+    descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o666)
+    with os.fdopen(descriptor, "wb") as handle:
+        handle.write(data)
+    if held is not None:
+        os.chmod(target, stat.S_IMODE(held.status.st_mode))
+        if held.data == data:
+            os.utime(target, ns=(held.status.st_atime_ns, held.status.st_mtime_ns))
+
+
+def _stage(descriptor: int, root: Path, baseline_id: str, files: Mapping[str, bytes], current: _Current) -> str:
+    """Build the complete new baseline directory of ``baseline_id`` in a
+    staging directory ``.<id>.<pid>.<8 hex>.new`` of the locked baselines
+    folder ``root`` and return its name. ``files`` maps each file's path
+    inside the directory to its bytes; the directories get the replaced
+    ones' permission bits once they are filled."""
+    while True:
+        name = f".{baseline_id}.{os.getpid()}.{os.urandom(4).hex()}.new"
+        try:
+            os.mkdir(name, dir_fd=descriptor)
             break
         except FileExistsError:
             continue
+    stage = root / name
+    raw_folder = stage / DATASETS_DIR
+    for relative, data in files.items():
+        target = stage / relative
+        if target.parent == raw_folder and not raw_folder.is_dir():
+            raw_folder.mkdir()
+        _stage_file(target, data, current.files.get(relative))
+    if current.raw_mode is not None and raw_folder.is_dir():
+        os.chmod(raw_folder, current.raw_mode)
+    if current.mode is not None:
+        os.chmod(stage, current.mode)
+    return name
+
+
+@functools.lru_cache(maxsize=None)
+def _renameat2() -> Any:
+    """The C library's ``renameat2``, or ``None`` where it has none."""
     try:
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(data)
-        while True:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                os.replace(temp_path, path)
-                break
-            except FileNotFoundError:
-                if not os.path.lexists(temp_path) or path.parent.is_dir():
-                    raise  # not the folder vanishing between mkdir and replace
-    except BaseException:
-        try:
-            os.unlink(temp_path)
-        except FileNotFoundError:
-            pass
-        raise
-    return True
+        function = ctypes.CDLL(None, use_errno=True).renameat2
+    except (AttributeError, OSError):
+        return None
+    function.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
+    function.restype = ctypes.c_int
+    return function
+
+
+def _exchange(descriptor: int, first: str, second: str) -> bool:
+    """Swap the entries ``first`` and ``second`` of the locked baselines
+    folder in one step (Linux ``renameat2`` with ``RENAME_EXCHANGE``), so
+    each name always names a complete directory. ``False``, with nothing
+    changed, when the C library, the kernel or the filesystem cannot; any
+    other failure raises ``OSError``."""
+    function = _renameat2()
+    if function is None:
+        return False
+    if function(descriptor, os.fsencode(first), descriptor, os.fsencode(second), _RENAME_EXCHANGE) == 0:
+        return True
+    code = ctypes.get_errno()
+    if code in (errno.ENOSYS, errno.EINVAL):
+        return False
+    raise OSError(code, os.strerror(code), second)
+
+
+def _publish(descriptor: int, baseline_id: str, stage: str, replacing: bool) -> None:
+    """Put the staging directory ``stage`` in place as ``<id>`` in one step:
+    exchanged with the current ``<id>``, which the stage name then holds and
+    which is removed, or, for a first baseline, renamed into place. Where no
+    exchange is possible, ``<id>`` is renamed to a pre-image
+    ``.<id>.<pid>.<8 hex>.old``, the stage to ``<id>``, and the pre-image is
+    removed; a writer killed between the two renames leaves the pre-image,
+    which ``_recover`` puts back."""
+    if not replacing:
+        os.rename(stage, baseline_id, src_dir_fd=descriptor, dst_dir_fd=descriptor)
+        return
+    if _exchange(descriptor, stage, baseline_id):
+        _remove_entry(descriptor, stage)
+        return
+    pre_image = f".{baseline_id}.{os.getpid()}.{os.urandom(4).hex()}.old"
+    os.rename(baseline_id, pre_image, src_dir_fd=descriptor, dst_dir_fd=descriptor)
+    os.rename(stage, baseline_id, src_dir_fd=descriptor, dst_dir_fd=descriptor)
+    _remove_entry(descriptor, pre_image)
 
 
 def write(
@@ -1109,52 +1343,58 @@ def write(
     datasets: Mapping[str, bytes] | None = None,
     baselines_dir: str | Path = BASELINES_DIR,
 ) -> Baseline:
-    """Write the baseline of ``baseline_id`` under ``<baselines_dir>/<id>/``
+    """Write the baseline of ``baseline_id`` as ``<baselines_dir>/<id>/``
     and return it as read back.
 
     ``expected.yaml`` and ``manifest.yaml`` are canonical ``dump_yaml``
     text; each ``datasets`` entry becomes ``datasets/<LOGICAL>.bin`` holding
-    exactly its bytes, and ``.bin`` files of datasets not given are removed
-    (the ``datasets`` folder too, once empty). The content is validated first,
-    so nothing is written for a baseline ``load`` would refuse. Unchanged
-    files keep their modification time. Used by ``capture.py`` and
-    ``report.py --import-unikix``; the bump check judges the change.
+    exactly its bytes, and the directory holds nothing else (no ``datasets``
+    folder without raw datasets). The content is validated first, so nothing
+    is written for a baseline ``load`` would refuse. Used by ``capture.py``
+    and ``report.py --import-unikix``; the bump check judges the change.
 
-    Every temp file (``.<file>.<pid>.<8 hex>.tmp``, from
-    ``harness.write_text`` and ``_write_bytes``) goes to the baseline
-    directory, never into ``datasets/``. Before writing, the temp files of
-    writers that no longer run (an interrupted ``write``) are removed from
-    the baseline directory and ``datasets/``; a live writer's are left alone.
-    A concurrent writer of the same id is tolerated: each file is replaced
-    atomically, and a ``.bin`` file or the ``datasets`` folder it removes
-    first, or a file it adds to that folder, is not an error."""
+    The directory is published whole. Holding the exclusive lock on
+    ``<baselines_dir>`` (``_locked``), the writer first undoes what writers
+    that died left there (``_recover``), then builds the complete new
+    directory in a staging directory ``.<id>.<pid>.<8 hex>.new`` beside it
+    and swaps it in (``_publish``), so ``<id>`` names the last complete
+    baseline until the swap and the new one after it, and a first baseline
+    appears only once complete. An interrupted or failed write leaves the
+    last complete baseline, or none, and a retry needs no cleanup;
+    concurrent writers take turns. Unchanged files are hard links to the
+    replaced ones, so they keep their inode and modification time; a
+    changed file keeps the replaced file's permission bits and each
+    directory the replaced directory's; a directory that already holds
+    exactly these files is left as it is. The replaced directory may hold
+    only its artifacts and writers' temp files
+    (``.<file>.<pid>.<8 hex>.tmp``, left out of the new one). Anything else
+    in it, a symbolic link, an ``<id>`` that is not a directory and a lock
+    that cannot be taken raise ``BaselineError`` before anything is
+    written."""
     root = Path(baselines_dir)
     directory = root / _check_id(baseline_id)
     raw = dict(datasets or {})
-    Baseline(baseline_id, dict(expected), dict(manifest), raw, directory)
+    candidate = Baseline(baseline_id, dict(expected), dict(manifest), raw, directory)
     _refuse_links((root, directory, directory / EXPECTED_FILE, directory / MANIFEST_FILE), directory)
     raw_folder = directory / DATASETS_DIR
     _refuse_links((raw_folder,), raw_folder)
-    _remove_stale_temps(directory)
-    write_text(directory / EXPECTED_FILE, dump_yaml(dict(expected)))
-    write_text(directory / MANIFEST_FILE, dump_yaml(dict(manifest)))
-    for name, data in sorted(raw.items()):
+    for name in sorted(raw):
         target = raw_folder / f"{name}{RAW_SUFFIX}"
         _refuse_links((target,), target)
-        _write_bytes(target, bytes(data), directory)
-    if raw_folder.is_dir():
-        for entry in _entries(raw_folder):
-            if entry.suffix == RAW_SUFFIX and entry.stem not in raw and not entry.is_dir():
-                entry.unlink(missing_ok=True)
-        if not _entries(raw_folder):
+    files = _artifact_bytes(candidate)
+    root.mkdir(parents=True, exist_ok=True)
+    with _locked(root, exclusive=True) as descriptor:
+        _recover(descriptor)
+        current = _current(directory)
+        if not current.holds(files):
             try:
-                raw_folder.rmdir()
-            except FileNotFoundError:
-                pass  # a concurrent writer removed it first
-            except OSError as exc:
-                if exc.errno not in (errno.ENOTEMPTY, errno.EEXIST):
-                    raise  # anything but a file a concurrent writer has just added
-    written = load(baseline_id, missing_ok=True, baselines_dir=root)
+                stage = _stage(descriptor, root, baseline_id, files, current)
+                _publish(descriptor, baseline_id, stage, current.mode is not None)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    _recover(descriptor)  # removes the stage, or puts the pre-image back
+                raise
+        written = _read(root, baseline_id, missing_ok=True)
     if written is None:
         raise BaselineError(f"{display_path(directory)} vanished while it was written")
     return written
@@ -1768,6 +2008,194 @@ def projection(decoded: Mapping[str, Any], scenario: Any, baseline: Baseline | N
     return out
 
 
+_WHOLE_LINE = "*"  # the binding key of a matcher that stands for a whole line
+
+
+@functools.lru_cache(maxsize=None)
+def _path_keys(layout: str) -> dict[str, str]:
+    """A field's path (without subscripts) -> its ``decode_record`` key: the
+    inverse of ``_key_paths``."""
+    return {path: key for key, path in _key_paths(layout).items()}
+
+
+def _leaf_key(view: _View, index: int, name: str, where: str) -> str | None:
+    """The key under which record ``index`` of ``view``, a field map, holds the
+    one decoded field ``name`` denotes as ``_View.field_value`` reads it:
+    ``name`` itself when the record holds it, else the key of the field whose
+    path, with the same COBOL subscripts, ``name`` is. ``None`` when ``name``
+    denotes nothing in the record. A group, a dataset's own field and ``@raw``
+    are read from the raw record, so no decoded field can hold their matcher:
+    ``BaselineError`` naming ``where`` and what ``name`` denotes."""
+    record = view.records[index]
+    if name in record:
+        return name
+    base, bracket, subscripts = name.partition("(")
+    if view.layout is not None:
+        key = _path_keys(view.layout).get(base)
+        if key is not None and key + bracket + subscripts in record:
+            return key + bracket + subscripts
+    if view.field_value(index, name) is _ABSENT:
+        return None
+    if name == RAW_KEY:
+        denoted = "the whole raw record"
+    elif view.layout is not None and (base in _key_paths(view.layout) or base in _path_keys(view.layout)):
+        denoted = f"a group of {view.layout}"
+    else:
+        denoted = f"one of the {view.name} dataset's own fields"
+    raise BaselineError(
+        f"{where} names {name}, {denoted}, not one decoded field, so its matcher cannot be placed in the record"
+    )
+
+
+def _own_matchers(item: Any, source: str) -> list[tuple[str, str, Mapping[str, Any]]]:
+    """``(source, name, matcher)`` for every matcher the scenario record
+    ``item`` gives; a whole-line matcher has the name ``*``."""
+    if is_matcher(item):
+        return [(source, _WHOLE_LINE, item)]
+    if isinstance(item, Mapping):
+        return [(source, _key_text(name), value) for name, value in item.items() if is_matcher(value)]
+    return []
+
+
+def _bind_level(
+    placed: Iterable[tuple[str, str, str, Mapping[str, Any]]], where: str
+) -> dict[str, Mapping[str, Any]]:
+    """Decoded key -> matcher for the matchers of one level, each given as
+    ``(source, name, key, matcher)``. Two names of the level giving one field
+    different matchers are refused: the field can hold only one."""
+    chosen: dict[str, tuple[str, str, Mapping[str, Any]]] = {}
+    for source, name, key, matcher in placed:
+        earlier = chosen.setdefault(key, (source, name, matcher))
+        if dict(earlier[2]) != dict(matcher):
+            raise BaselineError(
+                f"{where}: {earlier[0]} gives {key} the matcher {_show(dict(earlier[2]))} as {earlier[1]}, and "
+                f"{source} gives it {_show(dict(matcher))} as {name}; one field holds one matcher"
+            )
+    return {key: matcher for key, (_, _, matcher) in chosen.items()}
+
+
+def _entry_bindings(spec: Any, view: _View, ctx: _Context, label: str) -> list[dict[str, Mapping[str, Any]]]:
+    """``bind_matchers`` for one ``datasets``/``file_state`` entry, labelled
+    ``label``: the scenario's value ``spec`` over its decoded ``view``."""
+    if view.problem is not None:
+        return []
+    count = len(view.records)
+    own: list[list[tuple[str, str, Mapping[str, Any]]]] = [[] for _ in range(count)]
+    entry: dict[str, Mapping[str, Any]] = {}
+    if spec != _scenarios.BASELINE:
+        try:
+            specs, _ = _normalized(spec, True)
+        except BaselineError as exc:
+            raise BaselineError(f"{label}: {exc}") from None
+        entry = _matcher_map(specs.get("matchers"))
+        if isinstance(specs.get("records"), list):
+            for index, item in enumerate(specs["records"][:count]):
+                own[index].extend(_own_matchers(item, f"records[{index + 1}]"))
+        if isinstance(specs.get("contains"), list):
+            position = 0  # as _list_check aligns: records before it are matched or passed over
+            for number, item in enumerate(specs["contains"], start=1):
+                given = _own_matchers(item, f"contains[{number}]")
+                found = next(
+                    (at for at in range(position, count) if _record_check(item, view, at, ctx, entry)[0] is None),
+                    None,
+                )
+                if found is None:
+                    if given:
+                        after = f" after record {position}" if position else ""
+                        raise BaselineError(
+                            f"{label}: contains[{number}] matches no observed record{after}, so its matchers "
+                            f"({', '.join(sorted({name for _, name, _ in given}))}) cannot be placed"
+                        )
+                    continue
+                position = found + 1
+                own[found].extend(given)
+    levels = (  # lowest precedence first: the top-level matchers, then the entry's
+        [("expected.matchers", name, matcher) for name, matcher in ctx.global_matchers.items()],
+        [(f"{label}.matchers", name, matcher) for name, matcher in entry.items()],
+    )
+    held: set[str] = set()  # the entry's names some record holds
+    bindings: list[dict[str, Mapping[str, Any]]] = []
+    for index, record in enumerate(view.records):
+        where = f"{label} record {index + 1}"
+        if isinstance(record, str):
+            fields = sorted({name for _, name, _ in own[index] if name != _WHOLE_LINE})
+            if fields:
+                raise BaselineError(
+                    f"{where}: is a line, so the scenario's matchers for {', '.join(fields)} name no field"
+                )
+            bindings.append(_bind_level([(s, name, name, m) for s, name, m in own[index]], where))
+            continue
+        if any(name == _WHOLE_LINE for _, name, _ in own[index]):
+            raise BaselineError(f"{where}: the scenario gives a whole-line matcher for a field-map record")
+        from_top, from_entry, from_own = (
+            [(s, name, _leaf_key(view, index, name, f"{where}: {s}"), m) for s, name, m in named]
+            for named in (*levels, own[index])
+        )
+        unplaced = sorted({name for _, name, key, _ in from_own if key is None})
+        if unplaced:
+            raise BaselineError(
+                f"{where}: the scenario's matchers for {', '.join(unplaced)} name no decoded field of the record; "
+                f"name each field as it decodes or by its field path"
+            )
+        held.update(name for _, name, key, _ in from_entry if key is not None)
+        binding: dict[str, Mapping[str, Any]] = {}
+        for placed in (from_top, from_entry, from_own):
+            binding.update(_bind_level([item for item in placed if item[2] is not None], where))
+        bindings.append(binding)
+    unused = sorted(name for name in entry if name not in held)
+    if view.records and unused:
+        raise BaselineError(
+            f"{label}.matchers: {', '.join(unused)} names no decoded field of any record; "
+            f"name each field as it decodes or by its field path"
+        )
+    return bindings
+
+
+def bind_matchers(
+    scenario: Any, result: _base.Result, adapter_name: str, run_date: Any = None
+) -> dict[tuple[str, str], list[dict[str, Mapping[str, Any]]]]:
+    """Where the scenario's matchers stand in the decoded ``result``:
+    ``(section, name)`` of each ``datasets``/``file_state`` entry the
+    scenario's ``expected`` names -> one ``{decoded key: matcher}`` per
+    record, in ``decode_result`` order (``*`` is the key of a whole line).
+
+    Each matcher binds where ``compare`` checks it: a ``records`` item's by
+    position; a ``contains`` item's at the record ``compare`` aligns the item
+    with, the first one after the previous item's that it matches under
+    ``adapter_name``'s clock (exact on ``FIXED_CLOCK_ADAPTERS``, else related
+    to ``run_date``); the entry's ``matchers`` and the top-level ``matchers``
+    at every record holding the field. Names are read as ``compare`` reads
+    them: a decoded key, or a field path with its COBOL subscripts, which
+    binds to that field's decoded key. A field takes its record's own matcher
+    first, then the entry's, then the top-level one. An entry whose records
+    ``compare`` cannot read (not produced, not decodable) binds nothing, and
+    an inline ``baseline`` binds only the top-level matchers.
+
+    ``BaselineError`` for a matcher no decoded field can hold: a name denoting
+    a group, a dataset's own field or ``@raw``; a record's own name its record
+    does not hold, or an entry's name no record holds; a field matcher for a
+    line or a whole-line matcher for a field map; a ``contains`` item with a
+    matcher that matches no record; two names of one level giving one field
+    different matchers. A top-level name no record of an entry holds binds
+    nothing there: it may name a field of another dataset or of a screen."""
+    expected = scenario.expected if isinstance(scenario.expected, Mapping) else {}
+    bundle = _decode(scenario, result)
+    clock = _scenarios.clock(scenario)
+    _parse_clock(clock)
+    ctx = _Context(
+        adapter_name in FIXED_CLOCK_ADAPTERS, clock, _as_date(run_date), _matcher_map(expected.get("matchers"))
+    )
+    bound: dict[tuple[str, str], list[dict[str, Mapping[str, Any]]]] = {}
+    for section in ("datasets", "file_state"):
+        names = expected.get(section)
+        if not isinstance(names, Mapping):
+            continue
+        for name, spec in names.items():
+            key = (section, str(name))
+            bound[key] = _entry_bindings(spec, bundle.views[key], ctx, f"{section}.{name}")
+    return bound
+
+
 @functools.lru_cache(maxsize=None)
 def _layout_span(layout: str, key: str) -> tuple[int, int] | None:
     """The bytes of field ``key`` (a decode_record key or a path, with COBOL
@@ -2223,9 +2651,12 @@ def _artifact(relative: str) -> bool:
     return folder == DATASETS_DIR and "/" not in name and name.endswith(RAW_SUFFIX)
 
 
-def _base_tree(root: Path, commit: str) -> dict[str, dict[str, tuple[str, str]]]:
-    """``id -> {artifact: (mode, object id)}`` of every baseline at ``commit``."""
-    listing = _git(root, ["ls-tree", "-r", "-z", commit, "--", BASELINES_REL])
+def _base_tree(root: Path, commit: str, folder: str = BASELINES_REL) -> dict[str, dict[str, tuple[str, str]]]:
+    """``id -> {artifact: (mode, object id)}`` of every baseline at ``commit``
+    that lies in ``folder`` (the baselines folder, or one baseline directory
+    in it, as git names them). An empty mapping is confirmed absence: git
+    listed the folder and found nothing; git failing raises."""
+    listing = _git(root, ["ls-tree", "-r", "-z", commit, "--", folder])
     tree: dict[str, dict[str, tuple[str, str]]] = {}
     prefix = BASELINES_REL + "/"
     for entry in listing.split(b"\0"):
@@ -2245,7 +2676,8 @@ def _base_tree(root: Path, commit: str) -> dict[str, dict[str, tuple[str, str]]]
 def _working_tree(folder: Path) -> tuple[dict[str, dict[str, Path]], list[str]]:
     """``id -> {artifact: path}`` of every baseline directory in the working
     tree (untracked and modified files included), and the problems found:
-    symbolic links are reported, never followed."""
+    symbolic links are reported, never followed. A writer's staging or
+    pre-image directory is no baseline and is passed over."""
     tree: dict[str, dict[str, Path]] = {}
     problems: list[str] = []
     if folder.is_symlink():
@@ -2253,6 +2685,8 @@ def _working_tree(folder: Path) -> tuple[dict[str, dict[str, Path]], list[str]]:
     if not folder.is_dir():
         return tree, problems
     for directory in sorted(folder.iterdir()):
+        if _publication(directory.name) is not None:
+            continue
         if directory.is_symlink():
             problems.append(f"{directory.name}: the baseline directory is a symbolic link")
             continue
@@ -2612,31 +3046,34 @@ def _outcome_change(base: Any, new: Any) -> tuple[int, str]:
     return (0, "") if added is None else (_MINOR, added)
 
 
+def _parsed(reader: _YamlReader, name: str, data: bytes, where: str) -> Any:
+    """The YAML artifact ``name`` read ``where`` (at the base, in the working
+    tree); ``BaselineError`` naming both when it cannot be read."""
+    try:
+        return reader.parse(data)
+    except BaselineError as exc:
+        raise BaselineError(f"{name} {where} cannot be read: {exc}") from None
+
+
 def _required_bump(
     base_files: Mapping[str, tuple[str, str]],
-    work_files: Mapping[str, Path],
     work_bytes: Mapping[str, bytes],
     blobs: Mapping[str, bytes],
     reader: _YamlReader,
 ) -> tuple[int, str, dict, dict]:
     """The lowest bump the change of one baseline needs and why, with its
-    base and working manifests."""
-    def parsed(name: str, data: bytes, where: str) -> Any:
-        try:
-            return reader.parse(data)
-        except BaselineError as exc:
-            raise BaselineError(f"{name} {where} cannot be read: {exc}") from None
-
-    base_manifest = parsed(MANIFEST_FILE, blobs[base_files[MANIFEST_FILE][1]], "at the base")
-    new_manifest = parsed(MANIFEST_FILE, work_bytes[MANIFEST_FILE], "in the working tree")
+    base and working manifests. ``work_bytes`` holds the working artifacts'
+    content by the names ``base_files`` uses."""
+    base_manifest = _parsed(reader, MANIFEST_FILE, blobs[base_files[MANIFEST_FILE][1]], "at the base")
+    new_manifest = _parsed(reader, MANIFEST_FILE, work_bytes[MANIFEST_FILE], "in the working tree")
     if not isinstance(base_manifest, Mapping) or not isinstance(new_manifest, Mapping):
         raise BaselineError(f"{MANIFEST_FILE} is not a mapping")
     reasons: list[tuple[int, str]] = []
     base_expected_id = base_files[EXPECTED_FILE][1]
     if _object_id(work_bytes[EXPECTED_FILE], len(base_expected_id)) != base_expected_id:
         change, where = _outcome_change(
-            parsed(EXPECTED_FILE, blobs[base_expected_id], "at the base"),
-            parsed(EXPECTED_FILE, work_bytes[EXPECTED_FILE], "in the working tree"),
+            _parsed(reader, EXPECTED_FILE, blobs[base_expected_id], "at the base"),
+            _parsed(reader, EXPECTED_FILE, work_bytes[EXPECTED_FILE], "in the working tree"),
         )
         if change == _MAJOR:
             reasons.append((_MAJOR, f"the decoded expected outcome changed at {where}"))
@@ -2645,7 +3082,7 @@ def _required_bump(
         else:
             reasons.append((_PATCH, f"{EXPECTED_FILE} was rewritten without changing a value"))
     base_raw = {name for name in base_files if name.startswith(DATASETS_DIR + "/")}
-    work_raw = {name for name in work_files if name.startswith(DATASETS_DIR + "/")}
+    work_raw = {name for name in work_bytes if name.startswith(DATASETS_DIR + "/")}
     for name in sorted(base_raw - work_raw):
         reasons.append((_MAJOR, f"{name} was removed"))
     for name in sorted(work_raw - base_raw):
@@ -2668,15 +3105,10 @@ def _required_bump(
     return level, why, dict(base_manifest), dict(new_manifest)
 
 
-def check_bumps(base: str, repo_root: str | Path = REPO_ROOT) -> list[str]:
-    """Every baseline version rule the working tree of ``repo_root`` breaks
-    against revision ``base``, one ``<id>: <rule>`` text per violation; empty
-    when every directory under ``tests/baselines/`` is bumped as its change
-    requires (the rules are in the module docstring). An unknown revision, a
-    ``repo_root`` that is not the top level of a git work tree, or git
-    failing, raises ``BumpCheckError``."""
+def _resolved_root(repo_root: str | Path) -> Path:
+    """``repo_root`` resolved; ``BumpCheckError`` naming it when it cannot be."""
     try:
-        root = Path(repo_root).resolve()
+        return Path(repo_root).resolve()
     except (OSError, RuntimeError, ValueError) as exc:  # pathlib reports a symbolic link loop as RuntimeError
         shown = display_path(repo_root)
         named = "this checkout" if shown == "." else f"the repository root {shown}"
@@ -2685,62 +3117,90 @@ def check_bumps(base: str, repo_root: str | Path = REPO_ROOT) -> list[str]:
         else:
             reason = getattr(exc, "strerror", None) or str(exc) or type(exc).__name__
         raise BumpCheckError(f"{named} cannot be resolved: {reason}") from None
+
+
+def _shown_base(base: str, commit: str) -> str:
+    """The base revision as the check's messages name it."""
+    return base if base == commit else f"{base} ({commit[:12]})"
+
+
+def _reader_folder(scratch: str | Path | None = None) -> tempfile.TemporaryDirectory:
+    """The private temporary folder of a ``_YamlReader``: under ``scratch``
+    when given (an existing directory), else under the work root
+    ``CARDDEMO_TEST_WORKDIR`` names when ``harness.usable_work_root`` accepts
+    it, else the system's."""
+    if scratch is None:
+        try:
+            scratch = usable_work_root(os.environ.get("CARDDEMO_TEST_WORKDIR", ""))
+        except HarnessError:
+            scratch = None
+    return tempfile.TemporaryDirectory(prefix="carddemo-bumps-", dir=scratch)
+
+
+def _unchanged(base_files: Mapping[str, tuple[str, str]], work_bytes: Mapping[str, bytes]) -> bool:
+    """Whether the working artifacts are exactly the base's, file for file."""
+    return set(work_bytes) == set(base_files) and all(
+        _object_id(data, len(base_files[name][1])) == base_files[name][1] for name, data in work_bytes.items()
+    )
+
+
+def check_bumps(base: str, repo_root: str | Path = REPO_ROOT) -> list[str]:
+    """Every baseline version rule the working tree of ``repo_root`` breaks
+    against revision ``base``, one ``<id>: <rule>`` text per violation; empty
+    when every directory under ``tests/baselines/`` is bumped as its change
+    requires (the rules are in the module docstring). An unknown revision, a
+    ``repo_root`` that is not the top level of a git work tree, or git
+    failing, raises ``BumpCheckError``."""
+    root = _resolved_root(repo_root)
     commit = _resolve_commit(base, root)
     at_base = _base_tree(root, commit)
-    in_work, problems = _working_tree(root / BASELINES_REL)
-    violations = list(problems)
-    shown_base = base if base == commit else f"{base} ({commit[:12]})"
-    pending: dict[str, tuple[dict, dict[str, bytes]]] = {}
-    wanted: set[str] = set()
-    for baseline_id in sorted(set(at_base) | set(in_work)):
-        base_files = at_base.get(baseline_id, {})
-        work_files = in_work.get(baseline_id)
-        if not base_files:
-            if work_files:
+    # The working tree is listed and read under the shared lock, so no write publishes while it is judged.
+    with _locked(root / BASELINES_REL, exclusive=False, error=BumpCheckError):
+        in_work, problems = _working_tree(root / BASELINES_REL)
+        violations = list(problems)
+        shown_base = _shown_base(base, commit)
+        pending: dict[str, tuple[dict, dict[str, bytes]]] = {}
+        wanted: set[str] = set()
+        for baseline_id in sorted(set(at_base) | set(in_work)):
+            base_files = at_base.get(baseline_id, {})
+            work_files = in_work.get(baseline_id)
+            if not base_files:
+                if work_files:
+                    pending[baseline_id] = ({}, {})
+                continue
+            if work_files is None:
+                violations.append(
+                    f"{baseline_id}: present at {shown_base} but deleted from the working tree; "
+                    f"baselines are never deleted"
+                )
+                continue
+            lost = [name for name in (EXPECTED_FILE, MANIFEST_FILE) if name in base_files and name not in work_files]
+            if lost:
+                violations.append(f"{baseline_id}: {', '.join(lost)} present at {shown_base} is missing")
+                continue
+            if MANIFEST_FILE not in base_files:
+                # Without its manifest the directory had no baseline version at the
+                # base, so there is no version to bump from: it is judged as new.
                 pending[baseline_id] = ({}, {})
-            continue
-        if work_files is None:
-            violations.append(
-                f"{baseline_id}: present at {shown_base} but deleted from the working tree; "
-                f"baselines are never deleted"
-            )
-            continue
-        lost = [name for name in (EXPECTED_FILE, MANIFEST_FILE) if name in base_files and name not in work_files]
-        if lost:
-            violations.append(f"{baseline_id}: {', '.join(lost)} present at {shown_base} is missing")
-            continue
-        if MANIFEST_FILE not in base_files:
-            # Without its manifest the directory had no baseline version at the
-            # base, so there is no version to bump from: it is judged as new.
-            pending[baseline_id] = ({}, {})
-            continue
-        missing = [name for name in (EXPECTED_FILE, MANIFEST_FILE) if name not in base_files]
-        if missing:
-            violations.append(
-                f"{baseline_id}: {', '.join(missing)} is missing at {shown_base}, so the change cannot be judged"
-            )
-            continue
-        work_bytes = {name: path.read_bytes() for name, path in work_files.items()}
-        unchanged = set(work_bytes) == set(base_files) and all(
-            _object_id(data, len(base_files[name][1])) == base_files[name][1] for name, data in work_bytes.items()
-        )
-        if unchanged:
-            continue
-        pending[baseline_id] = (base_files, work_bytes)
-        wanted.update(oid for name, (_, oid) in base_files.items() if not name.startswith(DATASETS_DIR + "/"))
-    blobs = _cat_blobs(root, wanted)
-    # The work root holds the scratch folder when it can be one; otherwise the
-    # system's temporary directory does.
-    try:
-        scratch_root: Path | None = usable_work_root(os.environ.get("CARDDEMO_TEST_WORKDIR", ""))
-    except HarnessError:
-        scratch_root = None
-    with tempfile.TemporaryDirectory(prefix="carddemo-bumps-", dir=scratch_root) as folder:
-        reader = _YamlReader(Path(folder))
-        for baseline_id, (base_files, work_bytes) in sorted(pending.items()):
-            violations.extend(
-                _judge(baseline_id, base_files, in_work[baseline_id], work_bytes, blobs, reader, shown_base)
-            )
+                continue
+            missing = [name for name in (EXPECTED_FILE, MANIFEST_FILE) if name not in base_files]
+            if missing:
+                violations.append(
+                    f"{baseline_id}: {', '.join(missing)} is missing at {shown_base}, so the change cannot be judged"
+                )
+                continue
+            work_bytes = {name: path.read_bytes() for name, path in work_files.items()}
+            if _unchanged(base_files, work_bytes):
+                continue
+            pending[baseline_id] = (base_files, work_bytes)
+            wanted.update(oid for name, (_, oid) in base_files.items() if not name.startswith(DATASETS_DIR + "/"))
+        blobs = _cat_blobs(root, wanted)
+        with _reader_folder() as folder:
+            reader = _YamlReader(Path(folder))
+            for baseline_id, (base_files, work_bytes) in sorted(pending.items()):
+                violations.extend(
+                    _judge(baseline_id, base_files, in_work[baseline_id], work_bytes, blobs, reader, shown_base)
+                )
     return violations
 
 
@@ -2771,7 +3231,7 @@ def _judge(
             ]
         return []
     try:
-        level, why, base_manifest, new_manifest = _required_bump(base_files, work_files, work_bytes, blobs, reader)
+        level, why, base_manifest, new_manifest = _required_bump(base_files, work_bytes, blobs, reader)
         old_version = base_manifest.get("baseline_version")
         new_version = new_manifest.get("baseline_version")
         change = version_change(old_version, new_version)
@@ -2785,6 +3245,88 @@ def _judge(
             f"(found {new_version})"
         ]
     return []
+
+
+_LEVEL_NAMES = {rank: name for name, rank in _LEVEL_RANK.items()}
+
+
+@dataclass(frozen=True)
+class BumpNeed:
+    """How the bump check judges a baseline against a revision that holds it
+    (``bump_needed``). ``base_version`` and ``base_platform`` are that
+    revision's ``baseline_version`` and ``capture_platform``; ``level`` is
+    the lowest bump the change needs: ``none`` for a byte-identical
+    directory, else ``patch``, ``minor`` or ``major``, the levels ``bump``
+    takes; ``reason`` is the change that needs it."""
+
+    base_version: str
+    base_platform: Any
+    level: str
+    reason: str
+
+    def allows(self, bump_level: str) -> bool:
+        """Whether a bump at ``bump_level`` (``major``, ``minor`` or
+        ``patch``) is at least the level the change needs."""
+        return _LEVEL_RANK[bump_level] >= _LEVEL_RANK[self.level]
+
+
+def _artifact_bytes(candidate: Baseline) -> dict[str, bytes]:
+    """What ``write`` puts in the baseline directory of ``candidate``, by
+    each file's path inside that directory."""
+    files = {
+        EXPECTED_FILE: dump_yaml(dict(candidate.expected)).encode("utf-8"),
+        MANIFEST_FILE: dump_yaml(dict(candidate.manifest)).encode("utf-8"),
+    }
+    for name, data in candidate.datasets.items():
+        files[f"{DATASETS_DIR}/{name}{RAW_SUFFIX}"] = bytes(data)
+    return files
+
+
+def bump_needed(
+    candidate: Baseline, base: str = "HEAD", repo_root: str | Path = REPO_ROOT, *, scratch: str | Path | None = None
+) -> BumpNeed | None:
+    """How ``check_bumps`` against revision ``base`` would judge
+    ``tests/baselines/<id>/`` of ``repo_root`` holding exactly the files
+    ``write`` makes of ``candidate``. ``None`` when git lists that directory
+    at ``base`` without a ``manifest.yaml``, which the check judges as a new
+    baseline that must be ``1.0.0``. The base's YAML is parsed in a temporary
+    folder, removed before the return, under ``scratch`` when given (an
+    existing directory, such as a caller's work root), else where
+    ``check_bumps`` puts its own.
+
+    ``BaselineError`` when the change cannot be judged: ``base`` holds the
+    manifest but no ``expected.yaml``, or a manifest or version that cannot
+    be read. ``BumpCheckError`` when ``base`` is no commit, ``repo_root`` is
+    not the top level of a git work tree, or git fails in any way, the
+    listing and the blob reads included: a failure is never taken for
+    absence."""
+    root = _resolved_root(repo_root)
+    commit = _resolve_commit(base, root)
+    shown_base = _shown_base(base, commit)
+    folder = f"{BASELINES_REL}/{candidate.id}"
+    base_files = _base_tree(root, commit, folder).get(candidate.id, {})
+    if MANIFEST_FILE not in base_files:
+        return None
+    if EXPECTED_FILE not in base_files:
+        raise BaselineError(f"{folder}/{EXPECTED_FILE} is missing at {shown_base}, so the change cannot be judged")
+    work_bytes = _artifact_bytes(candidate)
+    blobs = _cat_blobs(root, (oid for name, (_, oid) in base_files.items() if not name.startswith(DATASETS_DIR + "/")))
+    with _reader_folder(scratch) as reader_folder:
+        reader = _YamlReader(Path(reader_folder))
+        if _unchanged(base_files, work_bytes):
+            level, reason = 0, f"{folder}/ holds exactly what {shown_base} holds"
+            manifest_id = base_files[MANIFEST_FILE][1]
+            base_manifest = _parsed(reader, MANIFEST_FILE, blobs[manifest_id], f"at {shown_base}")
+        else:
+            level, reason, base_manifest, _ = _required_bump(base_files, work_bytes, blobs, reader)
+    if not isinstance(base_manifest, Mapping):
+        raise BaselineError(f"{folder}/{MANIFEST_FILE} at {shown_base} is not a mapping")
+    version = base_manifest.get("baseline_version")
+    try:
+        parse_version(version)
+    except BaselineError as exc:
+        raise BaselineError(f"{folder}/{MANIFEST_FILE} at {shown_base}: {exc}") from None
+    return BumpNeed(version, base_manifest.get("capture_platform"), _LEVEL_NAMES[level], reason)
 
 
 # --------------------------------------------------------------------------

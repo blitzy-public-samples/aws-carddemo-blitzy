@@ -49,6 +49,16 @@ Deterministic projection: captures that differ only in the run clock must
 project to the same result YAML, with every screen's CURDATE and CURTIME
 holding their matcher kind whether or not the step asserts them.
 
+Matcher binding: ``capture.build_expected``, on the committed TRANSACT of
+TRN-POSTTRAN-normal-01 and SYSTRAN of FIN-INTCALC-normal-01, must write the
+same baseline whether a scenario names its timestamp matchers by decoded name
+or by field path (``TRAN-RECORD.TRAN-PROC-TS``), in ``records``, in
+``contains``, in the entry's ``matchers`` or in the top-level ``matchers``:
+``{match: run-timestamp}`` in place of the absolute timestamp of every record
+the matcher binds to, and a baseline ``baselines.compare`` passes with the
+qualified scenario. A matcher no decoded field can hold (a group, ``@raw``, a
+path naming no field, a whole-line matcher for a field map) must be refused.
+
 Same region day: ``tpe.drive``, on a fake terminal whose region clock passes
 midnight during the ACT-COACTUPC-boundary-24 steps, must drive the steps
 again after its ``restart``, or end under GAP-MIS-015 without one, so the run
@@ -97,6 +107,19 @@ must succeed, and the folder must hold its files alone. An id outside the
 scenario id manifest is refused by ``write`` and ``evidence_path``, and a
 record that breaks the result record contract by ``write``, before any folder
 is created; a conforming record must read back field-equal.
+
+Baseline publication: ``baselines.write``, on a baselines folder of the
+case's own, must publish each id whole. A writer process killed between two
+staged files, between the two renames of the fallback swap or after the
+exchange leaves the last complete baseline, the new one once it is in place,
+or none for a first capture, and ``load`` returns exactly that; a retry
+succeeds and leaves no staging or pre-image directory. Concurrent writer
+processes of one id, through the exchange or the fallback swap, never let
+``load`` read one writer's expected outcome with another's manifest or raw
+bytes. An entry that is no baseline artifact is refused, with nothing
+changed; unchanged files keep their inode and mtime (a copy its mtime where
+no hard link can be made), replaced files and folders their permission bits,
+and an identical baseline publishes nothing.
 
 Program launch: ``jobs.run_program``, on a build cache of the case's own whose
 units are shell scripts writing what libcob and ld.so write, must raise
@@ -155,6 +178,85 @@ keeping it in the evidence under its stage name as soon as it is acquired;
 leave out one whose dataset is not catalogued then or whose job never ran;
 keep what was acquired when a later unload fails; and never pass a stage name
 to the post-run unloads.
+
+Closing evidence: ``report._entry_problems`` must accept as a register
+entry's ``resolving_evidence`` only a commit (7 to 40, or 64, lowercase hex)
+or an execution id with the path of that execution's evidence:
+``tests/reports/unikix/<execution_id>`` or its scenario folder for a UniKix
+run, ``tests/reports/results/<scenario_id>.yaml`` with its ``scenario_id`` for
+a gnucobol-batch run. It must report exactly one problem for plain text, an
+unrelated mapping, an execution id without a path or a path without one, a
+malformed execution id, a path naming another execution or scenario, a
+gnucobol-batch run without its scenario, an unknown key, a commit that is not
+hex or stands beside execution keys, and a value that is not text; still
+refuse a closed entry without evidence; and hold each ``superseded_evidence``
+element to the same shapes.
+
+Revalidation observation gate: ``report._validate_evidence``, on a blocked,
+implemented-unexecuted or timed-out UniKix record whose execution fingerprint
+is current, must carry its recorded status, reason and gap forward on import
+whatever its evidence holds, and while revalidating only from an observed
+payload holding every observation the scenario and its baseline name;
+without one it writes nothing and reports the record stale for lacking
+``observed``.
+
+Recurring questions: ``report._add_gap``, on in-memory registers whose
+``gaps`` is a list of entries or a mapping of gap id to entry, must reopen
+the closed entry of the raise's category that asks its question (the text of
+``unknown`` up to the first colon) under its own id: open, its resolving
+evidence moved to ``superseded_evidence``, the raise's ``unknown`` and
+``needed`` taken and its items added. It must add to the open entry asking
+the question, which it prefers to a closed one asking the same, only the
+items that entry does not list yet, and change nothing when it lists them
+all; give a new id, the category's next free number, only to another
+question or to the same question in another category; and refuse, changing
+nothing, an entry asking the question whose ``affected_inventory_ids`` is
+not a list.
+
+Closure records: ``inventory_tools.append_closures``, on copies of the
+committed inventory and register in a repository root of the case's own,
+must append ``{date, gap_id, reason}`` to ``header.changes`` and leave the
+items, the total and the additions as they were, so the drift check still
+passes, and refuse, writing nothing, a gap id that is no register entry or
+no GAP id, and a blank reason; the header check must refuse a change whose
+``gap_id`` is not a GAP id. ``report._settle_gaps`` must close an
+inferred-not-observed entry whose items are all verified, and GAP-MIS-009
+once the installation's versions are recorded, only when the inventory
+holds the additions their importing and verifying executions entail (even
+for a scenario not yet validated) and no verified member is recorded
+unreachable. Otherwise it must leave the entry
+open and say what the inventory lacks; matched, blank or already-added
+short/clipped messages and unrelated executions must not prevent closing.
+Inferred revalidation applies the same check. Each closing queues one
+closure record whose reason names the entry, why it closed and its evidence.
+``report._write_register`` must record those closings in the inventory
+before ``gaps.yaml``; when the inventory cannot record them, leave each entry
+open with no evidence and say why among the gaps changed. If ``gaps.yaml``
+then cannot be written, ``inventory_tools.withdraw_closures`` must remove
+only the returned records under the inventory lock, one equal occurrence
+at a time from the end, preserving unrelated changes and items, including a
+concurrent addition and its raised total. It must refuse missing occurrences
+or malformed requests without writing; a failed withdrawal must report both
+failures and the records left behind. The coverage report must list a
+closure record by its gap id beside the additions.
+
+Capture version planning: ``baselines.bump_needed``, on in-memory copies of
+the baselines HEAD holds for TRN-CBTRN02C-negative-03 (observed) and
+TRN-CBTRN02C-recovery-02 (derived), must judge a change as ``--check-bumps
+--base HEAD`` does, from HEAD's version and platform: ``none`` for HEAD's own
+bytes, ``patch`` for manifest metadata, ``minor`` for changed raw bytes, a
+changed capture platform or raw bytes added to a derived baseline, ``major``
+for a changed decoded value. It must return ``None`` at the starting commit,
+where git lists no baseline, and raise ``BumpCheckError``, never ``None``,
+when git fails to list or read the base, which ``capture.py`` refuses as a
+``CaptureError`` carrying git's message.
+``capture.plan_version`` must raise HEAD's version, never the working tree's,
+so repeated captures plan one version; keep ``1.0.0`` with ``--bump`` ignored
+for a baseline HEAD lacks; and refuse a missing ``--bump`` or one below the
+level the change needs, naming that level. The bump check behind that
+planning must parse HEAD's YAML only in temporary folders directly in
+capture's work root, and leave none behind, whether ``CARDDEMO_TEST_WORKDIR``
+is unset or names another directory.
 
 Work root: a ``CARDDEMO_TEST_WORKDIR`` that is unset, empty, blank, a regular
 file, under one, the repository, inside it or an unwritable directory must
@@ -215,10 +317,12 @@ import dataclasses
 import datetime
 import functools
 import inspect
+import json
 import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -268,6 +372,7 @@ from harness import (  # noqa: E402
     runner,
     scenarios,
 )
+from harness import capture as capture_cli  # noqa: E402
 
 pytestmark = pytest.mark.unit
 
@@ -478,6 +583,95 @@ def test_every_screen_layout_defines_the_screen_clock_fields() -> None:
         if missing:
             lacking[mapset] = missing
     assert lacking == {}
+
+
+# Matcher binding, on committed bytes under the default clock: TRANSACT as
+# TRN-POSTTRAN-normal-01 posted it (262 records, whose first and last its two
+# contains items name) and SYSTRAN as FIN-INTCALC-normal-01 wrote it (50
+# records, each a records item). A spelling names each clock-derived
+# timestamp: "{}" by its decoded name, "TRAN-RECORD.{}" by its field path in
+# CVTRA05Y, and a spelling without "{}" names that field whatever the
+# timestamp.
+RUN_TIMESTAMP = {"match": "run-timestamp"}
+DECODED_NAME = "{}"
+FIELD_PATH = "TRAN-RECORD.{}"
+MATCHER_PLACEMENTS = [pytest.param(placement, id=placement) for placement in ("records", "contains", "entry", "top")]
+MATCHER_REFUSALS = [
+    pytest.param("records", "TRAN-RECORD", "records[1] names TRAN-RECORD, a group", id="group-in-records"),
+    pytest.param("contains", "TRAN-RECORD", "contains[1] matches no observed record", id="group-in-contains"),
+    pytest.param("entry", "TRAN-RECORD", "TRANSACT.matchers names TRAN-RECORD, a group", id="group-in-entry"),
+    pytest.param("top", "TRAN-RECORD", "expected.matchers names TRAN-RECORD, a group", id="group-in-top"),
+    pytest.param("entry", "@raw", "names @raw, the whole raw record", id="raw-record-in-entry"),
+    pytest.param("records", "TRAN-RECORD.TRAN-TS", "TRAN-RECORD.TRAN-TS name no decoded field", id="no-such-path"),
+    pytest.param("whole-line", DECODED_NAME, "a whole-line matcher for a field-map record", id="whole-line"),
+]
+
+
+def _timestamp_scenario(placement: str, spelling: str) -> tuple[scenarios.Scenario, base.Result, str]:
+    """An in-memory scenario asserting one dataset whose timestamps take
+    ``run-timestamp`` matchers named by ``spelling``: in its ``records``
+    (SYSTRAN; ``whole-line`` also makes the first one a whole-line matcher),
+    or in the ``contains`` items, the entry's ``matchers`` or the top-level
+    ``matchers`` (TRANSACT); a result holding the dataset's committed bytes;
+    and the dataset's name."""
+    if placement in ("records", "whole-line"):
+        source, name = scenarios.get("FIN-INTCALC-normal-01"), "SYSTRAN"
+        records = [
+            {(spelling.format(field) if baselines.is_matcher(value) else field): value for field, value in item.items()}
+            for item in source.expected["datasets"][name]["records"]
+        ]
+        if placement == "whole-line":
+            records[0] = RUN_TIMESTAMP
+        expected: dict = {"datasets": {name: {"records": records}}}
+    else:
+        source, name = scenarios.get("TRN-POSTTRAN-normal-01"), "TRANSACT"
+        committed = source.expected["datasets"][name]
+        contains = [
+            {field: value for field, value in item.items() if field != "TRAN-PROC-TS"} for item in committed["contains"]
+        ]
+        named = {spelling.format("TRAN-PROC-TS"): RUN_TIMESTAMP}
+        if placement == "contains":
+            contains = [{**item, **named} for item in contains]
+        expected = {"datasets": {name: {"count": committed["count"], "contains": contains}}}
+        if placement == "entry":
+            expected["datasets"][name]["matchers"] = named
+        elif placement == "top":
+            expected["matchers"] = named
+    result = base.Result(datasets={name: baselines.load(source.id).datasets[name]})
+    return dataclasses.replace(source, expected=copy.deepcopy(expected)), result, name
+
+
+@pytest.mark.parametrize("placement", MATCHER_PLACEMENTS)
+def test_matchers_named_by_field_path_bind_to_their_decoded_fields(placement: str) -> None:
+    short, result, name = _timestamp_scenario(placement, DECODED_NAME)
+    qualified, _, _ = _timestamp_scenario(placement, FIELD_PATH)
+    expected = capture_cli.build_expected(short, result)
+    assert capture_cli.build_expected(qualified, result) == expected
+    observed = baselines.decode_result(short, result)["datasets"][name]
+    absolute = baselines.resolve_matchers(RUN_TIMESTAMP, scenarios.clock(short))
+    named = {item["TRAN-ID"] for item in short.expected["datasets"][name].get("contains", [])}
+    fields = ("TRAN-ORIG-TS", "TRAN-PROC-TS") if placement == "records" else ("TRAN-PROC-TS",)
+    bound = 0
+    for record, decoded in zip(expected["datasets"][name], observed, strict=True):
+        if placement == "contains" and decoded["TRAN-ID"] not in named:
+            assert record == decoded
+            continue
+        bound += 1
+        assert all(decoded[field] == absolute for field in fields)
+        assert record == {**decoded, **dict.fromkeys(fields, RUN_TIMESTAMP)}
+        assert absolute not in record.values()
+    assert bound == (len(named) if placement == "contains" else len(observed))
+    manifest = dict(baselines.load(qualified.id).manifest)
+    baseline = baselines.Baseline(qualified.id, expected, manifest, dict(result.datasets))
+    run_date = datetime.date.fromisoformat(scenarios.clock(qualified)[:10])
+    assert baselines.compare(qualified, baseline, result, capture_cli.ADAPTER, run_date) == ("passed", None, "")
+
+
+@pytest.mark.parametrize(("placement", "spelling", "refusal"), MATCHER_REFUSALS)
+def test_matchers_no_decoded_field_can_hold_are_refused(placement: str, spelling: str, refusal: str) -> None:
+    scenario, result, _ = _timestamp_scenario(placement, spelling)
+    with pytest.raises(capture_cli.CaptureError, match=re.escape(refusal)):
+        capture_cli.build_expected(scenario, result)
 
 
 # The steps of ACT-COACTUPC-boundary-24 driven by tpe.drive on a fake region:
@@ -1138,6 +1332,276 @@ def test_evidence_writer_writes_a_conforming_record_that_reads_back_equal(
     fields = {name: written.get(name) for name in results.RECORD_FIELDS}
     assert fields == record
     assert results.record_problems(fields) == []
+
+
+# baselines.write publishing one id whole, on a baselines folder in the
+# case's own work_root_case folder inside the session work root. A writer
+# child process (sys.executable with tests/ on its path) kills itself with
+# SIGKILL at one seam of the publication, so it dies exactly there: after the
+# first staged file (_stage_file), between the two renames of the fallback
+# swap (the stage's rename, once the pre-image holds the baseline), or after
+# the exchange, before the replaced baseline is removed (_remove_entry).
+# "exchange" and "fallback" children write to the end, the latter with
+# renameat2 taken away.
+PUBLICATION_ID = "TRN-CBTRN02C-negative-03"
+PUBLICATION_DATASETS = ("ACCTDATA", "TRANSACT")
+PUBLICATION_WRITERS = 3
+PUBLICATION_ROUNDS = 12
+PUBLICATION_TIMEOUT_S = 60
+PUBLICATION_CHILD = """\
+import json, os, signal, sys
+sys.path.insert(0, sys.argv[1])
+from harness import baselines
+
+seam, root, writes, baseline_id = sys.argv[2], sys.argv[3], json.loads(sys.argv[4]), sys.argv[5]
+
+def die(*args, **kwargs):
+    os.kill(os.getpid(), signal.SIGKILL)
+
+if seam == "staged-file":
+    stage_file = baselines._stage_file
+    def staged(*args, **kwargs):
+        stage_file(*args, **kwargs)
+        die()
+    baselines._stage_file = staged
+elif seam == "between-renames":
+    baselines._exchange = lambda *args: False
+    rename = os.rename
+    def renamed(source, *args, **kwargs):
+        if str(source).endswith(".new"):
+            die()
+        rename(source, *args, **kwargs)
+    os.rename = renamed
+elif seam == "after-exchange":
+    baselines._remove_entry = die
+elif seam == "fallback":
+    baselines._exchange = lambda *args: False
+for expected, manifest, raw in writes:
+    datasets = {name: bytes.fromhex(data) for name, data in raw.items()}
+    baselines.write(baseline_id, expected, manifest, datasets, baselines_dir=root)
+"""
+
+
+def _publication_baseline(
+    tag: str, names: tuple[str, ...] = PUBLICATION_DATASETS
+) -> tuple[dict, dict, dict[str, bytes]]:
+    """An observed baseline whose three kinds of artifact all carry ``tag``:
+    the expected message, the manifest's execution id and each raw dataset."""
+    expected = {"return_code": 0, "messages": [f"writer {tag}"], "datasets": {name: {"count": 1} for name in names}}
+    manifest = {
+        **DERIVED_MANIFEST,
+        "capture_platform": "gnucobol-batch",
+        "execution_id": f"gnucobol-batch-{tag}",
+        "execution_fingerprint": "0" * 64,
+    }
+    return expected, manifest, {name: f"{tag}:{name}".encode() for name in names}
+
+
+def _publication_tags(loaded: baselines.Baseline) -> set[str]:
+    """The writer tags the artifacts of ``loaded`` carry: exactly one when it
+    was published whole."""
+    tags = {
+        loaded.expected["messages"][0].removeprefix("writer "),
+        loaded.manifest["execution_id"].removeprefix("gnucobol-batch-"),
+    }
+    tags.update(data.decode().partition(":")[0] for data in loaded.datasets.values())
+    return tags
+
+
+def _publication_child(seam: str, root: Path, writes: list) -> subprocess.Popen:
+    """A writer process that writes each ``(expected, manifest, datasets)``
+    of ``writes`` to ``root`` in turn, with ``seam`` set up as the comment
+    on ``PUBLICATION_ID`` describes."""
+    payload = json.dumps(
+        [[expected, manifest, {name: data.hex() for name, data in raw.items()}] for expected, manifest, raw in writes]
+    )
+    return subprocess.Popen(
+        [sys.executable, "-c", PUBLICATION_CHILD, str(TESTS_ROOT), seam, str(root), payload, PUBLICATION_ID],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
+def _finished(child: subprocess.Popen) -> tuple[int, str]:
+    """The return code and output of a writer process, killed when it runs
+    past ``PUBLICATION_TIMEOUT_S``."""
+    try:
+        out, err = child.communicate(timeout=PUBLICATION_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        child.kill()
+        out, err = child.communicate()
+    return child.returncode, out + err
+
+
+# Where the writer dies, whether a baseline stood before it, and whose
+# baseline load must then return: the last complete one, the new one once
+# it is in place, or none for an interrupted first capture.
+PUBLICATION_INTERRUPTIONS = [
+    pytest.param("staged-file", True, "old", id="replacement-between-staged-files"),
+    pytest.param("staged-file", False, None, id="first-capture-between-staged-files"),
+    pytest.param("between-renames", True, "old", id="fallback-swap-between-its-renames"),
+    pytest.param("after-exchange", True, "new", id="replacement-after-the-exchange"),
+]
+
+
+@pytest.mark.parametrize(("seam", "replacing", "survivor"), PUBLICATION_INTERRUPTIONS)
+def test_an_interrupted_publication_leaves_a_complete_baseline_and_a_retry_succeeds(
+    work_root_case: Path, seam: str, replacing: bool, survivor: str | None
+) -> None:
+    root = work_root_case / "baselines"
+    if replacing:
+        baselines.write(PUBLICATION_ID, *_publication_baseline("old"), baselines_dir=root)
+    else:
+        root.mkdir()
+    returncode, output = _finished(_publication_child(seam, root, [_publication_baseline("new")]))
+    assert returncode == -signal.SIGKILL, output
+    left = sorted(name for name in os.listdir(root) if name != PUBLICATION_ID)
+    assert left, "the writer died with nothing of its publication left"
+    assert all(name.startswith(f".{PUBLICATION_ID}.") and name[-4:] in (".new", ".old") for name in left), left
+    judged, problems = baselines._working_tree(root)  # what the bump check would judge
+    assert (sorted(judged), problems) == (sorted({PUBLICATION_ID} & set(os.listdir(root))), [])
+    loaded = baselines.load(PUBLICATION_ID, missing_ok=True, baselines_dir=root)
+    if survivor is None:
+        assert loaded is None
+        assert not (root / PUBLICATION_ID).exists()
+    else:
+        assert _publication_tags(loaded) == {survivor}
+    written = baselines.write(PUBLICATION_ID, *_publication_baseline("retry"), baselines_dir=root)
+    assert _publication_tags(written) == {"retry"}
+    assert os.listdir(root) == [PUBLICATION_ID]
+    assert sorted(os.listdir(root / PUBLICATION_ID / baselines.DATASETS_DIR)) == [
+        f"{name}{baselines.RAW_SUFFIX}" for name in PUBLICATION_DATASETS
+    ]
+
+
+@pytest.mark.parametrize("swap", ["exchange", "fallback"])
+def test_concurrent_writers_of_one_id_never_publish_mixed_artifacts(work_root_case: Path, swap: str) -> None:
+    root = work_root_case / "baselines"
+    baselines.write(PUBLICATION_ID, *_publication_baseline("seed"), baselines_dir=root)
+    children = [
+        _publication_child(
+            swap,
+            root,
+            # Every other round drops TRANSACT, so .bin files come and go.
+            [
+                _publication_baseline(f"w{writer}r{turn}", PUBLICATION_DATASETS[: 1 + turn % 2])
+                for turn in range(PUBLICATION_ROUNDS)
+            ],
+        )
+        for writer in range(PUBLICATION_WRITERS)
+    ]
+    try:
+        writing = True
+        while writing:  # loads while the writers run, and once more after
+            writing = any(child.poll() is None for child in children)
+            tags = _publication_tags(baselines.load(PUBLICATION_ID, baselines_dir=root))
+            assert len(tags) == 1, tags
+    finally:
+        finished = [_finished(child) for child in children]
+    assert [returncode for returncode, _ in finished] == [0] * PUBLICATION_WRITERS, finished
+    final = _publication_tags(baselines.load(PUBLICATION_ID, baselines_dir=root))
+    assert final <= {f"w{writer}r{PUBLICATION_ROUNDS - 1}" for writer in range(PUBLICATION_WRITERS)}, final
+    assert len(final) == 1
+    assert os.listdir(root) == [PUBLICATION_ID]
+
+
+# Entries a baseline directory cannot hold, by their path inside it, what
+# stands there, and how the refusal names it.
+FOREIGN_BASELINE_ENTRIES = [
+    pytest.param("notes.txt", "file", "is not part of a baseline", id="file"),
+    pytest.param("scratch", "folder", "is not part of a baseline", id="folder"),
+    pytest.param("datasets/README", "file", "is not part of a baseline", id="file-in-datasets"),
+    pytest.param("datasets/OLD.bin", "folder", "is not part of a baseline", id="folder-named-as-a-dataset"),
+    pytest.param("elsewhere", "link", "is a symbolic link", id="symbolic-link"),
+]
+
+
+@pytest.mark.parametrize(("relative", "kind", "refusal"), FOREIGN_BASELINE_ENTRIES)
+def test_a_baseline_directory_holding_a_foreign_entry_is_not_replaced(
+    work_root_case: Path, relative: str, kind: str, refusal: str
+) -> None:
+    root = work_root_case / "baselines"
+    baselines.write(PUBLICATION_ID, *_publication_baseline("old"), baselines_dir=root)
+    entry = root / PUBLICATION_ID / relative
+    if kind == "file":
+        entry.write_bytes(b"kept\n")
+    elif kind == "folder":
+        entry.mkdir()
+    else:
+        (work_root_case / "target").mkdir()
+        entry.symlink_to(work_root_case / "target", target_is_directory=True)
+    before = _tree(work_root_case)
+    with pytest.raises(baselines.BaselineError) as caught:
+        baselines.write(PUBLICATION_ID, *_publication_baseline("new"), baselines_dir=root)
+    assert f"{PUBLICATION_ID}/{relative} {refusal}" in str(caught.value)
+    assert _tree(work_root_case) == before
+
+
+# A second write after the "a" baseline: its change, the files it rewrites
+# and the ones it drops.
+BASELINE_REWRITES = [
+    pytest.param("identical", (), (), id="identical"),
+    pytest.param("manifest", (baselines.MANIFEST_FILE,), (), id="manifest-changed"),
+    pytest.param(
+        "dataset-dropped",
+        (baselines.EXPECTED_FILE,),
+        (f"{baselines.DATASETS_DIR}/TRANSACT{baselines.RAW_SUFFIX}",),
+        id="dataset-dropped",
+    ),
+]
+
+
+@pytest.mark.parametrize("hard_links", [True, False], ids=["hard-links", "copies"])
+@pytest.mark.parametrize(("change", "rewritten", "dropped"), BASELINE_REWRITES)
+def test_a_rewrite_keeps_unchanged_files_and_an_identical_one_publishes_nothing(
+    work_root_case: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    change: str,
+    rewritten: tuple[str, ...],
+    dropped: tuple[str, ...],
+    hard_links: bool,
+) -> None:
+    root = work_root_case / "baselines"
+    directory = root / PUBLICATION_ID
+    expected, manifest, raw = _publication_baseline("a")
+    baselines.write(PUBLICATION_ID, expected, manifest, raw, baselines_dir=root)
+    (directory / baselines.MANIFEST_FILE).chmod(0o640)
+    (directory / baselines.DATASETS_DIR).chmod(0o750)
+    directory.chmod(0o750)
+
+    def statuses() -> dict[str, os.stat_result]:
+        return {path.relative_to(directory).as_posix(): path.lstat() for path in [directory, *directory.rglob("*")]}
+
+    before = statuses()
+    if change == "manifest":
+        manifest = {**manifest, "capture_date": "2026-02-02"}
+    elif change == "dataset-dropped":
+        expected = {**expected, "datasets": {"ACCTDATA": {"count": 1}}}
+        raw = {"ACCTDATA": raw["ACCTDATA"]}
+    if not hard_links:
+
+        def no_link(*args: object, **kwargs: object) -> None:
+            raise PermissionError(1, "Operation not permitted")
+
+        monkeypatch.setattr(os, "link", no_link)
+    baselines.write(PUBLICATION_ID, expected, manifest, raw, baselines_dir=root)
+    after = statuses()
+    assert os.listdir(root) == [PUBLICATION_ID]
+    assert set(after) == set(before) - set(dropped)
+    for relative, status in after.items():
+        old = before[relative]
+        assert stat.S_IMODE(status.st_mode) == stat.S_IMODE(old.st_mode), relative
+        if change == "identical":
+            assert (status.st_ino, status.st_mtime_ns) == (old.st_ino, old.st_mtime_ns), relative
+        elif stat.S_ISDIR(status.st_mode):
+            assert status.st_ino != old.st_ino, relative
+        elif relative in rewritten:
+            assert status.st_ino != old.st_ino, relative
+        else:
+            assert status.st_mtime_ns == old.st_mtime_ns, relative
+            assert (status.st_ino == old.st_ino) == hard_links, relative
+    assert baselines.load(PUBLICATION_ID, baselines_dir=root).manifest == manifest
 
 
 # The command log of a scenario's evidence: a CommandSet of the committed
@@ -3887,6 +4351,741 @@ def test_proof_expectation_pins_each_stage_observation(scenario_id: str, mutate,
         assert len(found) == 1 and problem in found[0], found
 
 
+# Closing evidence: what report._entry_problems accepts as the evidence that
+# settled a register entry, its resolving_evidence or an earlier closure's in
+# superseded_evidence. The execution ids are invented ids of valid form; the
+# commits are the suite's starting commit, in full and abbreviated.
+CLOSING_GAP = "GAP-UNC-008"
+CLOSING_UNIKIX = "unikix-20250101T000000Z-0123abcd"
+CLOSING_OTHER_UNIKIX = "unikix-20250102T000000Z-0123abcd"
+CLOSING_GNUCOBOL = "gnucobol-batch-0123456789abcdef"
+CLOSING_SCENARIO = "FIN-INTCALC-normal-01"
+CLOSING_COMMIT = "93ebec71ff7b59a68cedd7c501afe496a8eaa68d"
+CLOSING_FOLDER = f"tests/reports/unikix/{CLOSING_UNIKIX}"
+CLOSING_REJECTED = f"{CLOSING_GAP}: resolving_evidence must be "
+
+# (fields over a closed uncertain-purpose entry, and the start and a part of
+# the one problem they give, or None when the entry is valid).
+CLOSING_EVIDENCE = [
+    pytest.param({"resolving_evidence": {"execution_id": CLOSING_UNIKIX, "evidence_path": CLOSING_FOLDER}},
+                 None, id="unikix-execution"),
+    pytest.param({"resolving_evidence": {"execution_id": CLOSING_UNIKIX, "scenario_id": CLOSING_SCENARIO,
+                                         "evidence_path": f"{CLOSING_FOLDER}/{CLOSING_SCENARIO}"}},
+                 None, id="unikix-scenario-folder"),
+    pytest.param({"resolving_evidence": {"execution_id": CLOSING_GNUCOBOL, "scenario_id": CLOSING_SCENARIO,
+                                         "evidence_path": f"tests/reports/results/{CLOSING_SCENARIO}.yaml"}},
+                 None, id="gnucobol-batch-record"),
+    pytest.param({"resolving_evidence": {"commit": CLOSING_COMMIT}}, None, id="commit-40-hex"),
+    pytest.param({"resolving_evidence": {"commit": CLOSING_COMMIT[:7]}}, None, id="commit-7-hex"),
+    pytest.param({"resolving_evidence": "done"}, (CLOSING_REJECTED, "got 'done'"), id="plain-text"),
+    pytest.param({"resolving_evidence": {"note": "resolved"}}, (CLOSING_REJECTED, "unknown key(s) 'note'"),
+                 id="unrelated-mapping"),
+    pytest.param({"resolving_evidence": {"execution_id": CLOSING_UNIKIX}}, (CLOSING_REJECTED, "no evidence_path"),
+                 id="execution-without-path"),
+    pytest.param({"resolving_evidence": {"evidence_path": CLOSING_FOLDER}}, (CLOSING_REJECTED, "no execution_id"),
+                 id="path-without-execution"),
+    pytest.param({"resolving_evidence": {"execution_id": "unikix-2025-01-01",
+                                         "evidence_path": "tests/reports/unikix/unikix-2025-01-01"}},
+                 (CLOSING_REJECTED, "execution_id 'unikix-2025-01-01' is neither"), id="malformed-execution-id"),
+    pytest.param({"resolving_evidence": {"execution_id": CLOSING_UNIKIX,
+                                         "evidence_path": f"tests/reports/unikix/{CLOSING_OTHER_UNIKIX}"}},
+                 (CLOSING_REJECTED, f"is neither {CLOSING_FOLDER} nor"), id="path-of-another-execution"),
+    pytest.param({"resolving_evidence": {"execution_id": CLOSING_UNIKIX, "scenario_id": CLOSING_SCENARIO,
+                                         "evidence_path": f"{CLOSING_FOLDER}/FIN-INTCALC-normal-02"}},
+                 (CLOSING_REJECTED, f"nor {CLOSING_FOLDER}/{CLOSING_SCENARIO}"), id="path-of-another-scenario"),
+    pytest.param({"resolving_evidence": {"execution_id": CLOSING_GNUCOBOL,
+                                         "evidence_path": f"tests/reports/results/{CLOSING_SCENARIO}.yaml"}},
+                 (CLOSING_REJECTED, "so it needs scenario_id"), id="gnucobol-batch-without-scenario"),
+    pytest.param({"resolving_evidence": {"execution_id": CLOSING_UNIKIX, "evidence_path": CLOSING_FOLDER,
+                                         "verdict": "passed"}},
+                 (CLOSING_REJECTED, "unknown key(s) 'verdict'"), id="unknown-key"),
+    pytest.param({"resolving_evidence": {"commit": "HEAD"}}, (CLOSING_REJECTED, "is not a git commit id"),
+                 id="commit-not-hex"),
+    pytest.param({"resolving_evidence": {"commit": CLOSING_COMMIT, "execution_id": CLOSING_UNIKIX,
+                                         "evidence_path": CLOSING_FOLDER}},
+                 (CLOSING_REJECTED, "commit stands alone"), id="commit-with-execution"),
+    pytest.param({"resolving_evidence": {"execution_id": CLOSING_UNIKIX, "evidence_path": 42}},
+                 (CLOSING_REJECTED, "evidence_path must be text"), id="value-not-text"),
+    pytest.param({"resolving_evidence": None}, (f"{CLOSING_GAP}: a closed entry names its resolving_evidence", ""),
+                 id="closed-without-evidence"),
+    pytest.param({"status": "open", "resolving_evidence": None,
+                  "superseded_evidence": [{"commit": CLOSING_COMMIT}, "done"]},
+                 (f"{CLOSING_GAP}: superseded_evidence[1] must be ", "got 'done'"), id="superseded-text"),
+]
+
+
+@pytest.mark.parametrize(("fields", "problem"), CLOSING_EVIDENCE)
+def test_entry_closing_evidence_shape(fields: dict, problem: tuple[str, str] | None) -> None:
+    entry = {
+        "gap_id": CLOSING_GAP, "category": "uncertain-purpose", "status": "closed",
+        "unknown": "Whether truncating the monthly interest is intended.",
+        "needed": "The owner's statement of the intended rounding.",
+        "affected_inventory_ids": ["INV-FIN-003"],
+    }
+    entry.update(fields)
+    problems = report._entry_problems(CLOSING_GAP, entry)
+    if problem is None:
+        assert problems == []
+    else:
+        start, part = problem
+        assert len(problems) == 1 and problems[0].startswith(start) and part in problems[0], problems
+
+
+# report._validate_evidence on a record of NON_RAN_SCENARIO, which only unikix
+# runs, with no outcome to compare (report.Evidence.ran false) and whose
+# execution fingerprint is the scenario's current one, its validation.yaml
+# writer recording the record instead of writing it, so nothing reaches an
+# evidence tree. Each status with the reason and gap result.yaml records for
+# it.
+NON_RAN_SCENARIO = "SEC-COSGN00C-normal-01"
+NON_RAN_RECORDS = [
+    pytest.param(results.STATUS_BLOCKED, "adapter-unavailable", "GAP-MIS-009", id="blocked"),
+    pytest.param(results.STATUS_UNEXECUTED, "missing-prerequisite", "GAP-MIS-014", id="implemented-unexecuted"),
+    pytest.param(results.STATUS_FAILING, "timeout", None, id="failing-timeout"),
+]
+# Each judgement: the import (a gaps document) or a revalidation, whether the
+# observed payload holds every observation the scenario and its baseline name
+# or is absent, and whether the recorded verdict is then written.
+NON_RAN_JUDGEMENTS = [
+    pytest.param(False, False, False, id="revalidation-without-observed"),
+    pytest.param(True, False, True, id="import-without-observed"),
+    pytest.param(False, True, True, id="revalidation-with-every-observation"),
+]
+NON_RAN_FINGERPRINT = "5" * 64
+NON_RAN_LACKS = "observed (the run's return code, messages and screens)"
+
+
+def _every_observation(scenario: scenarios.Scenario, baseline: baselines.Baseline) -> dict:
+    """An observed payload holding every field the scenario's and the
+    baseline's expected screens name, each step's ``@map`` as asserted and a
+    matcher's field blank, and the scenario's expected messages."""
+    screens: list[dict[str, str]] = []
+    for expected in (scenario.expected, baseline.expected):
+        steps = expected.get("screens")
+        for index, step in enumerate(steps if isinstance(steps, list) else []):
+            if index == len(screens):
+                screens.append({})
+            if isinstance(step, Mapping):
+                screens[index].update((str(name), value if isinstance(value, str) else "")
+                                      for name, value in step.items())
+    messages = scenario.expected.get("messages")
+    messages = [message for message in messages if isinstance(message, str)] if isinstance(messages, list) else []
+    return {"return_code": None, "messages": messages, "screens": screens}
+
+
+@pytest.mark.parametrize(("importing", "observed", "written"), NON_RAN_JUDGEMENTS)
+@pytest.mark.parametrize(("status", "reason", "gap_id"), NON_RAN_RECORDS)
+def test_a_verdict_with_no_outcome_to_compare_is_revalidated_only_from_every_observation(
+    monkeypatch: pytest.MonkeyPatch,
+    work_root_case: Path,
+    status: str,
+    reason: str,
+    gap_id: str | None,
+    importing: bool,
+    observed: bool,
+    written: bool,
+) -> None:
+    scenario = scenarios.get(NON_RAN_SCENARIO)
+    baseline = baselines.load(NON_RAN_SCENARIO)
+    record = results.build_record(
+        scenario,
+        results.UNIKIX,
+        status,
+        reason=reason,
+        gap_id=gap_id,
+        execution_fingerprint=NON_RAN_FINGERPRINT,
+        execution_id=EVIDENCE_EXECUTION_ID,
+    )
+    raw = dict(record, observed=_every_observation(scenario, baseline) if observed else None)
+    found = report.Evidence(EVIDENCE_EXECUTION_ID, NON_RAN_SCENARIO, work_root_case / NON_RAN_SCENARIO, raw, {}, {})
+    assert not found.ran
+    assert report.missing_observations(found, scenario, baseline) == ([] if observed else [NON_RAN_LACKS])
+    writes: list[dict] = []
+    monkeypatch.setattr(report, "current_fingerprint", lambda current: (NON_RAN_FINGERPRINT, None))
+    monkeypatch.setattr(report, "_write_validation", lambda evidence, validation: writes.append(dict(validation)))
+    document: dict | None = {} if importing else None
+    summary = report.ImportSummary(EVIDENCE_EXECUTION_ID)
+    outcome = report._validate_evidence(found, scenario, document, summary, report._CopyGaps({}, frozenset()), None)
+    assert document == ({} if importing else None) and summary.gaps_added == []
+    if not written:
+        assert outcome is None and writes == []
+        assert summary.skipped == [(NON_RAN_SCENARIO, f"stale: the evidence lacks {NON_RAN_LACKS}")]
+        return
+    assert outcome == (status, reason) and summary.skipped == []
+    assert len(writes) == 1
+    carried = {name: writes[0][name] for name in ("status", "reason", "gap_id", "execution_fingerprint", "decoded")}
+    assert carried == {
+        "status": status,
+        "reason": reason,
+        "gap_id": gap_id,
+        "execution_fingerprint": NON_RAN_FINGERPRINT,
+        "decoded": None,
+    }
+    assert writes[0]["baseline_version"] == baseline.version
+    assert writes[0]["scenario_digest"] == scenarios.digest(scenario)
+
+
+# Recurring questions: report._add_gap on in-memory registers, whose entries
+# ask the question their unknown starts with (the text up to its first
+# colon). Each register holds another open question (GAP-UNC-001), a
+# stub-limitation entry (GAP-STB-010) and, as RAISE_ENTRY, the cross-adapter
+# divergence of RAISE_SCENARIO first seen in RAISE_FIRST, closed on
+# RAISE_CLOSING or open; RAISE_RECURRING raises it again. Every gap id here,
+# the ids expected of a new entry included, is one gaps.yaml holds, so
+# report.py --check finds each id this file cites; the entries under them
+# are invented. The execution ids are invented ids of valid form, and the
+# item ids need not exist.
+RAISE_SCENARIO = "FIN-INTCALC-normal-01"
+RAISE_QUESTION = f"Cross-adapter divergence of {RAISE_SCENARIO}"
+RAISE_ENTRY = "GAP-UNC-014"
+RAISE_FIRST = "unikix-20251201T000000Z-89abcdef"
+RAISE_CLOSING = {
+    "execution_id": "unikix-20260101T000000Z-0123abcd",
+    "evidence_path": "tests/reports/unikix/unikix-20260101T000000Z-0123abcd",
+}
+RAISE_RECURRING = "unikix-20260201T000000Z-4567cdef"
+RAISE_ITEMS = ["INV-FIN-008", "INV-FIN-009"]
+RAISE_EXTRA_ITEM = "INV-FIN-010"
+RAISE_NEEDED = "The owner's statement of which outcome is intended."
+RAISE_FORMS = [pytest.param("list", id="list-form"), pytest.param("mapping", id="mapping-form")]
+
+# Each case: the items the open RAISE_ENTRY lists, the items raised again,
+# whether a closed GAP-UNC-013 asking the same question stands before it,
+# what _add_gap returns (None: nothing changes) and the items listed after.
+RAISE_OPEN_CASES = [
+    pytest.param(RAISE_ITEMS, RAISE_ITEMS[::-1], False, None, RAISE_ITEMS, id="lists-every-item"),
+    pytest.param(RAISE_ITEMS, [RAISE_EXTRA_ITEM, RAISE_ITEMS[0]], False, (RAISE_ENTRY, "extended"),
+                 [*RAISE_ITEMS, RAISE_EXTRA_ITEM], id="extra-item"),
+    pytest.param(RAISE_ITEMS, RAISE_ITEMS, True, None, RAISE_ITEMS, id="beside-a-closed-duplicate"),
+]
+
+# Each case: the category and the question raised, and the id of the entry
+# added, the category's next free number.
+RAISE_NEW_CASES = [
+    pytest.param("uncertain-purpose", "Cross-adapter divergence of FIN-INTCALC-normal-02", "GAP-UNC-015",
+                 id="another-question"),
+    pytest.param("stub-limitation", RAISE_QUESTION, "GAP-STB-011", id="same-question-another-category"),
+]
+
+
+def _raised_unknown(question: str, execution_id: str) -> str:
+    """The unknown of a divergence raised by ``execution_id``, as
+    ``report._divergence_entry`` words it."""
+    return (f"{question}: UniKix execution {execution_id} gives another decoded outcome than the gnucobol-batch "
+            "baseline, which stays authoritative, in messages.")
+
+
+def _raise_register(form: str, status: str, items: list[str], duplicate: bool = False) -> dict:
+    """The gaps.yaml document of a case, its ``gaps`` a list of entries or,
+    for ``"mapping"``, a mapping of gap id to entry: RAISE_ENTRY in
+    ``status`` listing ``items``, after GAP-UNC-001, GAP-STB-010 and, with
+    ``duplicate``, a closed GAP-UNC-013 that asks RAISE_ENTRY's question."""
+    entries = [
+        {"gap_id": "GAP-UNC-001", "category": "uncertain-purpose", "status": "open",
+         "unknown": "Whether UNUSED1Y is used: no program copies it.", "needed": "The owner's statement of purpose.",
+         "affected_inventory_ids": ["INV-DAT-001"], "resolving_evidence": None},
+        {"gap_id": "GAP-STB-010", "category": "stub-limitation", "status": "open",
+         "unknown": "The emulated catalog: GDG generations are resolved by the harness.",
+         "needed": "An eligible UniKix run of the same scenario that agrees.",
+         "affected_inventory_ids": ["INV-DAT-002"], "resolving_evidence": None},
+    ]
+    if duplicate:
+        entries.append({"gap_id": "GAP-UNC-013", "category": "uncertain-purpose", "status": "closed",
+                        "unknown": _raised_unknown(RAISE_QUESTION, RAISE_FIRST), "needed": RAISE_NEEDED,
+                        "affected_inventory_ids": list(items), "resolving_evidence": dict(RAISE_CLOSING)})
+    entries.append({"gap_id": RAISE_ENTRY, "category": "uncertain-purpose", "status": status,
+                    "unknown": _raised_unknown(RAISE_QUESTION, RAISE_FIRST), "needed": RAISE_NEEDED,
+                    "affected_inventory_ids": list(items),
+                    "resolving_evidence": dict(RAISE_CLOSING) if status == "closed" else None})
+    if form == "mapping":
+        return {"gaps": {entry["gap_id"]: {key: value for key, value in entry.items() if key != "gap_id"}
+                         for entry in entries}}
+    return {"gaps": entries}
+
+
+@pytest.mark.parametrize("form", RAISE_FORMS)
+def test_add_gap_reopens_the_closed_entry_asking_the_same_question(form: str) -> None:
+    document = _raise_register(form, "closed", RAISE_ITEMS[:1])
+    unknown = _raised_unknown(RAISE_QUESTION, RAISE_RECURRING)
+    needed = f"An eligible UniKix run that agrees with the baseline, after {RAISE_RECURRING}."
+    registered = report._add_gap(document, "uncertain-purpose", unknown, iter(RAISE_ITEMS[::-1]), needed)
+    entries = report._gap_entries(document)
+    assert registered == (RAISE_ENTRY, "reopened")
+    assert sorted(entries) == ["GAP-STB-010", "GAP-UNC-001", RAISE_ENTRY]
+    entry = entries[RAISE_ENTRY]
+    assert entry["status"] == "open" and entry["resolving_evidence"] is None
+    assert entry["superseded_evidence"] == [RAISE_CLOSING]
+    assert entry["unknown"] == unknown and entry["needed"] == needed
+    assert entry["affected_inventory_ids"] == RAISE_ITEMS
+    assert report._entry_problems(RAISE_ENTRY, entry) == []
+
+
+@pytest.mark.parametrize(("listed", "raised", "duplicate", "registered", "after"), RAISE_OPEN_CASES)
+@pytest.mark.parametrize("form", RAISE_FORMS)
+def test_add_gap_adds_no_entry_beside_the_open_one_asking_the_same_question(
+    form: str, listed: list[str], raised: list[str], duplicate: bool, registered: tuple[str, str] | None,
+    after: list[str],
+) -> None:
+    document = _raise_register(form, "open", listed, duplicate)
+    expected = copy.deepcopy(document)
+    report._gap_entries(expected)[RAISE_ENTRY]["affected_inventory_ids"] = after
+    unknown = _raised_unknown(RAISE_QUESTION, RAISE_RECURRING)
+    assert report._add_gap(document, "uncertain-purpose", unknown, iter(raised), "Another statement.") == registered
+    assert document == expected
+
+
+@pytest.mark.parametrize(("category", "question", "gap_id"), RAISE_NEW_CASES)
+@pytest.mark.parametrize("form", RAISE_FORMS)
+def test_add_gap_gives_another_question_the_next_free_number(form: str, category: str, question: str,
+                                                             gap_id: str) -> None:
+    document = _raise_register(form, "closed", RAISE_ITEMS)
+    before = report._gap_entries(copy.deepcopy(document))
+    unknown = _raised_unknown(question, RAISE_RECURRING)
+    assert report._add_gap(document, category, unknown, iter(RAISE_ITEMS[::-1]), RAISE_NEEDED) == (gap_id, "added")
+    entries = report._gap_entries(document)
+    added = {"affected_inventory_ids": RAISE_ITEMS, "category": category, "needed": RAISE_NEEDED,
+             "resolving_evidence": None, "status": "open", "unknown": unknown}
+    assert entries.pop(gap_id) == (added if form == "mapping" else dict(added, gap_id=gap_id))
+    assert entries == before
+
+
+@pytest.mark.parametrize("form", RAISE_FORMS)
+def test_add_gap_refuses_an_entry_whose_items_are_not_a_list(form: str) -> None:
+    document = _raise_register(form, "closed", RAISE_ITEMS)
+    report._gap_entries(document)[RAISE_ENTRY]["affected_inventory_ids"] = RAISE_ITEMS[0]
+    before = copy.deepcopy(document)
+    with pytest.raises(report.ReportError, match=f"the affected_inventory_ids of {RAISE_ENTRY} is not a list"):
+        report._add_gap(document, "uncertain-purpose", _raised_unknown(RAISE_QUESTION, RAISE_RECURRING),
+                        RAISE_ITEMS, RAISE_NEEDED)
+    assert document == before
+
+
+# Closure records: the inventory update of a register entry the import or the
+# revalidation closes, and the write that records it before gaps.yaml. Every
+# case works on copies of the committed inventory.yaml and gaps.yaml in a
+# repository root of its own inside the work root, which report.py's
+# gaps.yaml, inventory and repository root point at for the case.
+# CLOSURE_EXECUTION is an invented execution id of valid form.
+CLOSURE_ROOT_PREFIX = "unit-closure-"
+CLOSURE_EXECUTION = "unikix-20250103T000000Z-0123abcd"
+CLOSURE_FOLDER = f"tests/reports/unikix/{CLOSURE_EXECUTION}"
+CLOSURE_EVIDENCE = {"execution_id": CLOSURE_EXECUTION, "evidence_path": CLOSURE_FOLDER}
+CLOSURE_INFERRED = "GAP-INF-001"
+CLOSURE_INSTALLATION = "GAP-MIS-009"
+CLOSURE_VERIFIED = "every affected item verified"
+CLOSURE_VERSIONS_RECORDED = "the installation's versions are recorded"
+CLOSURE_LEFT_OPEN = f"{CLOSURE_INFERRED}: left open, the inventory could not record its closure: "
+
+# An environment.yaml that records a version for every UniKix prerequisite.
+CLOSURE_ENVIRONMENT = {"versions": {key: "12.0.0" for key in report.UNIKIX_VERSION_KEYS}}
+
+# Each case: whether every GAP-INF-001 item is verified, whether the
+# installation's versions are recorded, and the entries closed, each with why.
+CLOSURE_SETTLINGS = [
+    pytest.param(True, False, [(CLOSURE_INFERRED, CLOSURE_VERIFIED)], id="inferred-entry-all-verified"),
+    pytest.param(False, True, [(CLOSURE_INSTALLATION, CLOSURE_VERSIONS_RECORDED)], id="installation-versions"),
+    pytest.param(False, False, [], id="nothing-settled"),
+]
+
+# A gap id of valid form that no register entry has, put together at run time
+# so that report.referenced_gap_ids, which reads every gap id written in
+# tests/, does not take it for a citation the register must hold.
+CLOSURE_NO_SUCH_GAP = "-".join(("GAP", "INF", "999"))
+
+# Closure pairs append_closures refuses, and what its refusal says.
+CLOSURE_REFUSALS = [
+    pytest.param((CLOSURE_NO_SUCH_GAP, "A reason."),
+                 f"{CLOSURE_NO_SUCH_GAP} are not entries of tests/inventory/gaps.yaml", id="no-such-entry"),
+    pytest.param(("INV-UTL-003", "A reason."), "'INV-UTL-003' is not GAP-<CAT>-<nnn>", id="not-a-gap-id"),
+    pytest.param((CLOSURE_INFERRED, "  "), f"the closure record of {CLOSURE_INFERRED} needs a reason",
+                 id="blank-reason"),
+]
+
+# The gap_id of a header change, and whether the header check refuses it.
+CLOSURE_GAP_IDS = [
+    pytest.param(CLOSURE_INFERRED, False, id="gap-id"),
+    pytest.param("GAP-XYZ-001", True, id="unknown-category"),
+    pytest.param(f"{CLOSURE_INFERRED}\n", True, id="trailing-newline"),
+    pytest.param(1, True, id="not-text"),
+]
+
+# How the inventory copy is broken so that it cannot record a closing, and
+# what the reason the operator is given says.
+CLOSURE_INVENTORY_FAILURES = [
+    pytest.param("no-header", "has no header; freeze the inventory before recording a closure", id="no-header"),
+    pytest.param("directory", "not an inventory file", id="a-directory"),
+]
+
+
+def _closure_reason(gap_id: str, why: str) -> str:
+    """The reason of the closure record of ``gap_id`` closed for ``why`` on
+    CLOSURE_EXECUTION, as ``report._close`` words it."""
+    return f"{gap_id} closed: {why}; resolving evidence: UniKix execution {CLOSURE_EXECUTION} ({CLOSURE_FOLDER})"
+
+
+@pytest.fixture
+def closure_root(monkeypatch: pytest.MonkeyPatch, carddemo_work_root: Path) -> Iterator[Path]:
+    """A repository root of this case's own inside the session work root
+    (carddemo_work_root), never under pytest's basetemp or in the checkout,
+    given by its real path, holding copies of the committed
+    ``inventory.yaml`` and ``gaps.yaml`` under ``tests/inventory/``, which
+    ``report.GAPS_FILE``, ``inventory_tools.INVENTORY_FILE`` and
+    ``report.REPO_ROOT`` name for the case; removed afterwards."""
+    directory = Path(tempfile.mkdtemp(prefix=CLOSURE_ROOT_PREFIX, dir=carddemo_work_root)).resolve()
+    try:
+        copies = directory / "tests" / "inventory"
+        copies.mkdir(parents=True)
+        for name in ("inventory.yaml", "gaps.yaml"):
+            shutil.copyfile(INVENTORY_DIR / name, copies / name)
+        monkeypatch.setattr(report, "GAPS_FILE", copies / "gaps.yaml")
+        monkeypatch.setattr(inventory_tools, "INVENTORY_FILE", copies / "inventory.yaml")
+        monkeypatch.setattr(report, "REPO_ROOT", directory)
+        yield directory
+    finally:
+        shutil.rmtree(directory)
+
+
+def _closed_inferred_entry() -> tuple[dict, str, list, list]:
+    """The register copy as ``report.GAPS_FILE`` holds it, read as a document
+    and as text, with GAP-INF-001 closed on CLOSURE_EXECUTION through
+    ``report._close``, the changes noted and the closings queued."""
+    original = report.GAPS_FILE.read_text(encoding="utf-8")
+    document = load_yaml(report.GAPS_FILE)
+    changes: list[str] = []
+    closures: list = []
+    entry = report._gap_entries(document)[CLOSURE_INFERRED]
+    report._close(CLOSURE_INFERRED, entry, dict(CLOSURE_EVIDENCE), CLOSURE_VERIFIED, changes, closures)
+    return document, original, changes, closures
+
+
+def test_append_closures_records_a_closure_without_an_addition(closure_root: Path,
+                                                              carddemo_repo_root: Path) -> None:
+    path = inventory_tools.INVENTORY_FILE
+    before = inventory_tools.load(path)
+    first = datetime.date.today().isoformat()
+    records = inventory_tools.append_closures([(CLOSURE_INFERRED, " A reason. ")], path, repo_root=closure_root)
+    days = {first, datetime.date.today().isoformat()}
+    after = inventory_tools.load(path)
+    assert len(records) == 1 and records[0]["date"] in days
+    assert records == [{"date": records[0]["date"], "gap_id": CLOSURE_INFERRED, "reason": "A reason."}]
+    assert after["items"] == before["items"]
+    assert after["header"]["changes"] == [*before["header"]["changes"], *records]
+    assert {key: value for key, value in after["header"].items() if key != "changes"} == {
+        key: value for key, value in before["header"].items() if key != "changes"
+    }
+    assert after["header"]["total"] == len(after["items"])
+    assert inventory_tools._added_ids(after["header"]) == inventory_tools._added_ids(before["header"])
+    assert inventory_tools.append_closures([], path, repo_root=closure_root) == []
+    # The drift check reads no addition from the record: the copy still
+    # matches the repository.
+    assert inventory_tools.check(path, carddemo_repo_root) == []
+
+
+@pytest.mark.parametrize(("case", "remaining", "refusal"), [
+    pytest.param("last", [0, 1, 2], None, id="last-equal-occurrence-only"),
+    pytest.param("both", [1, 2], None, id="two-requested-occurrences"),
+    pytest.param("absent", [], "no matching header.changes record remains", id="absent-refused"),
+    pytest.param("excess", [], "no matching header.changes record remains", id="too-many-refused"),
+    pytest.param("malformed", [], "malformed closure record", id="addition-is-not-a-closure"),
+])
+def test_withdraw_closures_removes_only_the_requested_records_or_writes_nothing(
+    closure_root: Path, case: str, remaining: list[int], refusal: str | None,
+) -> None:
+    path = inventory_tools.INVENTORY_FILE
+    before = inventory_tools.load(path)
+    records = inventory_tools.append_closures([
+        (CLOSURE_INFERRED, "A reason."), (CLOSURE_INSTALLATION, "Another closing."),
+        (CLOSURE_INFERRED, "A different reason."), (CLOSURE_INFERRED, "A reason."),
+    ], path, repo_root=closure_root)
+    requested = [records[-1]]
+    if case == "both":
+        requested *= 2
+    elif case == "absent":
+        requested = [records[-1], {**records[-1], "date": "1900-01-01"}]
+    elif case == "excess":
+        requested *= 3
+    elif case == "malformed":
+        requested = [{**records[-1], "inventory_id": "INV-SEC-001"}]
+    written = path.read_bytes()
+    if refusal is not None:
+        with pytest.raises(inventory_tools.InventoryError, match=re.escape(refusal)):
+            inventory_tools.withdraw_closures(requested, path, repo_root=closure_root)
+        assert path.read_bytes() == written
+    else:
+        assert inventory_tools.withdraw_closures(requested, path, repo_root=closure_root) == requested
+        after = inventory_tools.load(path)
+        assert after["header"]["changes"] == [*before["header"]["changes"], *(records[i] for i in remaining)]
+        assert after["items"] == before["items"]
+        assert {key: value for key, value in after["header"].items() if key != "changes"} == {
+            key: value for key, value in before["header"].items() if key != "changes"
+        }
+    assert inventory_tools.withdraw_closures([], closure_root / "absent.yaml", repo_root=closure_root) == []
+    assert not (closure_root / "absent.yaml").exists()
+
+
+@pytest.mark.parametrize(("closure", "refusal"), CLOSURE_REFUSALS)
+def test_append_closures_refuses_a_closure_it_cannot_record(closure_root: Path, closure: tuple[str, str],
+                                                            refusal: str) -> None:
+    path = inventory_tools.INVENTORY_FILE
+    before = path.read_bytes()
+    with pytest.raises(inventory_tools.InventoryError, match=re.escape(refusal)):
+        inventory_tools.append_closures([(CLOSURE_INFERRED, "A reason."), closure], path, repo_root=closure_root)
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize(("gap_id", "refused"), CLOSURE_GAP_IDS)
+def test_header_check_holds_a_change_gap_id_to_a_gap_id(gap_id: object, refused: bool) -> None:
+    change = {"date": "2025-01-03", "gap_id": gap_id, "reason": "A reason."}
+    problems = inventory_tools._header_problems({"changes": [change]})
+    assert problems == ([f"header: change {inventory_tools._shown(change)} has a gap_id that is not "
+                         "GAP-<CAT>-<nnn>"] if refused else [])
+
+
+@pytest.mark.parametrize(("verified", "versions", "closed"), CLOSURE_SETTLINGS)
+def test_settling_closes_each_entry_through_one_queued_closure_record(
+    closure_root: Path, verified: bool, versions: bool, closed: list[tuple[str, str]]
+) -> None:
+    items = inventory_tools.load(inventory_tools.INVENTORY_FILE)["items"]
+    document = load_yaml(report.GAPS_FILE)
+    inferred = report._gap_entries(document)[CLOSURE_INFERRED]
+    members = report._resolve(CLOSURE_INFERRED, inferred, report._Universe.build(items, []))
+    state = SimpleNamespace(
+        items=items, scenarios={}, statuses={}, item_scenarios={},
+        item_status={item_id: report.VERIFIED for item_id in members} if verified else {},
+    )
+    expected = copy.deepcopy(document)
+    for gap_id, _ in closed:
+        report._gap_entries(expected)[gap_id].update(status="closed", resolving_evidence=CLOSURE_EVIDENCE)
+    summary = report.ImportSummary(CLOSURE_EXECUTION)
+    closures: list = []
+    report._settle_gaps(document, state, CLOSURE_EXECUTION, [CLOSURE_ENVIRONMENT] if versions else [], summary,
+                        closures)
+    assert document == expected
+    assert summary.gaps_changed == [f"{gap_id}: closed, {why}" for gap_id, why in closed]
+    assert [(closure.gap_id, closure.reason) for closure in closures] == [
+        (gap_id, _closure_reason(gap_id, why)) for gap_id, why in closed
+    ]
+    assert all(closure.entry is report._gap_entries(document)[closure.gap_id] for closure in closures)
+
+
+@pytest.mark.parametrize(("gap_id", "revalidating"), [
+    pytest.param(CLOSURE_INFERRED, False, id="inferred-import"),
+    pytest.param(CLOSURE_INFERRED, True, id="inferred-revalidation"),
+    pytest.param(CLOSURE_INSTALLATION, False, id="installation-import"),
+])
+@pytest.mark.parametrize(("condition", "withheld"), [
+    pytest.param("unmatched", True, id="unmatched-message"),
+    pytest.param("unmatched-screen", True, id="unmatched-screen-message"),
+    pytest.param("unvalidated-message", True, id="unvalidated-scenario-in-closing-execution"),
+    pytest.param("earlier-verifier", True, id="earlier-verifying-execution"),
+    pytest.param("matched", False, id="matched-message"),
+    pytest.param("unreachable", True, id="verified-but-unreachable"),
+    pytest.param("empty-screen", False, id="no-addition-text"),
+    pytest.param("short-added", False, id="short-message-already-added"),
+    pytest.param("long-added", False, id="clipped-message-already-added"),
+    pytest.param("unrelated", False, id="unrelated-execution"),
+])
+def test_closing_requires_the_inventory_to_reflect_its_evidence(
+    closure_root: Path, monkeypatch: pytest.MonkeyPatch, gap_id: str, revalidating: bool,
+    condition: str, withheld: bool,
+) -> None:
+    items = inventory_tools.load(inventory_tools.INVENTORY_FILE)["items"]
+    item_id = "INV-SEC-007"
+    item = next(item for item in items if item["id"] == item_id)
+    document = load_yaml(report.GAPS_FILE)
+    entry = report._gap_entries(document)[gap_id]
+    entry["affected_inventory_ids"] = [item_id]
+    entry.pop("affected", None)
+    scenario = scenarios.get("SEC-COSGN00C-normal-01")
+    earlier = "unikix-20250102T000000Z-0123abcd"
+    unrelated = "unikix-20250101T000000Z-0123abcd"
+    message_execution = earlier if condition == "earlier-verifier" else (
+        unrelated if condition == "unrelated" else CLOSURE_EXECUTION
+    )
+    evidence_dir = closure_root / "tests" / "reports" / "unikix"
+    monkeypatch.setattr(report, "UNIKIX_EVIDENCE_DIR", evidence_dir)
+    message_scenario = scenarios.get("SEC-COSGN00C-negative-01") if condition == "unvalidated-message" else scenario
+    result = evidence_dir / message_execution / message_scenario.id / report.RESULT_FILE
+    result.parent.mkdir(parents=True)
+    text = "A newly observed closure message"
+    field_name = "ERRMSG"
+    if condition == "unmatched-screen":
+        field_name, text = scenarios.SCREEN_TEXT, f" \n  {text}\nA second screen line"
+    elif condition == "matched":
+        text = "Wrong Password. Try again ..."
+    elif condition == "unreachable":
+        item["activation"] = "unreachable"
+        text = "Wrong Password. Try again ..."
+    elif condition == "empty-screen":
+        field_name, text = scenarios.SCREEN_TEXT, " \n   \n"
+    elif condition in {"short-added", "long-added"}:
+        text = "OK" if condition == "short-added" else "Observed message " * 20
+        item["name"] = f"COSGN00C observed message '{report._clip(text.strip(), report._ADDITION_QUOTE_LIMIT)}'"
+    result.write_text(dump_yaml({"observed_messages": [{"step": 1, "field": field_name, "value": text}]}),
+                      encoding="utf-8")
+    executions = [CLOSURE_EXECUTION, earlier] if condition == "earlier-verifier" else [CLOSURE_EXECUTION]
+    state = SimpleNamespace(
+        items=items, scenarios={scenario.id: scenario, message_scenario.id: message_scenario},
+        statuses={scenario.id: SimpleNamespace(counted=[
+            {"execution_id": execution, "adapter": "unikix", "status": "passed"} for execution in executions
+        ])},
+        item_scenarios={item_id: [scenario.id]}, item_status={item_id: report.VERIFIED},
+        unikix_records=[] if condition == "unvalidated-message" else [
+            report.UnikixRecord(message_execution, scenario.id, {}, result)
+        ],
+    )
+    summary = report.ImportSummary(CLOSURE_EXECUTION)
+    closures: list = []
+    if revalidating:
+        report._settle_inferred(document, state, None, summary.gaps_changed, closures)
+    else:
+        report._settle_gaps(document, state, CLOSURE_EXECUTION, [CLOSURE_ENVIRONMENT], summary, closures)
+    assert entry["status"] == ("open" if withheld else "closed")
+    assert (entry["resolving_evidence"] is None) == withheld
+    assert any(closure.gap_id == gap_id for closure in closures) != withheld
+    line = next(line for line in summary.gaps_changed if line.startswith(f"{gap_id}:"))
+    if withheld:
+        assert "left open although" in line and "the inventory does not yet reflect its closing evidence" in line
+        if condition == "unreachable":
+            assert f"{item_id} is recorded unreachable but verified" in line
+        else:
+            quoted = "A newly observed closure message" if condition == "unmatched-screen" else text
+            assert f"1 observed message(s) of {message_execution} match no item (first: '{quoted}')" in line
+    else:
+        assert line.startswith(f"{gap_id}: closed,")
+
+
+def test_write_register_records_the_closing_in_the_inventory_before_gaps_yaml(closure_root: Path) -> None:
+    before = inventory_tools.load(inventory_tools.INVENTORY_FILE)
+    document, original, changes, closures = _closed_inferred_entry()
+    report._write_register(document, original, closures, changes)
+    after = inventory_tools.load(inventory_tools.INVENTORY_FILE)
+    *earlier, recorded = after["header"]["changes"]
+    assert earlier == before["header"]["changes"]
+    assert (recorded["gap_id"], recorded["reason"]) == (CLOSURE_INFERRED,
+                                                        _closure_reason(CLOSURE_INFERRED, CLOSURE_VERIFIED))
+    assert after["items"] == before["items"] and after["header"]["total"] == before["header"]["total"]
+    entry = report._gap_entries(load_yaml(report.GAPS_FILE))[CLOSURE_INFERRED]
+    assert entry["status"] == "closed" and entry["resolving_evidence"] == CLOSURE_EVIDENCE
+    assert changes == [f"{CLOSURE_INFERRED}: closed, {CLOSURE_VERIFIED}"]
+
+
+@pytest.mark.parametrize(("failure", "why"), CLOSURE_INVENTORY_FAILURES)
+def test_write_register_leaves_the_entry_open_when_the_inventory_cannot_record_its_closing(
+    closure_root: Path, failure: str, why: str
+) -> None:
+    path = inventory_tools.INVENTORY_FILE
+    if failure == "directory":
+        path.unlink()
+        path.mkdir()
+    else:
+        path.write_text(dump_yaml({"items": inventory_tools.load(INVENTORY_DIR / "inventory.yaml")["items"]}),
+                        encoding="utf-8")
+    document, original, _, closures = _closed_inferred_entry()
+    summary = report.ImportSummary(CLOSURE_EXECUTION)
+    summary.gaps_changed.append(f"{CLOSURE_INFERRED}: closed, {CLOSURE_VERIFIED}")
+    report._write_register(document, original, closures, summary.gaps_changed)
+    entry = report._gap_entries(document)[CLOSURE_INFERRED]
+    assert entry["status"] == "open" and entry["resolving_evidence"] is None
+    assert report.GAPS_FILE.read_text(encoding="utf-8") == original
+    assert len(summary.gaps_changed) == 1 and summary.gaps_changed[0].startswith(CLOSURE_LEFT_OPEN)
+    assert why in summary.gaps_changed[0]
+    assert f"  gap updated {summary.gaps_changed[0]}" in summary.lines()
+    assert summary.rejected == []
+
+
+def test_write_register_withdraws_its_closure_when_gaps_yaml_cannot_be_written(
+    closure_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    register = report.GAPS_FILE
+    link = closure_root / "gaps-link.yaml"
+    link.symlink_to(register)
+    monkeypatch.setattr(report, "GAPS_FILE", link)
+    inventory_text, register_text = inventory_tools.INVENTORY_FILE.read_bytes(), register.read_bytes()
+    document, original, changes, closures = _closed_inferred_entry()
+    with pytest.raises(report.ReportError, match="is a symbolic link; nothing is written through it"):
+        report._write_register(document, original, closures, changes)
+    assert inventory_tools.INVENTORY_FILE.read_bytes() == inventory_text
+    assert register.read_bytes() == register_text
+
+
+def test_write_register_rollback_preserves_a_concurrent_inventory_addition(
+    closure_root: Path, carddemo_repo_root: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = inventory_tools.INVENTORY_FILE
+    before = inventory_tools.load(path)
+    source = closure_root / "app" / "cbl" / "COSGN00C.cbl"
+    source.parent.mkdir(parents=True)
+    shutil.copyfile(carddemo_repo_root / "app" / "cbl" / source.name, source)
+    document, original, changes, closures = _closed_inferred_entry()
+    assigned: list[str] = []
+    reason = "New behavior observed while the import updates the register"
+
+    def add_then_refuse(document: dict, original: str) -> None:
+        assigned.extend(inventory_tools.append_items([{
+            "area": "SEC", "kind": "rule", "name": "Concurrent newly observed behavior",
+            "source": "app/cbl/COSGN00C.cbl:1", "description": "A behavior found by another inventory writer.",
+            "level": "e2e", "gap_ids": [report.GAP_COMPLETENESS],
+        }], reason, path, repo_root=closure_root))
+        during = inventory_tools.load(path)
+        assert any(change.get("gap_id") == CLOSURE_INFERRED for change in during["header"]["changes"])
+        raise PermissionError(13, "simulated gaps.yaml write refusal")
+
+    monkeypatch.setattr(report, "_write_gaps", add_then_refuse)
+    with pytest.raises(PermissionError, match="simulated gaps.yaml write refusal"):
+        report._write_register(document, original, closures, changes)
+    after = inventory_tools.load(path)
+    assert len(assigned) == 1
+    assert after["header"]["total"] == len(after["items"]) == 685
+    assert set(inventory_tools.item_ids(after)) == {*inventory_tools.item_ids(before), *assigned}
+    assert next(item for item in after["items"] if item["id"] == assigned[0])["name"] == (
+        "Concurrent newly observed behavior"
+    )
+    *earlier, addition = after["header"]["changes"]
+    assert earlier == before["header"]["changes"]
+    assert addition == {"date": addition["date"], "inventory_id": assigned[0], "reason": reason}
+    assert not any("gap_id" in change for change in after["header"]["changes"])
+    assert report.GAPS_FILE.read_text(encoding="utf-8") == original
+
+
+def test_write_register_names_both_failures_when_its_closures_cannot_be_withdrawn(
+    closure_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    link = closure_root / "gaps-link.yaml"
+    link.symlink_to(report.GAPS_FILE)
+    monkeypatch.setattr(report, "GAPS_FILE", link)
+
+    def refuse(records: list, path: Path, *, repo_root: Path) -> None:
+        raise inventory_tools.InventoryError(f"cannot write {path}: Permission denied")
+
+    monkeypatch.setattr(inventory_tools, "withdraw_closures", refuse)
+    before = inventory_tools.load(inventory_tools.INVENTORY_FILE)["header"]["changes"]
+    document, original, changes, closures = _closed_inferred_entry()
+    with pytest.raises(report.ReportError, match="could not withdraw its closure records") as raised:
+        report._write_register(document, original, closures, changes)
+    text = str(raised.value)
+    assert "is a symbolic link" in text and "Permission denied" in text
+    *earlier, recorded = inventory_tools.load(inventory_tools.INVENTORY_FILE)["header"]["changes"]
+    assert earlier == before and recorded["gap_id"] == CLOSURE_INFERRED
+    assert repr(recorded) in text and "without discarding other inventory changes" in text
+
+
+def test_report_lists_a_closure_record_by_its_gap_id() -> None:
+    state = report.build_state()
+    addition = {"date": "2025-01-03", "inventory_id": "INV-SEC-001", "reason": "An addition."}
+    closure = {"date": "2025-01-03", "gap_id": CLOSURE_INFERRED,
+               "reason": _closure_reason(CLOSURE_INFERRED, CLOSURE_VERIFIED)}
+    state = dataclasses.replace(state, header={**state.header, "changes": [addition, closure]})
+    lines = report.render_report(state, (False, "not judged here")).split("\n")
+    start = lines.index("Changes since the freeze:")
+    assert lines[start + 1:start + 5] == [
+        "",
+        "- 2025-01-03 INV-SEC-001: An addition.",
+        f"- 2025-01-03 {CLOSURE_INFERRED}: {_closure_reason(CLOSURE_INFERRED, CLOSURE_VERIFIED)}",
+        "",
+    ]
+
+
 # ==========================================================================
 # Instruments: layouts, codec, fixtures, inventory, the id manifest, gaps,
 # configuration, baseline bumps and the protected tree
@@ -5260,6 +6459,232 @@ def close_work_root(carddemo_work_root: Path) -> Iterator[Path]:
         yield directory
     finally:
         shutil.rmtree(directory)
+
+
+# The committed observed baseline the capture version planning is judged on,
+# and a committed derived one (a post-open fault scenario, GAP-MIS-013).
+CAPTURE_SCENARIO = "TRN-CBTRN02C-negative-03"
+DERIVED_SCENARIO = "TRN-CBTRN02C-recovery-02"
+
+
+def _flipped(data: bytes) -> bytes:
+    """``data`` with the lowest bit of its last byte inverted."""
+    return data[:-1] + bytes([data[-1] ^ 0x01])
+
+
+def _observed(manifest: dict, raw: dict) -> None:
+    """A derived ``manifest`` and its empty ``raw`` made those of a
+    gnucobol-batch observation of the one dataset DERIVED_SCENARIO names."""
+    manifest.pop("derived_from", None)
+    manifest.update(
+        capture_platform="gnucobol-batch", execution_id="gnucobol-batch-0000000000000000",
+        execution_fingerprint="0" * 64,
+    )
+    raw.update(ACCTDATA=b"0" * 300)
+
+
+# (the baseline HEAD holds; mutation of its expected, manifest and raw
+# datasets, or None for HEAD's own bytes; the level the bump check needs; a
+# fragment of its reason).
+BUMP_NEEDS = [
+    pytest.param(CAPTURE_SCENARIO, None, "none", "holds exactly what HEAD", id="head-bytes"),
+    pytest.param(
+        CAPTURE_SCENARIO, lambda expected, manifest, raw: manifest.update(capture_date="1999-12-31"),
+        "patch", "manifest.yaml metadata changed", id="manifest-only",
+    ),
+    pytest.param(
+        CAPTURE_SCENARIO, lambda expected, manifest, raw: raw.update(ACCTDATA=_flipped(raw["ACCTDATA"])),
+        "minor", "datasets/ACCTDATA.bin changed", id="raw-bytes-changed",
+    ),
+    pytest.param(
+        CAPTURE_SCENARIO, lambda expected, manifest, raw: manifest.update(capture_platform="unikix"),
+        "minor", "capture_platform changed from gnucobol-batch to unikix", id="capture-platform-changed",
+    ),
+    pytest.param(
+        DERIVED_SCENARIO, lambda expected, manifest, raw: _observed(manifest, raw),
+        "minor", "datasets/ACCTDATA.bin was added", id="derived-to-observed-raw-added",
+    ),
+    pytest.param(
+        CAPTURE_SCENARIO,
+        lambda expected, manifest, raw: expected["datasets"]["DALYREJS"][0].update({"DALYTRAN-AMT": "2020.02"}),
+        "major", "the decoded expected outcome changed at datasets.DALYREJS[0].DALYTRAN-AMT", id="decoded-value",
+    ),
+]
+
+_PATCH_NEED = baselines.BumpNeed("1.2.3", "gnucobol-batch", "patch", "manifest.yaml metadata changed")
+_MINOR_NEED = baselines.BumpNeed("1.2.3", "derived", "minor", "capture_platform changed from derived to gnucobol-batch")
+_MAJOR_NEED = baselines.BumpNeed(
+    "1.2.3", "gnucobol-batch", "major", "the decoded expected outcome changed at datasets.DALYREJS[0].DALYTRAN-AMT"
+)
+
+# (the bump check's need against HEAD, None when HEAD lacks the baseline;
+# --bump; the working-tree version, None for no copy; the planned versions).
+PLANNED_VERSIONS = [
+    pytest.param(None, None, None, (None, "1.0.0"), id="new"),
+    pytest.param(None, "major", "1.0.0", ("1.0.0", "1.0.0"), id="written-since-head-bump-ignored"),
+    pytest.param(None, "patch", "1.0.3", ("1.0.3", "1.0.0"), id="rewritten-since-head-stays-new"),
+    pytest.param(
+        baselines.BumpNeed("1.2.3", "gnucobol-batch", "none", "unchanged"), "patch", "1.2.3", ("1.2.3", "1.2.4"),
+        id="unchanged-patch",
+    ),
+    pytest.param(_PATCH_NEED, "patch", "1.2.9", ("1.2.3", "1.2.4"), id="patch-from-head-not-working-tree"),
+    pytest.param(_MINOR_NEED, "minor", None, ("1.2.3", "1.3.0"), id="derived-to-observed-minor"),
+    pytest.param(_PATCH_NEED, "major", "1.3.0", ("1.2.3", "2.0.0"), id="above-the-need"),
+    pytest.param(_MAJOR_NEED, "major", "3.0.0", ("1.2.3", "2.0.0"), id="major-from-head-not-working-tree"),
+]
+
+# (need, --bump below it or none, a fragment of the refusal).
+PLAN_REFUSALS = [
+    pytest.param(_MAJOR_NEED, "patch", "needs at least --bump major (--bump patch given)", id="major-change-patch"),
+    pytest.param(_MAJOR_NEED, "minor", "needs at least --bump major (--bump minor given)", id="major-change-minor"),
+    pytest.param(_MINOR_NEED, "patch", "needs at least --bump minor (--bump patch given)", id="platform-change-patch"),
+    pytest.param(
+        _PATCH_NEED, None, "exists at 1.2.3 at HEAD; replacing it needs --bump major|minor|patch", id="no-bump"
+    ),
+]
+
+
+def _git_output(repo_root: Path, *args: str) -> bytes:
+    return subprocess.run(
+        ["git", *args], cwd=repo_root, capture_output=True, timeout=CLI_TIMEOUT_S, check=True
+    ).stdout
+
+
+def _head_baseline(repo_root: Path, folder: Path, baseline_id: str = CAPTURE_SCENARIO) -> baselines.Baseline:
+    """The baseline HEAD holds for ``baseline_id``, built in memory from git's
+    blobs whatever the working tree holds; its YAML is parsed in
+    ``folder``."""
+    prefix = f"{baselines.BASELINES_REL}/{baseline_id}/"
+    listing = _git_output(repo_root, "ls-tree", "-r", "-z", "--name-only", "HEAD", "--", prefix.rstrip("/"))
+    files = {
+        name[len(prefix):]: _git_output(repo_root, "cat-file", "blob", f"HEAD:{name}")
+        for name in listing.decode().split("\0")
+        if name
+    }
+
+    def parsed(name: str) -> object:
+        path = folder / name
+        path.write_bytes(files[name])
+        return load_yaml(path)
+
+    raw = {
+        Path(name).stem: data for name, data in files.items() if name.startswith(f"{baselines.DATASETS_DIR}/")
+    }
+    return baselines.Baseline(baseline_id, parsed(baselines.EXPECTED_FILE), parsed(baselines.MANIFEST_FILE), raw)
+
+
+@pytest.mark.parametrize(("baseline_id", "mutate", "level", "reason"), BUMP_NEEDS)
+def test_bump_needed_judges_as_the_bump_check(
+    carddemo_repo_root: Path, work_root_case: Path, baseline_id: str, mutate, level: str, reason: str
+) -> None:
+    head = _head_baseline(carddemo_repo_root, work_root_case, baseline_id)
+    expected, manifest, raw = copy.deepcopy(head.expected), dict(head.manifest), dict(head.datasets)
+    if mutate is not None:
+        mutate(expected, manifest, raw)
+    need = baselines.bump_needed(baselines.Baseline(head.id, expected, manifest, raw), scratch=work_root_case)
+    assert need is not None
+    assert (need.base_version, need.base_platform, need.level) == (head.version, head.capture_platform, level)
+    assert reason in need.reason, need.reason
+
+
+def test_bump_needed_absent_at_base_is_new(carddemo_repo_root: Path, work_root_case: Path) -> None:
+    _require_commit(carddemo_repo_root, STARTING_COMMIT)
+    candidate = _head_baseline(carddemo_repo_root, work_root_case)
+    assert baselines.bump_needed(candidate, STARTING_COMMIT, scratch=work_root_case) is None
+
+
+@pytest.mark.parametrize("command", ["ls-tree", "cat-file"])
+def test_bump_needed_git_failure_is_never_absence(
+    carddemo_repo_root: Path, work_root_case: Path, monkeypatch: pytest.MonkeyPatch, command: str
+) -> None:
+    candidate = _head_baseline(carddemo_repo_root, work_root_case)
+    real_git = baselines._git
+    stderr = f"fatal: {command} cannot read the object database"
+
+    def failing_git(root: Path, args, stdin: bytes | None = None) -> bytes:
+        if args[0] == command:
+            raise baselines._GitFailed(f"git {' '.join(args[:2])} failed in .: {stderr}", 128, stderr)
+        return real_git(root, args, stdin)
+
+    monkeypatch.setattr(baselines, "_git", failing_git)
+    with pytest.raises(baselines.BumpCheckError) as failed:
+        baselines.bump_needed(candidate, scratch=work_root_case)
+    assert stderr in str(failed.value)
+    with pytest.raises(capture_cli.CaptureError) as refused:
+        capture_cli._head_need(candidate, work_root_case)
+    message = str(refused.value)
+    assert message.startswith(f"git cannot tell what HEAD holds for {baselines.BASELINES_REL}/{CAPTURE_SCENARIO}/: ")
+    assert stderr in message and message.endswith("; nothing is written")
+
+
+@pytest.mark.parametrize("captures", [0, 1, 2, 7])
+def test_plan_version_raises_head_version(carddemo_repo_root: Path, work_root_case: Path, captures: int) -> None:
+    """``captures`` earlier ``--bump patch`` captures since HEAD leave the
+    working tree that many patches above HEAD; the next plans the same
+    version as the first."""
+    head = _head_baseline(carddemo_repo_root, work_root_case)
+    working = head.version
+    for _ in range(captures):
+        working = baselines.bump(working, "patch")
+    manifest = dict(head.manifest, baseline_version=working, capture_date="1999-12-31")
+    need = baselines.bump_needed(
+        baselines.Baseline(head.id, head.expected, manifest, head.datasets), scratch=work_root_case
+    )
+    assert need is not None and need.base_version == head.version
+    planned = capture_cli.plan_version(need, "patch", SimpleNamespace(version=working))
+    assert planned == (head.version, baselines.bump(head.version, "patch"))
+
+
+@pytest.mark.parametrize(("need", "bump", "working", "planned"), PLANNED_VERSIONS)
+def test_plan_version(need, bump: str | None, working: str | None, planned: tuple) -> None:
+    existing = None if working is None else SimpleNamespace(version=working)
+    assert capture_cli.plan_version(need, bump, existing) == planned
+
+
+@pytest.mark.parametrize(("need", "bump", "refusal"), PLAN_REFUSALS)
+def test_plan_version_refuses_an_insufficient_bump(need, bump: str | None, refusal: str) -> None:
+    with pytest.raises(capture_cli.CaptureError) as refused:
+        capture_cli.plan_version(need, bump, SimpleNamespace(version=need.base_version))
+    message = str(refused.value)
+    assert refusal in message, message
+    if bump is not None:
+        assert message.startswith(f"HEAD holds its {need.base_platform} baseline {need.base_version}: {need.reason}")
+        assert message.endswith("; nothing is written")
+
+
+@pytest.mark.parametrize("work_root_env", ["unset", "another-directory"])
+def test_head_need_parses_inside_the_work_root(
+    carddemo_repo_root: Path, work_root_case: Path, monkeypatch: pytest.MonkeyPatch, work_root_env: str
+) -> None:
+    """Whatever ``CARDDEMO_TEST_WORKDIR`` names, the bump check of capture's
+    version planning parses HEAD's YAML only in temporary folders directly
+    in capture's work root, and removes them."""
+    candidate = _head_baseline(carddemo_repo_root, work_root_case)
+    work_root = work_root_case / "work-root"
+    elsewhere = work_root_case / "another-directory"
+    work_root.mkdir()
+    elsewhere.mkdir()
+    if work_root_env == "unset":
+        monkeypatch.delenv(WORK_ROOT_ENV, raising=False)
+    else:
+        monkeypatch.setenv(WORK_ROOT_ENV, str(elsewhere))
+    folders: list[Path] = []
+    real_init = baselines._YamlReader.__init__
+
+    def recording_init(reader, folder: Path) -> None:
+        folders.append(Path(folder))
+        real_init(reader, folder)
+
+    monkeypatch.setattr(baselines._YamlReader, "__init__", recording_init)
+    need = capture_cli._head_need(candidate, work_root)
+    assert need is not None and need.level == "none", need
+    assert folders
+    system_temp = Path(tempfile.gettempdir())
+    for folder in folders:
+        assert folder.parent == work_root, folder
+        assert elsewhere not in folder.parents and folder.parent != system_temp, folder
+    assert not any(work_root.iterdir())
+    assert not any(elsewhere.iterdir())
 
 
 # Each case: whether a session started; the flags (_region_started,

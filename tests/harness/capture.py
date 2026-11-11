@@ -16,8 +16,10 @@ without a comparison, and what it observed becomes its baseline
     ``contains`` records, in the entry's ``matchers`` or in the top-level
     ``matchers``) holds that matcher instead of the observed value, once the
     observed value is checked to be exactly the matcher's value under the
-    scenario clock. The baseline then holds no clock-derived value that a run
-    on another clock would contradict.
+    scenario clock. Fields are matched as the comparison addresses them
+    (``baselines.bind_matchers``): by decoded name or by field path, and a
+    qualified name binds to the decoded field it denotes. The baseline then
+    holds no clock-derived value that a run on another clock would contradict.
 ``datasets/<LOGICAL>.bin``
     The raw bytes of each business dataset those two sections name.
 ``manifest.yaml``
@@ -28,14 +30,17 @@ without a comparison, and what it observed becomes its baseline
     baseline's new version as every later run of the same commit and build
     makes it (``manifest_execution_id``, ``record_at_version``).
 
-Versions: a new baseline starts at ``1.0.0`` and ``--bump`` is ignored for
-it; so is a baseline written since HEAD, which the bump check against HEAD
-still treats as new. Replacing a baseline HEAD holds needs ``--bump`` at the
-level of the change, as ``baselines.py --check-bumps`` judges it: MAJOR when
-an expected value changes, MINOR when assertions or raw bytes are added,
-PATCH when only the manifest changes. Replacing a baseline captured on
-another platform (a derived one above all) changes the capture platform, so
-it needs at least MINOR.
+Versions are planned against HEAD (``baselines.bump_needed``). A baseline
+HEAD does not hold starts at ``1.0.0`` and ``--bump`` is ignored for it, also
+when one was written since HEAD: the bump check against HEAD still treats it
+as new. Replacing a baseline HEAD holds needs ``--bump``, which raises HEAD's
+committed version, never a working-tree copy's, so the same command plans
+the same version however often it runs. The level must cover the change as
+``baselines.py --check-bumps --base HEAD`` judges it: MAJOR when an expected
+value changes, MINOR when assertions or raw bytes are added or the capture
+platform changes (a derived baseline replaced by an observed one), PATCH when
+only the manifest changes; a lower ``--bump`` is refused with the level the
+change needs. When git cannot tell what HEAD holds, the capture is refused.
 
 A capture is refused, and nothing is written, when gnucobol-batch cannot run
 the scenario (its baseline is derived, and only ``report.py --import-unikix``
@@ -59,9 +64,15 @@ repository. A configured root is used only when ``harness.usable_work_root``
 accepts it (not blank, outside the repository, a directory, created when
 missing, and writable). An unusable ``--work-root`` is a usage error; an
 unusable ``CARDDEMO_TEST_WORKDIR`` is named on stderr with the reason, and the
-new temporary root replaces it. Inside the repository the script writes only
-under ``tests/baselines/<id>/``, besides the git-ignored runtime files the
-runner writes under ``tests/reports/runtime/``.
+new temporary root replaces it. Version planning parses HEAD's YAML in a
+temporary folder inside the work root. Inside the repository the script
+writes only under ``tests/baselines/``, besides the git-ignored runtime files
+the runner writes under ``tests/reports/runtime/``: ``baselines.write``
+publishes each ``<id>/`` whole, under a lock on that folder, through a staging
+directory ``.<id>.<pid>.<8 hex>.new`` beside it (and, where the kernel cannot
+exchange two names, a pre-image ``.<id>.<pid>.<8 hex>.old``), so an
+interrupted or concurrent capture leaves the last complete baseline, or none,
+and a retry needs no cleanup.
 """
 
 from __future__ import annotations
@@ -72,7 +83,6 @@ import datetime as _dt
 import importlib
 import os
 import shutil
-import subprocess
 import sys
 import tempfile
 from collections.abc import Mapping, Sequence
@@ -97,7 +107,6 @@ __all__ = [
     "build_expected",
     "build_manifest",
     "capture",
-    "committed_at_head",
     "main",
     "make_adapter",
     "manifest_execution_id",
@@ -122,7 +131,6 @@ _SECTIONS = ("datasets", "file_state")
 _LINE_KEYS = ("messages", "reject_reason_codes")
 _WHOLE_RECORD = "*"  # the key of a matcher that stands for a whole line
 _RAW_DETAIL_CHARS = 160
-_GIT_TIMEOUT_S = 60
 
 
 class CaptureError(HarnessError):
@@ -134,10 +142,11 @@ class Captured:
     """How the capture of one scenario ended.
 
     ``written`` when its baseline was written at ``new_version``;
-    ``old_version`` is the version it replaced (``None`` for a new
-    baseline). Otherwise ``detail`` says why nothing was written and
-    ``unexecuted`` whether the run ended ``implemented-unexecuted``. ``kept``
-    is the working directory a failing run kept."""
+    ``old_version`` is the version it replaced: HEAD's for a baseline HEAD
+    holds, else the working tree's (``None`` for a new baseline). Otherwise
+    ``detail`` says why nothing was written and ``unexecuted`` whether the
+    run ended ``implemented-unexecuted``. ``kept`` is the working directory a
+    failing run kept."""
 
     scenario_id: str
     written: bool = False
@@ -153,17 +162,6 @@ class Captured:
 # --------------------------------------------------------------------------
 
 
-def _matchers(value: Any) -> dict[str, Mapping[str, Any]]:
-    """The field -> matcher entries of a ``matchers`` mapping."""
-    if not isinstance(value, Mapping):
-        return {}
-    return {str(name): matcher for name, matcher in value.items() if _baselines.is_matcher(matcher)}
-
-
-def _holds(matcher: Mapping[str, Any], observed: Any, clock: str) -> bool:
-    return _baselines.check_matcher(matcher, observed, clock, True) is None
-
-
 def _settled(matcher: Mapping[str, Any], observed: Any, clock: str, where: str) -> dict:
     """``matcher`` as the baseline holds it, once ``observed`` is checked to be
     exactly the one value it stands for under the fixed ``clock``."""
@@ -173,143 +171,32 @@ def _settled(matcher: Mapping[str, Any], observed: Any, clock: str, where: str) 
     return dict(matcher)
 
 
-def _same_literal(literal: Any, observed: Any) -> bool:
-    """Whether ``observed`` (decoded text, ``{raw: <hex>}`` or a line) is the
-    scenario literal ``literal`` as ``baselines.compare`` reads it: text
-    exactly, trailing spaces included, and an integer as exactly its own
-    text."""
-    if isinstance(literal, bool) or literal is None:
-        return False
-    if isinstance(literal, int):
-        try:
-            return observed == str(literal)
-        except ValueError:  # beyond Python's integer-to-text limit: no decoded field is that long
-            return False
-    return type(observed) is type(literal) and observed == literal
-
-
-def _aligns(item: Any, record: Any, field_level: Mapping[str, Mapping[str, Any]], clock: str) -> bool:
-    """Whether the observed ``record`` satisfies the scenario's ``contains``
-    ``item``: every field the item names is a decoded field of the record
-    and holds the item's literal, or the value of the matcher that applies
-    (the item's own, else a field-level one, as ``baselines.compare``
-    reads it)."""
-    if _baselines.is_matcher(item):
-        return _holds(item, record, clock)
-    if isinstance(item, Mapping):
-        if not isinstance(record, dict):
-            return False
-        for name, literal in item.items():
-            if name not in record:
-                return False
-            spec = literal if _baselines.is_matcher(literal) else field_level.get(name, literal)
-            if _baselines.is_matcher(spec):
-                if not _holds(spec, record[name], clock):
-                    return False
-            elif not _same_literal(spec, record[name]):
-                return False
-        return True
-    return isinstance(record, str) and _same_literal(item, record)
-
-
-def _inline_matchers(item: Any) -> dict[str, Mapping[str, Any]]:
-    """The matchers one scenario record gives: ``{"*": matcher}`` for a
-    whole-line matcher, else field -> matcher."""
-    if _baselines.is_matcher(item):
-        return {_WHOLE_RECORD: item}
-    if isinstance(item, Mapping):
-        return {str(name): value for name, value in item.items() if _baselines.is_matcher(value)}
-    return {}
-
-
-def _record_matchers(
-    spec: Any, observed: Sequence[Any], field_level: Mapping[str, Mapping[str, Any]], clock: str, where: str
-) -> dict[int, dict[str, Mapping[str, Any]]]:
-    """Observed record index -> the matchers the scenario's own records give
-    it: by position for ``records``; for ``contains``, at the record each
-    item is found at, the first one after the previous item's that it
-    matches, which is how ``baselines.compare`` aligns them. A ``contains``
-    item holding a matcher that matches no record cannot place it, so it is
-    refused."""
-    if isinstance(spec, list):
-        records_spec, contains_spec = spec, None
-    elif isinstance(spec, Mapping):
-        records_spec, contains_spec = spec.get("records"), spec.get("contains")
-    else:
-        return {}
-    assigned: dict[int, dict[str, Mapping[str, Any]]] = {}
-    if isinstance(records_spec, list):
-        for index, item in enumerate(records_spec[: len(observed)]):
-            found = _inline_matchers(item)
-            if found:
-                assigned.setdefault(index, {}).update(found)
-    if isinstance(contains_spec, list):
-        position = 0
-        for number, item in enumerate(contains_spec, start=1):
-            found = _inline_matchers(item)
-            index = next(
-                (at for at in range(position, len(observed)) if _aligns(item, observed[at], field_level, clock)),
-                None,
-            )
-            if index is None:
-                if found:
-                    raise CaptureError(
-                        f"{where}: contains[{number}] matches no observed record after record {position}, "
-                        f"so its matchers ({', '.join(sorted(found))}) cannot be placed"
-                    )
-                continue
-            position = index + 1
-            if found:
-                assigned.setdefault(index, {}).update(found)
-    return assigned
-
-
 def _with_matchers(
-    records: Sequence[Any], spec: Any, top: Mapping[str, Mapping[str, Any]], clock: str, where: str
+    records: Sequence[Any], bindings: Sequence[Mapping[str, Mapping[str, Any]]], clock: str, where: str
 ) -> list:
-    """``records`` (one decoded dataset or observation) with every field the
-    scenario gives a matcher holding that matcher. A field takes the matcher
-    of its own scenario record first, then the entry's ``matchers``, then the
-    top-level ``matchers``: the precedence ``baselines.compare`` applies.
-    Each replaced value is first checked against the matcher
-    (``_settled``)."""
-    section = _matchers(spec.get("matchers")) if isinstance(spec, Mapping) else {}
-    field_level = {**top, **section}
-    inline = _record_matchers(spec, records, field_level, clock, where)
+    """``records`` (one decoded dataset or observation) with every field
+    ``bindings`` gives a matcher holding that matcher, and a line whose
+    binding is ``*`` the line's: ``bindings`` holds one ``{decoded key:
+    matcher}`` per record, where ``baselines.bind_matchers`` places the
+    scenario's matchers as ``baselines.compare`` checks them. Each replaced
+    value is first checked against its matcher (``_settled``)."""
+    if len(bindings) != len(records):
+        raise CaptureError(
+            f"{where}: the matchers are bound to {len(bindings)} record(s), not to the {len(records)} observed"
+        )
     out: list = []
-    for index, record in enumerate(records):
-        own = inline.get(index, {})
+    for index, (record, bound) in enumerate(zip(records, bindings)):
         shown = f"{where} record {index + 1}"
         if isinstance(record, str):
-            stray = sorted(name for name in own if name != _WHOLE_RECORD)
-            if stray:
-                raise CaptureError(
-                    f"{shown}: is a line, so the scenario's matchers for {', '.join(stray)} name no field"
-                )
-            out.append(_settled(own[_WHOLE_RECORD], record, clock, shown) if _WHOLE_RECORD in own else record)
+            out.append(_settled(bound[_WHOLE_RECORD], record, clock, shown) if _WHOLE_RECORD in bound else record)
             continue
         if not isinstance(record, dict):
             raise CaptureError(f"{shown}: a decoded {type(record).__name__} is neither a field map nor a line")
-        if _WHOLE_RECORD in own:
-            raise CaptureError(f"{shown}: the scenario gives a whole-line matcher for a field-map record")
-        unplaced = sorted(name for name in own if name not in record)
-        if unplaced:
-            raise CaptureError(
-                f"{shown}: the scenario's matchers for {', '.join(unplaced)} name no decoded field of the record; "
-                f"name each field as it decodes"
-            )
         settled: dict[str, Any] = {}
         for name, value in record.items():
-            matcher = own.get(name) or section.get(name) or top.get(name)
+            matcher = bound.get(name)
             settled[name] = value if matcher is None else _settled(matcher, value, clock, f"{shown} {name}")
         out.append(settled)
-    if records:
-        unused = sorted(name for name in section if not any(isinstance(r, dict) and name in r for r in records))
-        if unused:
-            raise CaptureError(
-                f"{where}.matchers: {', '.join(unused)} names no decoded field of any record; "
-                f"name each field as it decodes"
-            )
     return out
 
 
@@ -324,11 +211,14 @@ def build_expected(scenario: Any, result: Any) -> dict:
     ``result`` observed them (``baselines.decode_result``), with the
     scenario's matchers in place of the clock-derived fields (module
     docstring). ``CaptureError`` when a value was not observed or contradicts
-    its matcher."""
+    its matcher, or a matcher cannot be placed in a decoded field."""
     wanted = scenario.expected
     decoded = _baselines.decode_result(scenario, result)
     clock = _scenarios.clock(scenario)
-    top = _matchers(wanted.get("matchers"))
+    try:
+        bindings = _baselines.bind_matchers(scenario, result, ADAPTER)
+    except _baselines.BaselineError as exc:
+        raise CaptureError(str(exc)) from None
     expected: dict[str, Any] = {}
     if "return_code" in wanted:
         expected["return_code"] = decoded["return_code"]
@@ -345,11 +235,13 @@ def build_expected(scenario: Any, result: Any) -> dict:
         observed = decoded.get(section)
         observed = observed if isinstance(observed, Mapping) else {}
         expected[section] = {}
-        for name, spec in entries.items():
+        for name in entries:
             records = observed.get(str(name))
             if not isinstance(records, list):
                 raise CaptureError(f"{section}.{name}: {_clip(records)} was observed, not a list of records")
-            expected[section][str(name)] = _with_matchers(records, spec, top, clock, f"{section}.{name}")
+            expected[section][str(name)] = _with_matchers(
+                records, bindings.get((section, str(name)), []), clock, f"{section}.{name}"
+            )
     if "screens" in wanted:
         expected["screens"] = copy.deepcopy(decoded.get("screens"))
     return expected
@@ -382,55 +274,51 @@ def raw_datasets(scenario: Any, result: Any) -> dict[str, bytes]:
     return raw
 
 
-def committed_at_head(baseline_id: str) -> bool:
-    """Whether HEAD holds the baseline's manifest, so that the bump check
-    (``baselines.py --check-bumps --base HEAD``) judges a rewrite as a
-    change of that baseline rather than as a new one. ``True`` when git
-    cannot tell, which keeps ``--bump`` required."""
-    if git_head() == "unknown":
-        return True
-    relative = f"{_baselines.BASELINES_REL}/{baseline_id}/{_baselines.MANIFEST_FILE}"
+def _head_need(candidate: Any, work_root: Path) -> Any:
+    """How ``baselines.py --check-bumps --base HEAD`` judges writing
+    ``candidate`` (a ``baselines.Baseline``): ``baselines.bump_needed``
+    against HEAD, ``None`` when HEAD does not hold the baseline. HEAD's YAML
+    is parsed in a temporary folder under ``work_root``, the capture's
+    existing work root, so the check writes nothing outside it. A git
+    failure is never taken for absence: it, and a HEAD baseline whose change
+    cannot be judged, raise ``CaptureError``."""
+    folder = f"{_baselines.BASELINES_REL}/{candidate.id}/"
     try:
-        completed = subprocess.run(
-            ["git", "cat-file", "-e", f"HEAD:{relative}"],
-            cwd=str(REPO_ROOT),
-            capture_output=True,
-            timeout=_GIT_TIMEOUT_S,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return True
-    return completed.returncode == 0
+        return _baselines.bump_needed(candidate, scratch=work_root)
+    except _baselines.BumpCheckError as exc:
+        raise CaptureError(f"git cannot tell what HEAD holds for {folder}: {exc}; nothing is written") from None
+    except _baselines.BaselineError as exc:
+        raise CaptureError(f"the change of HEAD's {folder} cannot be judged: {exc}; nothing is written") from None
 
 
-def plan_version(existing: Any, bump: str | None, committed: bool = True) -> tuple[str | None, str]:
-    """``(old version, new version)`` of the baseline about to be written over
-    ``existing`` (a ``baselines.Baseline``, or ``None`` when there is none);
-    ``committed`` says whether HEAD holds ``existing`` (``committed_at_head``).
-    A new baseline starts at ``1.0.0`` whatever ``bump`` says, and so does one
-    HEAD does not hold yet. Replacing a committed one needs ``bump``, at least
-    ``minor`` when it was not observed on gnucobol-batch. ``CaptureError``
-    otherwise."""
-    if existing is None:
-        return None, _baselines.NEW_VERSION
-    # A baseline written since HEAD is still new to the bump check, which
-    # requires 1.0.0 for it, so recapturing it before a commit keeps 1.0.0.
-    if not committed:
-        return existing.version, _baselines.NEW_VERSION
-    platform = existing.capture_platform
+def plan_version(need: Any, bump: str | None, existing: Any = None) -> tuple[str | None, str]:
+    """``(old version, new version)`` of the baseline about to be written,
+    from ``need`` (``baselines.bump_needed`` against HEAD: a ``BumpNeed``,
+    or ``None`` when HEAD does not hold the baseline) and ``existing``, the
+    working-tree baseline (``None`` when there is none).
+
+    A baseline HEAD does not hold is new to the bump check against HEAD,
+    which requires ``1.0.0``, so it gets ``1.0.0`` whatever ``bump`` says and
+    however often it was written since HEAD; its old version is the working
+    tree's. Replacing one HEAD holds needs ``bump``, at least ``need.level``,
+    and raises HEAD's committed version, never the working tree's, so the
+    same ``need`` and ``bump`` always plan the same version. ``CaptureError``
+    otherwise, naming the level the change needs."""
+    if bump is not None and bump not in _baselines.BUMP_LEVELS:
+        raise CaptureError(f"--bump {bump} is not one of {', '.join(_baselines.BUMP_LEVELS)}")
+    if need is None:
+        return (existing.version if existing is not None else None), _baselines.NEW_VERSION
     if bump is None:
         raise CaptureError(
-            f"its {platform} baseline exists at {existing.version}; replacing it needs "
+            f"its {need.base_platform} baseline exists at {need.base_version} at HEAD; replacing it needs "
             f"--bump {'|'.join(_baselines.BUMP_LEVELS)}"
         )
-    # Not only a derived baseline: replacing any baseline captured elsewhere
-    # changes capture_platform, which the bump check rates MINOR at least.
-    if platform != ADAPTER and bump == "patch":
+    if not need.allows(bump):
         raise CaptureError(
-            f"its {platform} baseline {existing.version} would become one observed on {ADAPTER}, a change of "
-            f"capture platform that needs at least --bump minor (--bump major when the decoded outcome changes)"
+            f"HEAD holds its {need.base_platform} baseline {need.base_version}: {need.reason}, which needs at "
+            f"least --bump {need.level} (--bump {bump} given); nothing is written"
         )
-    return existing.version, _baselines.bump(existing.version, bump)
+    return need.base_version, _baselines.bump(need.base_version, bump)
 
 
 def build_manifest(version: str, record: Any, execution_id: str | None = None) -> dict:
@@ -550,10 +438,22 @@ def _capture(scenario_id: str, bump: str | None, adapter: Any) -> Captured:
     # --bump skips the post-open fault scenarios, whose derived baselines
     # exist, as implemented-unexecuted instead of refusing them for --bump.
     existing = _baselines.load(scenario.id, missing_ok=True)
-    committed = existing is not None and committed_at_head(scenario.id)
-    old_version, new_version = plan_version(existing, bump, committed)
+    # What HEAD holds is learnt from the capture at a provisional version: the
+    # version HEAD holds, or that it holds none, does not depend on it.
+    provisional = build_manifest(
+        _baselines.NEW_VERSION, record_at_version(scenario, adapter, outcome.record, _baselines.NEW_VERSION)
+    )
+    # The run's work root, which the runner created: the bump check's files stay inside it.
+    work_root = Path(adapter.work_root)
+    need = _head_need(_baselines.Baseline(scenario.id, expected, provisional, datasets), work_root)
+    old_version, new_version = plan_version(need, bump, existing)
     manifest = build_manifest(new_version, record_at_version(scenario, adapter, outcome.record, new_version))
     candidate = _baselines.Baseline(scenario.id, expected, manifest, datasets)
+    if need is not None:
+        # The bump check judges the baseline as written, at its new version.
+        need = _head_need(candidate, work_root)
+        if plan_version(need, bump, existing) != (old_version, new_version):
+            raise CaptureError("HEAD changed while the capture's version was planned; nothing is written")
     run_date = _dt.date.fromisoformat(_scenarios.clock(scenario)[:10])
     status, reason, diff = _baselines.compare(scenario, candidate, result, ADAPTER, run_date)
     if status != _results.STATUS_PASSED:
@@ -567,7 +467,7 @@ def _capture(scenario_id: str, bump: str | None, adapter: Any) -> Captured:
         written=True,
         old_version=old_version,
         new_version=new_version,
-        detail=_change_note(existing, committed, expected, datasets, bump),
+        detail=_change_note(need, existing, expected, datasets, bump),
     )
 
 
@@ -591,20 +491,28 @@ def _not_passed(outcome: Any) -> Captured:
 
 
 def _change_note(
-    existing: Any, committed: bool, expected: Mapping[str, Any], datasets: Mapping[str, bytes], bump: str | None
+    need: Any, existing: Any, expected: Mapping[str, Any], datasets: Mapping[str, bytes], bump: str | None
 ) -> str:
-    """What the written baseline changed, to choose and check the bump by."""
+    """What the written baseline changed: against HEAD as the bump check
+    judges it (``need``, ``None`` when HEAD does not hold it), and against the
+    working-tree baseline ``existing`` it replaced."""
     ignored = f"; --bump {bump} ignored" if bump else ""
-    if existing is None:
-        return f"new baseline{ignored}" if bump else ""
-    outcome = "unchanged" if existing.expected == expected else "changed"
-    raw = "unchanged" if existing.datasets == dict(datasets) else "changed"
+    if need is None:
+        if existing is None:
+            return f"new baseline{ignored}" if bump else ""
+        outcome = "unchanged" if existing.expected == expected else "changed"
+        raw = "unchanged" if existing.datasets == dict(datasets) else "changed"
+        return (
+            f"replaced the {existing.capture_platform} baseline {existing.version}: "
+            f"expected outcome {outcome}, raw datasets {raw}; HEAD does not hold it, so it stays a new baseline "
+            f"at {_baselines.NEW_VERSION}{ignored}"
+        )
     note = (
-        f"replaced the {existing.capture_platform} baseline {existing.version}: "
-        f"expected outcome {outcome}, raw datasets {raw}"
+        f"against HEAD's {need.base_platform} baseline {need.base_version}: {need.reason}, "
+        f"a {need.level} change (--bump {bump})"
     )
-    if not committed:
-        note += f"; HEAD does not hold it, so it stays a new baseline at {_baselines.NEW_VERSION}{ignored}"
+    if existing is not None and existing.version != need.base_version:
+        note += f"; planned from HEAD's {need.base_version}, not the working tree's {existing.version}"
     return note
 
 
@@ -721,7 +629,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--bump",
         choices=_baselines.BUMP_LEVELS,
-        help="the version level of a replaced baseline; ignored for a new one, which starts at 1.0.0",
+        help=(
+            "the level by which HEAD's version of a replaced baseline is raised, at least the level its change "
+            "needs; ignored for a baseline HEAD does not hold, which starts at 1.0.0"
+        ),
     )
     parser.add_argument(
         "--work-root",

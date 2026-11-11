@@ -13,6 +13,17 @@ recovery paths), each with the fields of the inventory item contract::
 ``scenario_ids``, ``status`` and ``gap_ids`` are rewritten by
 ``harness/report.py``; everything else is produced here.
 
+``header.changes`` records every change since the freeze. An addition
+(``append_items``) is ``{date, inventory_id, reason}`` and raises the total.
+A gap-register entry closes only once the inventory holds the additions its
+closing evidence entails and an activation it does not contradict. A closure
+record (``append_closures``) is ``{date, gap_id, reason}``, naming the entry,
+why it closed and its resolving evidence. It records the closing's reason,
+changes neither the items nor the total, and the drift check reads no
+addition from it. If the register write fails, ``withdraw_closures`` removes
+only that transaction's returned records under the inventory lock, preserving
+concurrent additions and unrelated changes rather than restoring a snapshot.
+
 Behaviour items come from two places:
 
 * static tables transcribed from the batch, JCL and cross-job analysis, each
@@ -30,13 +41,14 @@ Command line (run from the repository root)::
 
 The tool only reads ``app/``, ``samples/`` and ``README.md``; the UniKix zip is
 read in memory with ``zipfile``. It makes no network call and writes nothing
-outside ``tests/inventory/``: ``--freeze`` and ``append_items`` resolve the
-inventory path, symlinks followed, and refuse any target outside
-``tests/inventory/`` of the repository holding this script, a directory, or an
-existing file that is empty or no inventory. ``--inventory`` points ``--check``
-at any file, read only; to freeze a copy of the repository, run that copy's
-own tool. Writes are atomic and serialized by a lock on the inventory's
-directory, so concurrent writers never lose an addition.
+outside ``tests/inventory/``: ``--freeze``, ``append_items`` and
+``append_closures`` resolve the inventory path, symlinks followed, and refuse
+any target outside ``tests/inventory/`` of the repository holding this script,
+a directory, or an existing file that is empty or no inventory.
+``--inventory`` points ``--check`` at any file, read only; to freeze a copy of
+the repository, run that copy's own tool. Writes are atomic and serialized by
+a lock on the inventory's directory, so concurrent writers never lose an
+addition.
 """
 
 from __future__ import annotations
@@ -97,6 +109,7 @@ __all__ = [
     "SOURCE_KINDS",
     "STATUSES",
     "SourceLine",
+    "append_closures",
     "append_items",
     "by_id",
     "check",
@@ -112,6 +125,7 @@ __all__ = [
     "main",
     "next_id",
     "resolve_copies",
+    "withdraw_closures",
     "write",
 ]
 
@@ -3221,7 +3235,8 @@ def _header_problems(header: dict[str, Any]) -> list[str]:
     commit and base are strings, the date a string or date, the total an
     integer, ``source_items`` and ``derived_items`` map kinds to counts,
     ``by_area`` maps each area to its counts, and ``changes`` is a list of
-    mappings with a date and a reason."""
+    mappings with a date and a reason, whose ``inventory_id``, where given,
+    is a string and whose ``gap_id``, where present, a GAP id."""
     problems = []
     unexpected = sorted(key if isinstance(key, str) else _shown(key) for key in header if key not in _HEADER_KEYS)
     if unexpected:
@@ -3255,6 +3270,10 @@ def _header_problems(header: dict[str, Any]) -> list[str]:
                     problems.append(f"header: change {_shown(change)} lacks a date or reason")
                 elif not isinstance(change.get("inventory_id") or "", str):
                     problems.append(f"header: change {_shown(change)} has an inventory_id that is not a string")
+                elif "gap_id" in change and not (
+                    isinstance(change["gap_id"], str) and _GAP_RE.fullmatch(change["gap_id"])
+                ):
+                    problems.append(f"header: change {_shown(change)} has a gap_id that is not GAP-<CAT>-<nnn>")
     return problems
 
 
@@ -3439,7 +3458,8 @@ def _known_gap_ids(repo_root: Path) -> set[str]:
     path = Path(repo_root) / "tests" / "inventory" / "gaps.yaml"
     data = _read_yaml(path)
     if data is _ABSENT:
-        raise InventoryError(f"{path} does not exist, so the gap ids of new items cannot be checked")
+        raise InventoryError(f"{path} does not exist, so the gap ids of new items and closure records cannot be "
+                             "checked")
     gaps = data.get("gaps") if isinstance(data, dict) else None
     if not isinstance(gaps, list):
         raise InventoryError(f"{path} has no 'gaps' list")
@@ -3522,6 +3542,123 @@ def append_items(
         )
         write({"header": header, "items": records}, target, repo_root=repo_root)
     return assigned
+
+
+def append_closures(
+    closures: Sequence[tuple[str, str]],
+    path: str | Path = INVENTORY_FILE,
+    *,
+    repo_root: Path = REPO_ROOT,
+) -> list[dict[str, Any]]:
+    """Record in ``header.changes`` the reason of each gap-register closing.
+
+    Before closing, the caller checks that the inventory holds the additions
+    the closing evidence entails and an activation it does not contradict;
+    this function records the reason, not those additions or activation edits.
+
+    ``closures`` holds ``(gap_id, reason)`` pairs: the id of an entry of
+    ``tests/inventory/gaps.yaml`` of ``repo_root``, and a reason naming the
+    entry, why it closed and its resolving evidence. Each pair becomes the
+    closure record ``{date, gap_id, reason}``, dated today and appended in
+    order. A closure record holds no ``inventory_id``, so it is no addition:
+    the items, ``total`` and the header counts stay as they are. Returns the
+    records appended; nothing is read or written when ``closures`` is empty.
+
+    InventoryError is raised, the file left unchanged, for a pair whose gap
+    id is not ``GAP-<CAT>-<nnn>`` or no entry of ``gaps.yaml``, a pair with
+    an empty reason, an inventory with no header, and a header or items of
+    the wrong shape. ``path`` must resolve inside ``tests/inventory/`` of
+    ``repo_root``; the load, the checks and the write run under a lock on
+    its directory, as in ``append_items``.
+    """
+    pairs = []
+    for closure in closures:
+        if not isinstance(closure, (tuple, list)) or len(closure) != 2:
+            raise InventoryError(f"a closure record needs a (gap_id, reason) pair, not {_shown(closure)}")
+        gap_id, reason = closure
+        if not isinstance(gap_id, str) or not _GAP_RE.fullmatch(gap_id):
+            raise InventoryError(f"closure record gap id {_shown(gap_id)} is not GAP-<CAT>-<nnn>")
+        if not isinstance(reason, str) or not reason.strip():
+            raise InventoryError(f"the closure record of {gap_id} needs a reason")
+        pairs.append((gap_id, reason.strip()))
+    if not pairs:
+        return []
+    target = _confined_target(path, repo_root)
+    with _locked(target):
+        inventory = load(path)
+        header = dict(inventory["header"])
+        if not header:
+            raise InventoryError(f"{path} has no header; freeze the inventory before recording a closure")
+        records = list(inventory["items"])
+        problems = _header_problems(header) + _item_problems(records)
+        if problems:
+            raise _refusal(path, "extended", problems)
+        unknown = sorted({gap_id for gap_id, _ in pairs} - _known_gap_ids(repo_root))
+        if unknown:
+            raise InventoryError(
+                f"closure record gap id(s) {', '.join(unknown)} are not entries of tests/inventory/gaps.yaml"
+            )
+        today = datetime.date.today().isoformat()
+        added = [{"date": today, "gap_id": gap_id, "reason": reason} for gap_id, reason in pairs]
+        header["changes"] = [*(header.get("changes") or []), *added]
+        write({"header": header, "items": records}, target, repo_root=repo_root)
+    return [dict(record) for record in added]
+
+
+def withdraw_closures(
+    closures: Sequence[dict[str, Any]],
+    path: str | Path = INVENTORY_FILE,
+    *,
+    repo_root: Path = REPO_ROOT,
+) -> list[dict[str, Any]]:
+    """Withdraw exactly the records returned by ``append_closures`` when
+    the register could not record their closings.
+
+    Each ``{date, gap_id, reason}`` removes one equal ``header.changes``
+    record, searching from the end, so earlier identical records and all
+    unrelated changes, items and counts survive. The load, validation,
+    removal and write hold the same directory lock as ``append_items``;
+    a concurrent addition is never overwritten by an earlier snapshot.
+    Returns copies of the withdrawn records, in the given order; an empty
+    request reads and writes nothing.
+
+    A malformed request, an inventory without a valid header and items, or
+    any requested occurrence missing raises InventoryError before writing
+    anything. Missing occurrences are refused, not silently ignored, so a
+    failed rollback cannot be mistaken for a completed one. No gap-register
+    read is needed: that file may be what the transaction could not write.
+    ``path`` must resolve inside ``tests/inventory/`` of ``repo_root``.
+    """
+    requested = []
+    for record in closures:
+        if (not isinstance(record, dict) or set(record) != {"date", "gap_id", "reason"}
+                or not isinstance(record["date"], str) or not record["date"].strip()
+                or not isinstance(record["gap_id"], str) or not _GAP_RE.fullmatch(record["gap_id"])
+                or not isinstance(record["reason"], str) or not record["reason"].strip()):
+            raise InventoryError(f"cannot withdraw malformed closure record {_shown(record)}")
+        requested.append(dict(record))
+    if not requested:
+        return []
+    target = _confined_target(path, repo_root)
+    with _locked(target):
+        inventory = load(path)
+        header = dict(inventory["header"])
+        if not header:
+            raise InventoryError(f"{path} has no header; cannot withdraw closure records")
+        records = list(inventory["items"])
+        problems = _header_problems(header) + _item_problems(records)
+        if problems:
+            raise _refusal(path, "updated", problems)
+        changes = list(header.get("changes") or [])
+        for record in requested:
+            index = next((index for index in range(len(changes) - 1, -1, -1) if changes[index] == record), None)
+            if index is None:
+                raise InventoryError(f"{path} cannot withdraw closure record {_shown(record)}: no matching "
+                                     "header.changes record remains; nothing was withdrawn")
+            del changes[index]
+        header["changes"] = changes
+        write({"header": header, "items": records}, target, repo_root=repo_root)
+    return requested
 
 
 _MAX_REFUSAL_PROBLEMS = 3

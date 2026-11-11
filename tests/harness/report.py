@@ -68,11 +68,12 @@ Command line (from the repository root)::
 
 The module writes only under ``tests/``: the report files and the
 inventory's report fields; on import, baselines, scenario tags and
-expectations, ``gaps.yaml``, inventory additions and, beside the UniKix
-evidence, ``validation.yaml`` and the transient ``promotion.yaml`` journal of
-an in-progress promotion, which the import removes once the promotion
-completes; on revalidation, ``validation.yaml`` and ``gaps.yaml``. The UniKix
-zip is only read, in memory.
+expectations, ``gaps.yaml``, inventory additions and closure records and,
+beside the UniKix evidence, ``validation.yaml`` and the transient
+``promotion.yaml`` journal of an in-progress promotion, which the import
+removes once the promotion completes; on revalidation, ``validation.yaml``,
+``gaps.yaml`` and the inventory's closure records. The UniKix zip is only
+read, in memory.
 """
 
 from __future__ import annotations
@@ -588,6 +589,71 @@ def load_gaps(path: str | Path = GAPS_FILE) -> GapRegister:
     return GapRegister(document, dict(sorted(entries.items())), tuple(problems))
 
 
+# What settles a register entry, its resolving_evidence and each earlier
+# closure's in superseded_evidence: the commit that did, a git object id
+# abbreviated (7 to 40 hex) or in full (sha1, or sha256 as git_head returns
+# it in a sha256 repository), or the execution whose evidence did.
+_EVIDENCE_COMMIT_RE = re.compile(r"[0-9a-f]{7,40}|[0-9a-f]{64}")
+_EXECUTION_EVIDENCE_KEYS = frozenset({"execution_id", "evidence_path", "scenario_id", "counterpart_of"})
+_EVIDENCE_SHAPE = ("{execution_id, evidence_path} naming that execution's evidence (optionally scenario_id, "
+                   "counterpart_of) or {commit}")
+
+
+def _resolving_evidence_problem(evidence: Any) -> str | None:
+    """Why ``evidence`` does not name what settled an entry, or ``None`` when
+    it does. It is ``{commit}``, a git commit id, or ``{execution_id,
+    evidence_path}`` with an optional ``scenario_id`` and ``counterpart_of``
+    (the gnucobol-batch scenario a UniKix ``scenario_id`` stands in for, which
+    the seam rule reads), every value text. ``evidence_path`` names that
+    execution's evidence: ``tests/reports/unikix/<execution_id>`` or its
+    ``<scenario_id>`` folder for a UniKix execution, the scenario's record
+    ``tests/reports/results/<scenario_id>.yaml`` for a gnucobol-batch one."""
+    if not isinstance(evidence, Mapping):
+        return f"got {_clip(repr(evidence), 80)}"
+    keys = set(evidence)
+    if "commit" in keys:
+        if keys != {"commit"}:
+            return f"commit stands alone, not with {', '.join(sorted(map(repr, keys - {'commit'})))}"
+        commit = evidence["commit"]
+        if not isinstance(commit, str) or not _EVIDENCE_COMMIT_RE.fullmatch(commit):
+            return f"commit {_clip(repr(commit), 80)} is not a git commit id of 7 to 40, or 64, lowercase hex digits"
+        return None
+    unknown = keys - _EXECUTION_EVIDENCE_KEYS
+    if unknown:
+        return f"unknown key(s) {', '.join(sorted(map(repr, unknown)))}"
+    missing = [key for key in ("execution_id", "evidence_path") if key not in keys]
+    if missing:
+        return f"no {' and no '.join(missing)}"
+    not_text = sorted(key for key, value in evidence.items() if not isinstance(value, str))
+    if not_text:
+        return f"{', '.join(not_text)} must be text"
+    execution_id, path = evidence["execution_id"], evidence["evidence_path"]
+    scenario_id, counterpart = evidence.get("scenario_id"), evidence.get("counterpart_of")
+    for key, value in (("scenario_id", scenario_id), ("counterpart_of", counterpart)):
+        if value is not None and not _scenarios.ID_RE.fullmatch(value):
+            return f"{key} {_clip(repr(value), 80)} is not a scenario id"
+    if _UNIKIX_ID_RE.fullmatch(execution_id):
+        folder = f"{display_path(UNIKIX_EVIDENCE_DIR)}/{execution_id}"
+        if path == folder:
+            return None
+        cited = path[len(folder) + 1:] if path.startswith(f"{folder}/") else ""
+        if _scenarios.ID_RE.fullmatch(cited) and scenario_id in (None, cited):
+            return None
+        named = f"{folder}/<scenario id>" if scenario_id is None else f"{folder}/{scenario_id}"
+        return f"evidence_path {_clip(repr(path), 120)} is neither {folder} nor {named}"
+    if not _results._GNUCOBOL_ID_RE.fullmatch(execution_id):
+        return (f"execution_id {_clip(repr(execution_id), 80)} is neither unikix-<yyyymmddThhmmssZ>-<8 hex> "
+                "nor gnucobol-batch-<16 hex>")
+    if counterpart is not None:
+        return "counterpart_of names what a UniKix scenario_id stands in for, so it needs a UniKix execution_id"
+    if scenario_id is None:
+        return "a gnucobol-batch execution's evidence is its scenario's record, so it needs scenario_id"
+    named = _results.evidence_path_for(_results.GNUCOBOL, scenario_id)
+    if path != named:
+        return f"evidence_path {_clip(repr(path), 120)} is not {named}"
+    return None
+
+
 def _entry_problems(gap_id: str, entry: Mapping[str, Any]) -> list[str]:
     """How one register entry breaks the register contract."""
     problems = []
@@ -606,9 +672,10 @@ def _entry_problems(gap_id: str, entry: Mapping[str, Any]) -> list[str]:
     evidence = entry.get("resolving_evidence")
     if status == "closed" and not evidence:
         problems.append(f"{gap_id}: a closed entry names its resolving_evidence")
-    if evidence is not None and not isinstance(evidence, (Mapping, str)):
-        problems.append(f"{gap_id}: resolving_evidence must be a mapping (execution_id, scenario_id, "
-                        "evidence_path, or commit) or null")
+    elif evidence is not None:
+        why = _resolving_evidence_problem(evidence)
+        if why is not None:
+            problems.append(f"{gap_id}: resolving_evidence must be {_EVIDENCE_SHAPE}: {why}")
     ids = entry.get("affected_inventory_ids", [])
     if not isinstance(ids, list) or not all(isinstance(item_id, str) for item_id in ids):
         problems.append(f"{gap_id}: affected_inventory_ids must be a list of inventory ids")
@@ -648,9 +715,13 @@ def _history_problems(gap_id: str, entry: Mapping[str, Any]) -> list[str]:
                     problems.extend(f"{gap_id}: narrowed_from.affected[{index}]: {problem}"
                                     for problem in clause_problems(clause))
     superseded = entry.get("superseded_evidence")
-    if superseded is not None and (not isinstance(superseded, list)
-                                   or not all(isinstance(evidence, (Mapping, str)) for evidence in superseded)):
+    if superseded is not None and not isinstance(superseded, list):
         problems.append(f"{gap_id}: superseded_evidence must be a list of the resolving_evidence of earlier closures")
+    elif superseded is not None:
+        for index, evidence in enumerate(superseded):
+            why = _resolving_evidence_problem(evidence)
+            if why is not None:
+                problems.append(f"{gap_id}: superseded_evidence[{index}] must be {_EVIDENCE_SHAPE}: {why}")
     return problems
 
 
@@ -2417,7 +2488,8 @@ def render_report(state: State, proof: tuple[bool, str] | None = None) -> str:
     changes = state.header.get("changes") or []
     if changes:
         lines += [
-            f"- {change.get('date')} {change.get('inventory_id')}: {_cell(change.get('reason'))}"
+            f"- {change.get('date')} {change.get('inventory_id') or change.get('gap_id')}: "
+            f"{_cell(change.get('reason'))}"
             if isinstance(change, Mapping) else f"- {_cell(change)}"
             for change in changes
         ]
@@ -4050,23 +4122,52 @@ def _gap_entries(document: dict) -> dict[str, dict]:
     return {str(_entry_id(entry)): entry for entry in section if isinstance(entry, dict)}
 
 
-def _add_gap(document: dict, category: str, unknown: str, items: Iterable[str], needed: str) -> str | None:
-    """Append an open entry of ``category`` with the next free number and
-    return its id; ``None`` when an open entry already asks the question
-    ``unknown`` starts with (the text up to its first colon)."""
+def _add_gap(document: dict, category: str, unknown: str, items: Iterable[str],
+             needed: str) -> tuple[str, str] | None:
+    """Register in ``document`` the question ``unknown`` starts with (the
+    text up to its first colon) about ``items``, so that no two entries of
+    ``category`` ask it. An entry of ``category`` that already asks it keeps
+    its id, an open one preferred: a closed one reopens (``_reopen``), takes
+    this ``unknown`` and ``needed``, which name the evidence it reopens on,
+    and lists ``items`` as well; an open one lists those of ``items`` it does
+    not list yet. Only a question no entry of ``category`` asks gets a new
+    open entry, with the category's next free number. Returns ``(gap_id,
+    how)``, ``how`` being ``"added"``, ``"reopened"`` or ``"extended"``;
+    ``None`` when an open entry already asks it about every item. Raises
+    ``ReportError``, changing nothing, when the entry that asks it holds an
+    ``affected_inventory_ids`` that is not a list."""
     entries = _gap_entries(document)
     question = unknown.split(":", 1)[0]
-    for entry in entries.values():
-        if (entry.get("category") == category and entry.get("status") == "open"
-                and str(entry.get("unknown", "")).split(":", 1)[0] == question):
-            return None
+    raised = {str(item) for item in items}
+    asking = [
+        (gap_id, entry) for gap_id, entry in entries.items()
+        if entry.get("category") == category and str(entry.get("unknown", "")).split(":", 1)[0] == question
+    ]
+    if asking:
+        gap_id, entry = next(((gap_id, entry) for gap_id, entry in asking if entry.get("status") == "open"),
+                             asking[0])
+        listed = entry.get("affected_inventory_ids")
+        if listed is not None and not isinstance(listed, list):
+            raise ReportError(f"gaps.yaml: the affected_inventory_ids of {gap_id} is not a list, so the question "
+                              f"'{_clip(question, 200)}' it asks cannot be registered for "
+                              f"{_clip(', '.join(sorted(raised)), 300)}; nothing is registered")
+        held = {str(item_id) for item_id in listed or []}
+        if entry.get("status") == "open":
+            if raised <= held:
+                return None
+            entry["affected_inventory_ids"] = sorted(held | raised)
+            return gap_id, "extended"
+        _reopen(entry)
+        entry["unknown"], entry["needed"] = unknown, needed
+        entry["affected_inventory_ids"] = sorted(held | raised)
+        return gap_id, "reopened"
     prefix = next(code for code, name in CATEGORIES.items() if name == category)
     numbers = [
         int(match.group(2)) for match in map(_GAP_ID_FULL_RE.match, entries) if match and match.group(1) == prefix
     ]
     gap_id = f"GAP-{prefix}-{max(numbers, default=0) + 1:03d}"
     entry = {
-        "affected_inventory_ids": sorted(set(items)),
+        "affected_inventory_ids": sorted(raised),
         "category": category,
         "gap_id": gap_id,
         "needed": needed,
@@ -4079,7 +4180,7 @@ def _add_gap(document: dict, category: str, unknown: str, items: Iterable[str], 
         section[gap_id] = {key: value for key, value in entry.items() if key != "gap_id"}
     else:
         section.append(entry)
-    return gap_id
+    return gap_id, "added"
 
 
 # --------------------------------------------------------------------------
@@ -5374,8 +5475,11 @@ class _PromotionWrites:
 
     scenario_text: str | None  # the new scenario file; None when the file already reads so
     baseline: Any  # the promoted baseline, validated
-    gap_id: str | None  # the register entry it opens; None when an open entry asks the same
-    gaps_document: dict | None  # the register holding that entry
+    # The register change it makes, (gap_id, how) as _add_gap returns it: an
+    # entry added, a closed one reopened or an open one extended; None when an
+    # open entry already asks the same about every item, as on a retry.
+    gap: tuple[str, str] | None
+    gaps_document: dict | None  # the register holding that change
     gaps_text: str | None  # and its gaps.yaml text
 
 
@@ -5383,11 +5487,12 @@ def _promotion_writes(evidence: Evidence, scenario: Any, journal: Mapping[str, A
                       document: dict) -> _PromotionWrites:
     """Every write of ``journal``, built and checked before the first one:
     the baseline (validated), the scenario text and the promoted scenario it
-    parses to, the register entry added to a copy of ``document`` with its
-    ``gaps.yaml`` text, and the ``validation.yaml`` record of the promoted
-    state (its record contract). Every target is refused when it is a
-    symbolic link, and the journal and ``validation.yaml`` pass the checks
-    their own writes make (``_evidence_file``)."""
+    parses to, the register entry added, reopened or extended in a copy of
+    ``document`` (``_add_gap``) with its ``gaps.yaml`` text, and the
+    ``validation.yaml`` record of the promoted state (its record contract).
+    Every target is refused when it is a symbolic link, and the journal and
+    ``validation.yaml`` pass the checks their own writes make
+    (``_evidence_file``)."""
     scenario_id = scenario.id
     missing = [name for name in journal["datasets"] if name not in evidence.datasets]
     if missing:
@@ -5402,41 +5507,42 @@ def _promotion_writes(evidence: Evidence, scenario: Any, journal: Mapping[str, A
     expected, tags = data.get("expected"), data.get("tags")
     promoted = replace(scenario, data=data, expected=expected if isinstance(expected, dict) else {},
                        tags=tuple(tags) if isinstance(tags, list) else ())
-    gap_id = gaps_document = gaps_text = None
+    registered = gaps_document = gaps_text = None
     gap = journal["gap"]
     if gap is not None:
         gaps_document = copy.deepcopy(document)
-        gap_id = _add_gap(gaps_document, gap["category"], gap["unknown"], gap["items"], gap["needed"])
-        if gap_id is not None:
+        registered = _add_gap(gaps_document, gap["category"], gap["unknown"], gap["items"], gap["needed"])
+        if registered is not None:
             gaps_text = _gaps_text(gaps_document, GAPS_FILE.read_text(encoding="utf-8"))
     status, reason, _, projected = _judge(evidence, promoted, baseline)
     _validation(evidence, promoted, baseline, status, reason, None, projected)
     directory = _baselines.BASELINES_DIR / scenario_id
     raw_folder = directory / _baselines.DATASETS_DIR
     _refuse_links(
-        scenario.path, *([GAPS_FILE] if gap_id is not None else []),
+        scenario.path, *([GAPS_FILE] if registered is not None else []),
         _baselines.BASELINES_DIR, directory, directory / _baselines.EXPECTED_FILE,
         directory / _baselines.MANIFEST_FILE, raw_folder,
         *(raw_folder / f"{name}{_baselines.RAW_SUFFIX}" for name in sorted(datasets)),
     )
     _evidence_file(evidence, PROMOTION_FILE)
     _validation_path(evidence)
-    return _PromotionWrites(text if text != original else None, baseline, gap_id, gaps_document, gaps_text)
+    return _PromotionWrites(text if text != original else None, baseline, registered, gaps_document, gaps_text)
 
 
 def _commit_promotion(evidence: Evidence, scenario: Any, journal: Mapping[str, Any], writes: _PromotionWrites,
                       document: dict, summary: ImportSummary, completing: bool) -> tuple[str, str | None]:
     """Make the writes of ``journal``, whose file is written, in the order a
-    retry completes from any point: the scenario, the register entry (into
+    retry completes from any point: the scenario, the register change (into
     ``document`` as well, so the import's own register write keeps it), the
     baseline (derived to observed: the commit point), then the
     ``validation.yaml`` of the promoted state as it reads back, and last the
-    removal of the journal. The promotion is reported only once committed.
-    Returns the status and reason written."""
+    removal of the journal. The promotion, and the entry it added, reopened
+    or extended, are reported only once committed. Returns the status and
+    reason written."""
     scenario_id = scenario.id
     if writes.scenario_text is not None:
         write_text(scenario.path, writes.scenario_text)
-    if writes.gap_id is not None:
+    if writes.gap is not None:
         write_text(GAPS_FILE, str(writes.gaps_text))
         document.update(writes.gaps_document or {})
     _baselines.write(scenario_id, journal["expected"], journal["manifest"], writes.baseline.datasets)
@@ -5449,8 +5555,14 @@ def _commit_promotion(evidence: Evidence, scenario: Any, journal: Mapping[str, A
     _remove_evidence_file(evidence, PROMOTION_FILE)
     how = f"{journal['how']}, completing an interrupted promotion" if completing else journal["how"]
     summary.promoted.append((scenario_id, journal["from_version"], journal["baseline_version"], how))
-    if writes.gap_id is not None:
-        summary.gaps_added.append(writes.gap_id)
+    if writes.gap is not None:
+        gap_id, registered = writes.gap
+        if registered == "added":
+            summary.gaps_added.append(gap_id)
+        else:
+            change = "reopened" if registered == "reopened" else "lists more items"
+            summary.gaps_changed.append(f"{gap_id}: {change}, the observed outcome of {scenario_id} differs from its "
+                                        f"derived expectation again in {journal['execution_id']}")
     return status, reason
 
 
@@ -5478,8 +5590,9 @@ def _complete_promotion(evidence: Evidence, scenario: Any, document: dict,
                         summary: ImportSummary) -> tuple[str, str | None]:
     """Complete the promotion an interrupted import journalled: its writes
     are made again from the journal (unchanged files are left alone, and the
-    register entry is not added twice), with no new judgement and so no
-    second version bump; then the promoted state is judged and validated."""
+    register entry is not added, reopened or extended twice), with no new
+    judgement and so no second version bump; then the promoted state is
+    judged and validated."""
     journal = _checked_journal(evidence, scenario)
     writes = _promotion_writes(evidence, scenario, journal, document)
     return _commit_promotion(evidence, scenario, journal, writes, document, summary, completing=True)
@@ -5701,8 +5814,15 @@ def _validate_evidence(evidence: Evidence, scenario: Any, document: dict | None,
     ``document`` (import), promote an eligible derived baseline (or complete
     the promotion an interrupted import journalled) and register a
     divergence first, refusing a record whose comparison could not be made.
-    Returns the status written, or ``None`` when nothing is written because
-    the evidence no longer describes the scenario or a promotion is pending
+    A record is written only when the evidence holds every observation the
+    current ``expected`` names (``missing_observations``), with one
+    exception: on import, a record with no outcome to compare
+    (``Evidence.ran`` false: blocked, implemented-unexecuted, or failing on
+    timeout) keeps its recorded status, reason and gap whatever its evidence
+    holds; while revalidating it keeps them only under that rule. Returns
+    the status written, or ``None`` when nothing is written because the
+    evidence no longer describes the scenario (its execution fingerprint
+    changed, or it lacks such an observation) or a promotion is pending
     while revalidating. Raises ``HarnessError`` when the evidence cannot be
     judged: the current execution fingerprint cannot be computed, the
     baseline cannot be read, the comparison could not be made, or a
@@ -5733,16 +5853,19 @@ def _validate_evidence(evidence: Evidence, scenario: Any, document: dict | None,
     baseline, problem = _load_baseline(scenario.id)
     if problem is not None:
         raise ReportError(f"{scenario.id}: the baseline cannot be read: {problem}")
+    # A revalidation rewrites a record only from evidence holding every
+    # observation the current expected names, a verdict with no outcome to
+    # compare included; the import carries that verdict forward as recorded.
+    missing = missing_observations(evidence, scenario, baseline) if evidence.ran or document is None else []
+    if missing:
+        if summary is not None:
+            summary.skipped.append((scenario.id, f"stale: the evidence lacks {', '.join(missing)}"))
+        return None
     if not evidence.ran:
         record = _validation(evidence, scenario, baseline, str(raw.get("status")), raw.get("reason"),
                              raw.get("gap_id"), None)
         _write_validation(evidence, record)
         return record["status"], record["reason"]
-    missing = missing_observations(evidence, scenario, baseline)
-    if missing:
-        if summary is not None:
-            summary.skipped.append((scenario.id, f"stale: the evidence lacks {', '.join(missing)}"))
-        return None
     problem = _run_date_problem(evidence, scenario, baseline)
     if problem is not None:
         raise ReportError(problem)
@@ -5756,13 +5879,21 @@ def _validate_evidence(evidence: Evidence, scenario: Any, document: dict | None,
         if baseline.derived:
             return _promote(evidence, scenario, baseline, status, diff, projected, document, summary)
         # The validation is written before the entry is registered, so a record
-        # refused on the way registers nothing; a retry judges again and the
-        # entry is not added twice.
+        # refused on the way registers nothing; a retry judges again and finds
+        # the entry asking the question, so it is not added twice. A divergence
+        # that recurs reopens the closed entry that asked it, or adds its
+        # items to the open one, under the entry's own id.
         category, unknown, needed = _divergence_entry(evidence, scenario, baseline, diff, document)
         _write_validation(evidence, _validation(evidence, scenario, baseline, status, reason, None, projected))
-        gap_id = _add_gap(document, category, unknown, map(str, scenario.inventory_ids), needed)
-        if gap_id:
-            summary.gaps_added.append(gap_id)
+        registered = _add_gap(document, category, unknown, map(str, scenario.inventory_ids), needed)
+        if registered is not None:
+            gap_id, how = registered
+            if how == "added":
+                summary.gaps_added.append(gap_id)
+            else:
+                change = "reopened" if how == "reopened" else "lists more items"
+                summary.gaps_changed.append(f"{gap_id}: {change}, cross-adapter divergence of {scenario.id} recurs "
+                                            f"in {evidence.execution_id}")
         return status, reason
     record = _validation(evidence, scenario, baseline, status, reason, None, projected)
     _write_validation(evidence, record)
@@ -5782,6 +5913,22 @@ def _versions_recorded(environment: Mapping[str, Any]) -> bool:
         found.get(key, "").strip() and not found[key].strip().lower().startswith(_VERSION_FAILURE_PREFIXES)
         for key in UNIKIX_VERSION_KEYS
     )
+
+
+# The most characters of an observed message the name of its inventory
+# addition quotes.
+_ADDITION_QUOTE_LIMIT = 160
+
+
+def _addition_text(message: ObservedMessage) -> str:
+    """The text the inventory addition of ``message``, an observed message
+    that matches no item, is made of: the first non-blank line of an
+    ``@text`` screen, or the ``ERRMSG`` value without its surrounding blanks.
+    Empty when the message holds no such text, so that it can never become
+    an addition."""
+    if message.field == _scenarios.SCREEN_TEXT:
+        return next((line.strip() for line in message.text.split("\n") if line.strip()), "")
+    return message.text.strip()
 
 
 def _new_message_items(state: State, execution_id: str, imported: Iterable[str], document: dict,
@@ -5806,10 +5953,7 @@ def _new_message_items(state: State, execution_id: str, imported: Iterable[str],
         for message in _observed_messages(path, raw, execution_id, scenario_id):
             if message_items(message.text, message.field, patterns):
                 continue
-            if message.field == _scenarios.SCREEN_TEXT:
-                text = next((line.strip() for line in message.text.split("\n") if line.strip()), "")
-            else:
-                text = message.text.strip()
+            text = _addition_text(message)
             if not text or text in added:
                 continue
             added.add(text)
@@ -5819,7 +5963,7 @@ def _new_message_items(state: State, execution_id: str, imported: Iterable[str],
             item = {
                 "area": scenario.area,
                 "kind": kind,
-                "name": f"{program} observed message '{_clip(text, 160)}'",
+                "name": f"{program} observed message '{_clip(text, _ADDITION_QUOTE_LIMIT)}'",
                 "source": f"{display_path(path)}:{message.line}",
                 "description": (f"Observed on UniKix in execution {execution_id}, scenario {scenario_id}, step "
                                 f"{message.step} ({message.field}); no extraction rule produced an item for it "
@@ -5890,13 +6034,10 @@ def _restore(entry: dict) -> None:
         entry.pop("affected", None)
 
 
-def _closing_evidence(state: State, item_ids: Iterable[str], execution_id: str | None) -> dict | None:
-    """The ``resolving_evidence`` of an inferred-not-observed entry whose items
-    are all verified: the UniKix execution whose counted passed records verify
-    them (the importing one when it is among them, else the latest, as ids
-    embed their UTC start), else the importing execution, else the commit
-    checked out. ``None`` when nothing names the evidence."""
-    executions = {
+def _verifying_executions(state: State, item_ids: Iterable[str]) -> set[str]:
+    """The UniKix executions whose counted passed records verify any of
+    ``item_ids``."""
+    return {
         str(record["execution_id"])
         for item_id in item_ids
         for scenario_id in state.item_scenarios.get(item_id, ())
@@ -5904,6 +6045,15 @@ def _closing_evidence(state: State, item_ids: Iterable[str], execution_id: str |
         if record.get("adapter") == _results.UNIKIX and record.get("status") == _results.STATUS_PASSED
         and record.get("execution_id")
     }
+
+
+def _closing_evidence(state: State, item_ids: Iterable[str], execution_id: str | None) -> dict | None:
+    """The ``resolving_evidence`` of an inferred-not-observed entry whose items
+    are all verified: the UniKix execution whose counted passed records verify
+    them (the importing one when it is among them, else the latest, as ids
+    embed their UTC start), else the importing execution, else the commit
+    checked out. ``None`` when nothing names the evidence."""
+    executions = _verifying_executions(state, item_ids)
     if execution_id is not None and (execution_id in executions or not executions):
         chosen: str | None = execution_id
     else:
@@ -5914,16 +6064,155 @@ def _closing_evidence(state: State, item_ids: Iterable[str], execution_id: str |
     return None if commit == "unknown" else {"commit": commit}
 
 
-def _settle_inferred(document: dict, state: State, execution_id: str | None, changes: list) -> None:
+# The inventory activation of an item that no input or configuration can reach.
+_UNREACHABLE = "unreachable"
+
+
+@dataclass
+class _ClosingCheck:
+    """The inventory step of closing a register entry, judged before the
+    entry closes: the inventory must already hold the additions the closing
+    evidence entails, and an activation that evidence does not contradict.
+
+    The closing evidence of an entry is the importing execution
+    (``execution_id``; ``None`` on revalidation) and every UniKix execution
+    whose counted passed records verify the entry's items. It entails an
+    addition for each observed ``ERRMSG`` or ``@text`` of those executions
+    that matches no item (``unmatched_messages``), even before validation,
+    that ``_new_message_items`` turns into one: a message of a present
+    scenario holding text that no item's name quotes yet, so that a message
+    added once but beyond what the matching sees keeps no entry open. An
+    item recorded ``unreachable`` that the evidence verifies contradicts its
+    activation, which the drift check holds to the extraction, so only a
+    person can correct it. The evidence's messages are read once, when an
+    entry first needs them."""
+
+    state: Any
+    execution_id: str | None
+
+    @functools.cached_property
+    def messages(self) -> list[ObservedMessage]:
+        """The observed UniKix messages that match no item and that the
+        inventory holds no addition for yet."""
+        state = self.state
+        quoted = set()
+        for item in state.items:
+            name = str(item.get("name") or "")
+            start, end = name.find("'"), name.rfind("'")
+            if 0 <= start < end:
+                quoted.add(name[start + 1:end])
+        return [
+            message for message in unmatched_messages(state, UNIKIX_EVIDENCE_DIR)
+            if message.scenario_id in state.scenarios and _addition_text(message)
+            and _clip(_addition_text(message), _ADDITION_QUOTE_LIMIT) not in quoted
+        ]
+
+    def withheld(self, gap_id: str, held: str, members: Sequence[str]) -> str | None:
+        """The line noting that ``gap_id``, whose closing ``held`` would
+        allow, stays open because the inventory does not yet reflect the
+        evidence that closes it, an entry affecting ``members``; ``None``
+        when the inventory reflects it, so the entry may close."""
+        executions = _verifying_executions(self.state, members)
+        if self.execution_id is not None:
+            executions.add(self.execution_id)
+        observed = []
+        for execution in sorted(executions):
+            found = [message for message in self.messages if message.execution_id == execution]
+            if found:
+                observed.append(f"{len(found)} observed message(s) of {execution} match no item "
+                                f"(first: '{_clip(_addition_text(found[0]), 80)}')")
+        parts = [_clip("; ".join(observed), 600)] if observed else []
+        activation = {item["id"]: item.get("activation") for item in self.state.items}
+        contradicted = [
+            item_id for item_id in members
+            if activation.get(item_id) == _UNREACHABLE and self.state.item_status.get(item_id) == VERIFIED
+        ]
+        if contradicted:
+            verb = "is" if len(contradicted) == 1 else "are"
+            parts.append(f"{_clip(', '.join(contradicted), 300)} {verb} recorded unreachable but verified")
+        if not parts:
+            return None
+        return (f"{gap_id}: left open although {held}: the inventory does not yet reflect its closing evidence: "
+                f"{'; '.join(parts)}")
+
+
+@dataclass
+class _Closure:
+    """One closing ``_close`` made in the register document, held until
+    ``_write_register`` has the inventory record it: the entry and its id,
+    the ``header.changes`` reason the inventory records it with, the line
+    noted for the operator, and the ``status`` and ``resolving_evidence``
+    the closing replaced."""
+
+    gap_id: str
+    entry: dict
+    reason: str
+    line: str
+    replaced: dict
+
+    def revert(self, changes: list, why: str) -> None:
+        """Undo the closing: the entry is open again with the status and
+        evidence it held before, its membership as the settling left it, and
+        the closing's line in ``changes`` gives way to ``why`` the closing
+        does not stand."""
+        for key in ("status", "resolving_evidence"):
+            if key in self.replaced:
+                self.entry[key] = self.replaced[key]
+            else:
+                self.entry.pop(key, None)
+        text = f"{self.gap_id}: left open, the inventory could not record its closure: {why}"
+        if self.line in changes:
+            changes[changes.index(self.line)] = text
+        else:
+            changes.append(text)
+
+
+def _close(gap_id: str, entry: dict, evidence: dict, why: str, changes: list, closures: list) -> None:
+    """Close ``entry`` on ``evidence``, ``{execution_id, evidence_path}`` or
+    ``{commit}``: set ``status: closed`` and that ``resolving_evidence``,
+    note ``<gap_id>: closed, <why>`` in ``changes``, and queue in
+    ``closures`` the record of the closing's reason. Every closing the
+    import and the revalidation make goes through here, and only once
+    ``_ClosingCheck.withheld`` finds that the inventory already reflects the
+    closing evidence: it holds the addition of every observed message of
+    that evidence that matches no item, and records no item the evidence
+    verifies as unreachable. The importer can author no description, and no
+    affected item's description depends on the closing, so what the closing
+    adds to the inventory is that reason: a ``header.changes`` closure record
+    naming the entry, ``why`` and the evidence
+    (``inventory_tools.append_closures``), which ``_write_register`` writes
+    before ``gaps.yaml``."""
+    replaced = {key: entry[key] for key in ("status", "resolving_evidence") if key in entry}
+    entry["status"], entry["resolving_evidence"] = "closed", evidence
+    line = f"{gap_id}: closed, {why}"
+    changes.append(line)
+    if "commit" in evidence:
+        named = f"commit {evidence['commit']}"
+    else:
+        named = f"UniKix execution {evidence['execution_id']} ({evidence['evidence_path']})"
+    closures.append(_Closure(gap_id, entry, f"{gap_id} closed: {why}; resolving evidence: {named}", line, replaced))
+
+
+def _settle_inferred(document: dict, state: State, execution_id: str | None, changes: list,
+                     closures: list, check: _ClosingCheck | None = None) -> None:
     """Judge every inferred-not-observed entry, open or closed, over its full
     membership (``narrowed_from`` once it is narrowed), appending one line
     per change to ``changes``. An entry closes, its full membership
-    restored, only when every item is verified by current records; a closed
-    entry with an item no longer verified reopens, its
-    ``resolving_evidence`` moved to ``superseded_evidence``; an open entry
-    lists exactly its unverified items, the earlier membership kept under
-    ``narrowed_from``. ``execution_id`` names the importing execution
-    (``None`` on revalidation)."""
+    restored, only when every item is verified by current records and the
+    inventory reflects the evidence that verifies them (``check``, a
+    ``_ClosingCheck`` of ``state`` made here when not given): it holds the
+    addition of every observed message of that evidence that matches no
+    item, and records no affected item as unreachable. The closing goes
+    through ``_close``, which queues in ``closures`` the record of its
+    reason; an entry the inventory does not yet reflect stays open, its full
+    membership restored, with the line saying what the inventory lacks, so
+    the next import or revalidation judges it again. A closed entry with an
+    item no longer verified reopens, its ``resolving_evidence`` moved to
+    ``superseded_evidence``; an open entry lists exactly its unverified
+    items, the earlier membership kept under ``narrowed_from``.
+    ``execution_id`` names the importing execution (``None`` on
+    revalidation)."""
+    check = check if check is not None else _ClosingCheck(state, execution_id)
     universe = _Universe.build(state.items, state.scenarios.values())
     for gap_id, entry in _gap_entries(document).items():
         if entry.get("category") != CATEGORIES["INF"] or entry.get("status") not in GAP_STATUSES:
@@ -5939,12 +6228,15 @@ def _settle_inferred(document: dict, state: State, execution_id: str | None, cha
         if not unverified:
             if entry.get("status") == "open":
                 evidence = _closing_evidence(state, members, execution_id)
+                withheld = None if evidence is None else check.withheld(gap_id, "every affected item is verified",
+                                                                        members)
                 if evidence is None:
                     changes.append(f"{gap_id}: left open although every affected item is verified: no UniKix "
                                    "execution or commit names the evidence")
+                elif withheld is not None:
+                    changes.append(withheld)
                 else:
-                    entry["status"], entry["resolving_evidence"] = "closed", evidence
-                    changes.append(f"{gap_id}: closed, every affected item verified")
+                    _close(gap_id, entry, evidence, "every affected item verified", changes, closures)
             elif narrowed is not None:
                 changes.append(f"{gap_id}: its full membership is restored, every affected item verified")
             if narrowed is not None:
@@ -5971,21 +6263,86 @@ def _settle_inferred(document: dict, state: State, execution_id: str | None, cha
 
 
 def _settle_gaps(document: dict, state: State, execution_id: str, environments: Iterable[Mapping[str, Any]],
-                 summary: ImportSummary) -> None:
+                 summary: ImportSummary, closures: list) -> None:
     """Judge the inferred-not-observed entries (``_settle_inferred``), and
-    close GAP-MIS-009 once the installation's versions are recorded."""
-    _settle_inferred(document, state, execution_id, summary.gaps_changed)
+    GAP-MIS-009 once the installation's versions are recorded. Each closing
+    needs the inventory to hold the additions its evidence entails and an
+    activation it does not contradict (``_ClosingCheck``); otherwise the
+    entry stays open, with what is lacking in ``summary.gaps_changed``.
+    ``_close`` queues the inventory record of each closing's reason in
+    ``closures``."""
+    check = _ClosingCheck(state, execution_id)
+    _settle_inferred(document, state, execution_id, summary.gaps_changed, closures, check)
     evidence = {"execution_id": execution_id, "evidence_path": f"{display_path(UNIKIX_EVIDENCE_DIR)}/{execution_id}"}
     installation = _gap_entries(document).get(GAP_NO_INSTALLATION)
     if (installation is not None and installation.get("status") == "open"
             and any(_versions_recorded(environment) for environment in environments)):
-        installation["status"], installation["resolving_evidence"] = "closed", dict(evidence)
-        summary.gaps_changed.append(f"{GAP_NO_INSTALLATION}: closed, the installation's versions are recorded")
+        members = _resolve(GAP_NO_INSTALLATION, installation, _Universe.build(state.items, state.scenarios.values()))
+        withheld = check.withheld(GAP_NO_INSTALLATION, "the installation's versions are recorded", members)
+        if withheld is not None:
+            summary.gaps_changed.append(withheld)
+        else:
+            _close(GAP_NO_INSTALLATION, installation, dict(evidence), "the installation's versions are recorded",
+                   summary.gaps_changed, closures)
 
 
 def _write_gaps(document: dict, original: str) -> None:
     _refuse_links(GAPS_FILE)
     write_text(GAPS_FILE, _gaps_text(document, original))
+
+
+def _problem_text(exc: BaseException) -> str:
+    """``exc`` on one line, an ``OSError`` as ``_os_problem`` shows it."""
+    return _os_problem(exc) if isinstance(exc, OSError) else " ".join(str(exc).split()) or type(exc).__name__
+
+
+def _write_register(document: dict, original: str, closures: Sequence[_Closure], changes: list) -> None:
+    """Write ``gaps.yaml`` from ``document`` when it differs from the file,
+    the inventory update of every closing in ``closures`` recorded first
+    (``inventory_tools.append_closures``), so that no entry closes without
+    it. When the inventory cannot record them, every one of those closings
+    is undone (``_Closure.revert``): its entry stays open and ``changes``
+    says why, so the next import or revalidation judges it again. When
+    ``gaps.yaml`` then cannot be read or written, withdraw only the records
+    ``append_closures`` returned, under the inventory lock, preserving
+    concurrent additions and every other change, and propagate the error.
+    Neither file records a closing the other lacks unless that withdrawal
+    also fails, which ``_withdraw_closures`` reports with both failures and
+    the records left behind."""
+    recorded: list[dict[str, Any]] = []
+    try:
+        if closures:
+            try:
+                recorded = _inventory.append_closures([(closure.gap_id, closure.reason) for closure in closures],
+                                                      _inventory.INVENTORY_FILE, repo_root=REPO_ROOT)
+            except (HarnessError, OSError) as exc:
+                for closure in closures:
+                    closure.revert(changes, _problem_text(exc))
+        if document != load_yaml(GAPS_FILE):
+            _write_gaps(document, original)
+    except BaseException as exc:
+        if recorded:
+            _withdraw_closures(recorded, exc)
+        raise
+
+
+def _withdraw_closures(records: Sequence[dict[str, Any]], cause: BaseException) -> None:
+    """Withdraw this transaction's exact inventory closure ``records`` once
+    ``gaps.yaml`` could not record the closings (``cause``). The inventory's
+    locked API preserves other writers' additions and changes. If withdrawal
+    fails, raise ``ReportError`` naming both failures and the records whose
+    removal could not be established, never advising a snapshot restoration
+    that would discard another writer's work."""
+    try:
+        _inventory.withdraw_closures(records, _inventory.INVENTORY_FILE, repo_root=REPO_ROOT)
+    except (HarnessError, OSError) as exc:
+        raise ReportError(
+            f"{display_path(GAPS_FILE)} could not be updated ({_problem_text(cause)}), and "
+            f"{display_path(_inventory.INVENTORY_FILE)} could not withdraw its closure records "
+            f"({_problem_text(exc)}): header.changes may still record these closings, which "
+            f"{display_path(GAPS_FILE)} does not: {list(records)!r}; reconcile those records without "
+            "discarding other inventory changes"
+        ) from cause
 
 
 @contextlib.contextmanager
@@ -6019,11 +6376,19 @@ def import_unikix(execution_id: str) -> ImportSummary:
     register entry when it differs), register cross-adapter divergences,
     write ``validation.yaml`` beside each ``result.yaml``, add observed
     messages no item matches to the inventory and to GAP-UNC-012, judge the
-    inferred-not-observed entries and settle GAP-MIS-009, and regenerate the
-    reports. A record whose current execution fingerprint cannot be computed
-    is rejected. Imports and revalidations run one at a time (``_exclusive``).
-    An invalid ``CARDDEMO_ADAPTER``, which the final regeneration refuses,
-    raises ``ReportError`` before anything is written."""
+    inferred-not-observed entries and settle GAP-MIS-009, closing only once
+    the inventory holds the additions the closing evidence entails and an
+    activation it does not contradict. Record each closing's reason in the
+    inventory's ``header.changes`` before ``gaps.yaml`` is written
+    (``_write_register``), and regenerate the reports. An entry whose
+    evidence the inventory does not yet reflect or whose closing it cannot
+    record stays open, listed with the reason under ``gaps_changed``;
+    that is a register outcome, not a rejected record,
+    so it leaves the exit status to the records. A record whose current
+    execution fingerprint cannot be computed is rejected. Imports and
+    revalidations run one at a time (``_exclusive``). An invalid
+    ``CARDDEMO_ADAPTER``, which the final regeneration refuses, raises
+    ``ReportError`` before anything is written."""
     if not isinstance(execution_id, str) or not _UNIKIX_ID_RE.fullmatch(execution_id):
         raise ReportError(f"{execution_id!r} is not a unikix execution id unikix-<yyyymmddThhmmssZ>-<8 hex>")
     _selected_adapter()
@@ -6070,9 +6435,9 @@ def _import_execution(execution_id: str, execution_dir: Path) -> ImportSummary:
             summary.validated.append((evidence.scenario_id, *written))
             imported.append(evidence.scenario_id)
     _new_message_items(build_state(), execution_id, imported, document, summary)
-    _settle_gaps(document, build_state(), execution_id, environments, summary)
-    if document != load_yaml(GAPS_FILE):
-        _write_gaps(document, original)
+    closures: list[_Closure] = []
+    _settle_gaps(document, build_state(), execution_id, environments, summary, closures)
+    _write_register(document, original, closures, summary.gaps_changed)
     regenerate()
     return summary
 
@@ -6084,7 +6449,10 @@ class RevalidationSummary:
     describes the scenario; ``rejected`` holds the records that could not be
     revalidated at all and those whose observed payload could not be compared
     with the baseline, whose ``validation.yaml`` records that comparison
-    error as a live run would."""
+    error as a live run would. ``gaps_changed`` lists each change to the
+    register, an entry left open because the inventory could not record its
+    closing included; like a stale record, that leaves the exit status as
+    it is."""
 
     revalidated: list = field(default_factory=list)  # (execution/scenario, status, reason)
     left: list = field(default_factory=list)  # (execution/scenario, why it stays stale)
@@ -6112,12 +6480,18 @@ def revalidate() -> RevalidationSummary:
     cannot be compared with the baseline (rewritten failing with reason
     error, as a live run records it, and reported with the comparison's
     diagnostic). Then judge the inferred-not-observed entries of
-    ``gaps.yaml`` again, write it when they change, and regenerate the
-    reports. A symbolic link at ``tests/reports`` or ``tests/reports/unikix``
-    raises ``ReportError`` before anything is read or written; one in place
-    of an execution or scenario directory is rejected, and reported as such.
-    An invalid ``CARDDEMO_ADAPTER``, which the final regeneration refuses,
-    raises ``ReportError`` before anything is read or written."""
+    ``gaps.yaml`` again, closing only once the inventory holds the additions
+    the closing evidence entails and an activation it does not contradict.
+    Write the register when it changes, each closing's reason recorded first
+    in the inventory's ``header.changes`` (an entry whose evidence the
+    inventory does not yet reflect or whose closing it cannot record stays
+    open, listed with the reason under ``gaps_changed``), and regenerate the
+    reports. A symbolic link at
+    ``tests/reports`` or ``tests/reports/unikix`` raises ``ReportError``
+    before anything is read or written; one in place of an execution or
+    scenario directory is rejected, and reported as such. An invalid
+    ``CARDDEMO_ADAPTER``, which the final regeneration refuses, raises
+    ``ReportError`` before anything is read or written."""
     _selected_adapter()
     with _exclusive():
         return _revalidate()
@@ -6188,9 +6562,9 @@ def _revalidate() -> RevalidationSummary:
                 result.rejected.append((label, f"the observed payload could not be compared ({written[0]}, reason "
                                                f"{written[1]} written to {VALIDATION_FILE}): {error}"))
     result.rejected.extend((link.relative_to(evidence_dir).as_posix(), _ENTRY_LINK) for link in links)
-    _settle_inferred(document, build_state(), None, result.gaps_changed)
-    if document != load_yaml(GAPS_FILE):
-        _write_gaps(document, original)
+    closures: list[_Closure] = []
+    _settle_inferred(document, build_state(), None, result.gaps_changed, closures)
+    _write_register(document, original, closures, result.gaps_changed)
     regenerate()
     return result
 
