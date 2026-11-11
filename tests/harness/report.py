@@ -3765,35 +3765,66 @@ def _git(args: Sequence[str]) -> subprocess.CompletedProcess | None:
     return _run(["git", *args])
 
 
+def _git_message(completed: subprocess.CompletedProcess) -> str:
+    """git's error output in ``completed`` on one line, clipped; empty when
+    git printed none."""
+    return _clip(" ".join((completed.stderr or "").split()), 500)
+
+
+def _protected_git(args: Sequence[str], accepted: tuple[int, ...] = (0,)) -> subprocess.CompletedProcess:
+    """``git <args>`` for the protected-tree check, when it exits with one of
+    ``accepted``. ``ReportError`` when git cannot start, times out or exits
+    otherwise, with git's own message: the tree then cannot be checked,
+    which is no finding about the tree."""
+    completed = _git(args)
+    command = f"git {' '.join(args[:2])}"
+    if completed is None:
+        raise ReportError(f"{command} cannot be run (git does not start or times out), "
+                          "so the protected tree cannot be checked")
+    if completed.returncode not in accepted:
+        raise ReportError(f"{command} failed (exit {completed.returncode}), so the protected tree cannot be "
+                          f"checked: {_git_message(completed) or 'no message'}")
+    return completed
+
+
 def check_protected(base: str | None = None) -> list[str]:
     """No change under ``app/``, ``samples/`` or ``diagrams/``: ``git diff``
     against the inventory header's ``protected_base`` (the starting commit)
-    is empty, and so is ``git status`` of those paths."""
+    is empty, and so is ``git status`` of those paths.
+
+    The findings: the base names no commit of this clone (``git rev-parse
+    --verify`` exits 1), with git's message when it prints one and, only
+    when ``git rev-parse --is-shallow-repository`` prints ``true``, the
+    advice to fetch the full history; a change the diff lists or reports by
+    its exit 1; a working-tree change the status lists. ``ReportError`` when
+    git cannot start, times out, or exits otherwise (no repository, a fatal
+    error, dubious ownership), with git's own message."""
     if base is None:
         try:
             base = _inventory.load()["header"].get("protected_base") or PROTECTED_BASE
         except HarnessError:
             base = PROTECTED_BASE
     paths = ("app", "samples", "diagrams")
-    verify = _git(["rev-parse", "--verify", "--quiet", f"{base}^{{commit}}"])
-    if verify is None:
-        return ["git cannot be run, so the protected tree cannot be checked"]
-    if verify.returncode != 0:
-        return [f"the protected base {base} is not in this clone's history; fetch the full history "
-                "(actions/checkout fetch-depth: 0) and check again"]
+    verify = _protected_git(["rev-parse", "--verify", "--quiet", f"{base}^{{commit}}"], accepted=(0, 1))
+    if verify.returncode == 1:
+        finding = f"the protected base {base} is not a commit of this clone"
+        detail = _git_message(verify)
+        if detail:
+            finding += f": {detail}"
+        # A shallow probe that fails counts as not shallow: the advice to fetch
+        # the full history is given only where git says the history is cut.
+        shallow = _git(["rev-parse", "--is-shallow-repository"])
+        if shallow is not None and shallow.returncode == 0 and shallow.stdout.strip() == "true":
+            finding += ("; the clone is shallow, so the base is not in this clone's history; fetch the full "
+                        "history (actions/checkout fetch-depth: 0) and check again")
+        return [finding]
     findings = []
-    diff = _git(["diff", "--exit-code", "--name-status", base, "--", *paths])
-    if diff is None or diff.returncode not in (0, 1):
-        detail = _clip(diff.stderr.strip(), 500) if diff is not None else "git cannot be run"
-        findings.append(f"git diff against {base} failed: {detail}")
-    elif diff.returncode == 1 or diff.stdout.strip():
+    diff = _protected_git(["diff", "--exit-code", "--name-status", base, "--", *paths], accepted=(0, 1))
+    if diff.returncode == 1 or diff.stdout.strip():
         changed = [line for line in diff.stdout.splitlines() if line.strip()]
         findings.append(f"changed since {base} under app/, samples/ or diagrams/: " + "; ".join(changed[:50]))
-    status = _git(["status", "--porcelain", "--untracked-files=all", "--", *paths])
-    if status is None or status.returncode != 0:
-        detail = _clip(status.stderr.strip(), 500) if status is not None else "git cannot be run"
-        findings.append(f"git status failed: {detail}")
-    elif status.stdout.strip():
+    status = _protected_git(["status", "--porcelain", "--untracked-files=all", "--", *paths])
+    if status.stdout.strip():
         changed = [line for line in status.stdout.splitlines() if line.strip()]
         findings.append("working-tree changes under app/, samples/ or diagrams/: " + "; ".join(changed[:50]))
     return findings

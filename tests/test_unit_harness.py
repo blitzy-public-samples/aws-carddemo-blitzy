@@ -39,7 +39,9 @@ Instruments every business assertion depends on:
   need the git history and fail, never skip, without it. The command-line
   checks run with the session work root as ``CARDDEMO_TEST_WORKDIR``, and the
   bump check's scratch folder, traced in its process, lies inside the work
-  root it is given.
+  root it is given. Under a fake git, a git failure stops the protected check
+  with git's own message, and a base that names no commit is a finding that
+  advises fetching the full history only in a shallow clone.
 
 Codec reconstruction over REDEFINES: a record ``decode_record`` decodes must
 encode back to the same bytes in ASCII and cp037, a positive overpunch
@@ -6698,6 +6700,60 @@ def test_protected_tree(carddemo_repo_root: Path, carddemo_work_root: Path) -> N
         "and this clone's history must hold it.",
     )
     _assert_passes(_cli(carddemo_repo_root, "report.py", "--check-protected", work_root=carddemo_work_root))
+
+
+# A git the protected-tree check finds first on PATH: ``rev-parse --verify``
+# and ``rev-parse --is-shallow-repository`` run the case's shell commands, and
+# every call they let through fails as a fatal git error does.
+FAKE_GIT_FAILURE = "fatal: simulated git failure"
+FAKE_GIT_SCRIPT = """\
+#!/bin/sh
+case "$1 $2" in
+  "rev-parse --verify") {verify} ;;
+  "rev-parse --is-shallow-repository") {shallow} ;;
+esac
+echo "{failure}" >&2
+exit 128
+"""
+
+
+@pytest.mark.parametrize(
+    ("verify", "shallow", "returncode", "says", "advises"),
+    [
+        pytest.param(":", ":", 2, FAKE_GIT_FAILURE, False, id="git-fatal"),
+        pytest.param("exit 1", "echo true; exit 0", 1, "fetch-depth: 0", True, id="no-base-shallow"),
+        pytest.param("exit 1", "echo false; exit 0", 1, "is not a commit of this clone", False, id="no-base-full"),
+    ],
+)
+def test_protected_tree_names_the_git_failure_cause(
+    carddemo_repo_root: Path, work_root_case: Path, verify: str, shallow: str, returncode: int, says: str, advises: bool
+) -> None:
+    """git failing in any other way than "no such commit" stops the check
+    with git's own message (exit 2). A base that names no commit is a finding
+    (exit 1) naming the base, and the advice to fetch the full history
+    appears only when git says the clone is shallow."""
+    fake = work_root_case / "bin"
+    fake.mkdir()
+    git = fake / "git"
+    git.write_text(FAKE_GIT_SCRIPT.format(verify=verify, shallow=shallow, failure=FAKE_GIT_FAILURE), encoding="utf-8")
+    git.chmod(0o755)
+    completed = _cli(
+        carddemo_repo_root,
+        "report.py",
+        "--check-protected",
+        work_root=work_root_case,
+        extra_env={"PATH": f"{fake}{os.pathsep}{os.environ['PATH']}"},
+    )
+    shown = f"exited {completed.returncode}\nstdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
+    assert completed.returncode == returncode and "Traceback" not in completed.stderr, shown
+    if returncode == 2:
+        assert completed.stderr.startswith("report.py: error: git rev-parse --verify failed (exit 128)"), shown
+        assert says in completed.stderr, shown
+    else:
+        assert completed.stdout.startswith("protected tree: 1 finding(s)"), shown
+        assert says in completed.stdout, shown
+        assert f"the protected base {inventory_tools.load()['header']['protected_base']} " in completed.stdout, shown
+    assert ("fetch-depth" in completed.stdout + completed.stderr) is advises, shown
 
 
 # --------------------------------------------------------------------------
