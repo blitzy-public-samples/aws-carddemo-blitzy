@@ -1,0 +1,128 @@
+# Derived baseline of scenario TRN-COTRN02C-normal-03; not observed.
+# USER0001 signs on (CC00), takes main menu option 8 'Transaction Add' and, on
+# COTRN02 (transaction CT02), adds a transaction for card 0500024453765740 with
+# CONFIRM Y while TRANSACT holds only the invented keys 7, 19 and 41.
+# Authored from the source, never captured:
+# - app/cbl/COSGN00C.cbl:230-237 and app/cbl/COMEN01C.cbl:115-156 with
+#   app/cpy/COMEN02Y.cpy (type U -> COMEN01C, sent with a blank ERRMSG; option
+#   8 transfers to COTRN02C with the program context reset);
+# - app/cbl/COTRN02C.cbl:112-130,516-571 (first entry: LOW-VALUES map, CT02
+#   header from app/cpy/COTTL01Y.cpy and app/cpy/CSDAT01Y.cpy, blank ERRMSG);
+# - app/cbl/COTRN02C.cbl:210-223,609-623 (card path: CCXREF read by card
+#   number; card 0500024453765740 is app/data/ASCII/cardxref.txt:1, account
+#   00000000050);
+# - app/cbl/COTRN02C.cbl:442-449,642-706 (STARTBR at HIGH-VALUES, READPREV of
+#   the highest key 0000000000000041, WS-TRAN-ID-N PIC 9(16) plus 1, so the
+#   new id is 0000000000000042: the highest key plus 1, not the count plus 1);
+# - app/cbl/COTRN02C.cbl:450-465 (INITIALIZE TRAN-RECORD, then the screen
+#   fields: TCATCD into the PIC 9(04) TRAN-CAT-CD, the amount through
+#   NUMVAL-C, the typed dates into the 26-byte timestamps padded with spaces);
+# - app/cbl/COTRN02C.cbl:711-734,762-779 (WRITE NORMAL: every input field is
+#   blanked and STRING builds the 66-character success message, padded to the
+#   78 of ERRMSG), with app/bms/COTRN02.bms for the field lengths and
+#   app/cpy/CVTRA05Y.cpy for the TRANSACT record.
+# Open under GAP-INF-007 (derived TRN end-to-end baselines) and GAP-INF-012
+# (online-only copybooks). Only `report.py --import-unikix` promotes it, from
+# imported UniKix evidence; it is never edited by hand to match a run.
+# One screen per step, each the screen shown after the step's AID; messages
+# holds each step's ERRMSG. Text is full BMS field width with trailing spaces.
+# TRANSACT is listed in primary-key order, the three precondition records
+# unchanged and the added one last. TRAN-ORIG-TS and TRAN-PROC-TS carry the
+# dates typed on the screen, so they are exact values and take no clock
+# matcher; CURDATE and CURTIME are the only clock-derived values. TRAN-RECORD's
+# FILLER is not asserted, as in the scenario: INITIALIZE skips it, so it holds
+# whatever the READPREV left.
+file_state:
+  TRANSACT:
+    records:
+    - TRAN-AMT: '10.07'
+      TRAN-CARD-NUM: '0500024453765740'
+      TRAN-CAT-CD: '1'
+      TRAN-DESC: 'Synthetic purchase 7                                                                                '
+      TRAN-ID: '0000000000000007'
+      TRAN-MERCHANT-CITY: 'Testville                                         '
+      TRAN-MERCHANT-ID: '900000007'
+      TRAN-MERCHANT-NAME: 'Synthetic Merchant                                '
+      TRAN-MERCHANT-ZIP: '27601     '
+      TRAN-ORIG-TS: '2022-06-07 10:00:00.000000'
+      TRAN-PROC-TS: '2022-06-07-10.00.00.000000'
+      TRAN-SOURCE: 'POS TERM  '
+      TRAN-TYPE-CD: '01'
+    - TRAN-AMT: '20.19'
+      TRAN-CARD-NUM: '0500024453765740'
+      TRAN-CAT-CD: '1'
+      TRAN-DESC: 'Synthetic purchase 19                                                                               '
+      TRAN-ID: '0000000000000019'
+      TRAN-MERCHANT-CITY: 'Testville                                         '
+      TRAN-MERCHANT-ID: '900000019'
+      TRAN-MERCHANT-NAME: 'Synthetic Merchant                                '
+      TRAN-MERCHANT-ZIP: '27601     '
+      TRAN-ORIG-TS: '2022-06-19 10:00:00.000000'
+      TRAN-PROC-TS: '2022-06-19-10.00.00.000000'
+      TRAN-SOURCE: 'POS TERM  '
+      TRAN-TYPE-CD: '01'
+    - TRAN-AMT: '30.41'
+      TRAN-CARD-NUM: '0500024453765740'
+      TRAN-CAT-CD: '1'
+      TRAN-DESC: 'Synthetic purchase 41                                                                               '
+      TRAN-ID: '0000000000000041'
+      TRAN-MERCHANT-CITY: 'Testville                                         '
+      TRAN-MERCHANT-ID: '900000041'
+      TRAN-MERCHANT-NAME: 'Synthetic Merchant                                '
+      TRAN-MERCHANT-ZIP: '27601     '
+      TRAN-ORIG-TS: '2022-06-28 10:00:00.000000'
+      TRAN-PROC-TS: '2022-06-28-10.00.00.000000'
+      TRAN-SOURCE: 'POS TERM  '
+      TRAN-TYPE-CD: '01'
+    - TRAN-AMT: '12.34'
+      TRAN-CARD-NUM: '0500024453765740'
+      TRAN-CAT-CD: '1'
+      TRAN-DESC: 'Test purchase                                                                                       '
+      TRAN-ID: '0000000000000042'
+      TRAN-MERCHANT-CITY: 'Testville                                         '
+      TRAN-MERCHANT-ID: '800000001'
+      TRAN-MERCHANT-NAME: 'Test Merchant                                     '
+      TRAN-MERCHANT-ZIP: '27601     '
+      TRAN-ORIG-TS: '2022-07-01                '
+      TRAN-PROC-TS: '2022-07-01                '
+      TRAN-SOURCE: 'POS TERM  '
+      TRAN-TYPE-CD: '01'
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'Transaction added successfully.  Your Tran ID is 0000000000000042.            '
+screens:
+- '@map': 'COMEN01'
+  ERRMSG: '                                                                              '
+  OPTN008: '08. Transaction Add                     '
+  PGMNAME: 'COMEN01C'
+  TRNNAME: 'CM00'
+- '@map': 'COTRN02'
+  ERRMSG: '                                                                              '
+  PGMNAME: 'COTRN02C'
+  TRNNAME: 'CT02'
+- '@map': 'COTRN02'
+  ACTIDIN: '           '
+  CARDNIN: '                '
+  CONFIRM: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: 'run-date'
+  CURTIME:
+    match: 'run-time'
+  ERRMSG: 'Transaction added successfully.  Your Tran ID is 0000000000000042.            '
+  MCITY: '                         '
+  MID: '         '
+  MNAME: '                              '
+  MZIP: '          '
+  PGMNAME: 'COTRN02C'
+  TCATCD: '    '
+  TDESC: '                                                            '
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TORIGDT: '          '
+  TPROCDT: '          '
+  TRNAMT: '            '
+  TRNNAME: 'CT02'
+  TRNSRC: '          '
+  TTYPCD: '  '
