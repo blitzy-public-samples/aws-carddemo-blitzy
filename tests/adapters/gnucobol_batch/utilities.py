@@ -54,12 +54,14 @@ Output
 ``UtilityError`` (a ``HarnessError``) reports a step the replacements cannot
 run as transcribed: an unparseable or unsupported statement, an unknown DD, a
 record layout the emulation does not handle. It is never a step return code.
+A control statement the replacements cannot parse is reported with the job,
+the qualified step and the complete statement, and the step's evidence file
+holds its control statements.
 Importing this module reads no file and starts no process.
 """
 
 from __future__ import annotations
 
-import contextlib
 import operator
 import re
 import time
@@ -205,6 +207,15 @@ def _positive_int(value: Any, what: str) -> int:
     return value
 
 
+def _is_number(text: str) -> bool:
+    """Whether ``text`` is an unsigned number written with the digits 0-9.
+    IDCAMS and DFSORT control statements have no other digits, while
+    ``str.isdigit`` also accepts superscripts and the digits of other
+    scripts, which ``int`` then reads as numbers or refuses with
+    ``ValueError``."""
+    return text.isascii() and text.isdigit()
+
+
 def _disp(entry: Mapping[str, Any], where: str) -> tuple[str, ...]:
     raw = entry.get("disp")
     if raw is None:
@@ -239,9 +250,12 @@ class StepContext:
     ``catalog``, the job's ``generations`` (relative generations fixed at job
     start), the ``dsn_map`` of ``jobs.yaml``, the repository root (read only,
     for SYSIN members), the scenario working directory (the store's), the
-    step's position in the scenario (its evidence file name) and the scenario
-    deadline, a ``time.monotonic()`` value. ``run_utility`` binds the step it
-    runs (``bound``); ``resolve_dd`` reads that step's DDs."""
+    step's position in the scenario (its evidence file name), the scenario
+    deadline, a ``time.monotonic()`` value, and the name of the job the step
+    belongs to (its ``jobs.yaml`` key; step names are already qualified, for
+    example ``STEP05R.PRC001``), which diagnostics give with the step.
+    ``run_utility`` binds the step it runs (``bound``); ``resolve_dd`` reads
+    that step's DDs."""
 
     store: DatasetStore
     catalog: Catalog
@@ -252,6 +266,7 @@ class StepContext:
     step_index: int
     deadline: float | None = None
     step: Mapping[str, Any] | None = None
+    job: str | None = None
     # Record length of each sequential file a replacement wrote during the
     # step, by path: the length a new dataset is catalogued with when its DD
     # codes none. Fresh for every bound step.
@@ -271,6 +286,8 @@ class StepContext:
             raise UtilityError(f"step_index must be an integer, got {self.step_index!r}")
         if self.step_index < 0:
             raise UtilityError(f"step_index must not be negative, got {self.step_index}")
+        if self.job is not None and (not isinstance(self.job, str) or not self.job):
+            raise UtilityError(f"job must be a job name or None, got {self.job!r}")
 
     def bound(self, step: Mapping[str, Any]) -> StepContext:
         """This context for ``step``, with no dataset written yet."""
@@ -282,6 +299,13 @@ class StepContext:
     def step_name(self) -> str:
         name = (self.step or {}).get("step")
         return name if isinstance(name, str) and name else f"step {self.step_index}"
+
+    @property
+    def label(self) -> str:
+        """How diagnostics name the step: ``job <job> step <step>``, or ``step <step>``."""
+        if self.job is None:
+            return f"step {self.step_name}"
+        return f"job {self.job} step {self.step_name}"
 
     def check_deadline(self, what: str) -> None:
         """Raise ``ScenarioTimeout`` once the scenario deadline has passed."""
@@ -584,7 +608,8 @@ def run_utility(step: Mapping[str, Any], ctx: StepContext) -> UtilityResult:
 
     Raises ``UtilityError`` for a step the replacements cannot run as
     transcribed and ``ScenarioTimeout`` once the deadline has passed; the
-    lines written until then still go to the evidence file."""
+    lines written until then still go to the evidence file, and a failure to
+    write it becomes a note on the exception raised."""
     bound = ctx.bound(step)
     kind = step.get("kind")
     runner = _RUNNERS.get(kind) if isinstance(kind, str) else None
@@ -600,9 +625,14 @@ def run_utility(step: Mapping[str, Any], ctx: StepContext) -> UtilityResult:
         created, deleted = apply_normal_dispositions(step, bound)
         result.created.extend(created)
         result.deleted.extend(deleted)
-    except BaseException:
-        with contextlib.suppress(OSError, HarnessError):
+    except BaseException as error:
+        try:
             _write_evidence(bound, result.sysprint)
+        except (OSError, HarnessError) as failure:
+            error.add_note(
+                f"{bound.label}: the SYSPRINT evidence could not be written: "
+                f"{type(failure).__name__}: {failure}"
+            )
         raise
     result.evidence = _write_evidence(bound, result.sysprint)
     return result
@@ -694,9 +724,9 @@ def _shown_key(key: bytes) -> str:
 _Operand = str | tuple["_Operand", ...]
 
 _IDCAMS_TOKEN_RE = re.compile(r"'(?:[^']|'')*'?|[(),]|[^\s(),']+")
-_SET_RE = re.compile(r"SET\s+(MAXCC|LASTCC)\s*=\s*(\d+)", re.IGNORECASE)
+_SET_RE = re.compile(r"SET\s+(MAXCC|LASTCC)\s*=\s*([0-9]+)", re.IGNORECASE)
 _IF_RE = re.compile(
-    r"IF\s+(LASTCC|MAXCC)\s*(¬=|\^=|>=|<=|=|>|<|EQ|NE|GT|GE|LT|LE)\s*(\d+)\s+THEN\b\s*(.*)",
+    r"IF\s+(LASTCC|MAXCC)\s*(¬=|\^=|>=|<=|=|>|<|EQ|NE|GT|GE|LT|LE)\s*([0-9]+)\s+THEN\b\s*(.*)",
     re.IGNORECASE | re.DOTALL,
 )
 _ELSE_RE = re.compile(r"ELSE\b\s*(.*)", re.IGNORECASE | re.DOTALL)
@@ -710,6 +740,14 @@ _CC_OPERATORS: dict[str, Callable[[int, int], bool]] = {
     "<=": operator.le, "LE": operator.le,
 }
 _MAX_CONDITION_CODE = 16
+# "The maximum level of nesting allowed is 10, starting with the first IF"
+# (z/OS DFSMS Access Method Services Commands, IF-THEN-ELSE command sequence).
+_MAX_IF_NESTING = 10
+# The deepest parenthesis nesting the IDCAMS and SORT parsers accept: an
+# emulation guard, not an IBM limit. The transcribed SYSIN nests 2 levels
+# deep; the bound keeps the nested operands, and their repr in messages, far
+# inside Python's recursion limit.
+_MAX_PAREN_NESTING = 32
 
 # Abbreviations IDCAMS accepts for the keywords the replacement interprets.
 _ALIASES = {
@@ -811,10 +849,15 @@ class IdcamsCommand:
 
 def _nest(text: str, where: str) -> tuple[_Operand, ...]:
     """Words and parenthesized lists of an IDCAMS command, blanks and commas
-    both separating."""
+    both separating, nested at most ``_MAX_PAREN_NESTING`` levels deep."""
     stack: list[list[_Operand]] = [[]]
     for token in _IDCAMS_TOKEN_RE.findall(text):
         if token == "(":
+            if len(stack) > _MAX_PAREN_NESTING:
+                raise UtilityError(
+                    f"{where}: parentheses are nested more than {_MAX_PAREN_NESTING} levels "
+                    f"deep, which the IDCAMS replacement does not parse (GAP-STB-005)"
+                )
             stack.append([])
         elif token == ")":
             if len(stack) == 1:
@@ -868,7 +911,7 @@ def _numbers(value: tuple[_Operand, ...] | None, keyword: str, count: int, where
     if (
         value is None
         or len(value) != count
-        or not all(isinstance(item, str) and item.isdigit() for item in value)
+        or not all(isinstance(item, str) and _is_number(item) for item in value)
     ):
         raise UtilityError(f"{where}: {keyword} needs {count} number(s), got {value!r}")
     return [int(item) for item in value]  # type: ignore[arg-type]
@@ -1108,7 +1151,7 @@ def _top_level_else(clause: str) -> int | None:
     return None
 
 
-def _parse_command(text: str, where: str) -> IdcamsCommand:
+def _parse_command(text: str, where: str, depth: int = 0) -> IdcamsCommand:
     statement = " ".join(text.split())
     if not statement:
         return IdcamsCommand("", "NULL")
@@ -1120,27 +1163,41 @@ def _parse_command(text: str, where: str) -> IdcamsCommand:
         return IdcamsCommand(statement, "SET", register=match.group(1).upper(), value=value)
     match = _IF_RE.fullmatch(statement)
     if match:
+        if depth >= _MAX_IF_NESTING:
+            raise UtilityError(
+                f"{where}: IF commands are nested more than {_MAX_IF_NESTING} levels deep; "
+                f"IDCAMS allows {_MAX_IF_NESTING}, counting from the first IF"
+            )
         register, comparison, threshold, clause = match.groups()
         clause = clause.strip()
-        otherwise = None
+        otherwise_text = None
         split = None if clause.upper().startswith("IF ") else _top_level_else(clause)
         if split is not None:
-            otherwise = _parse_command(clause[split + len("ELSE") :], where)
+            otherwise_text = clause[split + len("ELSE") :]
             clause = clause[:split]
-        if clause.strip().upper() == "DO" or (otherwise and otherwise.text.upper() == "DO"):
+        # THEN DO and ELSE DO are refused before either clause is parsed, since
+        # parsing DO as a command would report it as an unknown command.
+        if clause.strip().upper() == "DO" or (otherwise_text or "").strip().upper() == "DO":
             raise UtilityError(f"{where}: DO-END groups are not emulated (GAP-STB-005)")
+        otherwise = (
+            None if otherwise_text is None else _parse_command(otherwise_text, where, depth + 1)
+        )
         return IdcamsCommand(
             statement,
             "IF",
             register=register.upper(),
             operator=comparison.upper(),
             value=int(threshold),
-            then=_parse_command(clause, where),
+            then=_parse_command(clause, where, depth + 1),
             otherwise=otherwise,
         )
     match = _ELSE_RE.fullmatch(statement)
     if match:
-        return IdcamsCommand(statement, "ELSE", then=_parse_command(match.group(1), where))
+        if match.group(1).strip().upper() == "DO":
+            raise UtilityError(f"{where}: DO-END groups are not emulated (GAP-STB-005)")
+        return IdcamsCommand(
+            statement, "ELSE", then=_parse_command(match.group(1), where, depth + 1)
+        )
     items = _nest(statement, where)
     verb = _canonical(items[0]) if items and isinstance(items[0], str) else ""
     if verb == "IF":
@@ -1157,11 +1214,23 @@ def parse_idcams(lines: Iterable[Any]) -> list[IdcamsCommand]:
     """The commands of an IDCAMS SYSIN: ``/* ... */`` comments removed,
     continuation lines (a trailing ``-`` or ``+``) joined, and each command
     parsed. ``KEYS`` and ``RECORDSIZE`` pairs may be written ``(16 0)`` or
-    ``(11,25)``, ``KEYS`` length first. A command the replacement does not
-    emulate, or cannot parse, raises ``UtilityError``."""
+    ``(11,25)``, ``KEYS`` length first. A SYSIN line that is not text raises
+    ``UtilityError`` naming the line; a command the replacement does not
+    emulate, or cannot parse, raises ``UtilityError`` naming the command's
+    number and quoting the complete command."""
+    lines = list(lines)
+    for number, raw in enumerate(lines, start=1):
+        if not isinstance(raw, str):
+            raise UtilityError(f"IDCAMS SYSIN line {number} is not text: {raw!r}")
     commands = []
     for number, statement in enumerate(idcams_statements(lines), start=1):
-        commands.append(_parse_command(statement, f"IDCAMS command {number}"))
+        try:
+            commands.append(_parse_command(statement, f"IDCAMS command {number}"))
+        except UtilityError as error:
+            text = " ".join(statement.split())
+            if text in str(error):
+                raise
+            raise UtilityError(f"{error}; the command reads: {text}") from error
     return commands
 
 
@@ -1433,9 +1502,12 @@ class _Idcams:
     def _repro_indexed(self, target: ResolvedDD, records: Sequence[bytes], limit: int) -> int:
         """Copy into a KSDS as VSAM's keyed sequential insert does: a record
         whose key is below the previous one is out of sequence, one whose key
-        equals it or is already in the cluster a duplicate. Both are rejected
-        with condition code 8, and the copy stops at the ``ERRORLIMIT``-th
-        error."""
+        equals it or is already in the cluster a duplicate, and so is one whose
+        key of a unique (``UNIQUEKEY``) alternate index is already in the
+        cluster or in a record copied before it. Each is rejected with
+        condition code 8. Errors are reported in input order and the copy
+        stops at the ``ERRORLIMIT``-th error, so no record after it is
+        inserted."""
         store = self.ctx.store
         profile = target.profile
         if profile is None or target.path is None:
@@ -1449,46 +1521,67 @@ class _Idcams:
                     f"are not emulated (GAP-STB-005)"
                 )
         present = store.exists(target.path)
-        existing = (
-            {
-                record[offset : offset + length]
-                for record in _split(
-                    store.unload_indexed(target.path, profile), profile.record_length, target.shown
-                )
-            }
+        # append_indexed writes a present file with the keys it was built with,
+        # so those are the unique alternate keys whose duplicates it refuses.
+        physical = (store.profile(target.path) if present else None) or profile
+        unique = [
+            (alt_offset, alt_length)
+            for alt_offset, alt_length, duplicates in physical.alternates
+            if not duplicates
+        ]
+        cluster = (
+            _split(store.unload_indexed(target.path, profile), profile.record_length, target.shown)
             if present
-            else set()
+            else []
         )
+        existing = {record[offset : offset + length] for record in cluster}
+        taken = [
+            {record[alt_offset : alt_offset + alt_length] for record in cluster}
+            for alt_offset, alt_length in unique
+        ]
         accepted: list[bytes] = []
+        numbers: list[int] = []  # the 1-based input number of each accepted record
         errors = 0
         previous: bytes | None = None
-        for record in records:
+        for number, record in enumerate(records, start=1):
             key = record[offset : offset + length]
+            alternates = [
+                record[alt_offset : alt_offset + alt_length] for alt_offset, alt_length in unique
+            ]
             if previous is not None and key < previous:
                 self._record_error(target, "IDC3314I **RECORD OUT OF SEQUENCE - KEY FOLLOWS:", key)
                 errors += 1
             elif key == previous or key in existing:
                 self._record_error(target, "IDC3308I ** DUPLICATE RECORD - KEY FOLLOWS:", key)
                 errors += 1
+            elif any(alternate in keys for alternate, keys in zip(alternates, taken, strict=True)):
+                # A duplicate key of a unique alternate index, shown by the
+                # record's primary key.
+                self._record_error(target, "IDC3308I ** DUPLICATE RECORD - KEY FOLLOWS:", key)
+                errors += 1
             else:
                 accepted.append(record)
+                numbers.append(number)
                 previous = key
+                for alternate, keys in zip(alternates, taken, strict=True):
+                    keys.add(alternate)
             if errors >= limit:
                 self.lines.append("IDC31467I MAXIMUM ERROR LIMIT REACHED")
                 break
-        rejected: list[int] = []
         if accepted or not present:
-            rejected = store.append_indexed(
+            refused = store.append_indexed(
                 target.path, b"".join(accepted), profile, on_duplicate="report"
             )
-        for number in rejected:  # a duplicate key of a unique alternate index
-            record = accepted[number - 1]
-            key = record[offset : offset + length]
-            self._record_error(target, "IDC3308I ** DUPLICATE RECORD - KEY FOLLOWS:", key)
-        self.lines.append(
-            f"IDC0005I NUMBER OF RECORDS PROCESSED WAS {len(accepted) - len(rejected)}"
-        )
-        return 8 if errors or rejected else 0
+            # The checks above apply the store's duplicate rule, so a refusal
+            # means the emulation and the file disagree on the keys.
+            if refused:
+                raise UtilityError(
+                    f"REPRO into {target.shown}: the indexed file refused accepted input records "
+                    f"{', '.join(str(numbers[position - 1]) for position in refused)} that "
+                    f"passed the key checks"
+                )
+        self.lines.append(f"IDC0005I NUMBER OF RECORDS PROCESSED WAS {len(accepted)}")
+        return 8 if errors else 0
 
 
 def _idcams_sysin(ctx: StepContext) -> list[str]:
@@ -1523,7 +1616,14 @@ def _idcams_sysin(ctx: StepContext) -> list[str]:
 
 
 def _run_idcams(ctx: StepContext, result: UtilityResult) -> int:
-    return _Idcams(ctx, result).run(parse_idcams(_idcams_sysin(ctx)))
+    sysin = _idcams_sysin(ctx)
+    try:
+        commands = parse_idcams(sysin)
+    except UtilityError as error:
+        # The evidence shows the statements the replacement could not run.
+        result.sysprint.extend(line.rstrip() for line in sysin)
+        raise UtilityError(f"{ctx.label}: {error}") from error
+    return _Idcams(ctx, result).run(commands)
 
 
 # --------------------------------------------------------------------------
@@ -1533,11 +1633,11 @@ def _run_idcams(ctx: StepContext, result: UtilityResult) -> int:
 _SORT_FORMATS = ("CH", "ZD")
 _ZD_MAX_DIGITS = 31  # DFSORT's longest ZD field
 _SYMBOL_NAME_RE = re.compile(r"[A-Za-z#$@][A-Za-z0-9#$@_-]*")
-_CHAR_CONSTANT_RE = re.compile(r"(\d*)C'((?:[^']|'')*)'", re.IGNORECASE)
-_HEX_CONSTANT_RE = re.compile(r"(\d*)X'([0-9A-Fa-f]*)'", re.IGNORECASE)
-_NUMBER_RE = re.compile(r"[+-]?\d+")
-_BLANKS_RE = re.compile(r"(\d*)X", re.IGNORECASE)
-_COLUMN_RE = re.compile(r"(\d+):(.+)")
+_CHAR_CONSTANT_RE = re.compile(r"([0-9]*)C'((?:[^']|'')*)'", re.IGNORECASE)
+_HEX_CONSTANT_RE = re.compile(r"([0-9]*)X'([0-9A-Fa-f]*)'", re.IGNORECASE)
+_NUMBER_RE = re.compile(r"[+-]?[0-9]+")
+_BLANKS_RE = re.compile(r"([0-9]*)X", re.IGNORECASE)
+_COLUMN_RE = re.compile(r"([0-9]+):(.+)")
 _EDIT_RE = re.compile(r"EDIT=\((.*)\)", re.IGNORECASE)
 _CONDITION_OPERATORS = ("EQ", "NE", "GT", "GE", "LT", "LE")
 _PY_OPERATORS: dict[str, Callable[[Any, Any], bool]] = {
@@ -1547,7 +1647,10 @@ _PY_OPERATORS: dict[str, Callable[[Any, Any], bool]] = {
 
 
 def _split_top(text: str, where: str) -> list[str]:
-    """``text`` split at the commas outside parentheses and quotes."""
+    """``text`` split at the commas outside parentheses and quotes, nested at
+    most ``_MAX_PAREN_NESTING`` levels deep. Every SORT operand and SYMNAMES
+    line is split here before any part of it is parsed, so the bound also
+    holds for the nested conditions ``_ConditionParser`` descends into."""
     parts: list[str] = []
     depth, quoted, start, index = 0, False, 0, 0
     while index < len(text):
@@ -1562,6 +1665,11 @@ def _split_top(text: str, where: str) -> list[str]:
             quoted = True
         elif char == "(":
             depth += 1
+            if depth > _MAX_PAREN_NESTING:
+                raise UtilityError(
+                    f"{where}: parentheses are nested more than {_MAX_PAREN_NESTING} levels "
+                    f"deep, which the SORT replacement does not parse (GAP-STB-006)"
+                )
         elif char == ")":
             depth -= 1
             if depth < 0:
@@ -1667,7 +1775,8 @@ def parse_symnames(lines: Iterable[Any]) -> dict[str, Symbol]:
     """The symbols of a SYMNAMES dataset: ``NAME,position,length[,format]``
     (1-based position) and ``NAME,constant`` (``C'..'``, ``X'..'`` or a
     decimal number). Text after the first blank outside quotes is a remark
-    (TRANREPT's ``//Date``), and a line starting with ``*`` is a comment."""
+    (TRANREPT's ``//Date``), and a line starting with ``*`` is a comment. A
+    line that cannot be parsed raises ``UtilityError`` quoting the line."""
     symbols: dict[str, Symbol] = {}
     for number, raw in enumerate(lines, start=1):
         if not isinstance(raw, str):
@@ -1676,24 +1785,29 @@ def parse_symnames(lines: Iterable[Any]) -> dict[str, Symbol]:
         if not line or line.startswith("*"):
             continue
         where = f"SYMNAMES line {number}"
-        name, *values = _split_top(_first_field(line), where)
-        if not _SYMBOL_NAME_RE.fullmatch(name):
-            raise UtilityError(f"{where}: {name!r} is not a symbol name")
-        if name in symbols:
-            raise UtilityError(f"{where}: symbol {name} is defined twice")
-        constant = _constant(values[0], where) if len(values) == 1 else None
-        if constant is not None:
-            symbols[name] = Symbol(name, constant=constant[1])
-            continue
-        if len(values) not in (2, 3) or not all(value.isdigit() for value in values[:2]):
-            raise UtilityError(f"{where}: {line!r} is not 'name,position,length[,format]'")
-        position, length = int(values[0]), int(values[1])
-        if position == 0 or length == 0:
-            raise UtilityError(f"{where}: position and length must be positive")
-        fmt = values[2].upper() if len(values) == 3 else None
-        if fmt is not None and not fmt.isalpha():
-            raise UtilityError(f"{where}: {values[2]!r} is not a format")
-        symbols[name] = Symbol(name, position, length, fmt)
+        try:
+            name, *values = _split_top(_first_field(line), where)
+            if not _SYMBOL_NAME_RE.fullmatch(name):
+                raise UtilityError(f"{where}: {name!r} is not a symbol name")
+            if name in symbols:
+                raise UtilityError(f"{where}: symbol {name} is defined twice")
+            constant = _constant(values[0], where) if len(values) == 1 else None
+            if constant is not None:
+                symbols[name] = Symbol(name, constant=constant[1])
+                continue
+            if len(values) not in (2, 3) or not all(_is_number(value) for value in values[:2]):
+                raise UtilityError(f"{where}: {line!r} is not 'name,position,length[,format]'")
+            position, length = int(values[0]), int(values[1])
+            if position == 0 or length == 0:
+                raise UtilityError(f"{where}: position and length must be positive")
+            fmt = values[2].upper() if len(values) == 3 else None
+            if fmt is not None and not fmt.isalpha():
+                raise UtilityError(f"{where}: {values[2]!r} is not a format")
+            symbols[name] = Symbol(name, position, length, fmt)
+        except UtilityError as error:
+            if line in str(error):
+                raise
+            raise UtilityError(f"{error}; the line reads: {line}") from error
     return symbols
 
 
@@ -1802,7 +1916,7 @@ def _expand(tokens: Iterable[str], symbols: Mapping[str, Symbol]) -> list[str]:
 
 
 def _number_token(tokens: Sequence[str], index: int, what: str, where: str) -> int:
-    if index >= len(tokens) or not tokens[index].isdecimal() or int(tokens[index]) == 0:
+    if index >= len(tokens) or not _is_number(tokens[index]) or int(tokens[index]) == 0:
         found = tokens[index] if index < len(tokens) else "nothing"
         raise UtilityError(f"{where}: {what} must be a positive number, found {found}")
     return int(tokens[index])
@@ -1879,7 +1993,7 @@ class _ConditionParser:
         token = self._peek() or ""
         following = self.tokens[self.index + 2] if self.index + 2 < len(self.tokens) else ""
         # p,l,f after the operator is a field; a lone number is a constant.
-        is_field = token.isdigit() and following.upper() in _SORT_FORMATS
+        is_field = _is_number(token) and following.upper() in _SORT_FORMATS
         constant = None if is_field else _constant(token, self.where)
         if constant is not None:
             self.index += 1
@@ -2007,12 +2121,15 @@ def _sort_statements(lines: Iterable[Any], where: str) -> list[tuple[str, str]]:
     except after ``END``, whose following cards ``parse_sort`` ignores."""
     statements: list[tuple[str, str]] = []
     pending: tuple[str, str] | None = None
+    started = 0  # the line the pending statement starts on
     for number, raw in enumerate(lines, start=1):
         if not isinstance(raw, str):
             raise UtilityError(f"{where} line {number} is not text: {raw!r}")
         line = raw[:SORT_COLUMNS].rstrip()
         if not line.strip() or (pending is None and line.startswith("*")):
             continue
+        if pending is None:
+            started = number
         if pending is not None:
             pending = (pending[0], pending[1] + _first_field(line.lstrip()))
         else:
@@ -2031,7 +2148,10 @@ def _sort_statements(lines: Iterable[Any], where: str) -> list[tuple[str, str]]:
             statements.append(pending)
             pending = None
     if pending is not None:
-        raise UtilityError(f"{where}: the {pending[0]} statement continues past the last line")
+        raise UtilityError(
+            f"{where}: the {pending[0]} statement that starts on line {started} continues past "
+            f"the last line; the statement reads: {pending[0]} {pending[1]}"
+        )
     return statements
 
 
@@ -2117,7 +2237,7 @@ def _outrec_items(value: str, symbols: Mapping[str, Symbol], where: str) -> tupl
                     f"{where}: the numeric constant {token} cannot be an OUTREC item"
                 )
             item = OutItem(start, len(data), data=data)
-        elif symbol is not None or token.isdigit():
+        elif symbol is not None or _is_number(token):
             if symbol is not None:
                 named = f"OUTREC field symbol {token}"
                 position = _positive_int(symbol.position, f"{where}: the position of {named}")
@@ -2175,7 +2295,7 @@ def parse_sort(lines: Iterable[Any], symbols: Mapping[str, Symbol] | None = None
     constants (``EQ NE GT GE LT LE``) joined by ``AND`` and ``OR``;
     ``OUTREC FIELDS`` (or ``BUILD``) takes ``c:``, ``p,l``, symbols, ``X``,
     ``nX``, ``C'..'``, ``X'..'`` and ``EDIT=(mask)`` of ZD fields. Anything
-    else raises ``UtilityError``."""
+    else raises ``UtilityError`` quoting the complete statement."""
     table = dict(symbols or {})
     keys: tuple[SortKey, ...] | None = None
     include: Condition | None = None
@@ -2185,28 +2305,36 @@ def parse_sort(lines: Iterable[Any], symbols: Mapping[str, Symbol] | None = None
         where = f"SORT {operation} statement"
         if operation == "END":
             break
-        if operation in seen:
-            raise UtilityError(f"{where} is coded twice")
-        seen.add(operation)
-        params = _sort_params(operand, where)
-        if operation == "SORT":
-            if set(params) != {"FIELDS"} or params["FIELDS"] is None:
-                raise UtilityError(f"{where}: only FIELDS is emulated, got {operand!r}")
-            keys = _sort_keys(params["FIELDS"], table, where)
-        elif operation == "INCLUDE":
-            if set(params) != {"COND"} or params["COND"] is None:
-                raise UtilityError(f"{where}: only COND is emulated, got {operand!r}")
-            inner = _parenthesized(params["COND"], where)
-            include = _ConditionParser(_split_top(inner, where), table, where).parse()
-        elif operation == "OUTREC":
-            if len(params) != 1 or not ({"FIELDS", "BUILD"} & set(params)):
-                raise UtilityError(f"{where}: only FIELDS or BUILD is emulated, got {operand!r}")
-            value = params.get("FIELDS") or params.get("BUILD")
-            if value is None:
-                raise UtilityError(f"{where}: FIELDS needs a list")
-            outrec = _outrec_items(value, table, where)
-        else:
-            raise UtilityError(f"the {operation} statement is not emulated (GAP-STB-006)")
+        try:
+            if operation in seen:
+                raise UtilityError(f"{where} is coded twice")
+            seen.add(operation)
+            params = _sort_params(operand, where)
+            if operation == "SORT":
+                if set(params) != {"FIELDS"} or params["FIELDS"] is None:
+                    raise UtilityError(f"{where}: only FIELDS is emulated, got {operand!r}")
+                keys = _sort_keys(params["FIELDS"], table, where)
+            elif operation == "INCLUDE":
+                if set(params) != {"COND"} or params["COND"] is None:
+                    raise UtilityError(f"{where}: only COND is emulated, got {operand!r}")
+                inner = _parenthesized(params["COND"], where)
+                include = _ConditionParser(_split_top(inner, where), table, where).parse()
+            elif operation == "OUTREC":
+                if len(params) != 1 or not ({"FIELDS", "BUILD"} & set(params)):
+                    raise UtilityError(
+                        f"{where}: only FIELDS or BUILD is emulated, got {operand!r}"
+                    )
+                value = params.get("FIELDS") or params.get("BUILD")
+                if value is None:
+                    raise UtilityError(f"{where}: FIELDS needs a list")
+                outrec = _outrec_items(value, table, where)
+            else:
+                raise UtilityError(f"the {operation} statement is not emulated (GAP-STB-006)")
+        except UtilityError as error:
+            text = f"{operation} {operand}".rstrip()
+            if text in str(error):
+                raise
+            raise UtilityError(f"{error}; the statement reads: {text}") from error
     if keys is None:
         raise UtilityError("the SORT SYSIN has no SORT statement")
     return SortSpec(keys, include, outrec)
@@ -2263,7 +2391,10 @@ def _run_sort(ctx: StepContext, result: UtilityResult) -> int:
     symnames = _lines_param(params, "symnames", ctx) or []
     lines += [f"SYMNAMES: {line.rstrip()}" for line in symnames]
     lines += [line.rstrip() for line in sysin]
-    spec = parse_sort(sysin, parse_symnames(symnames))
+    try:
+        spec = parse_sort(sysin, parse_symnames(symnames))
+    except UtilityError as error:
+        raise UtilityError(f"{ctx.label}: {error}") from error
     for ddname in ("SORTIN", "SORTOUT"):
         if not ctx.has_dd(ddname):
             raise UtilityError(f"step {ctx.step_name}: the SORT step has no {ddname} DD")
