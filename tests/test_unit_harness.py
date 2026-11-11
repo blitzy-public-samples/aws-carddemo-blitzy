@@ -5362,6 +5362,28 @@ def test_report_lists_a_closure_record_by_its_gap_id() -> None:
     ]
 
 
+def test_report_shows_both_projections_and_names_the_page_zero_one_it_equals() -> None:
+    state = report.build_state()
+    failing_probe = report.PLANNING_PROJECTION_NO_PAGE_ZERO
+    chosen = sorted(state.item_status)[:sum(failing_probe.values())]
+    statuses = [status for status in report.ITEM_STATUSES for _ in range(failing_probe[status])]
+    state = dataclasses.replace(
+        state,
+        items=[item for item in state.items if item["id"] in set(chosen)],
+        item_status=dict(zip(chosen, statuses)),
+    )
+    lines = report.render_report(state, (False, "not judged here")).split("\n")
+    planned = report.PLANNING_PROJECTION
+    assert (f"| verified | {failing_probe['verified']} | {planned['verified']} | {failing_probe['verified']} |"
+            in lines)
+    assert "- Planning projection: verified / total 125 / 684 = 18.3%" in lines
+    assert "- Projection with the page-zero probe failing: verified / total 112 / 684 = 16.4%" in lines
+    assert ("The counts equal the projection with the page-zero probe failing and differ from the planning "
+            "projection:") in lines
+    assert "The counts equal the planning projection." not in lines
+    assert "100% may be claimed: no" in lines
+
+
 # ==========================================================================
 # Instruments: layouts, codec, fixtures, inventory, the id manifest, gaps,
 # configuration, baseline bumps and the protected tree

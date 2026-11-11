@@ -475,6 +475,12 @@ SEED_TOTAL = 110
 
 # The CI figures the plan projected, with the page-zero probe succeeding.
 PLANNING_PROJECTION = {VERIFIED: 125, FAILING: 0, BLOCKED: 506, UNEXECUTED: 9, NOT_COVERED: 44}
+# The same projection with the probe failing: CBSTM03A, CBSTM03B and 8 of
+# their items, CREASTMT, the daily cycle, COSTM01 and CUSTREC become blocked,
+# and CBSTM03A's post-open fault item turns from implemented-unexecuted to
+# blocked. The report shows it beside the first; differences are explained
+# against the first, which is the plan's CI projection.
+PLANNING_PROJECTION_NO_PAGE_ZERO = {VERIFIED: 112, FAILING: 0, BLOCKED: 520, UNEXECUTED: 8, NOT_COVERED: 44}
 
 PYTHON_PACKAGES = ("pytest", "pluggy", "iniconfig", "packaging", "Pygments", "PyYAML")
 DPKG_PACKAGES = ("build-essential", "libgmp-dev", "libncurses-dev", "libdb-dev", "s3270")
@@ -2386,18 +2392,33 @@ def render_report(state: State, proof: tuple[bool, str] | None = None) -> str:
         "### Against the planning projection",
         "",
         "The plan projected the CI figures with every scenario present, every scenario gnucobol-batch can run "
-        "recorded, the page-zero probe succeeding and no UniKix evidence imported. This report governs.",
+        "recorded, the page-zero probe succeeding and no UniKix evidence imported, and gave the figures for a "
+        "failing probe beside them. Differences are explained against the first projection. This report governs.",
         "",
-        *_table(("Status", "This report", "Planning projection"),
-                [[status, counts[status], PLANNING_PROJECTION[status]] for status in ITEM_STATUSES]
-                + [["total", total, sum(PLANNING_PROJECTION.values())]]),
+        *_table(("Status", "This report", "Planning projection", "Projection, page-zero probe failing"),
+                [[status, counts[status], PLANNING_PROJECTION[status], PLANNING_PROJECTION_NO_PAGE_ZERO[status]]
+                 for status in ITEM_STATUSES]
+                + [["total", total, sum(PLANNING_PROJECTION.values()),
+                    sum(PLANNING_PROJECTION_NO_PAGE_ZERO.values())]]),
         "",
     ]
+    for label, projection in (("Planning projection", PLANNING_PROJECTION),
+                              ("Projection with the page-zero probe failing", PLANNING_PROJECTION_NO_PAGE_ZERO)):
+        projected_total = sum(projection.values())
+        lines.append(f"- {label}: verified / total {projection[VERIFIED]} / {projected_total} = "
+                     f"{_percent(projection[VERIFIED], projected_total)}")
+    lines.append("")
     if all(counts[status] == PLANNING_PROJECTION[status] for status in ITEM_STATUSES):
         lines += ["The counts equal the planning projection.", ""]
     else:
         causes = _projection_causes(state) or ["The records and scenarios as they stand give these statuses."]
-        lines += ["The counts differ from the projection:", "", *(f"- {cause}" for cause in causes), ""]
+        intro = (
+            "The counts equal the projection with the page-zero probe failing and differ from the planning "
+            "projection:"
+            if all(counts[status] == PLANNING_PROJECTION_NO_PAGE_ZERO[status] for status in ITEM_STATUSES)
+            else "The counts differ from the projection:"
+        )
+        lines += [intro, "", *(f"- {cause}" for cause in causes), ""]
     lines += [
         "## By level",
         "",
@@ -2475,8 +2496,12 @@ def render_report(state: State, proof: tuple[bool, str] | None = None) -> str:
         "",
         "## 100% claim",
         "",
-        f"100% may be claimed: {'yes' if claim else 'no'} ({verified} of {total} items verified; "
-        f"{len(open_gaps)} register entries open)",
+        # The claim stands alone on its line, exactly 'yes' or 'no', so a reader
+        # or a script can match it literally; the reason follows it.
+        f"100% may be claimed: {'yes' if claim else 'no'}",
+        "",
+        f"{verified} of {total} items are verified and {len(open_gaps)} register entries are open; the claim "
+        "needs every item verified and no open entry.",
         "",
         "## Inventory completeness",
         "",
