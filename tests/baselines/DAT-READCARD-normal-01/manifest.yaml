@@ -1,0 +1,13 @@
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: gnucobol-batch
+execution_fingerprint: 53d09448186bbbaf9e2b0f7042da8cb13e06114f3ab09d5c57729ab8da07b20f
+execution_id: gnucobol-batch-33820449f8acf7f4
+source_commit: b301367779f1872f84377d9948b1c4bd2634bfc8
+source_identity:
+  commit: b301367779f1872f84377d9948b1c4bd2634bfc8
+  tree: app
+  units:
+    app/cbl/CBACT02C.cbl: f81506881aec5d44d340d8b125efe67e2b355343c8893ab6bc95e2cb72c292b7
+    app/cpy/CVACT02Y.cpy: 9f1c62ef31b9d541712f1ed28f79e011ea7338611f5e0f30f2e1cbf624181223
+    app/jcl/READCARD.jcl: 1b1ac8b46a655783bcf7f5e86d238f05b91b10c846928edf54d07eddd46206bd

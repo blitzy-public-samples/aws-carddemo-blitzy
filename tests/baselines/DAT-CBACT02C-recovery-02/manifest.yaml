@@ -1,0 +1,20 @@
+# Derived baseline of DAT-CBACT02C-recovery-02: expected.yaml is derived from
+# app/cbl/CBACT02C.cbl:71-174 (derived_from: source) and never observed. No
+# adapter fails a READ after a successful OPEN (GAP-MIS-013), so capture.py
+# refuses the scenario and the expectation is inferred (GAP-INF-013). It
+# therefore carries no execution_id or execution_fingerprint and holds no
+# datasets/; replace it with a captured baseline (MINOR bump) only once a fault
+# seam exists. source_identity is what a gnucobol-batch run of CBACT02C
+# executes, the program and its COPY closure, at the commit whose app/ sources
+# the derivation read.
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: derived
+derived_from: source
+source_commit: 93ebec71ff7b59a68cedd7c501afe496a8eaa68d
+source_identity:
+  commit: 93ebec71ff7b59a68cedd7c501afe496a8eaa68d
+  tree: app
+  units:
+    app/cbl/CBACT02C.cbl: f81506881aec5d44d340d8b125efe67e2b355343c8893ab6bc95e2cb72c292b7
+    app/cpy/CVACT02Y.cpy: 9f1c62ef31b9d541712f1ed28f79e011ea7338611f5e0f30f2e1cbf624181223
