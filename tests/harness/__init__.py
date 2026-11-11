@@ -35,6 +35,7 @@ import reprlib
 import stat
 import subprocess
 import sys
+import tempfile
 from datetime import date, datetime
 from pathlib import Path, PurePath, PureWindowsPath
 from typing import Any, Callable
@@ -72,6 +73,7 @@ __all__ = [
     "relpath",
     "sha256_file",
     "sha256_hex",
+    "usable_work_root",
     "write_text",
 ]
 
@@ -915,3 +917,59 @@ def display_path(path: str | PurePath) -> str:
         return located.relative_to(REPO_ROOT).as_posix()
     except (ValueError, OSError, RuntimeError):  # outside, or unresolvable
         return candidate.as_posix()
+
+
+# The directory usable_work_root makes in a work root, and removes at once,
+# to prove that working directories can be created and removed there.
+_WORK_ROOT_PROBE_PREFIX = ".carddemo-probe-"
+
+
+def usable_work_root(configured: str | PurePath) -> Path:
+    """The resolved work root ``configured`` names, created when missing, or
+    ``HarnessError`` saying why it cannot be one.
+
+    A work root holds every scenario's working directory, the build cache,
+    the extracted UniKix zip and the UniKix deployment root, so it is usable
+    only when ``configured`` is not blank; its resolved path is neither the
+    repository nor inside it, which is checked before anything is created, so
+    a refused value leaves nothing behind; it is created with any missing
+    parents; it is a directory; and a directory can be made in it and
+    removed again, as each scenario's working directory is. The text is taken
+    as given: ``~`` is not expanded, and a relative path is taken from the
+    current folder. It reads no environment variable; the caller passes the
+    configured text and decides what replaces a refused root.
+    """
+    if not isinstance(configured, (str, PurePath)):
+        raise TypeError(f"configured must be str or a path, not {type(configured).__name__}")
+    text = str(configured)
+    if not text.strip():
+        raise HarnessError("the value is blank")
+    try:
+        root = Path(text).resolve()
+    except (OSError, RuntimeError, ValueError) as exc:  # pathlib reports a symbolic link loop as RuntimeError
+        if isinstance(exc, RuntimeError):
+            reason = "its symbolic links form a loop"
+        else:
+            reason = getattr(exc, "strerror", None) or str(exc) or type(exc).__name__
+        raise HarnessError(f"the path cannot be resolved: {reason}") from None
+    if root == REPO_ROOT:
+        raise HarnessError("the path is the repository itself")
+    if REPO_ROOT in root.parents:
+        raise HarnessError(f"the path resolves to {display_path(root)}, inside the repository")
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        if os.path.exists(root) and not os.path.isdir(root):
+            raise HarnessError(f"{root} is not a directory") from None
+        raise HarnessError(f"{root} cannot be created: {exc}") from None
+    if not root.is_dir():
+        raise HarnessError(f"{root} is not a directory")
+    try:
+        probe = tempfile.mkdtemp(prefix=_WORK_ROOT_PROBE_PREFIX, dir=root)
+    except OSError as exc:
+        raise HarnessError(f"{root} is not writable: {exc}") from None
+    try:
+        os.rmdir(probe)
+    except OSError as exc:
+        raise HarnessError(f"a directory made in {root} cannot be removed: {exc}") from None
+    return root

@@ -36,7 +36,10 @@ Instruments every business assertion depends on:
   and both adapters implement ``adapters.base.Adapter``.
 - Baselines and the protected tree: the version-bump check against
   ``--carddemo-baseline-base`` and ``report.py --check-protected`` pass; both
-  need the git history and fail, never skip, without it.
+  need the git history and fail, never skip, without it. The command-line
+  checks run with the session work root as ``CARDDEMO_TEST_WORKDIR``, and the
+  bump check's scratch folder, traced in its process, lies inside the work
+  root it is given.
 
 Codec reconstruction over REDEFINES: a record ``decode_record`` decodes must
 encode back to the same bytes in ASCII and cp037, a positive overpunch
@@ -153,6 +156,20 @@ leave out one whose dataset is not catalogued then or whose job never ran;
 keep what was acquired when a later unload fails; and never pass a stage name
 to the post-run unloads.
 
+Work root: a ``CARDDEMO_TEST_WORKDIR`` that is unset, empty, blank, a regular
+file, under one, the repository, inside it or an unwritable directory must
+give conftest and ``capture.py`` a fresh empty ``carddemo-`` root of their own
+in the temporary directory, outside the repository, which they remove when it
+stays empty, with a warning naming a set value and its reason, and must put
+the bump check's scratch folder in the temporary directory instead; a refused
+value creates nothing in the repository. Each such case points
+``tempfile.gettempdir()`` at a folder of its own inside the session work root,
+so nothing it makes lies outside that root. The same values given as
+``--work-root`` stop ``capture.py`` with exit status 2. When no temporary
+root outside the repository can be made, conftest stops with a usage error
+that names the refused value too. A usable root is used as configured,
+created when missing, kept, and gets no warning.
+
 Region stage observations: ``base.region_stage_observation`` and
 ``parse_region_stage`` must round-trip ``@BEFORE:<JOB>:@REGION-FILES`` and
 ``@AFTER:<JOB>:@REGION-FILES``, which ``observation_matches`` covers exactly
@@ -208,7 +225,7 @@ import tempfile
 import threading
 import time
 from collections import Counter
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -474,11 +491,13 @@ DAY_GUARD_AID_SECONDS = 15
 DAY_GUARD_MIDNIGHT = datetime.datetime(2025, 12, 31, 23, 59)
 DAY_GUARD_MORNING = datetime.datetime(2025, 12, 31, 10, 0)
 DAY_GUARD_ADDRESS = "127.0.0.1:2001"
-# drive's working directory lies in the suite's work root, where every run
-# writes: a non-blank CARDDEMO_TEST_WORKDIR, or else a root made by
-# tempfile.mkdtemp(prefix="carddemo-").
+# The work-root variable conftest reads once per session; the cases never read
+# it, the rootless-cleanup case removes it, and _cli sets it, for the command
+# lines it runs, to the work root it is given.
 WORK_ROOT_ENV = "CARDDEMO_TEST_WORKDIR"
-DEFAULT_WORK_ROOT_PREFIX = "carddemo-"
+# drive's working directory lies in the session work root, where every run
+# writes (carddemo_work_root: that variable's value, or the root conftest made
+# with tempfile.mkdtemp(prefix="carddemo-")).
 DAY_GUARD_WORKDIR_PREFIX = "unit-tpe-day-guard-"
 # The day change the midnight flow shows: its first attempt types 2025-12-31,
 # and the screen of step 4 shows 01/01/26.
@@ -663,24 +682,14 @@ class _FakeTerminal:
 
 
 @pytest.fixture
-def day_guard_workdir() -> Iterator[Path]:
-    """A fresh directory of this case's own inside the work root, never under
-    pytest's basetemp. A configured work root is created when missing and
-    kept; the directory is removed afterwards, with the default root when this
-    fixture made it."""
-    configured = os.environ.get(WORK_ROOT_ENV, "")
-    made = None if configured.strip() else Path(tempfile.mkdtemp(prefix=DEFAULT_WORK_ROOT_PREFIX))
+def day_guard_workdir(carddemo_work_root: Path) -> Iterator[Path]:
+    """A fresh directory of this case's own inside the session work root
+    (carddemo_work_root), never under pytest's basetemp, removed afterwards."""
+    directory = Path(tempfile.mkdtemp(prefix=DAY_GUARD_WORKDIR_PREFIX, dir=carddemo_work_root))
     try:
-        root = Path(configured) if made is None else made
-        root.mkdir(parents=True, exist_ok=True)
-        directory = Path(tempfile.mkdtemp(prefix=DAY_GUARD_WORKDIR_PREFIX, dir=root))
-        try:
-            yield directory
-        finally:
-            shutil.rmtree(directory)
+        yield directory
     finally:
-        if made is not None:
-            shutil.rmtree(made)
+        shutil.rmtree(directory)
 
 
 @pytest.mark.parametrize(
@@ -846,24 +855,15 @@ class _GateBatch(_GateFake):
 
 
 @pytest.fixture
-def csd_gate_work_root() -> Iterator[Path]:
-    """A fresh, empty directory of this case's own inside the work root,
-    never under pytest's basetemp. A configured work root is created when
-    missing and kept; the directory is removed afterwards, with the default
-    root when this fixture made it."""
-    configured = os.environ.get(WORK_ROOT_ENV, "")
-    made = None if configured.strip() else Path(tempfile.mkdtemp(prefix=DEFAULT_WORK_ROOT_PREFIX))
+def csd_gate_work_root(carddemo_work_root: Path) -> Iterator[Path]:
+    """A fresh, empty directory of this case's own inside the session work
+    root (carddemo_work_root), never under pytest's basetemp, removed
+    afterwards."""
+    directory = Path(tempfile.mkdtemp(prefix=CSD_GATE_WORK_ROOT_PREFIX, dir=carddemo_work_root))
     try:
-        root = Path(configured) if made is None else made
-        root.mkdir(parents=True, exist_ok=True)
-        directory = Path(tempfile.mkdtemp(prefix=CSD_GATE_WORK_ROOT_PREFIX, dir=root))
-        try:
-            yield directory
-        finally:
-            shutil.rmtree(directory)
+        yield directory
     finally:
-        if made is not None:
-            shutil.rmtree(made)
+        shutil.rmtree(directory)
 
 
 @pytest.mark.parametrize(("job", "broken", "raised", "gap_id", "details"), CSD_GATE_CASES)
@@ -932,25 +932,15 @@ def _evidence_record() -> dict:
 
 
 @pytest.fixture
-def evidence_tests_root() -> Iterator[Path]:
-    """A fresh, empty tests root of this case's own inside the work root,
-    where every run writes, never under pytest's basetemp or in the checkout.
-    A configured work root is created when missing and kept; the tests root
-    is removed afterwards, with the default work root when this fixture made
-    it."""
-    configured = os.environ.get(WORK_ROOT_ENV, "")
-    made = None if configured.strip() else Path(tempfile.mkdtemp(prefix=DEFAULT_WORK_ROOT_PREFIX))
+def evidence_tests_root(carddemo_work_root: Path) -> Iterator[Path]:
+    """A fresh, empty tests root of this case's own inside the session work
+    root (carddemo_work_root), where every run writes, never under pytest's
+    basetemp or in the checkout, removed afterwards."""
+    directory = Path(tempfile.mkdtemp(prefix=EVIDENCE_ROOT_PREFIX, dir=carddemo_work_root))
     try:
-        root = Path(configured) if made is None else made
-        root.mkdir(parents=True, exist_ok=True)
-        directory = Path(tempfile.mkdtemp(prefix=EVIDENCE_ROOT_PREFIX, dir=root))
-        try:
-            yield directory
-        finally:
-            shutil.rmtree(directory)
+        yield directory
     finally:
-        if made is not None:
-            shutil.rmtree(made)
+        shutil.rmtree(directory)
 
 
 def _evidence_folder(tests_root: Path) -> Path:
@@ -1304,13 +1294,16 @@ class _Instants(datetime.datetime):
 
 
 def _jobs_adapter(
-    monkeypatch: pytest.MonkeyPatch, listings: list[str], jcl: Mapping[int, str] | None = None
+    monkeypatch: pytest.MonkeyPatch,
+    work_root: Path,
+    listings: list[str],
+    jcl: Mapping[int, str] | None = None,
 ) -> tuple[UniKixAdapter, _JobsCommands, list[tuple[str, str]]]:
-    """A ``UniKixAdapter`` with a fresh capture, fake commands answering
-    ``listings`` and ``jcl``, the committed resources.yaml, a scenario
-    deadline 300 s away, and the jobs it would wait for recorded instead,
-    each of which must have been registered (``adopt``) first."""
-    work_root = Path(os.environ.get(WORK_ROOT_ENV, "").strip() or tempfile.gettempdir())
+    """A ``UniKixAdapter`` on ``work_root`` (the session's carddemo_work_root)
+    with a fresh capture, fake commands answering ``listings`` and ``jcl``,
+    the committed resources.yaml, a scenario deadline 300 s away, and the jobs
+    it would wait for recorded instead, each of which must have been
+    registered (``adopt``) first."""
     adapter = UniKixAdapter(work_root=work_root, repo_root=Path(_TESTS_ROOT).parent)
     adapter._capture = evidence.Capture()
     commands = _JobsCommands(listings, jcl or {})
@@ -1384,13 +1377,16 @@ JOBS_RUN_CASES = [
 )
 def test_unikix_jobs_capture_attributes_only_new_jobs_submitted_during_the_steps(
     monkeypatch: pytest.MonkeyPatch,
+    carddemo_work_root: Path,
     instants: list[datetime.datetime],
     listings: list[str],
     restarts: int,
     captured: int,
     left_out: dict[int, str],
 ) -> None:
-    adapter, commands, awaited = _jobs_adapter(monkeypatch, listings, {captured: JOBS_JCL})
+    adapter, commands, awaited = _jobs_adapter(
+        monkeypatch, carddemo_work_root, listings, {captured: JOBS_JCL}
+    )
     fake_datetime = SimpleNamespace(
         datetime=_Instants, timedelta=datetime.timedelta, date=datetime.date
     )
@@ -1451,10 +1447,12 @@ JOBS_PLACEMENT_CASES = [
 
 @pytest.mark.parametrize(("listed", "left_out"), JOBS_PLACEMENT_CASES)
 def test_unikix_jobs_capture_places_a_new_job_by_its_listed_time(
-    monkeypatch: pytest.MonkeyPatch, listed: str, left_out: str | None
+    monkeypatch: pytest.MonkeyPatch, carddemo_work_root: Path, listed: str, left_out: str | None
 ) -> None:
     listing = JOBS_BEFORE_STEPS + f"  18 TRNRPT00 {listed}\n"
-    adapter, commands, awaited = _jobs_adapter(monkeypatch, [listing], {18: JOBS_JCL})
+    adapter, commands, awaited = _jobs_adapter(
+        monkeypatch, carddemo_work_root, [listing], {18: JOBS_JCL}
+    )
     window = unikix_adapter._JobsWindow(frozenset({16, 17}), JOBS_FIRST, JOBS_LAST)
     data = adapter._jobs_queue(window)
     capture = adapter._capture
@@ -1488,12 +1486,12 @@ JOBS_UNPLACEABLE_CASES = [
 
 @pytest.mark.parametrize(("listed", "precision"), JOBS_UNPLACEABLE_CASES)
 def test_unikix_jobs_capture_blocks_a_job_its_precision_cannot_place(
-    monkeypatch: pytest.MonkeyPatch, listed: str, precision: str
+    monkeypatch: pytest.MonkeyPatch, carddemo_work_root: Path, listed: str, precision: str
 ) -> None:
     # Job 21, listed first, was submitted during the steps; it is not
     # captured either once job 18 makes the listing no observation.
     listing = JOBS_BEFORE_STEPS + "  21 TRNRPT00 2025-03-04 10:01:15\n" + f"  18 TRNRPT00 {listed}\n"
-    adapter, commands, awaited = _jobs_adapter(monkeypatch, [listing])
+    adapter, commands, awaited = _jobs_adapter(monkeypatch, carddemo_work_root, [listing])
     window = unikix_adapter._JobsWindow(frozenset({16, 17}), JOBS_FIRST, JOBS_LAST)
     with pytest.raises(base.AdapterUnavailable) as caught:
         adapter._jobs_queue(window)
@@ -1521,10 +1519,12 @@ JOBS_LATE_LISTED_CASES = [
 
 @pytest.mark.parametrize(("snapshot", "listed"), JOBS_LATE_LISTED_CASES)
 def test_unikix_jobs_capture_blocks_a_job_listed_late_in_the_unit_the_first_step_began_in(
-    monkeypatch: pytest.MonkeyPatch, snapshot: str, listed: str
+    monkeypatch: pytest.MonkeyPatch, carddemo_work_root: Path, snapshot: str, listed: str
 ) -> None:
     listings = [snapshot, snapshot, snapshot + f"  18 TRNRPT00 {listed}\n"]
-    adapter, commands, awaited = _jobs_adapter(monkeypatch, listings, {18: JOBS_JCL})
+    adapter, commands, awaited = _jobs_adapter(
+        monkeypatch, carddemo_work_root, listings, {18: JOBS_JCL}
+    )
     fake_datetime = SimpleNamespace(
         datetime=_Instants, timedelta=datetime.timedelta, date=datetime.date
     )
@@ -1578,9 +1578,15 @@ JOBS_LISTING_REFUSALS = [
 @pytest.mark.parametrize("listing_name", ["listing-before-steps.txt", "listing.txt"])
 @pytest.mark.parametrize(("listing", "named"), JOBS_LISTING_REFUSALS)
 def test_unikix_jobs_capture_blocks_a_listing_that_is_not_job_lines(
-    monkeypatch: pytest.MonkeyPatch, listing: str, named: str, listing_name: str
+    monkeypatch: pytest.MonkeyPatch,
+    carddemo_work_root: Path,
+    listing: str,
+    named: str,
+    listing_name: str,
 ) -> None:
-    adapter, commands, awaited = _jobs_adapter(monkeypatch, [listing], {18: JOBS_JCL})
+    adapter, commands, awaited = _jobs_adapter(
+        monkeypatch, carddemo_work_root, [listing], {18: JOBS_JCL}
+    )
     window = unikix_adapter._JobsWindow(frozenset(), JOBS_FIRST, JOBS_LAST)
     with pytest.raises(base.AdapterUnavailable) as caught:
         if listing_name == "listing.txt":
@@ -1596,9 +1602,9 @@ def test_unikix_jobs_capture_blocks_a_listing_that_is_not_job_lines(
 
 
 def test_unikix_jobs_capture_reads_a_blank_listing_as_no_job(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, carddemo_work_root: Path
 ) -> None:
-    adapter, commands, awaited = _jobs_adapter(monkeypatch, ["\n   \n\t\n"])
+    adapter, commands, awaited = _jobs_adapter(monkeypatch, carddemo_work_root, ["\n   \n\t\n"])
     window = adapter._jobs_window()
     assert window.known == frozenset() and window.last is None
     window.last = datetime.datetime.now()
@@ -1688,10 +1694,14 @@ OBSERVE_FAILURES = [
 
 @pytest.mark.parametrize(("fails_at", "gap_id", "kept"), OBSERVE_FAILURES)
 def test_unikix_observations_stay_in_the_evidence_when_a_later_step_fails(
-    monkeypatch: pytest.MonkeyPatch, fails_at: str | None, gap_id: str | None, kept: tuple[str, ...]
+    monkeypatch: pytest.MonkeyPatch,
+    carddemo_work_root: Path,
+    fails_at: str | None,
+    gap_id: str | None,
+    kept: tuple[str, ...],
 ) -> None:
     listing = JOBS_BEFORE_STEPS + JOBS_LISTED_INSIDE
-    adapter, _, _ = _jobs_adapter(monkeypatch, [listing], {18: JOBS_JCL})
+    adapter, _, _ = _jobs_adapter(monkeypatch, carddemo_work_root, [listing], {18: JOBS_JCL})
     acquired = {**OBSERVED, base.TDQ_JOBS: _jobs_records()}
 
     def fail(where: str) -> None:
@@ -1825,10 +1835,10 @@ class _FaultCommands:
         return SimpleNamespace(stdout=self.counts.pop(0))
 
 
-def _fault_adapter(commands: _FaultCommands) -> UniKixAdapter:
-    """A ``UniKixAdapter`` with a fresh capture, ``commands``, the committed
-    resources.yaml and no deadline (the default limit applies)."""
-    work_root = Path(os.environ.get(WORK_ROOT_ENV, "").strip() or tempfile.gettempdir())
+def _fault_adapter(commands: _FaultCommands, work_root: Path) -> UniKixAdapter:
+    """A ``UniKixAdapter`` on ``work_root`` (the session's carddemo_work_root)
+    with a fresh capture, ``commands``, the committed resources.yaml and no
+    deadline (the default limit applies)."""
     adapter = UniKixAdapter(work_root=work_root, repo_root=Path(_TESTS_ROOT).parent)
     adapter._capture = evidence.Capture()
     adapter._commands = commands
@@ -1961,10 +1971,10 @@ FAULT_PLANS = [
 
 @pytest.mark.parametrize(("fault", "steps", "found", "expected"), FAULT_PLANS)
 def test_unikix_plans_an_online_fault_from_its_operation_count(
-    fault: dict, steps: int, found: set[str], expected: object
+    carddemo_work_root: Path, fault: dict, steps: int, found: set[str], expected: object
 ) -> None:
     commands = _FaultCommands(frozenset(found))
-    adapter = _fault_adapter(commands)
+    adapter = _fault_adapter(commands, carddemo_work_root)
     scenario = SimpleNamespace(
         id=FAULT_SCENARIO,
         inputs={"steps": [{"aid": "ENTER"} for _ in range(steps)]},
@@ -2129,6 +2139,7 @@ FAULT_RUNS = [
     ("scenario_id", "counts", "indices", "applied", "reads", "raised", "noted"), FAULT_RUNS
 )
 def test_unikix_applies_an_online_fault_after_its_operation_count(
+    carddemo_work_root: Path,
     scenario_id: str,
     counts: tuple[str, ...],
     indices: tuple[int, ...],
@@ -2138,7 +2149,7 @@ def test_unikix_applies_an_online_fault_after_its_operation_count(
     noted: str | None,
 ) -> None:
     commands = _FaultCommands(frozenset({FAULT_DISABLE, FAULT_COUNT}), counts)
-    adapter = _fault_adapter(commands)
+    adapter = _fault_adapter(commands, carddemo_work_root)
     plan, unprovidable = _fault_plan(adapter, scenarios.get(scenario_id))
     assert unprovidable is None
     (fault,) = plan.online_faults
@@ -2281,24 +2292,15 @@ LAUNCH_PROGRAM_ENDINGS = [
 
 
 @pytest.fixture
-def launch_root() -> Iterator[Path]:
-    """A fresh directory of this case's own inside the work root, never under
-    pytest's basetemp, given by its real path. A configured work root is
-    created when missing and kept; the directory is removed afterwards, with
-    the default root when this fixture made it."""
-    configured = os.environ.get(WORK_ROOT_ENV, "")
-    made = None if configured.strip() else Path(tempfile.mkdtemp(prefix=DEFAULT_WORK_ROOT_PREFIX))
+def launch_root(carddemo_work_root: Path) -> Iterator[Path]:
+    """A fresh directory of this case's own inside the session work root
+    (carddemo_work_root), never under pytest's basetemp, given by its real
+    path and removed afterwards."""
+    directory = Path(tempfile.mkdtemp(prefix=LAUNCH_ROOT_PREFIX, dir=carddemo_work_root)).resolve()
     try:
-        root = Path(configured) if made is None else made
-        root.mkdir(parents=True, exist_ok=True)
-        directory = Path(tempfile.mkdtemp(prefix=LAUNCH_ROOT_PREFIX, dir=root)).resolve()
-        try:
-            yield directory
-        finally:
-            shutil.rmtree(directory)
+        yield directory
     finally:
-        if made is not None:
-            shutil.rmtree(made)
+        shutil.rmtree(directory)
 
 
 class _LaunchCache:
@@ -2486,28 +2488,21 @@ PROCESS_SCOPE_POLL_S = 0.01
 
 
 @pytest.fixture
-def process_scope_root() -> Iterator[Path]:
-    """A fresh directory of this case's own inside the work root, never under
-    pytest's basetemp, given by its real path. A configured work root is
-    created when missing and kept. Afterwards every process group still
-    registered is ended, and the directory is removed, with the default root
-    when this fixture made it."""
-    configured = os.environ.get(WORK_ROOT_ENV, "")
-    made = None if configured.strip() else Path(tempfile.mkdtemp(prefix=DEFAULT_WORK_ROOT_PREFIX))
+def process_scope_root(carddemo_work_root: Path) -> Iterator[Path]:
+    """A fresh directory of this case's own inside the session work root
+    (carddemo_work_root), never under pytest's basetemp, given by its real
+    path. Afterwards every process group still registered is ended, and the
+    directory is removed."""
+    directory = Path(
+        tempfile.mkdtemp(prefix=PROCESS_SCOPE_ROOT_PREFIX, dir=carddemo_work_root)
+    ).resolve()
     try:
-        root = Path(configured) if made is None else made
-        root.mkdir(parents=True, exist_ok=True)
-        directory = Path(tempfile.mkdtemp(prefix=PROCESS_SCOPE_ROOT_PREFIX, dir=root)).resolve()
-        try:
-            yield directory
-        finally:
-            try:
-                datasets.kill_all()
-            finally:
-                shutil.rmtree(directory)
+        yield directory
     finally:
-        if made is not None:
-            shutil.rmtree(made)
+        try:
+            datasets.kill_all()
+        finally:
+            shutil.rmtree(directory)
 
 
 class _Group:
@@ -3172,13 +3167,17 @@ def test_unikix_run_jobs_calls_before_job_and_after_job_around_each_job(
 )
 def test_unikix_acquires_each_stage_observation_between_the_jobs(
     monkeypatch: pytest.MonkeyPatch,
+    csd_gate_work_root: Path,
     abends: str | None,
     failing: str | None,
     calls: list[tuple],
     kept: dict[str, bytes],
     gap_id: str | None,
 ) -> None:
-    work_root = Path(os.environ.get(WORK_ROOT_ENV, "").strip() or tempfile.gettempdir())
+    # A work root of this case's own inside the session's, so the working
+    # directory named after the real chain scenario is never the one that
+    # scenario's own run uses.
+    work_root = csd_gate_work_root
     adapter = UniKixAdapter(work_root=work_root, repo_root=Path(_TESTS_ROOT).parent)
     adapter._capture = evidence.Capture()
     adapter.deadline = time.monotonic() + 300
@@ -3262,11 +3261,14 @@ def test_unikix_acquires_each_stage_observation_between_the_jobs(
 
 @pytest.mark.parametrize(("started", "available", "declared", "missing"), UNIKIX_STAGE_SESSIONS)
 def test_unikix_declares_stage_observations_with_the_business_datasets(
-    started: bool, available: frozenset[str], declared: bool, missing: str | None
+    carddemo_work_root: Path,
+    started: bool,
+    available: frozenset[str],
+    declared: bool,
+    missing: str | None,
 ) -> None:
     assert base.AFTER_PREFIX + "*" in unikix_adapter._STATIC_OBSERVATIONS
-    work_root = Path(os.environ.get(WORK_ROOT_ENV, "").strip() or tempfile.gettempdir())
-    adapter = UniKixAdapter(work_root=work_root, repo_root=Path(_TESTS_ROOT).parent)
+    adapter = UniKixAdapter(work_root=carddemo_work_root, repo_root=Path(_TESTS_ROOT).parent)
     if started:
         adapter._session_ready = True
         adapter._commands = _ProbedCommands(available)
@@ -3593,14 +3595,14 @@ def test_region_stage_baselines_compare_the_region_state_around_the_job(
     ("started", "available", "declared", "datasets_declared", "missing"), UNIKIX_REGION_STAGE_SESSIONS
 )
 def test_unikix_declares_region_stage_observations_with_the_region_file_inquiry(
+    carddemo_work_root: Path,
     started: bool,
     available: frozenset[str],
     declared: bool,
     datasets_declared: bool,
     missing: str | None,
 ) -> None:
-    work_root = Path(os.environ.get(WORK_ROOT_ENV, "").strip() or tempfile.gettempdir())
-    adapter = UniKixAdapter(work_root=work_root, repo_root=Path(_TESTS_ROOT).parent)
+    adapter = UniKixAdapter(work_root=carddemo_work_root, repo_root=Path(_TESTS_ROOT).parent)
     if started:
         adapter._session_ready = True
         adapter._commands = _ProbedCommands(available)
@@ -3617,9 +3619,10 @@ def test_unikix_declares_region_stage_observations_with_the_region_file_inquiry(
 
 
 @pytest.mark.parametrize("stage", ["before", "after"])
-def test_unikix_source_identity_covers_fct_lst_for_a_region_stage_observation(stage: str) -> None:
-    work_root = Path(os.environ.get(WORK_ROOT_ENV, "").strip() or tempfile.gettempdir())
-    adapter = UniKixAdapter(work_root=work_root, repo_root=Path(_TESTS_ROOT).parent)
+def test_unikix_source_identity_covers_fct_lst_for_a_region_stage_observation(
+    carddemo_work_root: Path, stage: str
+) -> None:
+    adapter = UniKixAdapter(work_root=carddemo_work_root, repo_root=Path(_TESTS_ROOT).parent)
     fct = unikix_adapter._APP + "catlg/tpe/fct.lst"
 
     def units(file_state: dict) -> dict:
@@ -3638,11 +3641,15 @@ def test_unikix_source_identity_covers_fct_lst_for_a_region_stage_observation(st
 @pytest.mark.parametrize(("abends", "calls", "kept"), UNIKIX_REGION_EXECUTIONS)
 def test_unikix_reads_each_region_stage_observation_around_its_job(
     monkeypatch: pytest.MonkeyPatch,
+    csd_gate_work_root: Path,
     abends: str | None,
     calls: list[tuple],
     kept: dict[str, bytes],
 ) -> None:
-    work_root = Path(os.environ.get(WORK_ROOT_ENV, "").strip() or tempfile.gettempdir())
+    # A work root of this case's own inside the session's, so the working
+    # directory named after the real chain scenario is never the one that
+    # scenario's own run uses.
+    work_root = csd_gate_work_root
     adapter = UniKixAdapter(work_root=work_root, repo_root=Path(_TESTS_ROOT).parent)
     adapter._capture = evidence.Capture()
     adapter.deadline = time.monotonic() + 300
@@ -4125,9 +4132,21 @@ def test_cross_check_registered_mismatches(carddemo_repo_root: Path) -> None:
 
 
 CARDXREF_SOURCE = "app/data/ASCII/cardxref.txt"
+FIXTURE_PADDING_ROOT_PREFIX = "unit-fixture-padding-"
 
 
-def test_fixture_padding(carddemo_repo_root: Path, tmp_path: Path) -> None:
+@pytest.fixture
+def fixture_padding_root(carddemo_work_root: Path) -> Iterator[Path]:
+    """A fresh directory of this case's own inside the session work root
+    (carddemo_work_root), never under pytest's basetemp, removed afterwards."""
+    directory = Path(tempfile.mkdtemp(prefix=FIXTURE_PADDING_ROOT_PREFIX, dir=carddemo_work_root))
+    try:
+        yield directory
+    finally:
+        shutil.rmtree(directory)
+
+
+def test_fixture_padding(carddemo_repo_root: Path, fixture_padding_root: Path) -> None:
     lines = (carddemo_repo_root / CARDXREF_SOURCE).read_bytes().splitlines()
     assert lines and {len(line) for line in lines} == {36}
     assert fixtures.spec("CARDXREF").record_length == 50
@@ -4138,7 +4157,7 @@ def test_fixture_padding(carddemo_repo_root: Path, tmp_path: Path) -> None:
     # A line longer than the record is refused, never truncated: a copy of
     # the source whose first line is one byte too long, in a repository root
     # of the test's own.
-    root = tmp_path / "repository"
+    root = fixture_padding_root / "repository"
     source = root / CARDXREF_SOURCE
     source.parent.mkdir(parents=True)
     source.write_bytes(b"\n".join([lines[0].ljust(51, b"9"), *lines[1:]]) + b"\n")
@@ -4146,16 +4165,26 @@ def test_fixture_padding(carddemo_repo_root: Path, tmp_path: Path) -> None:
         fixtures.repository_dataset("CARDXREF", root)
 
 
-def _cli(repo_root: Path, script: str, *args: str) -> subprocess.CompletedProcess:
+def _cli(
+    repo_root: Path, script: str, *args: str, work_root: Path, extra_env: Mapping[str, str] | None = None
+) -> subprocess.CompletedProcess:
     """Run ``python tests/harness/<script> <args>`` from the repository root,
-    writing no bytecode into the checkout."""
+    writing no bytecode into the checkout.
+
+    The child gets this process's environment plus ``extra_env``, with
+    ``CARDDEMO_TEST_WORKDIR`` set to ``work_root`` (the session's
+    carddemo_work_root, or a folder of a case's own inside it) whatever the
+    variable held here, so a scratch folder the script makes stays inside the
+    session work root even when the variable is unset or unusable and conftest
+    made the root. ``extra_env`` cannot replace that variable or
+    ``PYTHONDONTWRITEBYTECODE``."""
     return subprocess.run(
         [sys.executable, str(repo_root / "tests" / "harness" / script), *args],
         cwd=repo_root,
         capture_output=True,
         text=True,
         timeout=CLI_TIMEOUT_S,
-        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        env={**os.environ, **(extra_env or {}), "PYTHONDONTWRITEBYTECODE": "1", WORK_ROOT_ENV: str(work_root)},
         check=False,
     )
 
@@ -4167,8 +4196,8 @@ def _assert_passes(completed: subprocess.CompletedProcess) -> None:
     )
 
 
-def test_inventory_check(carddemo_repo_root: Path) -> None:
-    _assert_passes(_cli(carddemo_repo_root, "inventory_tools.py", "--check"))
+def test_inventory_check(carddemo_repo_root: Path, carddemo_work_root: Path) -> None:
+    _assert_passes(_cli(carddemo_repo_root, "inventory_tools.py", "--check", work_root=carddemo_work_root))
 
 
 INVENTORY_ID_RE = re.compile(r"^INV-(SEC|MNU|USR|ACT|CRD|TRN|BIL|RPT|FIN|DAT|UTL|CFG|LAY|DTA|BAT)-\d{3}$")
@@ -4459,6 +4488,359 @@ def test_seam_rule_names_a_scenario_that_does_not_cite_a_seam_it_uses(
     ]
 
 
+# The work-root variable, which the cases below set, blank or remove.
+WORKDIR_VARIABLE = "CARDDEMO_TEST_WORKDIR"
+WORK_ROOT_CASE_PREFIX = "unit-work-root-"
+# A scenario of the id manifest that capture.py accepts on its command line.
+CAPTURE_SCENARIO_ID = "UTL-CSUTLDTC-normal-01"
+# git for a repository of the case's own, configured on the command line only.
+GIT_LOCAL = (
+    "git",
+    "-c",
+    "init.defaultBranch=main",
+    "-c",
+    "user.name=CardDemo self-test",
+    "-c",
+    "user.email=self-test@localhost",
+    "-c",
+    "commit.gpgsign=false",
+)
+
+
+@pytest.fixture
+def work_root_case(carddemo_work_root: Path) -> Iterator[Path]:
+    """A fresh folder of this case's own inside the session work root, never
+    under pytest's basetemp or in the checkout; removed afterwards."""
+    folder = Path(tempfile.mkdtemp(prefix=WORK_ROOT_CASE_PREFIX, dir=carddemo_work_root)).resolve()
+    try:
+        yield folder
+    finally:
+        shutil.rmtree(folder)
+
+
+@pytest.fixture
+def case_temporary_directory(work_root_case: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """``<case>/temp``, which ``tempfile.gettempdir()`` returns for the rest of
+    the case, so a fresh temporary root or scratch folder the code under test
+    makes in place of a refused work root stays inside the session work root."""
+    folder = work_root_case / "temp"
+    folder.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(folder))
+    return folder
+
+
+# Each maker returns the CARDDEMO_TEST_WORKDIR value to set (None: unset) and
+# the folder inside the repository that a refusal must not create (or None).
+
+
+def _unset_work_root(case: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[str | None, Path | None]:
+    return None, None
+
+
+def _empty_work_root(case: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[str | None, Path | None]:
+    return "", None
+
+
+def _blank_work_root(case: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[str | None, Path | None]:
+    return "  ", None
+
+
+def _file_work_root(case: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[str | None, Path | None]:
+    path = case / "regular-file"
+    path.write_text("not a directory\n", encoding="utf-8")
+    return str(path), None
+
+
+def _under_file_work_root(case: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[str | None, Path | None]:
+    path = case / "regular-file"
+    path.write_text("not a directory\n", encoding="utf-8")
+    return str(path / "root"), None
+
+
+def _repository_work_root(case: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[str | None, Path | None]:
+    return str(TESTS_ROOT.parent), None
+
+
+def _in_repository_work_root(case: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[str | None, Path | None]:
+    folder = TESTS_ROOT / f".{case.name}"
+    return str(folder / "root"), folder
+
+
+def _unwritable_work_root(case: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[str | None, Path | None]:
+    # An existing directory in which nothing can be made, as under chattr +i or
+    # without write permission. Simulated, so the case holds when the suite
+    # runs as root too; every other mkdtemp works as before.
+    root = case / "unwritable"
+    root.mkdir()
+    make_directory = tempfile.mkdtemp
+
+    def mkdtemp(suffix: str | None = None, prefix: str | None = None, dir: str | Path | None = None) -> str:
+        if dir is not None and Path(dir).resolve() == root:
+            raise PermissionError(f"[Errno 13] Permission denied (simulated): {os.path.join(dir, prefix or '')!r}")
+        return make_directory(suffix, prefix, dir)
+
+    monkeypatch.setattr(tempfile, "mkdtemp", mkdtemp)
+    return str(root), None
+
+
+# The work-root values replaced by a fresh temporary root, and what the
+# reason for refusing a set one says (None: unset, which is not refused).
+REPLACED_WORK_ROOTS = [
+    pytest.param(_unset_work_root, None, id="unset"),
+    pytest.param(_empty_work_root, "the value is blank", id="empty"),
+    pytest.param(_blank_work_root, "the value is blank", id="blank"),
+    pytest.param(_file_work_root, "is not a directory", id="regular-file"),
+    pytest.param(_under_file_work_root, "cannot be created", id="under-regular-file"),
+    pytest.param(_repository_work_root, "the path is the repository itself", id="repository"),
+    pytest.param(_in_repository_work_root, "inside the repository", id="inside-repository"),
+    pytest.param(_unwritable_work_root, "is not writable", id="unwritable-directory"),
+]
+REFUSED_WORK_ROOTS = [case for case in REPLACED_WORK_ROOTS if case.values[0] is not _unset_work_root]
+
+
+def _set_work_root_variable(monkeypatch: pytest.MonkeyPatch, value: str | None) -> None:
+    if value is None:
+        monkeypatch.delenv(WORKDIR_VARIABLE, raising=False)
+    else:
+        monkeypatch.setenv(WORKDIR_VARIABLE, value)
+
+
+def _assert_not_created(absent: Path | None) -> None:
+    """Fail when a refused root created ``absent`` inside the repository,
+    after removing it."""
+    if absent is None or not os.path.lexists(absent):
+        return
+    shutil.rmtree(absent)
+    pytest.fail(f"{absent} was created inside the repository")
+
+
+def _assert_fresh_temporary_root(root: Path, case: Path) -> None:
+    """``root`` is a new, empty ``carddemo-`` folder of the temporary
+    directory, outside the repository and apart from the session work root."""
+    assert root == root.resolve(), root
+    assert root.name.startswith("carddemo-") and root.parent == Path(tempfile.gettempdir()).resolve(), root
+    assert root.is_dir() and not any(root.iterdir()), root
+    assert root != TESTS_ROOT.parent and TESTS_ROOT.parent not in root.parents, root
+    assert root != case.parent, "the session work root is reused instead of a fresh one"
+
+
+def _configure_session(monkeypatch: pytest.MonkeyPatch) -> tuple[SimpleNamespace, list[Warning]]:
+    """A stand-in for pytest's config after conftest's ``pytest_configure``,
+    with the config-time warnings it gave."""
+    # pytest imports tests/conftest.py as the module `conftest`.
+    import conftest
+
+    monkeypatch.delenv("CARDDEMO_ADAPTER", raising=False)
+    given: list[Warning] = []
+    config = SimpleNamespace(
+        stash=pytest.Stash(),
+        issue_config_time_warning=lambda warning, stacklevel: given.append(warning),
+    )
+    conftest.pytest_configure(config)
+    return config, given
+
+
+@pytest.mark.parametrize(("make", "reason"), REPLACED_WORK_ROOTS)
+def test_conftest_replaces_an_unset_or_unusable_work_root(
+    monkeypatch: pytest.MonkeyPatch,
+    work_root_case: Path,
+    case_temporary_directory: Path,
+    make: Callable,
+    reason: str | None,
+) -> None:
+    import conftest
+
+    configured, absent = make(work_root_case, monkeypatch)
+    _set_work_root_variable(monkeypatch, configured)
+    try:
+        config, given = _configure_session(monkeypatch)
+        root = config.stash[conftest.WORK_ROOT_KEY]
+        try:
+            _assert_fresh_temporary_root(root, work_root_case)
+            assert config.stash.get(conftest.CREATED_WORK_ROOT_KEY, None) == root
+            if configured is None:
+                assert given == []
+            else:
+                assert [type(warning) for warning in given] == [pytest.PytestConfigWarning], given
+                text = str(given[0])
+                assert text.startswith(f"{WORKDIR_VARIABLE}={configured!r} is not a usable work root: "), text
+                assert reason in text and f"the fresh temporary work root {root} instead" in text, text
+            conftest.pytest_unconfigure(config)
+            assert not root.exists(), "pytest_unconfigure keeps the empty temporary work root the session made"
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+    finally:
+        _assert_not_created(absent)
+
+
+@pytest.mark.parametrize("existing", [pytest.param(True, id="existing"), pytest.param(False, id="missing")])
+def test_conftest_uses_a_usable_work_root(
+    monkeypatch: pytest.MonkeyPatch, work_root_case: Path, existing: bool
+) -> None:
+    import conftest
+
+    root = work_root_case / "work root" / "nested"
+    if existing:
+        root.mkdir(parents=True)
+    _set_work_root_variable(monkeypatch, str(root))
+    config, given = _configure_session(monkeypatch)
+    assert config.stash[conftest.WORK_ROOT_KEY] == root
+    assert conftest.CREATED_WORK_ROOT_KEY not in config.stash
+    assert given == []
+    assert root.is_dir() and not any(root.iterdir()), "the write probe stays in the work root"
+    conftest.pytest_unconfigure(config)
+    assert root.is_dir(), "pytest_unconfigure removes a configured work root"
+
+
+def _temporary_directory_in_repository(monkeypatch: pytest.MonkeyPatch) -> str:
+    monkeypatch.setattr(tempfile, "tempdir", str(TESTS_ROOT))
+    return f"the temporary directory ({TESTS_ROOT}) lies inside the repository"
+
+
+def _temporary_root_refused(monkeypatch: pytest.MonkeyPatch) -> str:
+    def mkdtemp(suffix: str | None = None, prefix: str | None = None, dir: str | Path | None = None) -> str:
+        raise PermissionError("[Errno 13] Permission denied (simulated)")
+
+    monkeypatch.setattr(tempfile, "mkdtemp", mkdtemp)
+    return "no temporary work root can be made: [Errno 13] Permission denied (simulated)"
+
+
+@pytest.mark.parametrize("configured", [pytest.param(None, id="unset"), pytest.param("", id="empty")])
+@pytest.mark.parametrize(
+    "break_fallback",
+    [
+        pytest.param(_temporary_directory_in_repository, id="temporary-directory-in-repository"),
+        pytest.param(_temporary_root_refused, id="temporary-root-refused"),
+    ],
+)
+def test_conftest_stops_without_a_work_root_outside_the_repository(
+    monkeypatch: pytest.MonkeyPatch, configured: str | None, break_fallback: Callable
+) -> None:
+    import conftest
+
+    def strays() -> list[Path]:
+        return sorted(path for path in TESTS_ROOT.iterdir() if path.name.startswith(conftest.WORK_ROOT_PREFIX))
+
+    _set_work_root_variable(monkeypatch, configured)
+    before = strays()
+    problem = break_fallback(monkeypatch)
+    try:
+        with pytest.raises(pytest.UsageError) as stopped:
+            conftest._work_root()
+    finally:
+        made = [path for path in strays() if path not in before]
+        for path in made:
+            shutil.rmtree(path)
+    assert made == [], "a temporary work root was made inside the repository"
+    message = str(stopped.value)
+    assert problem in message, message
+    refused = f"{WORKDIR_VARIABLE}={configured!r} is not a usable work root: the value is blank"
+    assert (refused in message) is (configured is not None), message
+
+
+@pytest.mark.parametrize(("make", "reason"), REPLACED_WORK_ROOTS)
+def test_capture_replaces_an_unset_or_unusable_work_root_variable(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    work_root_case: Path,
+    case_temporary_directory: Path,
+    make: Callable,
+    reason: str | None,
+) -> None:
+    from harness import capture
+
+    configured, absent = make(work_root_case, monkeypatch)
+    _set_work_root_variable(monkeypatch, configured)
+    try:
+        root, created = capture._work_root(None)
+        try:
+            assert created
+            _assert_fresh_temporary_root(root, work_root_case)
+            warning = capsys.readouterr().err
+            if configured is None:
+                assert warning == ""
+            else:
+                assert warning.startswith(
+                    f"capture.py: warning: {WORKDIR_VARIABLE}={configured!r} is not a usable work root: "
+                ), warning
+                assert reason in warning, warning
+            capture._discard(root, created, [])
+            assert not root.exists(), "capture.py keeps the temporary work root it made"
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+    finally:
+        _assert_not_created(absent)
+
+
+def _no_capture_adapter(work_root: Path) -> None:
+    raise HarnessError(f"the work root {work_root} was accepted, so the capture would run")
+
+
+@pytest.mark.parametrize(("make", "reason"), REFUSED_WORK_ROOTS)
+def test_capture_refuses_an_unusable_work_root_option(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    work_root_case: Path,
+    make: Callable,
+    reason: str,
+) -> None:
+    from harness import capture
+
+    configured, absent = make(work_root_case, monkeypatch)
+    monkeypatch.delenv(WORKDIR_VARIABLE, raising=False)
+    # A work root accepted by mistake ends the run here, before any capture.
+    monkeypatch.setattr(capture, "make_adapter", _no_capture_adapter)
+    try:
+        with pytest.raises(SystemExit) as stopped:
+            capture.main([CAPTURE_SCENARIO_ID, "--work-root", configured])
+        assert stopped.value.code == 2
+        error = capsys.readouterr().err
+        assert f"--work-root {configured!r} is not a usable work root: " in error and reason in error, error
+    finally:
+        _assert_not_created(absent)
+
+
+@pytest.mark.parametrize("source", [pytest.param("variable", id="variable"), pytest.param("option", id="option")])
+def test_capture_uses_a_usable_work_root(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], work_root_case: Path, source: str
+) -> None:
+    from harness import capture
+
+    root = work_root_case / "work root"
+    _set_work_root_variable(monkeypatch, str(root) if source == "variable" else None)
+    assert capture._work_root(str(root) if source == "option" else None) == (root, False)
+    assert root.is_dir() and not any(root.iterdir()), "the write probe stays in the work root"
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize("make", [pytest.param(case.values[0], id=case.id) for case in REPLACED_WORK_ROOTS])
+def test_bump_check_scratch_avoids_an_unusable_work_root(
+    monkeypatch: pytest.MonkeyPatch, work_root_case: Path, case_temporary_directory: Path, make: Callable
+) -> None:
+    repository = work_root_case / "repository"
+    repository.mkdir()
+    for args in (("init", "-q"), ("commit", "-q", "--allow-empty", "-m", "base")):
+        subprocess.run([*GIT_LOCAL, *args], cwd=repository, check=True, capture_output=True, timeout=60)
+    configured, absent = make(work_root_case, monkeypatch)
+    _set_work_root_variable(monkeypatch, configured)
+    # Every folder mkdtemp makes from here on, through any maker's own wrapper.
+    made: list[Path] = []
+    make_directory = tempfile.mkdtemp
+
+    def mkdtemp(suffix: str | None = None, prefix: str | None = None, dir: str | Path | None = None) -> str:
+        path = make_directory(suffix, prefix, dir)
+        made.append(Path(path))
+        return path
+
+    monkeypatch.setattr(tempfile, "mkdtemp", mkdtemp)
+    try:
+        assert baselines.check_bumps("HEAD", repository) == []
+    finally:
+        _assert_not_created(absent)
+    scratch = [path.parent for path in made if path.name.startswith("carddemo-bumps-")]
+    assert scratch == [case_temporary_directory], f"the scratch folder is made in {scratch}"
+
+
 MARKERS = {"unit", "integration", "e2e", "chain", "gnucobol_batch", "unikix"}
 
 
@@ -4472,6 +4854,66 @@ def test_markers_registered(pytestconfig: pytest.Config) -> None:
     assert registered == MARKERS
     assert MARKERS <= {line.split(":", 1)[0].split("(", 1)[0].strip() for line in pytestconfig.getini("markers")}
     assert "--strict-markers" in pytestconfig.getini("addopts")
+
+
+# CARDDEMO_ADAPTER value (None: unset) -> the adapter it selects, None when
+# it is refused. Only the unset variable selects the default; every supplied
+# value must name an adapter exactly, the empty and the blank one included.
+ADAPTER_SELECTIONS = [
+    pytest.param(None, "gnucobol-batch", id="unset"),
+    pytest.param("gnucobol-batch", "gnucobol-batch", id="gnucobol-batch"),
+    pytest.param("unikix", "unikix", id="unikix"),
+    pytest.param("", None, id="empty"),
+    pytest.param(" ", None, id="blank"),
+    pytest.param("foo", None, id="unknown"),
+    pytest.param("GNUCOBOL-BATCH", None, id="upper-case"),
+    pytest.param("gnucobol_batch", None, id="marker-name"),
+]
+ADAPTER_REFUSAL = "CARDDEMO_ADAPTER must be 'gnucobol-batch' or 'unikix'"
+
+
+def _set_adapter(monkeypatch: pytest.MonkeyPatch, value: str | None) -> None:
+    if value is None:
+        monkeypatch.delenv("CARDDEMO_ADAPTER", raising=False)
+    else:
+        monkeypatch.setenv("CARDDEMO_ADAPTER", value)
+
+
+@pytest.mark.parametrize(("value", "selected"), ADAPTER_SELECTIONS)
+def test_conftest_adapter_selection(monkeypatch: pytest.MonkeyPatch, value: str | None, selected: str | None) -> None:
+    # pytest imports tests/conftest.py as the module `conftest`.
+    import conftest
+
+    _set_adapter(monkeypatch, value)
+    if selected is not None:
+        assert conftest._selected_adapter() == selected
+        return
+    with pytest.raises(pytest.UsageError, match=re.escape(ADAPTER_REFUSAL)) as refused:
+        conftest._selected_adapter()
+    assert f"(got {value!r})" in str(refused.value)
+
+
+ADAPTER_OVER_LONG = "x" * 300
+
+
+@pytest.mark.parametrize(
+    ("value", "selected"), [*ADAPTER_SELECTIONS, pytest.param(ADAPTER_OVER_LONG, None, id="over-long")]
+)
+def test_report_adapter_selection(monkeypatch: pytest.MonkeyPatch, value: str | None, selected: str | None) -> None:
+    # The coverage report's Environment section names the adapter by the
+    # conftest rule and never copies a refused value into the report.
+    _set_adapter(monkeypatch, value)
+    if selected is not None:
+        assert report._selected_adapter() == selected
+        assert report._environment_lines()[0] == f"- Adapter: {selected}"
+        return
+    with pytest.raises(report.ReportError, match=re.escape(ADAPTER_REFUSAL)) as refused:
+        report._environment_lines()
+    message = str(refused.value)
+    if value == ADAPTER_OVER_LONG:
+        assert value not in message and len(message) < len(ADAPTER_REFUSAL) + 100, message
+    else:
+        assert f"(got {value!r})" in message
 
 
 COMMANDS_FILE = ADAPTERS_DIR / "unikix" / "commands.yaml"
@@ -4560,33 +5002,192 @@ def test_adapters_implement_base() -> None:
             exception("the runtime is absent")
 
 
-def _require_commit(repo_root: Path, revision: str) -> None:
-    """Fail, never skip, when ``revision`` is no commit of this clone: the
-    checks compare with history a shallow clone lacks."""
+def _require_commit(
+    repo_root: Path,
+    revision: str,
+    remedy: str = "Pass an existing commit to --carddemo-baseline-base and run again.",
+) -> None:
+    """Fail, never skip, when ``revision`` names no commit of this clone.
+
+    The value reaches git as one argument after ``--end-of-options``, so no
+    value is read as an option. The failure quotes the value. An empty value
+    and, in a full clone, an unknown revision get ``remedy``; a shallow clone,
+    which lacks the history the checks compare with, is told to fetch it."""
     completed = subprocess.run(
-        ["git", "rev-parse", "--verify", "--quiet", f"{revision}^{{commit}}"],
+        ["git", "rev-parse", "--verify", "--quiet", "--end-of-options", f"{revision}^{{commit}}"],
         cwd=repo_root,
         capture_output=True,
         text=True,
         timeout=CLI_TIMEOUT_S,
         check=False,
     )
-    if completed.returncode != 0:
-        pytest.fail(
-            f"{revision} is not a commit of this clone's history: fetch the full history "
-            "(git fetch --unshallow, or actions/checkout with fetch-depth: 0) and run again",
-            pytrace=False,
+    if completed.returncode == 0:
+        return
+    unshallow = "fetch the full history (git fetch --unshallow, or actions/checkout with fetch-depth: 0)"
+    if not str(revision).strip():
+        pytest.fail(f"{revision!r} is an empty revision: it names no commit. {remedy}", pytrace=False)
+    shallow = subprocess.run(
+        ["git", "rev-parse", "--is-shallow-repository"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        timeout=CLI_TIMEOUT_S,
+        check=False,
+    )
+    answer = shallow.stdout.strip() if shallow.returncode == 0 else ""
+    if answer == "false":
+        message = f"{revision!r} is an unknown revision: it names no commit of this clone. {remedy}"
+    elif answer == "true":
+        message = f"{revision!r} is not a commit of this shallow clone's history: {unshallow} and run again"
+    else:
+        said = (shallow.stderr or shallow.stdout).splitlines()
+        reason = next((line.strip() for line in said if line.strip()), f"exit {shallow.returncode}")
+        message = (
+            f"{revision!r} names no commit of this clone, and git rev-parse --is-shallow-repository "
+            f"cannot tell whether the clone is shallow ({reason}). {remedy} "
+            f"If the commit exists upstream, {unshallow} and run again."
         )
+    pytest.fail(message, pytrace=False)
 
 
-def test_baseline_bumps(carddemo_repo_root: Path, carddemo_baseline_base: str) -> None:
+@pytest.mark.parametrize(
+    ("revision", "kind"),
+    [
+        pytest.param("", "an empty revision", id="empty"),
+        pytest.param("   ", "an empty revision", id="blank"),
+        pytest.param("nosuchrev-does-not-exist", "an unknown revision", id="unknown"),
+        pytest.param("--path-format=absolute", "an unknown revision", id="option-like"),
+        pytest.param("HEAD", None, id="HEAD"),
+    ],
+)
+def test_require_commit_names_the_revision(carddemo_repo_root: Path, revision: str, kind: str | None) -> None:
+    """An existing commit passes. Any other value fails, never skips, quoting
+    the value; only a shallow clone's unknown revision gets the unshallow
+    remedy, and an empty value is called empty."""
+    if kind is None:
+        _require_commit(carddemo_repo_root, revision)
+        return
+    with pytest.raises(pytest.fail.Exception) as raised:
+        _require_commit(carddemo_repo_root, revision)
+    assert raised.value.pytrace is False
+    message = raised.value.msg
+    assert message.startswith(repr(revision)), message
+    shallow = subprocess.run(
+        ["git", "rev-parse", "--is-shallow-repository"],
+        cwd=carddemo_repo_root,
+        capture_output=True,
+        text=True,
+        timeout=CLI_TIMEOUT_S,
+        check=False,
+    )
+    if kind == "an empty revision" or (shallow.returncode == 0 and shallow.stdout.strip() == "false"):
+        assert f" is {kind}: " in message, message
+        assert "--carddemo-baseline-base" in message, message
+        assert "--unshallow" not in message, message
+    else:
+        assert "git fetch --unshallow" in message, message
+
+
+def test_baseline_bumps(carddemo_repo_root: Path, carddemo_work_root: Path, carddemo_baseline_base: str) -> None:
     _require_commit(carddemo_repo_root, carddemo_baseline_base)
-    _assert_passes(_cli(carddemo_repo_root, "baselines.py", "--check-bumps", "--base", carddemo_baseline_base))
+    _assert_passes(
+        _cli(
+            carddemo_repo_root,
+            "baselines.py",
+            "--check-bumps",
+            "--base",
+            carddemo_baseline_base,
+            work_root=carddemo_work_root,
+        )
+    )
 
 
-def test_protected_tree(carddemo_repo_root: Path) -> None:
-    _require_commit(carddemo_repo_root, inventory_tools.load()["header"]["protected_base"])
-    _assert_passes(_cli(carddemo_repo_root, "report.py", "--check-protected"))
+# The prefix of the scratch folder baselines.check_bumps makes for its YAML
+# reads, and a tracer a child process imports at start-up as `sitecustomize`
+# when its folder comes first on PYTHONPATH: it appends the real path of every
+# folder tempfile.mkdtemp makes (TemporaryDirectory's included) to the log
+# beside it, then runs the `sitecustomize` it shadows, if there is one.
+BUMP_SCRATCH_PREFIX = "carddemo-bumps-"
+MKDTEMP_TRACER_LOG = "mkdtemp.log"
+MKDTEMP_TRACER = f"""\
+import importlib.machinery
+import importlib.util
+import os
+import sys
+import tempfile
+
+_FOLDER = os.path.dirname(os.path.abspath(__file__))
+_LOG = os.path.join(_FOLDER, {MKDTEMP_TRACER_LOG!r})
+_make_directory = tempfile.mkdtemp
+
+
+def mkdtemp(suffix=None, prefix=None, dir=None):
+    path = _make_directory(suffix, prefix, dir)
+    with open(_LOG, "a", encoding="utf-8") as log:
+        log.write(os.path.realpath(path) + "\\n")
+    return path
+
+
+tempfile.mkdtemp = mkdtemp
+
+_shadowed = importlib.machinery.PathFinder.find_spec(
+    "sitecustomize", [entry for entry in sys.path if os.path.abspath(entry or os.curdir) != _FOLDER]
+)
+if _shadowed is not None and _shadowed.loader is not None:
+    _shadowed.loader.exec_module(importlib.util.module_from_spec(_shadowed))
+"""
+
+
+def test_baseline_bumps_scratch_stays_in_the_work_root(carddemo_repo_root: Path, work_root_case: Path) -> None:
+    """The bump-check command line makes its scratch folder inside the work
+    root ``_cli`` hands it, whatever ``CARDDEMO_TEST_WORKDIR`` holds in this
+    process, as the tracer records in the child. The work root is a folder of
+    the case's own, narrower than the session's, so a scratch folder made in
+    the session root or in the temporary directory is caught alike. Only
+    where the scratch lies is judged here: the bump verdict, which uncommitted
+    baseline changes decide, is test_baseline_bumps', so the command need only
+    end with a verdict (exit 0 or 1 and its summary line, no traceback)."""
+    work_root = work_root_case / "work root"
+    work_root.mkdir()
+    tracer = work_root_case / "tracer"
+    tracer.mkdir()
+    (tracer / "sitecustomize.py").write_text(MKDTEMP_TRACER, encoding="utf-8")
+    search_path = os.pathsep.join(filter(None, [str(tracer), os.environ.get("PYTHONPATH")]))
+    completed = _cli(
+        carddemo_repo_root,
+        "baselines.py",
+        "--check-bumps",
+        "--base",
+        "HEAD",
+        work_root=work_root,
+        extra_env={"PYTHONPATH": search_path},
+    )
+    verdict = completed.stderr.splitlines()[-1:] or [""]
+    assert (
+        completed.returncode in (0, 1)
+        and "Traceback" not in completed.stderr
+        and verdict[0].startswith("baselines.py: ")
+        and verdict[0].endswith(" against HEAD")
+    ), (
+        f"{' '.join(map(str, completed.args[1:]))} exited {completed.returncode} without a bump verdict\n"
+        f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
+    )
+    log = tracer / MKDTEMP_TRACER_LOG
+    assert log.is_file(), "the tracer did not run in the child, or the child made no folder with tempfile.mkdtemp"
+    made = [Path(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert any(path.name.startswith(BUMP_SCRATCH_PREFIX) for path in made), f"no bump-check scratch folder in {made}"
+    outside = [path for path in made if work_root not in path.parents]
+    assert outside == [], f"folders made outside the work root {work_root}: {outside}"
+
+
+def test_protected_tree(carddemo_repo_root: Path, carddemo_work_root: Path) -> None:
+    _require_commit(
+        carddemo_repo_root,
+        inventory_tools.load()["header"]["protected_base"],
+        remedy="The inventory header's protected_base must be the suite's starting commit, "
+        "and this clone's history must hold it.",
+    )
+    _assert_passes(_cli(carddemo_repo_root, "report.py", "--check-protected", work_root=carddemo_work_root))
 
 
 # --------------------------------------------------------------------------
@@ -4650,24 +5251,15 @@ class _CloseCommands:
 
 
 @pytest.fixture
-def close_work_root() -> Iterator[Path]:
-    """A fresh, empty work root of this case's own inside the work root,
-    never under pytest's basetemp. A configured work root is created when
-    missing and kept; the directory is removed afterwards, with the default
-    root when this fixture made it."""
-    configured = os.environ.get(WORK_ROOT_ENV, "")
-    made = None if configured.strip() else Path(tempfile.mkdtemp(prefix=DEFAULT_WORK_ROOT_PREFIX))
+def close_work_root(carddemo_work_root: Path) -> Iterator[Path]:
+    """A fresh, empty work root of this case's own inside the session work
+    root (carddemo_work_root), never under pytest's basetemp, removed
+    afterwards."""
+    directory = Path(tempfile.mkdtemp(prefix=CLOSE_WORK_ROOT_PREFIX, dir=carddemo_work_root))
     try:
-        root = Path(configured) if made is None else made
-        root.mkdir(parents=True, exist_ok=True)
-        directory = Path(tempfile.mkdtemp(prefix=CLOSE_WORK_ROOT_PREFIX, dir=root))
-        try:
-            yield directory
-        finally:
-            shutil.rmtree(directory)
+        yield directory
     finally:
-        if made is not None:
-            shutil.rmtree(made)
+        shutil.rmtree(directory)
 
 
 # Each case: whether a session started; the flags (_region_started,

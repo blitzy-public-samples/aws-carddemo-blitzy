@@ -131,6 +131,7 @@ from harness import (  # noqa: E402
     display_path,
     dump_yaml,
     load_yaml,
+    usable_work_root,
     write_text,
 )
 from harness import codec as _codec  # noqa: E402
@@ -2728,8 +2729,12 @@ def check_bumps(base: str, repo_root: str | Path = REPO_ROOT) -> list[str]:
         pending[baseline_id] = (base_files, work_bytes)
         wanted.update(oid for name, (_, oid) in base_files.items() if not name.startswith(DATASETS_DIR + "/"))
     blobs = _cat_blobs(root, wanted)
-    scratch = os.environ.get("CARDDEMO_TEST_WORKDIR")
-    scratch_root = scratch if scratch and Path(scratch).is_dir() else None
+    # The work root holds the scratch folder when it can be one; otherwise the
+    # system's temporary directory does.
+    try:
+        scratch_root: Path | None = usable_work_root(os.environ.get("CARDDEMO_TEST_WORKDIR", ""))
+    except HarnessError:
+        scratch_root = None
     with tempfile.TemporaryDirectory(prefix="carddemo-bumps-", dir=scratch_root) as folder:
         reader = _YamlReader(Path(folder))
         for baseline_id, (base_files, work_bytes) in sorted(pending.items()):

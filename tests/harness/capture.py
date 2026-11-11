@@ -55,9 +55,13 @@ tests/harness/baselines.py --check-bumps --base HEAD``.
 The work root is ``--work-root``, else ``CARDDEMO_TEST_WORKDIR``, else a new
 ``tempfile.mkdtemp(prefix="carddemo-")`` that is removed at the end unless a
 failing run kept its working directory there; it never lies inside the
-repository. Inside the repository the script writes only under
-``tests/baselines/<id>/``, besides the git-ignored runtime files the runner
-writes under ``tests/reports/runtime/``.
+repository. A configured root is used only when ``harness.usable_work_root``
+accepts it (not blank, outside the repository, a directory, created when
+missing, and writable). An unusable ``--work-root`` is a usage error; an
+unusable ``CARDDEMO_TEST_WORKDIR`` is named on stderr with the reason, and the
+new temporary root replaces it. Inside the repository the script writes only
+under ``tests/baselines/<id>/``, besides the git-ignored runtime files the
+runner writes under ``tests/reports/runtime/``.
 """
 
 from __future__ import annotations
@@ -80,7 +84,7 @@ _TESTS_ROOT = str(Path(__file__).resolve().parents[1])
 if _TESTS_ROOT not in sys.path:
     sys.path.insert(0, _TESTS_ROOT)
 
-from harness import REPO_ROOT, HarnessError, git_head  # noqa: E402
+from harness import REPO_ROOT, HarnessError, git_head, usable_work_root  # noqa: E402
 from harness import baselines as _baselines  # noqa: E402
 from harness import results as _results  # noqa: E402
 from harness import runner as _runner  # noqa: E402
@@ -625,18 +629,34 @@ must pass.
 
 def _work_root(option: str | None) -> tuple[Path, bool]:
     """The resolved work root and whether this run created it as a temporary
-    directory. ``CaptureError`` when it lies inside the repository."""
-    configured = option if option is not None else (os.environ.get(_WORKDIR_ENV, "").strip() or None)
-    created = configured is None
-    root = Path(tempfile.mkdtemp(prefix=_WORK_ROOT_PREFIX)) if created else Path(configured).expanduser()
-    resolved = root.resolve()
+    directory. ``--work-root`` and ``CARDDEMO_TEST_WORKDIR`` are taken after
+    ``~`` expansion and used only when ``harness.usable_work_root`` accepts
+    them. ``CaptureError`` when ``--work-root`` is unusable. An unusable
+    ``CARDDEMO_TEST_WORKDIR`` is named on stderr with the reason and, like an
+    unset one, replaced by a new temporary directory; ``CaptureError`` when
+    that directory lies inside the repository."""
+    if option is not None:
+        try:
+            return usable_work_root(os.path.expanduser(option)), False
+        except HarnessError as exc:
+            raise CaptureError(f"--work-root {option!r} is not a usable work root: {exc}") from None
+    configured = os.environ.get(_WORKDIR_ENV)
+    if configured is not None:
+        try:
+            return usable_work_root(os.path.expanduser(configured)), False
+        except HarnessError as exc:
+            print(
+                f"capture.py: warning: {_WORKDIR_ENV}={configured!r} is not a usable work root: {exc}; "
+                "a new temporary work root is used instead",
+                file=sys.stderr,
+                flush=True,
+            )
+    resolved = Path(tempfile.mkdtemp(prefix=_WORK_ROOT_PREFIX)).resolve()
     repository = REPO_ROOT.resolve()
     if resolved == repository or repository in resolved.parents:
-        if created:
-            shutil.rmtree(resolved, ignore_errors=True)
+        shutil.rmtree(resolved, ignore_errors=True)
         raise CaptureError(f"the work root {resolved} lies inside the repository; it must lie outside it")
-    resolved.mkdir(parents=True, exist_ok=True)
-    return resolved, created
+    return resolved, True
 
 
 def _discard(work_root: Path, created: bool, captures: Sequence[Captured]) -> None:
@@ -706,7 +726,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--work-root",
         metavar="PATH",
-        help=f"the work root, outside the repository (default: ${_WORKDIR_ENV}, else a new temporary directory)",
+        help=(
+            f"the work root, outside the repository; an unusable one is a usage error "
+            f"(default: ${_WORKDIR_ENV} when usable, else a new temporary directory)"
+        ),
     )
     args = parser.parse_args(argv)
     if args.all and args.scenario_ids:

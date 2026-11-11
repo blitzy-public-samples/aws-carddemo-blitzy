@@ -8,14 +8,18 @@ the harness imports as ``harness`` and the adapters as ``adapters``.
 
 Environment
     ``CARDDEMO_ADAPTER``
-        ``gnucobol-batch`` (the default, also when set empty) or ``unikix``.
-        Any other value is a usage error.
+        ``gnucobol-batch`` (the default when unset) or ``unikix``. Any other
+        value, the empty one included, is a usage error.
     ``CARDDEMO_TEST_WORKDIR``
         The work root: the per-scenario working directories, the build cache,
-        the extracted UniKix zip and the UniKix deployment root. It is created
-        when missing. Unset or blank, the session makes one with
-        ``tempfile.mkdtemp(prefix="carddemo-")``. Either way it must lie
-        outside the repository.
+        the extracted UniKix zip and the UniKix deployment root. It must lie
+        outside the repository, and it is created when missing. Unset, or set
+        to a value that cannot be a work root (blank, inside the repository,
+        not a directory, not creatable or not writable), the session uses a
+        fresh ``tempfile.mkdtemp(prefix="carddemo-")`` root instead, with a
+        warning naming the refused value and why. Only when that temporary
+        root would lie inside the repository, or cannot be made, is it a
+        usage error.
 
 Options
     ``--carddemo-order=forward|reverse``
@@ -72,7 +76,7 @@ if TYPE_CHECKING:
 # checkout: a run writes only to the work root and tests/reports/.
 sys.dont_write_bytecode = True
 
-from harness import MARKER_FOR_ADAPTER  # noqa: E402
+from harness import MARKER_FOR_ADAPTER, HarnessError, usable_work_root  # noqa: E402
 
 TESTS_ROOT = Path(__file__).resolve().parent
 REPO_ROOT = TESTS_ROOT.parent
@@ -129,10 +133,11 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 
 def _selected_adapter() -> str:
-    """The adapter ``CARDDEMO_ADAPTER`` selects. Only the empty value means the
-    default, as the coverage report's environment section reads it."""
-    value = os.environ.get(ADAPTER_ENV, "")
-    if value == "":
+    """The adapter ``CARDDEMO_ADAPTER`` selects: the default when the variable
+    is unset, else its value. Any value but an adapter name, the empty one
+    included, is a usage error."""
+    value = os.environ.get(ADAPTER_ENV)
+    if value is None:
         return DEFAULT_ADAPTER
     if value not in ADAPTER_CLASSES:
         allowed = " or ".join(f"'{name}'" for name in ADAPTER_CLASSES)
@@ -149,31 +154,52 @@ def _refuse_inside_repository(path: Path, what: str) -> None:
         )
 
 
-def _work_root() -> tuple[Path, bool]:
-    """The session's resolved work root, and whether this session created it.
-    Where it would lie is checked before anything is created, so a refused
-    root leaves nothing behind. The configured value is used as given, without
-    ``~`` expansion, as ``harness.results`` reads it to keep work-root paths
-    out of result records."""
-    configured = os.environ.get(WORKDIR_ENV, "")
-    if configured.strip():
-        root = Path(configured).resolve()
-        _refuse_inside_repository(root, f"{WORKDIR_ENV}={configured}")
+def _work_root() -> tuple[Path, bool, str | None]:
+    """The session's resolved work root, whether this session created it, and
+    the warning to give when ``CARDDEMO_TEST_WORKDIR`` is set but not used
+    (``None`` otherwise).
+
+    A set value is used only when ``harness.usable_work_root`` accepts it: not
+    blank, neither the repository nor inside it (checked before anything is
+    created, so a refused root leaves nothing behind), created when missing,
+    a directory, and writable. A refused or unset value is replaced by a fresh
+    ``tempfile.mkdtemp(prefix="carddemo-")`` root, which this session owns.
+    That root must lie outside the repository too: when the temporary
+    directory lies inside it, or no temporary root can be made, there is no
+    work root at all, and the usage error names the refused value as well.
+    The configured value is used as given, without ``~`` expansion, as
+    ``harness.results`` reads it to keep work-root paths out of result
+    records."""
+    configured = os.environ.get(WORKDIR_ENV)
+    refused = None
+    if configured is not None:
         try:
-            root.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            raise pytest.UsageError(f"{WORKDIR_ENV}: cannot create the work root {root}: {exc}") from exc
-        return root, False
-    _refuse_inside_repository(Path(tempfile.gettempdir()).resolve(), "the temporary directory")
-    return Path(tempfile.mkdtemp(prefix=WORK_ROOT_PREFIX)).resolve(), True
+            return usable_work_root(configured), False, None
+        except HarnessError as exc:
+            refused = f"{WORKDIR_ENV}={configured!r} is not a usable work root: {exc}"
+    try:
+        _refuse_inside_repository(Path(tempfile.gettempdir()).resolve(), "the temporary directory")
+        root = Path(tempfile.mkdtemp(prefix=WORK_ROOT_PREFIX)).resolve()
+    except (OSError, pytest.UsageError) as exc:
+        problem = str(exc) if isinstance(exc, pytest.UsageError) else f"no temporary work root can be made: {exc}"
+        if refused is not None:
+            problem = f"{refused}, and no fresh temporary work root can replace it: {problem}"
+        raise pytest.UsageError(problem) from exc
+    if refused is None:
+        return root, True, None
+    return root, True, f"{refused}; this session uses the fresh temporary work root {root} instead"
 
 
 def pytest_configure(config: pytest.Config) -> None:
     config.stash[ADAPTER_NAME_KEY] = _selected_adapter()
-    root, created = _work_root()
+    root, created, warning = _work_root()
     config.stash[WORK_ROOT_KEY] = root
     if created:
         config.stash[CREATED_WORK_ROOT_KEY] = root
+    # Given after the root is stashed, so pytest_unconfigure still removes the
+    # empty temporary root when -W turns the warning into an error.
+    if warning is not None:
+        config.issue_config_time_warning(pytest.PytestConfigWarning(warning), stacklevel=2)
 
 
 def pytest_unconfigure(config: pytest.Config) -> None:

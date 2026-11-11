@@ -111,6 +111,7 @@ from adapters.base import AdapterError, Result, after_job_observation  # noqa: E
 from harness import (  # noqa: E402
     DEFAULT_CLOCK,
     INVENTORY_DIR,
+    MARKER_FOR_ADAPTER,
     PROTECTED_BASE,
     REPO_ROOT,
     REPORTS_DIR,
@@ -491,6 +492,9 @@ _RUN_DATE_KEYS = ("bpe_job_start_date", "first_step_screen_date")
 
 _SUBPROCESS_TIMEOUT_S = 120
 _TEXT_CLIP = 2000
+_ADAPTER_ENV = "CARDDEMO_ADAPTER"
+# How much of a refused CARDDEMO_ADAPTER value an error message shows.
+_ADAPTER_CLIP = 40
 _SELECTOR_LIST_KEYS = ("activation", "area", "kind", "level", "owner", "source_path", "name", "source", "scenario")
 _SELECTOR_FLAG_KEYS = ("via_scenarios", "unikix_dependent")
 _LINES_SUFFIX_RE = re.compile(r":\d+(?:-\d+)?(?:,\d+(?:-\d+)?)*$")
@@ -2105,12 +2109,28 @@ def _page_zero_facts() -> tuple[str, str | None, int | None, str | None]:
     return outcome, code, minimum, f"diagnostic in {path}" if detail else None
 
 
+def _selected_adapter() -> str:
+    """The adapter ``CARDDEMO_ADAPTER`` selects, by the rule of
+    ``tests/conftest.py``: gnucobol-batch when the variable is unset, else
+    its value when that names an adapter. Any other value, the empty one
+    included, raises ``ReportError``, whose message shows it clipped, so no
+    report names an adapter that does not exist or copies environment text."""
+    value = os.environ.get(_ADAPTER_ENV)
+    if value is None:
+        return _results.GNUCOBOL
+    if value not in MARKER_FOR_ADAPTER:
+        allowed = " or ".join(f"'{name}'" for name in MARKER_FOR_ADAPTER)
+        raise ReportError(f"{_ADAPTER_ENV} must be {allowed} (got {_clip(value, _ADAPTER_CLIP)!r})")
+    return value
+
+
 def _environment_lines() -> list[str]:
-    """The Environment section: tool and package versions and the page-zero
-    probe, never a date, a duration or a path. The probe shows its outcome,
-    errno and vm.mmap_min_addr as ``_page_zero_facts`` derives them, never
-    the runtime file's raw text, which it names by its relative path."""
-    lines = [f"- Adapter: {os.environ.get('CARDDEMO_ADAPTER') or 'gnucobol-batch'}"]
+    """The Environment section: the adapter ``_selected_adapter`` names, tool
+    and package versions and the page-zero probe, never a date, a duration or
+    a path. The probe shows its outcome, errno and vm.mmap_min_addr as
+    ``_page_zero_facts`` derives them, never the runtime file's raw text,
+    which it names by its relative path."""
+    lines = [f"- Adapter: {_selected_adapter()}"]
     cobc = _run(["cobc", "--version"])
     first = (cobc.stdout.splitlines() or [""])[0].strip() if cobc is not None and cobc.returncode == 0 else ""
     lines.append(f"- `cobc --version`: {first or 'cobc is not available on PATH'}")
@@ -2442,11 +2462,15 @@ def _write_inventory(state: State) -> bool:
 def regenerate() -> State:
     """Rewrite the coverage matrix, the gap register and the coverage report,
     and the ``scenario_ids``, ``status`` and ``gap_ids`` of every inventory
-    item. Unchanged files are left untouched. Returns the state reported."""
+    item. Unchanged files are left untouched. The three texts are rendered
+    before anything is written, so one that cannot be rendered (an invalid
+    ``CARDDEMO_ADAPTER``) leaves every file as it was. Returns the state
+    reported."""
     _refuse_links(REPORTS_DIR.parent, REPORTS_DIR, MATRIX_FILE, REGISTER_FILE, REPORT_FILE)
     state = build_state()
+    texts = render(state)
     _write_inventory(state)
-    for path, text in render(state).items():
+    for path, text in texts.items():
         write_text(path, text)
     return state
 
@@ -5997,9 +6021,12 @@ def import_unikix(execution_id: str) -> ImportSummary:
     messages no item matches to the inventory and to GAP-UNC-012, judge the
     inferred-not-observed entries and settle GAP-MIS-009, and regenerate the
     reports. A record whose current execution fingerprint cannot be computed
-    is rejected. Imports and revalidations run one at a time (``_exclusive``)."""
+    is rejected. Imports and revalidations run one at a time (``_exclusive``).
+    An invalid ``CARDDEMO_ADAPTER``, which the final regeneration refuses,
+    raises ``ReportError`` before anything is written."""
     if not isinstance(execution_id, str) or not _UNIKIX_ID_RE.fullmatch(execution_id):
         raise ReportError(f"{execution_id!r} is not a unikix execution id unikix-<yyyymmddThhmmssZ>-<8 hex>")
+    _selected_adapter()
     execution_dir = _evidence_folder(execution_id)
     try:
         if not execution_dir.is_dir():
@@ -6088,7 +6115,10 @@ def revalidate() -> RevalidationSummary:
     ``gaps.yaml`` again, write it when they change, and regenerate the
     reports. A symbolic link at ``tests/reports`` or ``tests/reports/unikix``
     raises ``ReportError`` before anything is read or written; one in place
-    of an execution or scenario directory is rejected, and reported as such."""
+    of an execution or scenario directory is rejected, and reported as such.
+    An invalid ``CARDDEMO_ADAPTER``, which the final regeneration refuses,
+    raises ``ReportError`` before anything is read or written."""
+    _selected_adapter()
     with _exclusive():
         return _revalidate()
 
@@ -6310,6 +6340,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                        help="compare two UniKix executions through their normalized projections")
     args = parser.parse_args(argv)
     try:
+        # An invalid CARDDEMO_ADAPTER stops every action before it reads or
+        # writes anything, as it stops a pytest session at collection.
+        _selected_adapter()
         if args.check:
             return _print_findings("report check", check())
         if args.check_protected:
