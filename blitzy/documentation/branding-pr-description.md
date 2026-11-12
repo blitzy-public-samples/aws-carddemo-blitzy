@@ -18,7 +18,8 @@ unchanged.
 - The sign-on page shows the Blitzy logo above the heading `Blitzy Sign On`.
 - The browser tab shows the Blitzy icon (`icon.svg`) and the title `Blitzy`.
 - Accessibility adjustments, still presentation only: a 2px `#5B39F3` keyboard
-  focus ring and darker error text (`error.dark`). A themed 404 page replaces
+  focus ring (white on filled alerts), darker error text (`error.dark`), and
+  placeholder hints in `text.secondary` `#666666`. A themed 404 page replaces
   Next's unstyled built-in one, with the same text.
 
 Base commit for every comparison in this document:
@@ -48,7 +49,7 @@ Status is relative to the base commit: `A` added, `M` modified, `D` deleted.
 | M | `frontend/src/app/layout.tsx` | Loads Inter as `--font-inter`; sets the page title and description. |
 | A | `frontend/src/app/not-found.tsx` | Themed 404 page in place of Next's built-in one; same text and title. |
 | M | `frontend/src/app/signon/page.tsx` | Adds the 48px logo above the heading; heading text `Blitzy Sign On`. |
-| M | `frontend/src/app/theme.ts` | Brand palette, Inter; AppBar, focus, error-text, table, Typography overrides. |
+| M | `frontend/src/app/theme.ts` | Brand palette, Inter; AppBar, focus, error-text, placeholder, table, Typography. |
 | M | `frontend/src/components/AppShell.tsx` | `APP_TITLE` is `Blitzy`; adds the 28px logo to the left of the title. |
 | A | `frontend/src/components/BrandLogo.tsx` | Shared logo component used by the header and the sign-on page. |
 | M | `frontend/src/components/ErrorAlert.tsx` | Comment only: corrects the info Alert contrast figure to ≈6.88:1. |
@@ -124,6 +125,7 @@ gone from `frontend/src`.
 | `MuiButtonBase` root `.Mui-focusVisible` | `outline` | `2px solid` `primary.main` (`#5B39F3`) |
 | `MuiButtonBase` root `.Mui-focusVisible` | `outlineOffset` | `2px` |
 | `MuiButton`, `MuiIconButton` | `defaultProps.disableFocusRipple` | `true` |
+| `MuiAlert` filled, `.MuiAlert-action .Mui-focusVisible` | `outlineColor` | `currentColor` (the alert's white text) |
 | `MuiListItemButton`, `MuiMenuItem` root `.Mui-focusVisible` | `outlineOffset` | `-2px` (ring drawn inside the row) |
 | `MuiListItemButton` selected, forced colors | `borderInlineStart` | `theme.spacing(0.5)` (4px) solid `currentColor` |
 | `MuiListItemButton` selected, forced colors | `paddingInlineStart` | `theme.spacing(1.5)` (12px) |
@@ -131,13 +133,16 @@ gone from `frontend/src`.
 | `MuiTypography` variant | `color="text.secondary"` | `text.secondary` (`#666666`) |
 | `MuiFormLabel` root and asterisk `.Mui-error` | `color` | `error.dark` (`#932020`) |
 | `MuiFormHelperText` root `.Mui-error` | `color` | `error.dark` (`#932020`) |
+| `MuiInputBase` input `::placeholder` | `color`, `opacity` | `text.secondary` (`#666666`), `1` |
+| `MuiInputBase` input under an unshrunk label, `:focus::placeholder` | `opacity` | `1` |
 
 The two "selected, forced colors" rows style `.Mui-selected` inside
-`@media (forced-colors: active)`.
+`@media (forced-colors: active)`. The `::placeholder` row also covers the
+`-webkit-`, `-moz-`, and `-ms-` placeholder pseudo-elements that MUI styles.
 
 `AppShell.tsx` passes no `color` prop to the AppBar, so the theme override
-applies without any change to the AppBar element. The focus and error-text
-overrides are explained under [Contrast adjustments](#contrast-adjustments).
+applies without any change to the AppBar element. The focus, error-text, and
+placeholder overrides are explained under [Contrast adjustments](#contrast-adjustments).
 
 ### Product name, metadata, logo, and favicon
 
@@ -192,7 +197,7 @@ pseudo-element, and of every loaded CSS rule, found none of the six colors on
 
 ## Contrast adjustments
 
-Every brand value is unchanged, and so is `error.main`. Two adjustments were
+Every brand value is unchanged, and so is `error.main`. Four adjustments were
 made; the logo SVG is unaltered.
 
 1. **Error text.** `error.main` `#d32f2f` measures 4.43:1 on the `#F2F0FE`
@@ -208,11 +213,27 @@ made; the logo SVG is unaltered.
    the contained `SIGN ON` ripple, which also dropped its white label to 3.53:1.
    Every `ButtonBase` control (buttons, icon buttons, nav and menu items,
    pagination) now draws a 2px `#5B39F3` outline on keyboard focus, inset on
-   full-width nav and menu rows. Buttons and icon buttons no longer play the
-   focus ripple, so a focused `SIGN ON` keeps its resting fill and its label
-   stays 6.32:1. In forced-colors mode the outline stays (Chrome's emulation
-   forces its color to `rgba(5, 0, 73, 0.8)`, 11.30:1 on the white Canvas), and
-   the selected nav item, which loses its tint there, gets a 4px start-edge bar.
+   full-width nav and menu rows and white on filled alerts (item 4). Buttons and
+   icon buttons no longer play the focus ripple, so a focused `SIGN ON` keeps its
+   resting fill and its label stays 6.32:1. In forced-colors mode the outline
+   stays (Chrome's emulation forces its color to `rgba(5, 0, 73, 0.8)`, 11.30:1
+   on the white Canvas), and the selected nav item, which loses its tint there,
+   gets a 4px start-edge bar.
+3. **Placeholder hints.** MUI draws input placeholders in the text color at 0.42
+   opacity, which with the brand `#000000` text renders `rgb(148, 148, 148)`:
+   3.03:1 on paper and 3.00:1 on the canvas, below the 4.5:1 text minimum. Every
+   input placeholder, including the `-99999999.99` format hints on
+   `/accounts/update`, now uses `palette.text.secondary` `#666666` at full
+   opacity: 5.74:1 on paper and 5.10:1 on the canvas. MUI still hides a
+   placeholder while its field is empty and unfocused under an unshrunk label;
+   only the opacity of its focused re-show changed, from 0.42 to 1.
+4. **Focus on filled alerts.** `ErrorAlert` renders a filled alert whose close
+   button drew the 2px `#5B39F3` ring on the severity fill: 1.27:1 on error
+   `#d32f2f`, 1.23:1 on success `#2e7d32`, 1.09:1 on the info fill `info.dark`
+   `rgb(1, 95, 146)`, and 2.03:1 on warning `#ed6c02`. Focused controls in a
+   filled alert's action area now draw the ring in the alert's white text
+   color: 4.98:1, 5.13:1, 6.88:1, and 3.11:1. No current call site renders a
+   warning alert. The ring keeps its 2px solid style and 2px offset.
 
 Ratios measured in the running app with the WCAG 2.x relative-luminance formula:
 
@@ -233,6 +254,9 @@ Ratios measured in the running app with the WCAG 2.x relative-luminance formula:
 | Forced-colors ring `rgba(5, 0, 73, 0.8)` | Canvas `#FFFFFF` | Drawer, Chrome forced colors | 11.30:1 | 3:1 |
 | Error text `#932020` | Paper `#FFFFFF` | Error label, asterisk, and helper text on `/signon` | 8.51:1 | 4.5:1 |
 | Error outline `#d32f2f` | Paper `#FFFFFF` | User ID field in error on `/signon` | 4.98:1 | 3:1 |
+| Placeholder `#666666` | Paper `#FFFFFF` | Empty, focused Credit Limit on `/accounts/update` | 5.74:1 | 4.5:1 |
+| Focus ring `#FFFFFF` | Error alert `#d32f2f` | Alert close button, empty submit on `/signon` | 4.98:1 | 3:1 |
+| Focus ring `#FFFFFF` | Info alert `rgb(1, 95, 146)` | Alert close button, Fetch on `/users/update` | 6.88:1 | 3:1 |
 
 Computed for states and pairings that the captured pages do not render:
 
@@ -245,14 +269,19 @@ Computed for states and pairings that the captured pages do not render:
 | Error text `#932020` | Canvas `#F2F0FE` | 7.56:1 |
 | `error.main` `#d32f2f`, the former error text | Canvas `#F2F0FE` | 4.43:1 |
 | contrastText `#FFFFFF` | `error.main` `#d32f2f` (error buttons, alerts, snackbars) | 4.98:1 |
+| Placeholder `#666666` | Canvas `#F2F0FE` | 5.10:1 |
+| The former placeholder `rgb(148, 148, 148)` | Paper `#FFFFFF` | 3.03:1 |
+| Focus ring `#FFFFFF` | Success alert `#2e7d32` | 5.13:1 |
+| Focus ring `#FFFFFF` | Warning alert `#ed6c02` (no current call site) | 3.11:1 |
 
 The divider `#D9D9D9` measures 1.41:1 on paper and 1.25:1 on the canvas. It is
 used only for decorative separators (dividers, the drawer edge, table rows, and
 the header bottom border), not for text or for boundaries needed to identify a
 control. Outlined text fields keep the MUI default border `rgba(0, 0, 0, 0.23)`
 (rendered `rgb(196, 196, 196)`, 1.74:1 on paper); this change leaves that border
-as it was. Each focus indicator listed above is 4.60:1 or more against the
-color next to it, above the 3:1 minimum, with and without forced colors.
+as it was. Each focus indicator listed above meets the 3:1 minimum against the
+color next to it, with and without forced colors: the `#5B39F3` rings measure
+4.60:1 or more, and the white rings on filled alerts 3.11:1 to 6.88:1.
 
 ## Verification
 
@@ -285,6 +314,14 @@ color next to it, above the 3:1 minimum, with and without forced colors.
   start padding (`16px` on the other items).
 - After an empty sign-on submit, the User ID label, asterisk, and helper text
   compute `rgb(147, 32, 32)`; the field outline stays `rgb(211, 47, 47)`.
+- Keyboard focus on the close button of the filled error alert on `/signon` and
+  of the filled info alert on `/users/update` computes a
+  `2px solid rgb(255, 255, 255)` outline on `rgb(211, 47, 47)` and
+  `rgb(1, 95, 146)`; `FETCH` on `/users/update` keeps the `rgb(91, 57, 243)` ring.
+- On `/accounts/update`, an empty, focused money field computes a `::placeholder`
+  color of `rgb(102, 102, 102)` at opacity `1`. An empty, unfocused one keeps
+  its placeholder hidden (opacity `0`) under its unshrunk label, and its outline
+  stays `rgba(0, 0, 0, 0.23)`.
 - Signed in, an unknown route renders the themed 404 page inside the header and
   drawer, on the `rgb(242, 240, 254)` canvas, with the heading in Inter and no
   inline font or background style.

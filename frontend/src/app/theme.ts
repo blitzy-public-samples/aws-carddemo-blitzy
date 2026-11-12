@@ -14,7 +14,8 @@
  * Inputs, used verbatim: primary #5B39F3 and secondary #333333 (both with white
  * contrast text), canvas #F2F0FE, paper surfaces #FFFFFF, text #000000 and
  * #666666, and dividers/borders #D9D9D9. Every brand text pairing meets WCAG AA
- * (the lowest, #666666 on the #F2F0FE canvas, is 5.10:1). The semantic roles
+ * (the lowest, #666666 on the #F2F0FE canvas, is 5.10:1); input placeholder
+ * hints use that #666666 text.secondary too. The semantic roles
  * (error / warning / info / success), grey, spacing (8px base), breakpoints,
  * elevation (shadows) and the typography variant scale stay at their MUI
  * defaults. Page and component files consume these tokens through `sx` /
@@ -22,11 +23,11 @@
  *
  * TOKEN-DEFINITION EXEMPTION (AAP §0.3.4): the hex / rgba color literals, the
  * named `layout` sizing tokens (`drawerWidth`, `fullWidth`, `fullViewportHeight`)
- * AND the 1px border width and the 2px focus-ring width / offsets in the
- * `components` overrides below are the token DEFINITIONS in this file and are
- * explicitly permitted here. The "zero hardcoded CSS values" rule applies to
- * the component/page files that CONSUME the theme (via `sx` / `theme`) — never
- * to this theme-definition file.
+ * AND the 1px border width, the 2px focus-ring width / offsets and the full
+ * placeholder opacity in the `components` overrides below are the token
+ * DEFINITIONS in this file and are explicitly permitted here. The "zero
+ * hardcoded CSS values" rule applies to the component/page files that CONSUME
+ * the theme (via `sx` / `theme`) — never to this theme-definition file.
  */
 
 import { createTheme } from '@mui/material/styles';
@@ -166,7 +167,7 @@ const themeOptions: ThemeOptions = {
         // menu items, pagination). MUI removes the native outline and signals
         // focus only with a low-contrast tint or ripple; a 2px primary outline
         // is 6.32:1 on paper and 5.62:1 on the canvas, and outlines stay
-        // visible in forced-colors mode.
+        // visible in forced-colors mode. Filled Alerts recolor it (MuiAlert).
         MuiButtonBase: {
             styleOverrides: {
                 root: ({ theme }) => ({
@@ -188,6 +189,19 @@ const themeOptions: ThemeOptions = {
         MuiIconButton: {
             defaultProps: {
                 disableFocusRipple: true,
+            },
+        },
+        // On a filled Alert's severity fill the primary ring is 1.09-2.03:1, so
+        // focused controls in its action area (the close button) draw it in the
+        // Alert's white contrast text instead (3.11-6.88:1). The extra class
+        // outranks the ButtonBase ring selector, whatever the style order.
+        MuiAlert: {
+            styleOverrides: {
+                filled: {
+                    '& .MuiAlert-action .Mui-focusVisible': {
+                        outlineColor: 'currentColor',
+                    },
+                },
             },
         },
         // Full-width rows sit in scrolling drawer and menu paper, which clips
@@ -267,6 +281,29 @@ const themeOptions: ThemeOptions = {
                         color: theme.palette.error.dark,
                     },
                 }),
+            },
+        },
+        // MUI draws placeholder format hints in the text color at 0.42 opacity,
+        // 3.03:1 on paper. They use text.secondary at full opacity instead (5.74:1
+        // on paper, 5.10:1 on the canvas). MUI still hides them behind an
+        // unshrunk label; only its focused re-show opacity is raised to match.
+        MuiInputBase: {
+            styleOverrides: {
+                input: ({ theme }) => {
+                    const visiblePlaceholder = { color: theme.palette.text.secondary, opacity: 1 };
+                    const focusedPlaceholder = { opacity: 1 };
+                    return {
+                        '&::placeholder': visiblePlaceholder,
+                        '&::-webkit-input-placeholder': visiblePlaceholder,
+                        '&::-moz-placeholder': visiblePlaceholder,
+                        '&::-ms-input-placeholder': visiblePlaceholder,
+                        'label[data-shrink=false] + .MuiInputBase-formControl &': {
+                            '&:focus::-webkit-input-placeholder': focusedPlaceholder,
+                            '&:focus::-moz-placeholder': focusedPlaceholder,
+                            '&:focus::-ms-input-placeholder': focusedPlaceholder,
+                        },
+                    };
+                },
             },
         },
     },
