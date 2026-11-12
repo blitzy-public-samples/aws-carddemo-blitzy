@@ -17,6 +17,9 @@ unchanged.
   the Blitzy logo, and the title `Blitzy`.
 - The sign-on page shows the Blitzy logo above the heading `Blitzy Sign On`.
 - The browser tab shows the Blitzy icon (`icon.svg`) and the title `Blitzy`.
+- Accessibility adjustments, still presentation only: a 2px `#5B39F3` keyboard
+  focus ring and darker error text (`error.dark`). A themed 404 page replaces
+  Next's unstyled built-in one, with the same text.
 
 Base commit for every comparison in this document:
 `cb634428783e7b08a83594f8c39a9ba8f74740a6`.
@@ -43,14 +46,21 @@ Status is relative to the base commit: `A` added, `M` modified, `D` deleted.
 | D | `frontend/src/app/favicon.ico` | Removed; `icon.svg` replaces it. |
 | A | `frontend/src/app/icon.svg` | Browser tab icon (the same SVG), App Router icon convention. |
 | M | `frontend/src/app/layout.tsx` | Loads Inter as `--font-inter`; sets the page title and description. |
+| A | `frontend/src/app/not-found.tsx` | Themed 404 page in place of Next's built-in one; same text and title. |
 | M | `frontend/src/app/signon/page.tsx` | Adds the 48px logo above the heading; heading text `Blitzy Sign On`. |
-| M | `frontend/src/app/theme.ts` | Brand palette, Inter font family, and AppBar, table-cell, Typography overrides. |
+| M | `frontend/src/app/theme.ts` | Brand palette, Inter; AppBar, focus, error-text, table, Typography overrides. |
 | M | `frontend/src/components/AppShell.tsx` | `APP_TITLE` is `Blitzy`; adds the 28px logo to the left of the title. |
 | A | `frontend/src/components/BrandLogo.tsx` | Shared logo component used by the header and the sign-on page. |
 | M | `frontend/src/components/ErrorAlert.tsx` | Comment only: corrects the info Alert contrast figure to ≈6.88:1. |
 
 The two test files change only the asserted strings. No test logic changed, and
 no test was skipped or deleted. `frontend/next.config.js` is unchanged.
+
+`not-found.tsx` renders the same `404` heading, `This page could not be found.`
+message and `404: This page could not be found.` tab title as Next's built-in
+404 page. The built-in page's inline styles forced a white body (black under an
+OS dark mode) and the system font; the themed page uses the theme's canvas and
+Inter like every other route.
 
 ## Brand values applied
 
@@ -111,11 +121,23 @@ gone from `frontend/src`.
 | `MuiAppBar` root | `backgroundColor` | `background.paper` (`#FFFFFF`) |
 | `MuiAppBar` root | `color` | `text.primary` (`#000000`) |
 | `MuiAppBar` root | `borderBottom` | `1px solid` `divider` (`#D9D9D9`) |
+| `MuiButtonBase` root `.Mui-focusVisible` | `outline` | `2px solid` `primary.main` (`#5B39F3`) |
+| `MuiButtonBase` root `.Mui-focusVisible` | `outlineOffset` | `2px` |
+| `MuiButton`, `MuiIconButton` | `defaultProps.disableFocusRipple` | `true` |
+| `MuiListItemButton`, `MuiMenuItem` root `.Mui-focusVisible` | `outlineOffset` | `-2px` (ring drawn inside the row) |
+| `MuiListItemButton` selected, forced colors | `borderInlineStart` | `theme.spacing(0.5)` (4px) solid `currentColor` |
+| `MuiListItemButton` selected, forced colors | `paddingInlineStart` | `theme.spacing(1.5)` (12px) |
 | `MuiTableCell` root | `borderBottomColor` | `divider` (`#D9D9D9`) |
 | `MuiTypography` variant | `color="text.secondary"` | `text.secondary` (`#666666`) |
+| `MuiFormLabel` root and asterisk `.Mui-error` | `color` | `error.dark` (`#932020`) |
+| `MuiFormHelperText` root `.Mui-error` | `color` | `error.dark` (`#932020`) |
+
+The two "selected, forced colors" rows style `.Mui-selected` inside
+`@media (forced-colors: active)`.
 
 `AppShell.tsx` passes no `color` prop to the AppBar, so the theme override
-applies without any change to the AppBar element.
+applies without any change to the AppBar element. The focus and error-text
+overrides are explained under [Contrast adjustments](#contrast-adjustments).
 
 ### Product name, metadata, logo, and favicon
 
@@ -130,7 +152,9 @@ applies without any change to the AppBar element.
 | Logo on the sign-on page | 48px tall (`theme.spacing(6)`), above the heading | `src/components/BrandLogo.tsx` |
 | Favicon | `<link rel="icon" href="/icon.svg?…" type="image/svg+xml">` | `src/app/icon.svg` |
 
-The page description, exactly as served in `<meta name="description">`:
+The page description, exactly as served in `<meta name="description">`. The
+code span's source lines are wrapped for line length; Markdown joins them with a
+single space, so the rendered text is the exact string.
 
 `Blitzy: Build enterprise software in days with our autonomous AI platform.
 Automate up to 80% of development. Infinite code context. Accelerate your roadmap by 5x.`
@@ -168,8 +192,27 @@ pseudo-element, and of every loaded CSS rule, found none of the six colors on
 
 ## Contrast adjustments
 
-**None required.** Every rendered brand pairing meets WCAG AA, so no value was
-adjusted and no darkened variant was added. The logo SVG is unaltered.
+Every brand value is unchanged, and so is `error.main`. Two adjustments were
+made; the logo SVG is unaltered.
+
+1. **Error text.** `error.main` `#d32f2f` measures 4.43:1 on the `#F2F0FE`
+   canvas, below the 4.5:1 text minimum (4.98:1 on white). Error labels,
+   required asterisks, and helper text now use `palette.error.dark` `#932020`,
+   which MUI derives from `#d32f2f`; no palette value was added or changed. It
+   measures 7.56:1 on the canvas and 8.51:1 on white. `error.main` stays on
+   non-text surfaces: error input outlines (`rgb(211, 47, 47)`), error buttons,
+   and alerts and snackbars (white on `#d32f2f`, 4.98:1).
+2. **Keyboard focus.** MUI's `ButtonBase` removes the native outline, so focus
+   showed only as low-contrast tints and ripples: 1.32:1 for a drawer link,
+   1.37:1 for the selected one, about 2.1:1 for the header buttons, and 1.8:1 for
+   the contained `SIGN ON` ripple, which also dropped its white label to 3.53:1.
+   Every `ButtonBase` control (buttons, icon buttons, nav and menu items,
+   pagination) now draws a 2px `#5B39F3` outline on keyboard focus, inset on
+   full-width nav and menu rows. Buttons and icon buttons no longer play the
+   focus ripple, so a focused `SIGN ON` keeps its resting fill and its label
+   stays 6.32:1. In forced-colors mode the outline stays (Chrome's emulation
+   forces its color to `rgba(5, 0, 73, 0.8)`, 11.30:1 on the white Canvas), and
+   the selected nav item, which loses its tint there, gets a 4px start-edge bar.
 
 Ratios measured in the running app with the WCAG 2.x relative-luminance formula:
 
@@ -183,6 +226,13 @@ Ratios measured in the running app with the WCAG 2.x relative-luminance formula:
 | Primary `#5B39F3` text | Paper `#FFFFFF` | Focused field label on `/signon` | 6.32:1 | 4.5:1 |
 | contrastText `#FFFFFF` | Primary `#5B39F3` | `SIGN ON`, `GENERATE`, and `SEARCH` buttons | 6.32:1 | 4.5:1 |
 | Focused outline `#5B39F3` | Paper `#FFFFFF` | Focused text field | 6.32:1 | 3:1 |
+| Focus ring `#5B39F3` | Paper `#FFFFFF` | Focused `SIGN ON`, header brand, and `LOGOUT` | 6.32:1 | 3:1 |
+| contrastText `#FFFFFF` | Primary `#5B39F3` | Focused `SIGN ON` label (no focus ripple) | 6.32:1 | 4.5:1 |
+| Focus ring `#5B39F3` | Focused row `rgba(0, 0, 0, 0.12)` on paper | Drawer | 4.80:1 | 3:1 |
+| Focus ring `#5B39F3` | Focused selected row `rgba(91, 57, 243, 0.2)` on paper | Drawer | 4.60:1 | 3:1 |
+| Forced-colors ring `rgba(5, 0, 73, 0.8)` | Canvas `#FFFFFF` | Drawer, Chrome forced colors | 11.30:1 | 3:1 |
+| Error text `#932020` | Paper `#FFFFFF` | Error label, asterisk, and helper text on `/signon` | 8.51:1 | 4.5:1 |
+| Error outline `#d32f2f` | Paper `#FFFFFF` | User ID field in error on `/signon` | 4.98:1 | 3:1 |
 
 Computed for states and pairings that the captured pages do not render:
 
@@ -191,22 +241,28 @@ Computed for states and pairings that the captured pages do not render:
 | contrastText `#FFFFFF` | `primary.dark` `#3F27AA` (contained-button hover) | 10.09:1 |
 | Primary `#5B39F3` | Canvas `#F2F0FE` | 5.62:1 |
 | `#333333` | Paper `#FFFFFF` | 12.63:1 |
+| Focus ring `#5B39F3` | Canvas `#F2F0FE` (focused `SEARCH`, `CLEAR`, pagination) | 5.62:1 |
+| Error text `#932020` | Canvas `#F2F0FE` | 7.56:1 |
+| `error.main` `#d32f2f`, the former error text | Canvas `#F2F0FE` | 4.43:1 |
+| contrastText `#FFFFFF` | `error.main` `#d32f2f` (error buttons, alerts, snackbars) | 4.98:1 |
 
 The divider `#D9D9D9` measures 1.41:1 on paper and 1.25:1 on the canvas. It is
 used only for decorative separators (dividers, the drawer edge, table rows, and
 the header bottom border), not for text or for boundaries needed to identify a
 control. Outlined text fields keep the MUI default border `rgba(0, 0, 0, 0.23)`
 (rendered `rgb(196, 196, 196)`, 1.74:1 on paper); this change leaves that border
-as it was. Focus indicators stay visible.
+as it was. Each focus indicator listed above is 4.60:1 or more against the
+color next to it, above the 3:1 minimum, with and without forced colors.
 
 ## Verification
 
 - `npm run type-check`, `npm run lint:ci`, and the Jest suite pass: 27 of 27
   suites and 401 of 401 tests.
 - `npm run build` succeeds, and the route list includes `/icon.svg`.
-- The tab title is `Blitzy` on every page. The only icon link points to
-  `/icon.svg` with type `image/svg+xml` and returns 200. `/favicon.ico` returns
-  404.
+- The tab title is `Blitzy` on every page except the 404 page, whose title is
+  `404: This page could not be found.`, as with Next's built-in 404 page. The
+  only icon link points to `/icon.svg` with type `image/svg+xml` and returns 200.
+  `/favicon.ico` returns 404.
 - The console shows no messages on `/signon` or `/menu`, either on first load or
   after a hard reload.
 - Every font and image request goes to the app's own origin. The only
@@ -221,6 +277,17 @@ as it was. Focus indicators stay visible.
   `1px solid rgb(217, 217, 217)` bottom border.
 - The logo renders 48px tall on `/signon` and 28px tall in the header on `/menu`
   and `/reports`.
+- Keyboard focus on `SIGN ON`, the header brand, `LOGOUT`, and the drawer items
+  computes a `2px solid rgb(91, 57, 243)` outline, offset `2px` on buttons and
+  `-2px` on drawer rows, and a focused button has no ripple element.
+- With `forced-colors: active` emulated, focused drawer items keep a 2px solid
+  outline, and the selected item has a `4px solid` start border with `12px`
+  start padding (`16px` on the other items).
+- After an empty sign-on submit, the User ID label, asterisk, and helper text
+  compute `rgb(147, 32, 32)`; the field outline stays `rgb(211, 47, 47)`.
+- Signed in, an unknown route renders the themed 404 page inside the header and
+  drawer, on the `rgb(242, 240, 254)` canvas, with the heading in Inter and no
+  inline font or background style.
 
 ## Screenshots
 

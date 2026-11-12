@@ -22,10 +22,11 @@
  *
  * TOKEN-DEFINITION EXEMPTION (AAP §0.3.4): the hex / rgba color literals, the
  * named `layout` sizing tokens (`drawerWidth`, `fullWidth`, `fullViewportHeight`)
- * AND the 1px border width in the `components` overrides below are the token
- * DEFINITIONS in this file and are explicitly permitted here. The
- * "zero hardcoded CSS values" rule applies to the component/page files that
- * CONSUME the theme (via `sx` / `theme`) — never to this theme-definition file.
+ * AND the 1px border width and the 2px focus-ring width / offsets in the
+ * `components` overrides below are the token DEFINITIONS in this file and are
+ * explicitly permitted here. The "zero hardcoded CSS values" rule applies to
+ * the component/page files that CONSUME the theme (via `sx` / `theme`) — never
+ * to this theme-definition file.
  */
 
 import { createTheme } from '@mui/material/styles';
@@ -128,8 +129,9 @@ const themeOptions: ThemeOptions = {
         // via `next/font/google` (the class is applied to <html>, defining the
         // custom property document-wide). Listing it FIRST makes MUI use the
         // same-origin, CSP-safe, offline-capable font; the system sans-serif
-        // stack after it is the fallback, so the family degrades gracefully if
-        // the variable is unset.
+        // stack follows it for font matching. `var()` has no fallback here, so
+        // the variable must stay defined: an unset one invalidates the whole
+        // declaration rather than falling back to the stack.
         fontFamily: 'var(--font-inter), system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif',
     },
     shape: {
@@ -160,6 +162,62 @@ const themeOptions: ThemeOptions = {
                 }),
             },
         },
+        // Keyboard focus ring for every ButtonBase control (buttons, nav and
+        // menu items, pagination). MUI removes the native outline and signals
+        // focus only with a low-contrast tint or ripple; a 2px primary outline
+        // is 6.32:1 on paper and 5.62:1 on the canvas, and outlines stay
+        // visible in forced-colors mode.
+        MuiButtonBase: {
+            styleOverrides: {
+                root: ({ theme }) => ({
+                    '&.Mui-focusVisible': {
+                        outline: `2px solid ${theme.palette.primary.main}`,
+                        outlineOffset: '2px',
+                    },
+                }),
+            },
+        },
+        // The focus pulsate ripple washes a contained primary label down to
+        // 3.53:1. Without it a focused button keeps its resting fill and the
+        // ring above is the focus cue; the press ripple is unchanged.
+        MuiButton: {
+            defaultProps: {
+                disableFocusRipple: true,
+            },
+        },
+        MuiIconButton: {
+            defaultProps: {
+                disableFocusRipple: true,
+            },
+        },
+        // Full-width rows sit in scrolling drawer and menu paper, which clips
+        // an outer ring, so their ring is drawn inset (as on DataTable rows).
+        // Forced-colors mode drops the selected tint, so the current nav item
+        // gets a start-edge bar there, with its padding reduced to match.
+        MuiListItemButton: {
+            styleOverrides: {
+                root: ({ theme }) => ({
+                    '&.Mui-focusVisible': {
+                        outlineOffset: '-2px',
+                    },
+                    '@media (forced-colors: active)': {
+                        '&.Mui-selected': {
+                            borderInlineStart: `${theme.spacing(0.5)} solid currentColor`,
+                            paddingInlineStart: theme.spacing(1.5),
+                        },
+                    },
+                }),
+            },
+        },
+        MuiMenuItem: {
+            styleOverrides: {
+                root: {
+                    '&.Mui-focusVisible': {
+                        outlineOffset: '-2px',
+                    },
+                },
+            },
+        },
         // MUI derives table-cell borders by lightening the divider 88%, which
         // turns the opaque brand divider into a near-invisible #FAFAFA. Pin the
         // border color to the divider token so table rows keep the brand border.
@@ -183,6 +241,33 @@ const themeOptions: ThemeOptions = {
                     }),
                 },
             ],
+        },
+        // error.main is 4.43:1 on the brand canvas, below the 4.5:1 text minimum.
+        // Error label (InputLabel included), required-asterisk and helper text
+        // use the derived error.dark (7.56:1 on canvas, 8.51:1 on paper); error
+        // outlines, buttons and alerts keep error.main.
+        MuiFormLabel: {
+            styleOverrides: {
+                root: ({ theme }) => ({
+                    '&.Mui-error': {
+                        color: theme.palette.error.dark,
+                    },
+                }),
+                asterisk: ({ theme }) => ({
+                    '&.Mui-error': {
+                        color: theme.palette.error.dark,
+                    },
+                }),
+            },
+        },
+        MuiFormHelperText: {
+            styleOverrides: {
+                root: ({ theme }) => ({
+                    '&.Mui-error': {
+                        color: theme.palette.error.dark,
+                    },
+                }),
+            },
         },
     },
 };
