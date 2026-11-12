@@ -1,31 +1,30 @@
 # Manifest of the derived baseline of ACT-COACTUPC-boundary-17: USER0001
-# fetches account 00000000001 on COACTUP, types the leap day 2024-02-29 over
-# the Open Date and presses ENTER; EDIT-DAY-MONTH-YEAR divides 2024 by 4 with
-# no remainder, so the leap-year refusal is skipped, EDIT-DATE-LE's CSUTLDTC
-# call is expected to return severity 0, and INFOMSG shows 'Changes
-# validated.Press F5 to save' [app/cbl/COACTUPC.cbl:1478-1481]
-# [app/cpy/CSUTLDPY.cpy:243-296]. Only unikix can run the scenario, so
-# expected.yaml is authored from the source and is inferred-not-observed
-# (GAP-INF-005, GAP-INF-012, GAP-INF-001). It names no execution_id or
-# execution_fingerprint and holds no datasets/. A UniKix run never promotes
-# it: the UniKix CSUTLDPY and CSUTLDTC differ from app/ (GAP-DOC-024,
-# GAP-DOC-021), so its record is UniKix-copy behavior and this baseline stays
-# derived until an app/ build is observed (GAP-MIS-008).
+# fetches account 00000000001 on COACTUP and changes its Open Date to
+# 2023-02-29, 29 February of a common year, which COACTUPC refuses with 'Open
+# Date:Not a leap year.Cannot have 29 days in this month.' from the CSUTLDPY
+# leap-year edit it copies [app/cpy/CSUTLDPY.cpy:243-272]
+# [app/cbl/COACTUPC.cbl:1478-1482]; no record is rewritten. Only unikix can
+# run the scenario, so expected.yaml is authored from the source and is
+# inferred-not-observed (GAP-INF-005, GAP-INF-012). It names no execution_id
+# or execution_fingerprint and holds no datasets/ until report.py
+# --import-unikix promotes an eligible UniKix run. The UniKix CSUTLDPY drops
+# the TRIM of the field name (GAP-DOC-024), so a UniKix record of this
+# scenario is UniKix-copy behavior and leaves this baseline derived until an
+# app/ build is observed (GAP-MIS-008).
 #
-# source_identity.units are the app/ units the four steps execute, each
-# program as harness.results computes it for a program run (its COPY closure
-# and the app/cbl units it CALLs), plus the BMS sources and symbolic
-# copybooks of the maps shown. harness.results.source_identity itself yields
-# no units for a steps-only scenario, so the set is built per program, as in
-# the other COACTUPC baselines. COSGN00C signs USER0001 on and XCTLs to
-# COMEN01C [app/cbl/COSGN00C.cbl:221-240]; COMEN01C, whose COMEN01 screen is
-# asserted, XCTLs option 2 to COACTUPC [app/cbl/COMEN01C.cbl:115-156]
-# [app/cpy/COMEN02Y.cpy:31-35]; COACTUPC runs every field edit
-# [app/cbl/COACTUPC.cbl:1460-1676]. CSUTLDTC is listed because it runs: the
-# Open Date and the later Expiry and Reissue Dates and Date of Birth reach its
-# CALL in EDIT-DATE-LE [app/cpy/CSUTLDPY.cpy:284-296]. DFHAID and DFHBMSCA are
-# CICS-supplied, not app/ sources. source_commit is HEAD at authoring; app/ is
-# byte-identical to the suite's starting commit.
+# source_identity.units are every app/ unit the four steps execute, each
+# program with its COPY closure and CALL targets as harness.results computes
+# them for a program, plus the BMS source of each map shown: COSGN00C signs
+# USER0001 on and XCTLs to COMEN01C [app/cbl/COSGN00C.cbl:221-237]; COMEN01C,
+# whose COMEN01 screen is asserted, XCTLs option 2 to COACTUPC
+# [app/cbl/COMEN01C.cbl:115-156]; COACTUPC fetches and edits the account.
+# CSUTLDTC is listed although the refused Open Date leaves EDIT-DATE-CCYYMMDD
+# before EDIT-DATE-LE: the valid Expiry Date, Reissue Date and Date of Birth
+# edited after it reach its CALL [app/cbl/COACTUPC.cbl:1490-1545]
+# [app/cpy/CSUTLDPY.cpy:266-296]. DFHAID and DFHBMSCA are CICS-supplied and
+# not in the repository. source_commit is HEAD at authoring; app/ is
+# byte-identical to the suite's starting commit
+# 93ebec71ff7b59a68cedd7c501afe496a8eaa68d.
 baseline_version: 1.0.0
 capture_date: '2026-11-11'
 capture_platform: derived

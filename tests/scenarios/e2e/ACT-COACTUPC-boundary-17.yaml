@@ -1,130 +1,105 @@
-# COACTUPC Open Date leap-year boundary, accepted side: 29 February of the leap
-# year 2024 passes the 'no 29th of February outside a leap year' check, so the
-# next prompt, 'Changes validated.Press F5 to save', appears instead of the
-# field's message. The February edges of the shared date edit are
-# ACT-COACTUPC-boundary-15 (2023-02-28), -16 (2023-02-29), this scenario
-# (2024-02-29) and -18 (2023-02-30); ACT-COACTUPC-negative-023 is the item's
-# own refused case (2021-02-29).
+# Boundary of the leap-year check in the shared date edit: 29 February of a
+# common year. COACTUPC refuses an account Open Date of 2023-02-29 with
+# 'Open Date:Not a leap year.Cannot have 29 days in this month.' and writes
+# nothing. Open Date carries the February boundaries for all four date fields,
+# which share EDIT-DATE-CCYYMMDD: 2023-02-28 (boundary-16), 2023-02-29 (this
+# scenario), 2024-02-29 (boundary-18) and 2023-02-30 (boundary-15).
 #
-# Steps 1-3 reach the fetched account as ACT-COACTUPC-alternate-04 does:
-# USER0001 signs on through CC00 and COSGN00C routes the type 'U' user to
-# COMEN01; option '2' makes COMEN01C XCTL to COACTUPC, which sends COACTUP with
-# the search-key prompt; ENTER with account 00000000001 reads CXACAIX (card
-# 9680294154603697, customer 000000001, line 49 of
-# app/data/ASCII/cardxref.txt), ACCTDAT and CUSTDAT, shows them with 'Update
-# account details presented above.' and turns every editable field's MDT on,
-# so all of them come back on the next AID [app/cbl/COSGN00C.cbl:221-237]
-# [app/cbl/COMEN01C.cbl:115-156] [app/cbl/COACTUPC.cbl:964-973,2568-2580,
-# 2787-2865,2955-3000,3441-3562,3608-3884].
-# Step 4 types 2024, 02 and 29 over the open date 2014-11-20 and presses ENTER.
-# - 1100-RECEIVE-MAP moves them to ACUP-NEW-OPEN-DATE, 1205-COMPARE-OLD-NEW
-#   finds the change, and 1200-EDIT-MAP-INPUTS sets ACUP-CHANGES-NOT-OK and runs
-#   the field edits in screen order [app/cbl/COACTUPC.cbl:1142-1163,1460-1470,
-#   1681-1704]. Account Status 'Y' passes 1220-EDIT-YESNO; 'Open Date' is moved
-#   as '20240229' and EDIT-DATE-CCYYMMDD runs through its exit
-#   [app/cbl/COACTUPC.cbl:1472-1482].
-# - EDIT-YEAR-CCYY: 2024 is supplied, numeric and of century 20; EDIT-MONTH: 02
-#   is supplied, 1-12 and TEST-NUMVAL 0; EDIT-DAY: 29 is supplied, numeric and
-#   1-31 [app/cpy/CSUTLDPY.cpy:25-207] [app/cpy/CSUTLDWY.cpy:4-34].
-# - EDIT-DAY-MONTH-YEAR: February is not a 31-day month and the day is not 30.
-#   With February and day 29, WS-EDIT-DATE-YY-N is 24, not 00, so the divisor
-#   is 4; 2024 / 4 leaves remainder 0, so the leap-year refusal is skipped. All
-#   three date flags are valid, so control falls through to EDIT-DATE-LE
-#   [app/cpy/CSUTLDPY.cpy:209-279].
-# - EDIT-DATE-LE calls CSUTLDTC with mask YYYYMMDD; severity 0, as expected for
-#   a real leap day, composes no ' validation error Sev code' message and sets
-#   WS-EDIT-DATE-IS-VALID [app/cpy/CSUTLDPY.cpy:284-330]
-#   [app/cbl/CSUTLDTC.cbl:83-117].
-# - Every later edit passes on the invented customer below (as in
-#   ACT-COACTUPC-alternate-04), so INPUT-ERROR stays off and
-#   ACUP-CHANGES-OK-NOT-CONFIRMED is set [app/cbl/COACTUPC.cbl:1484-1676].
-#   Without PF5, 2000-DECIDE-ACTION does not run 9600-WRITE-PROCESSING, the only
-#   READ UPDATE and REWRITE path [app/cbl/COACTUPC.cbl:2602-2621].
-# - 3203-SHOW-UPDATED-VALUES shows the received values, the open date as typed
-#   and the amounts re-edited through +ZZZ,ZZZ,ZZZ.99; 3250-SETUP-INFOMSG sets
-#   PROMPT-FOR-CONFIRMATION in INFOMSG and the blank WS-RETURN-MSG in ERRMSG;
-#   3300 leaves every field protected; 3390 makes F5=Save and F12=Cancel bright
-#   [app/cbl/COACTUPC.cbl:472-473,2870-2951,2955-2983,3001-3003,3566-3584]
-#   [app/bms/COACTUP.bms:498-507].
+# Step 1: USER0001 signs on through CC00; COSGN00C routes the type 'U' user to
+# the main menu COMEN01 [app/cbl/COSGN00C.cbl:221-237].
+# Step 2: option '2' (Account Update) makes COMEN01C XCTL to COACTUPC, which
+# takes its fresh-entry path and sends COACTUP with the search-key prompt
+# [app/cbl/COMEN01C.cbl:115-156] [app/cbl/COACTUPC.cbl:964-973,2955-2961].
+# Step 3: ENTER with account 00000000001. 9000-READ-ACCT reads CXACAIX (card
+# 9680294154603697, customer 000000001), ACCTDAT and CUSTDAT, keeps the values
+# in ACUP-OLD-DETAILS and sets ACUP-SHOW-DETAILS; 3202-SHOW-ORIGINAL-VALUES
+# fills the map and 3320-UNPROTECT-FEW-ATTRS turns every input field's MDT on
+# [app/cbl/COACTUPC.cbl:2568-2580,2787-2865,3441-3562,3608-3884].
+# Step 4: ENTER with OPNYEAR 2023, OPNMON 02 and OPNDAY 29 typed over
+# 2014-11-20; every other field comes back as sent. 1205-COMPARE-OLD-NEW finds
+# the new open date, so 1200-EDIT-MAP-INPUTS sets ACUP-CHANGES-NOT-OK and runs
+# the field edits in screen order: Account Status 'Y' passes 1220-EDIT-YESNO,
+# then 'Open Date' goes through EDIT-DATE-CCYYMMDD THRU
+# EDIT-DATE-CCYYMMDD-EXIT [app/cbl/COACTUPC.cbl:1452-1482,1681-1775].
+# - EDIT-YEAR-CCYY: 2023 is supplied, numeric and of century 20; EDIT-MONTH: 02
+#   is 1-12 and numeric; EDIT-DAY: 29 is numeric and 1-31, so no earlier
+#   predicate fires [app/cpy/CSUTLDPY.cpy:25-207] [app/cpy/CSUTLDWY.cpy:4-34].
+# - EDIT-DAY-MONTH-YEAR: February is not a 31-day month and the day is not 30,
+#   so the leap-year check decides. The year's last two digits, 23, are not 00,
+#   so the divisor is 4; 2023 / 4 is 505 remainder 3, so INPUT-ERROR and the
+#   day, month and year flags are set, the message is composed into the cleared
+#   WS-RETURN-MSG and control goes to EDIT-DATE-CCYYMMDD-EXIT before
+#   EDIT-DATE-LE, so CSUTLDTC is not called for this date
+#   [app/cpy/CSUTLDPY.cpy:209-272].
+# Every later edit writes WS-RETURN-MSG only while WS-RETURN-MSG-OFF holds, so
+# this first message stands, and INPUT-ERROR keeps ACUP-CHANGES-OK-NOT-CONFIRMED
+# unset [app/cbl/COACTUPC.cbl:1484-1676]. 2000-DECIDE-ACTION continues on
+# ACUP-CHANGES-NOT-OK: no READ UPDATE or REWRITE runs [app/cbl/COACTUPC.cbl:
+# 2596-2597]. 3203-SHOW-UPDATED-VALUES echoes the received values (the valid
+# amounts edited again as +ZZZ,ZZZ,ZZZ.99), 3250-SETUP-INFOMSG sets
+# PROMPT-FOR-CHANGES, and 3390-SETUP-INFOMSG-ATTRS brightens F12=Cancel because
+# ACUP-CHANGES-MADE holds, while F5=Save stays dark [app/cbl/COACTUPC.cbl:
+# 2718-2720,2870-2981,3566-3581].
 #
-# Expected values are derived from the source (no TPE region runs in CI):
-# - INFOMSG is the 40-byte WS-INFO-MSG in the 45-byte field; ERRMSG is the blank
-#   75-byte WS-RETURN-MSG in the 78-byte field, so neither the leap-year message
-#   nor the CSUTLDTC severity message appears. Fields are compared at their full
-#   BMS length, trailing spaces kept.
-# - FKEY05 and FKEY12 keep their INITIAL text; a dark (ASKIP,DRK) field is
-#   captured as blanks, as on screen 3.
-# - The tpe adapter enters a field with EraseEOF before typing; the open-date
-#   fields are 4, 2 and 2 bytes, so the values fill them.
-# - CURDATE and CURTIME come from the region clock, hence the matchers and
-#   clock_mode relative.
-# - The acceptance rests on CSUTLDTC returning severity 0, which is known only
-#   through the CEEDAYS stub (GAP-INF-001); whether UniKix supplies CEEDAYS is
-#   open (GAP-MIS-010). A unikix run executes the UniKix copy, whose CSUTLDTC
-#   and CSUTLDPY differ (GAP-DOC-021, GAP-DOC-024), so its record is kept as
-#   UniKix-copy behaviour and does not verify the app/ items.
-#
-# Customer 000000001 is replaced by invented data that passes every COACTUPC
-# edit, so the open date is the only field the scenario exercises: the
-# repository record has FICO 274, below 300, and zip 12546, which is not a
-# North Carolina zip [app/cbl/COACTUPC.cbl:2514-2558]. Account 00000000001 and
-# its cross-reference stay as in the repository.
+# Expected values are derived from the source; no TPE region runs in CI.
+# - ERRMSG is TRIM('Open Date') and ':Not a leap year.Cannot have 29 days in
+#   this month.', 60 characters, in the 75-byte WS-RETURN-MSG and the 78-byte
+#   field; INFOMSG is the 40-byte WS-INFO-MSG in the 45-byte field. Every text
+#   value is the whole field at its BMS length, trailing spaces kept.
+# - CSSETATY makes the three open-date fields red; colour is not captured, and
+#   no '*' is shown because none of them is blank [app/cpy/CSSETATY.cpy:18-27].
+# - AADDGRP shows ACCT-GROUP-ID, blank in every repository account (GAP-DEF-005):
+#   the blank received field becomes LOW-VALUES, shown as spaces
+#   [app/cbl/COACTUPC.cbl:1213-1218,2921].
+# - The header is the COTTL01Y titles, CAUP, COACTUPC and CURDATE mm/dd/yy and
+#   CURTIME hh:mm:ss of the run clock through CSDAT01Y, hence the matchers and
+#   clock_mode relative [app/cbl/COACTUPC.cbl:2668-2692].
 id: ACT-COACTUPC-boundary-17
 level: e2e
 type: boundary
 description: >-
-  USER0001 signs on, chooses main-menu option 2 (Account Update), fetches
-  account 00000000001, whose open date is 2014-11-20, changes it to the leap
-  day 2024-02-29 and presses ENTER. 2024 is a leap year, so the 29th of
-  February passes the leap-year check, and CSUTLDTC, called with mask
-  YYYYMMDD, is expected to return severity 0. COACTUPC shows the changed
-  values, protected, with 'Changes validated.Press F5 to save', no date
-  message, and the F5=Save and F12=Cancel keys made visible. Nothing is saved
-  before PF5: ACCTDATA and CUSTDATA still hold the fetched records.
-# Primary item first, then the CSUTLDTC date acceptance this outcome rests on,
-# the program, the maps asserted, the transaction of steps 3 and 4, the CSD
-# files COACTUPC reads, and the online-only copybooks it copies. Sign-on (CC00,
-# COSGN00, USRSEC) and the menu transaction are verified by the SEC and MNU
-# scenarios; the batch record copybooks and the data files are verified at the
-# lowest level that executes them.
+  USER0001 signs on, chooses main menu option 2 'Account Update', fetches
+  account 00000000001 and changes its open date to 2023-02-29, the day after
+  the last day of February in a common year. 2023 is not a leap year, so
+  COACTUPC refuses the date with 'Open Date:Not a leap year.Cannot have 29
+  days in this month.', shows the entered values again with 'Update account
+  details presented above.', and leaves the account and customer records
+  unchanged.
+# Primary item first, then the program, the maps the steps land on, the
+# transaction the fetch and the edit run under, the CSD files the fetch reads
+# and the online-only copybooks COACTUPC copies. The sign-on and menu items are
+# verified by the SEC and MNU scenarios; the batch record copybooks and the
+# data files by the lowest level that executes them.
 inventory_ids:
 - INV-ACT-081  # COACTUPC Open Date: no 29th of February outside a leap year (rule)
-- INV-UTL-003  # CSUTLDTC date acceptance for masks YYYY-MM-DD and YYYYMMDD
 - INV-ACT-002  # COACTUPC program
-- INV-MNU-003  # COMEN01 map, where option 2 is entered
-- INV-ACT-004  # COACTUP map, the search, detail and confirmation screens
-- INV-CFG-009  # CAUP transaction, which runs the fetch and the field edits
-- INV-CFG-006  # CXACAIX CSD file: card cross-reference by account id
-- INV-CFG-001  # ACCTDAT CSD file: account master read and left unchanged
-- INV-CFG-005  # CUSTDAT CSD file: customer master read and left unchanged
-- INV-LAY-002  # COCOM01Y: the COMMAREA carrying the context and ids
-- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
-- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
-- INV-LAY-007  # CSLKPCDY: the area-code and state/zip lookups the later edits pass
-- INV-LAY-008  # CSMSG01Y, copied by COACTUPC
-- INV-LAY-009  # CSMSG02Y: abend data, copied by COACTUPC
-- INV-LAY-010  # CSSETATY: the per-field error attributes, none set here
-- INV-LAY-011  # CSSTRPFY: the AID mapping that selects the ENTER path
-- INV-LAY-013  # CSUTLDPY: EDIT-DATE-CCYYMMDD, its leap-year check and the CSUTLDTC call
-- INV-LAY-014  # CSUTLDWY: WS-EDIT-DATE-CCYYMMDD, its 88-levels and the CSUTLDTC result
-- INV-LAY-019  # CVCRD01Y: CC-ACCT-ID and the AID flags
+- INV-MNU-003  # COMEN01 map, the main menu option 2 is entered on
+- INV-ACT-004  # COACTUP map, the account update screen of steps 2-4
+- INV-CFG-009  # CAUP transaction, under which the fetch and the refused edit run
+- INV-CFG-006  # CXACAIX CSD file, the account-to-card path the fetch reads
+- INV-CFG-001  # ACCTDAT CSD file, read by the fetch and left unchanged
+- INV-CFG-005  # CUSTDAT CSD file, read by the fetch and left unchanged
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carrying the fetched values
+- INV-LAY-005  # COTTL01Y copybook, TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y copybook, CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y copybook, copied by COACTUPC
+- INV-LAY-007  # CSLKPCDY copybook, the edit lookups compiled into COACTUPC
+- INV-LAY-009  # CSMSG02Y copybook, the abend variables
+- INV-LAY-010  # CSSETATY copybook, the error attributes of the open-date fields
+- INV-LAY-011  # CSSTRPFY copybook, the AID mapping that turns ENTER into CCARD-AID-ENTER
+- INV-LAY-013  # CSUTLDPY copybook, EDIT-DATE-CCYYMMDD and its leap-year check
+- INV-LAY-014  # CSUTLDWY copybook, WS-EDIT-DATE-CCYYMMDD and its 88-levels
+- INV-LAY-019  # CVCRD01Y copybook, CC-ACCT-ID and the AID flags
 tags:
 - inferred-not-observed
 gap_ids:
 - GAP-INF-005  # ACT end-to-end baselines derived from the source, never observed
 - GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
-# Which dates CEEDAYS accepts is known only through the stub, and whether
-# UniKix supplies CEEDAYS at all is unknown.
-- GAP-INF-001
-- GAP-MIS-010
-# The UniKix CSUTLDPY changes the date edits this scenario runs, so a unikix run
-# observes the copy's behaviour of them.
+# The UniKix CSUTLDPY drops TRIM from the field name, so its message starts with
+# the 25-byte name and is cut at 75 characters; a unikix run observes the copy.
 - GAP-DOC-024
-# The UniKix copy also changes code this scenario passes through: CSUTLDTC's
-# Vstring lengths (021), COACTUPC's amount edits and change detection (022) and
-# COACTUP's row 1, where TRNNAME stands (025).
-- GAP-DOC-021
-- GAP-DOC-022
+# The UniKix COACTUP.bms lacks the unnamed field at row 1, columns 1-9, of the
+# map this scenario asserts.
 - GAP-DOC-025
 preconditions:
   datasets:
@@ -135,8 +110,8 @@ preconditions:
     # Record 49 maps account 00000000001 to card 9680294154603697 and customer
     # 000000001; CXACAIX is its alternate-index path.
     CARDXREF: {base: CARDXREF}
-    # Customer 000000001 replaced by invented data, as in the other COACTUPC
-    # scenarios; the 168-byte FILLER keeps the repository record's spaces.
+    # Customer 000000001 replaced by invented values that pass every edit, so
+    # the open date is the only field in error and every screen value is known.
     CUSTDATA:
       base: CUSTDATA
       records:
@@ -175,11 +150,10 @@ inputs:
     fields: {ACCTSID: '00000000001'}
     '@map': COACTUP
   - aid: ENTER
-    fields: {OPNYEAR: '2024', OPNMON: '02', OPNDAY: '29'}
+    fields: {OPNYEAR: '2023', OPNMON: '02', OPNDAY: '29'}
     '@map': COACTUP
 expected:
   screens:
-  # One entry per step, each the screen the step ends on.
   - '@map': COMEN01
     TRNNAME: CM00
     PGMNAME: COMEN01C
@@ -191,7 +165,7 @@ expected:
     ACCTSID: '           '
     INFOMSG: 'Enter or update id of account to update      '
     ERRMSG: '                                                                              '
-  # The fetched account and customer, editable, with the change prompt.
+  # The fetched values, offered for change.
   - '@map': COACTUP
     TRNNAME: CAUP
     TITLE01: '      AWS Mainframe Modernization       '
@@ -247,9 +221,7 @@ expected:
     FKEYS: 'ENTER=Process F3=Exit'
     FKEY05: '       '
     FKEY12: '          '
-  # The accepted leap day: the received values, protected, the open date as
-  # typed, the confirmation prompt (the next prompt in place of the field's
-  # message) with a blank ERRMSG, and the save and cancel keys shown.
+  # The values received, echoed with the refused open date and the message.
   - '@map': COACTUP
     TRNNAME: CAUP
     TITLE01: '      AWS Mainframe Modernization       '
@@ -259,7 +231,7 @@ expected:
     CURTIME: {match: run-time}
     ACCTSID: '00000000001'
     ACSTTUS: 'Y'
-    OPNYEAR: '2024'
+    OPNYEAR: '2023'
     OPNMON: '02'
     OPNDAY: '29'
     ACRDLIM: '+      2,020.00'
@@ -300,21 +272,21 @@ expected:
     ACSPH2C: '0102'
     ACSEFTC: '0053581756'
     ACSPFLG: 'Y'
-    INFOMSG: 'Changes validated.Press F5 to save           '
-    ERRMSG: '                                                                              '
+    INFOMSG: 'Update account details presented above.      '
+    ERRMSG: 'Open Date:Not a leap year.Cannot have 29 days in this month.                  '
     FKEYS: 'ENTER=Process F3=Exit'
-    FKEY05: 'F5=Save'
-    FKEY12: 'F12=Cancel'
-  # One ERRMSG value per step, all blank: no date message after the leap day.
+    FKEY05: '       '
+    FKEY12: F12=Cancel
+  # One ERRMSG value per step: blank on the menu, the fresh and the fetched
+  # update screens, the leap-year message after the refused edit.
   messages:
   - '                                                                              '
   - '                                                                              '
   - '                                                                              '
-  - '                                                                              '
-  # No PF5 yet, so neither master record is rewritten: both files keep their
-  # 50 records, account 00000000001 keeps open date 2014-11-20 and customer
-  # 000000001 the invented values.
+  - 'Open Date:Not a leap year.Cannot have 29 days in this month.                  '
   file_state:
+    # Nothing is rewritten: account 00000000001 keeps its open date and customer
+    # 000000001 the values loaded, and each dataset keeps its 50 records.
     ACCTDATA:
       count: 50
       contains:

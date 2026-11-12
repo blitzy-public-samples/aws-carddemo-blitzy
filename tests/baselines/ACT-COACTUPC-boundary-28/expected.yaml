@@ -1,34 +1,3 @@
-# Derived baseline of scenario ACT-COACTUPC-boundary-28 (capture_platform:
-# derived), authored from the app/ source and never observed: no TPE region
-# runs in CI. Open until a UniKix run of the app/ build is imported:
-# GAP-INF-005 (derived ACT end-to-end baselines) and GAP-INF-012 (online-only
-# copybooks such as CSSETATY).
-# Steps 1-3: USER0001 signs on, option 2 XCTLs to COACTUPC, and ENTER with
-# account 00000000001 shows the fetched account and customer with the change
-# prompt [app/cbl/COACTUPC.cbl:2787-2865,2955-2981].
-# Step 4: 900 over ACTSSN1 is a change, so 1200-EDIT-MAP-INPUTS sets
-# ACUP-CHANGES-NOT-OK and edits the fields in order; every field before SSN
-# passes, then 1265-EDIT-US-SSN finds '900' supplied, numeric and not zero,
-# and 900, the lowest value of the 900 THRU 999 range, satisfies
-# INVALID-SSN-PART1 (VALUES 0, 666, 900 THRU 999), so the routine sets
-# INPUT-ERROR and, the message being still off, composes
-# TRIM('SSN: First 3 chars') ': should not be 000, 666, or between 900 and
-# 999' (66 characters) into WS-RETURN-MSG; no later edit can replace it
-# [app/cbl/COACTUPC.cbl:117-123,1460-1531,2431-2464].
-# 2000-DECIDE-ACTION continues, so nothing is rewritten; 3203 shows ACTSSN1 as
-# typed, 3250 sets PROMPT-FOR-CHANGES and moves the message to ERRMSG, and 3390
-# brightens FKEY12 because a change was made [app/cbl/COACTUPC.cbl:2596-2597,
-# 2870-2952,2955-2983,3566-3581].
-# The refused screen therefore differs from ACT-COACTUPC-boundary-26 (666) and
-# ACT-COACTUPC-negative-064 (950) only in ACTSSN1, while 899, one below the
-# range, is accepted (ACT-COACTUPC-boundary-27).
-# This pins the app/ text: the UniKix COACTUPC drops TRIM, so its copy would
-# show 'SSN: First 3 chars' padded to 25 bytes before the colon (GAP-DOC-022);
-# such a record is UniKix-copy behavior and never replaces this file.
-# Screen values are full BMS width with trailing spaces kept (ERRMSG 78,
-# INFOMSG 45), because screens compare exactly. CURDATE and CURTIME come from
-# the region clock, so they are matchers. file_state holds the records as the
-# preconditions materialize them, decoded through CVACT01Y and CVCUS01Y.
 file_state:
   ACCTDATA:
     contains:
@@ -159,11 +128,11 @@ screens:
   ACSPH2B: '555'
   ACSPH2C: '0102'
   ACSSTTE: NC
-  ACSTFCO: '700'
+  ACSTFCO: '851'
   ACSTNUM: '000000001'
   ACSTTUS: Y
   ACSZIPC: '27601'
-  ACTSSN1: '900'
+  ACTSSN1: '123'
   ACTSSN2: '45'
   ACTSSN3: '6789'
   ACURBAL: +        194.00
@@ -175,7 +144,7 @@ screens:
   DOBDAY: 08
   DOBMON: '06'
   DOBYEAR: '1961'
-  ERRMSG: 'SSN: First 3 chars: should not be 000, 666, or between 900 and 999            '
+  ERRMSG: 'FICO Score: should be between 300 and 850                                     '
   EXPDAY: '20'
   EXPMON: '05'
   EXPYEAR: '2025'

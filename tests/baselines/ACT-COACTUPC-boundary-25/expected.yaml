@@ -2,30 +2,32 @@
 # derived), authored from the app/ source and never observed: no TPE region
 # runs in CI. Open until a UniKix run of the app/ build is imported:
 # GAP-INF-005 (derived ACT end-to-end baselines) and GAP-INF-012 (online-only
-# copybooks such as CSUTLDPY and CSLKPCDY).
+# copybooks such as CSUTLDPY, CSUTLDWY and CSSETATY).
 # Steps 1-3: USER0001 signs on, option 2 XCTLs to COACTUPC, and ENTER with
 # account 00000000001 shows the fetched account and customer with the change
 # prompt [app/cbl/COACTUPC.cbl:2787-2865,2955-2981].
-# Step 4: 665 over ACTSSN1 is a change, so 1200-EDIT-MAP-INPUTS sets
-# ACUP-CHANGES-NOT-OK and edits every field; 1265-EDIT-US-SSN finds '665'
-# supplied, numeric and not zero, and it is none of INVALID-SSN-PART1 (VALUES
-# 0, 666, 900 THRU 999), so no SSN message is composed; every other field
-# passes on the invented customer, so ACUP-CHANGES-OK-NOT-CONFIRMED is set
-# [app/cbl/COACTUPC.cbl:117-123,1460-1676,2431-2489].
-# ENTER is not PF5, so 2000-DECIDE-ACTION continues without 9600-WRITE-
-# PROCESSING and nothing is rewritten; 3203 shows the received values, 3250
-# moves 'Changes validated.Press F5 to save' to INFOMSG and the blank
-# WS-RETURN-MSG to ERRMSG, and 3390 brightens F5=Save and F12=Cancel, which
-# are dark, and so captured as blanks, on the fetched screen
-# [app/cbl/COACTUPC.cbl:2602-2621,2870-2945,2955-2983,3566-3584].
-# This pins app/ behaviour: the UniKix COACTUPC changes the edits and the
-# change detection on this path (GAP-DOC-022), and its CSUTLDTC and CSUTLDPY
-# the date edits it passes (GAP-DOC-021, GAP-DOC-024); such a record is
-# UniKix-copy behaviour and never replaces this file.
+# Step 4: 299 over ACSTFCO (old score 700) is a change, so
+# 1200-EDIT-MAP-INPUTS sets ACUP-CHANGES-NOT-OK and edits the fields in order;
+# every edit before the FICO Score passes on the repository account and the
+# invented customer. 1245-EDIT-NUM-REQD finds 299 supplied, numeric and not
+# zero, so 1275-EDIT-FICO-SCORE runs. 299 is one below the lower edge of
+# FICO-RANGE-IS-VALID (300 THROUGH 850), so it fails and, the message being
+# still off, composes TRIM('FICO Score') ': should be between 300 and 850'
+# (41 characters) into WS-RETURN-MSG; the later edits pass and cannot replace
+# it [app/cbl/COACTUPC.cbl:845-849,876,1460-1556,2109-2176,2514-2531].
+# 2000-DECIDE-ACTION continues, so nothing is rewritten; 3203 shows ACSTFCO as
+# typed, 3250 sets PROMPT-FOR-CHANGES and moves the message to ERRMSG, and 3390
+# brightens FKEY12 because a change was made while FKEY05 stays dark
+# [app/cbl/COACTUPC.cbl:2596-2597,2870-2952,2955-2981,3566-3581].
+# This pins the app/ text: the UniKix COACTUPC drops TRIM, so its copy would
+# show 'FICO Score' padded to 25 bytes before the suffix (GAP-DOC-022); such a
+# record is UniKix-copy behavior and never replaces this file.
 # Screen values are full BMS width with trailing spaces kept (ERRMSG 78,
-# INFOMSG 45), because screens compare exactly. CURDATE and CURTIME come from
-# the region clock, so they are matchers. file_state holds the records as the
-# preconditions materialize them, decoded through CVACT01Y and CVCUS01Y.
+# INFOMSG 45, ACSTFCO 3, FKEYS 21, FKEY05 7, FKEY12 10) [app/bms/COACTUP.bms:
+# 318-321,480-507], because screens compare exactly. CURDATE and CURTIME come
+# from the region clock, so they are matchers. file_state holds the records as
+# the preconditions materialize them, decoded through CVACT01Y and CVCUS01Y,
+# unchanged because no REWRITE runs.
 file_state:
   ACCTDATA:
     contains:
@@ -156,11 +158,11 @@ screens:
   ACSPH2B: '555'
   ACSPH2C: '0102'
   ACSSTTE: NC
-  ACSTFCO: '700'
+  ACSTFCO: '299'
   ACSTNUM: '000000001'
   ACSTTUS: Y
   ACSZIPC: '27601'
-  ACTSSN1: '665'
+  ACTSSN1: '123'
   ACTSSN2: '45'
   ACTSSN3: '6789'
   ACURBAL: +        194.00
@@ -172,14 +174,14 @@ screens:
   DOBDAY: 08
   DOBMON: '06'
   DOBYEAR: '1961'
-  ERRMSG: '                                                                              '
+  ERRMSG: 'FICO Score: should be between 300 and 850                                     '
   EXPDAY: '20'
   EXPMON: '05'
   EXPYEAR: '2025'
-  FKEY05: F5=Save
+  FKEY05: '       '
   FKEY12: F12=Cancel
   FKEYS: ENTER=Process F3=Exit
-  INFOMSG: 'Changes validated.Press F5 to save           '
+  INFOMSG: 'Update account details presented above.      '
   OPNDAY: '20'
   OPNMON: '11'
   OPNYEAR: '2014'

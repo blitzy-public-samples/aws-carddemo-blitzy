@@ -1,132 +1,108 @@
-# Boundary case of the COACTUPC FICO Score range edit: 851, one above the
-# upper edge, is refused. 1245-EDIT-NUM-REQD accepts the field, then
-# 1275-EDIT-FICO-SCORE finds FICO-RANGE-IS-VALID, VALUES 300 THROUGH 850,
-# false and composes 'FICO Score: should be between 300 and 850'
-# [app/cbl/COACTUPC.cbl:845-849,1545-1556,2514-2531]. The other edges are
-# the sibling boundary cases: 299 refused, 300 and 850 accepted.
+# COACTUPC refuses the Open Date year 2100, the first year of century 21.
 #
-# Steps 1-3 reach the fetched account as ACT-COACTUPC-negative-088 does:
-# USER0001 signs on through CC00, chooses option 2 (Account Update) on COMEN01,
-# and enters account 00000000001. 9000-READ-ACCT reads CXACAIX by account id
-# (card 9680294154603697, customer 000000001, line 49 of
-# app/data/ASCII/cardxref.txt), ACCTDAT and CUSTDAT, keeps the records as the
-# old values in the COMMAREA and sets ACUP-SHOW-DETAILS; the screen shows them
-# with 'Update account details presented above.', every editable field
-# unprotected with its MDT on [app/cbl/COACTUPC.cbl:2568-2580,2787-2865,
-# 2955-3000,3441-3561,3608-3884].
-# Step 4 types 851 over the FICO Score (ACSTFCO, shown as 700) and presses
-# ENTER.
-# - 1100-RECEIVE-MAP moves the received '851' to the 3-byte
-#   ACUP-NEW-CUST-FICO-SCORE-X, which ACUP-NEW-CUST-FICO-SCORE redefines as
-#   PIC 9(03) [app/cbl/COACTUPC.cbl:845-849,1279-1284]. 1205-COMPARE-OLD-NEW
-#   finds it unequal to the old score 700, so a change has occurred, and
-#   1200-EDIT-MAP-INPUTS sets ACUP-CHANGES-NOT-OK and runs the field edits in
-#   screen order [app/cbl/COACTUPC.cbl:1460-1470,1764-1768].
-# - Account Status, Open Date, Credit Limit, Expiry Date, Cash Credit Limit,
-#   Reissue Date, the current balance and cycle amounts, SSN and Date of Birth
-#   pass on the repository account and the invented customer. 'FICO Score' is
-#   moved to WS-EDIT-VARIABLE-NAME and the score to WS-EDIT-ALPHANUM-ONLY with
-#   length 3; 1245-EDIT-NUM-REQD finds '851' supplied, all numeric and, as
-#   FUNCTION NUMVAL gives 851, not zero, and sets FLG-ALPHNANUM-ISVALID, so
-#   1275-EDIT-FICO-SCORE runs [app/cbl/COACTUPC.cbl:1472-1556,2109-2176].
-#   851 lies one past the THROUGH 850 bound of FICO-RANGE-IS-VALID, so it sets
-#   INPUT-ERROR and FLG-FICO-SCORE-NOT-OK and, WS-RETURN-MSG being still blank
-#   [app/cbl/COACTUPC.cbl:876], STRINGs the trimmed field name and ': should
-#   be between 300 and 850' into WS-RETURN-MSG [app/cbl/COACTUPC.cbl:
-#   2514-2531].
-# - The name, address, zip, phone, EFT and primary-holder edits and the
-#   state/zip cross edit pass on the invented customer; they only set their
-#   flags, since WS-RETURN-MSG is no longer blank [app/cbl/COACTUPC.cbl:
-#   1557-1676]. INPUT-ERROR keeps ACUP-CHANGES-NOT-OK, and 2000-DECIDE-ACTION
-#   continues on it, so 9600-WRITE-PROCESSING, the only READ UPDATE and
-#   REWRITE path, does not run [app/cbl/COACTUPC.cbl:2596-2597].
-# - 3203-SHOW-UPDATED-VALUES shows the received values, the valid amounts
-#   re-edited through +ZZZ,ZZZ,ZZZ.99 and the FICO Score as received; 3250 sets
-#   PROMPT-FOR-CHANGES and moves the message to ERRMSG; 3300 keeps the fields
-#   editable, puts the cursor on ACSTFCO and marks it red through CSSETATY
-#   without the '*' of a blank field; 3390 makes F12=Cancel bright because
-#   changes were made, while F5=Save stays dark [app/cbl/COACTUPC.cbl:
-#   2870-2951,2955-2983,3101-3104,3333-3337,3566-3581]
-#   [app/cpy/CSSETATY.cpy:18-27].
+# Open Date boundaries of the century edit: 1899 (boundary-01) and 2100 (this
+# case) are refused; 1900 (boundary-02) and 2099 (boundary-03) are accepted.
+#
+# Steps 1-3 reach the account details exactly as ACT-COACTUPC-normal-02 does:
+# USER0001 signs on, main menu option '2' XCTLs to COACTUPC, which sends the
+# search screen, and ENTER with account 00000000001 reads CXACAIX (card
+# 9680294154603697, customer 000000001), ACCTDAT and CUSTDAT and shows the
+# details with 'Update account details presented above.'
+# [app/cbl/COMEN01C.cbl:115-156] [app/cbl/COACTUPC.cbl:964-973,2568-2580,
+# 2787-2865,3608-3884].
+# Step 4: ENTER with OPNYEAR '2100' typed over 2014. 1205-COMPARE-OLD-NEW finds
+# the open date changed, so 1200-EDIT-MAP-INPUTS sets ACUP-CHANGES-NOT-OK and
+# runs every edit in field order [app/cbl/COACTUPC.cbl:1429-1676]:
+# - Account Status 'Y' passes 1220-EDIT-YESNO, so WS-RETURN-MSG is still off.
+# - Open Date goes through EDIT-DATE-CCYYMMDD. EDIT-YEAR-CCYY finds the year
+#   supplied and numeric; WS-EDIT-DATE-CC-N is 21, neither THIS-CENTURY (20) nor
+#   LAST-CENTURY (19), so INPUT-ERROR and FLG-YEAR-NOT-OK are set and
+#   'Open Date : Century is not valid.' is STRINGed into WS-RETURN-MSG
+#   [app/cpy/CSUTLDPY.cpy:18-90] [app/cpy/CSUTLDWY.cpy:5-10]. The GO TO falls
+#   through to EDIT-MONTH and EDIT-DAY, which accept 11 and 20; the year flag
+#   leaves WS-EDIT-DATE-IS-VALID false, so EDIT-DAY-MONTH-YEAR exits before
+#   EDIT-DATE-LE and CSUTLDTC is not called for this date
+#   [app/cpy/CSUTLDPY.cpy:91-280,329].
+# - Every later edit passes for the customer below, and a later failure could
+#   not replace the message anyway: each edit writes only while
+#   WS-RETURN-MSG-OFF holds.
+# 2000-DECIDE-ACTION continues on ACUP-CHANGES-NOT-OK, so nothing is written
+# [app/cbl/COACTUPC.cbl:2596-2597]. 3200 performs 3203-SHOW-UPDATED-VALUES,
+# which echoes the received values; 3250 sets PROMPT-FOR-CHANGES and moves
+# WS-RETURN-MSG to ERRMSG; 3390 brightens F12=Cancel because a change is
+# pending and leaves F5=Save dark [app/cbl/COACTUPC.cbl:2718-2720,2870-2949,
+# 2955-2983,3566-3584]. The cursor and the red attribute on OPNYEAR are not
+# observable in the captured text.
 #
 # Expected values are derived from the source (no TPE region runs in CI):
-# - The message is TRIM('FICO Score') followed by ': should be between 300 and
-#   850', 41 characters of the 75-byte WS-RETURN-MSG, shown in the 78-byte
-#   ERRMSG with trailing spaces. INFOMSG is the 40-byte WS-INFO-MSG in the
-#   45-byte field. Fields are compared at their full BMS length, trailing
-#   spaces kept.
-# - The tpe adapter enters a field with EraseEOF before typing; '851' fills the
-#   3-byte ACSTFCO, and the screen shows it as received.
-# - FKEY05 and FKEY12 keep their INITIAL text; a dark (ASKIP,DRK) field is
-#   captured as blanks. Colour and cursor position are not in the s3270 text
-#   capture and are not asserted.
+# - Text values are whole fields at their BMS length, trailing spaces kept.
+#   ERRMSG is the 33-character message in the 78-byte field; INFOMSG is the
+#   40-byte WS-INFO-MSG in the 45-byte field [app/cbl/COACTUPC.cbl:462-480].
+# - The amounts are echoed through WS-EDIT-CURRENCY-9-2-F because their edits
+#   pass; the other fields are echoed as received.
 # - CURDATE and CURTIME come from the region clock, hence the matchers and
 #   clock_mode relative.
-#
-# Customer 000000001 is replaced by invented data that passes every other
-# COACTUPC edit, so the FICO Score is the only field refused and its old value
-# 700 is a valid score: the repository record has FICO 274, itself below 300,
-# and zip 12546, which is not a North Carolina zip [app/cbl/COACTUPC.cbl:
-# 2514-2558]. Account 00000000001 and its cross-reference stay as in the
-# repository.
 id: ACT-COACTUPC-boundary-04
 level: e2e
 type: boundary
 description: >-
-  USER0001 signs on, chooses main-menu option 2 (Account Update), fetches
-  account 00000000001, whose customer has FICO Score 700, types 851 over the
-  FICO Score and presses ENTER. 851 is one above the upper edge of 300 to
-  850, so COACTUPC refuses the change: it shows the received values again,
-  editable, with 'FICO Score: should be between 300 and 850' in the message
-  line, the score as typed, the change prompt 'Update account details
-  presented above.' and F12=Cancel made visible. Nothing is saved: ACCTDATA
-  and CUSTDATA still hold the fetched records.
-# Primary item first, then the program, the maps asserted, the transaction of
-# steps 3 and 4, the CSD files COACTUPC reads, and the online-only copybooks it
-# copies. Sign-on (CC00, COSGN00, USRSEC) and the menu transaction are
-# verified by the SEC and MNU scenarios; the batch record copybooks and the
-# data files are verified at the lowest level that executes them.
+  USER0001 signs on, chooses main menu option 2 'Account Update', fetches
+  account 00000000001 and changes the Open Date year from 2014 to 2100, the
+  first year past the accepted centuries 19 and 20. COACTUPC refuses the
+  century 21 with 'Open Date : Century is not valid.' in the message line,
+  keeps the entered values on the screen with the prompt 'Update account
+  details presented above.', offers F12=Cancel and rewrites neither the
+  account nor the customer record.
+# Primary item first, then the program, the maps asserted, the transaction the
+# fetch and the edit run under, the CSD files the fetch reads, and the
+# online-only copybooks COACTUPC copies. Sign-on and the menu (CC00, CM00,
+# COSGN00, USRSEC) are verified by the SEC and MNU scenarios; batch record
+# copybooks and data files at the lowest level that executes them.
 inventory_ids:
-- INV-ACT-146  # COACTUPC FICO Score: 300 to 850 (1275-EDIT-FICO-SCORE)
+- INV-ACT-072  # COACTUPC Open Date: century 19 or 20 (EDIT-YEAR-CCYY)
 - INV-ACT-002  # COACTUPC program
 - INV-MNU-003  # COMEN01 map, where option 2 is entered
-- INV-ACT-004  # COACTUP map, the search, detail and refused-change screens
-- INV-CFG-009  # CAUP transaction, which runs the fetch and the field edits
+- INV-ACT-004  # COACTUP map, the detail and edit-error screen
+- INV-CFG-009  # CAUP transaction, under which the fetch and the edit run
 - INV-CFG-006  # CXACAIX CSD file: card cross-reference by account id
-- INV-CFG-001  # ACCTDAT CSD file: account master read
-- INV-CFG-005  # CUSTDAT CSD file: customer master read
+- INV-CFG-001  # ACCTDAT CSD file: the account master read, never rewritten here
+- INV-CFG-005  # CUSTDAT CSD file: the customer master read, never rewritten here
 - INV-LAY-002  # COCOM01Y: the COMMAREA carrying the context and ids
 - INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
 - INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
-- INV-LAY-007  # CSLKPCDY: the area-code and state/zip lookups the later edits pass
+- INV-LAY-007  # CSLKPCDY: the area code, state and state/zip tables of the edits
 - INV-LAY-008  # CSMSG01Y, copied by COACTUPC
 - INV-LAY-009  # CSMSG02Y: abend data, copied by COACTUPC
-- INV-LAY-010  # CSSETATY: the error attribute set on ACSTFCO
+- INV-LAY-010  # CSSETATY: the attribute settings of 3300-SETUP-SCREEN-ATTRS
 - INV-LAY-011  # CSSTRPFY: the AID mapping that selects the ENTER path
-- INV-LAY-013  # CSUTLDPY: the date edits the earlier dates and Date of Birth pass
-- INV-LAY-014  # CSUTLDWY: the date-edit working storage
+- INV-LAY-013  # CSUTLDPY: EDIT-YEAR-CCYY, which composes the message
+- INV-LAY-014  # CSUTLDWY: WS-EDIT-DATE-CC-N with THIS-CENTURY and LAST-CENTURY
 - INV-LAY-019  # CVCRD01Y: CC-ACCT-ID and the AID flags
 tags:
 - inferred-not-observed
 gap_ids:
 - GAP-INF-005  # ACT end-to-end baselines derived, never observed
 - GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
-# The UniKix COACTUPC STRINGs the untrimmed 25-byte field name in
-# 1275-EDIT-FICO-SCORE, so on UniKix the message reads 'FICO Score' padded to
-# 25 bytes before ': should be between 300 and 850'; the app/ text is pinned.
+# The UniKix copy drops FUNCTION TRIM from the field name in CSUTLDPY's
+# messages (024), changes COACTUPC's amount conversions that the echoed
+# amounts pass through (022) and lacks COACTUP's unnamed field at row 1,
+# columns 1-9 (025), so a unikix run observes the copy's behaviour there.
+- GAP-DOC-024
 - GAP-DOC-022
-# The UniKix COACTUP.bms differs at row 1, columns 1-9, where TRNNAME stands.
 - GAP-DOC-025
 preconditions:
   datasets:
+    # The 10 repository users, for the USER0001 sign-on.
+    USRSEC: {base: USRSEC}
+    # Account 00000000001 and its cross-reference record as in the repository.
     ACCTDATA: {base: ACCTDATA}
     CARDXREF: {base: CARDXREF}
-    # Customer 000000001 replaced by invented data, as in the other COACTUPC
-    # scenarios; the 168-byte FILLER keeps the repository record's spaces.
+    # Customer 000000001 replaced by invented values that pass every edit of
+    # 1200-EDIT-MAP-INPUTS, so the Open Date edit is the only one that fails.
     CUSTDATA:
       base: CUSTDATA
       records:
-      - CUST-ID: '000000001'
+      - CUST-ID: '1'
         CUST-FIRST-NAME: Testfirst
         CUST-MIDDLE-NAME: Testmiddle
         CUST-LAST-NAME: Testlast
@@ -142,9 +118,8 @@ preconditions:
         CUST-GOVT-ISSUED-ID: TESTGOVT0001
         CUST-DOB-YYYY-MM-DD: '1961-06-08'
         CUST-EFT-ACCOUNT-ID: '0053581756'
-        CUST-PRI-CARD-HOLDER-IND: Y
+        CUST-PRI-CARD-HOLDER-IND: 'Y'
         CUST-FICO-CREDIT-SCORE: '700'
-    USRSEC: {base: USRSEC}
   parameters:
     clock_mode: relative
   faults: []
@@ -153,25 +128,19 @@ inputs:
   steps:
   - transid: CC00
     aid: ENTER
+    fields: {USERID: USER0001, PASSWD: PASSWORD}
     '@map': COSGN00
-    fields:
-      USERID: USER0001
-      PASSWD: PASSWORD
   - aid: ENTER
+    fields: {OPTION: '2'}
     '@map': COMEN01
-    fields:
-      OPTION: '2'
   - aid: ENTER
+    fields: {ACCTSID: '00000000001'}
     '@map': COACTUP
-    fields:
-      ACCTSID: '00000000001'
   - aid: ENTER
+    fields: {OPNYEAR: '2100'}
     '@map': COACTUP
-    fields:
-      ACSTFCO: '851'
 expected:
   screens:
-  # One entry per step, each the screen the step ends on.
   - '@map': COMEN01
     TRNNAME: CM00
     PGMNAME: COMEN01C
@@ -183,7 +152,6 @@ expected:
     ACCTSID: '           '
     INFOMSG: 'Enter or update id of account to update      '
     ERRMSG: '                                                                              '
-  # The fetched account and customer, editable, with the change prompt.
   - '@map': COACTUP
     TRNNAME: CAUP
     TITLE01: '      AWS Mainframe Modernization       '
@@ -239,9 +207,6 @@ expected:
     FKEYS: 'ENTER=Process F3=Exit'
     FKEY05: '       '
     FKEY12: '          '
-  # The refused change: the received values again, the FICO Score as
-  # received, the range message, the change prompt, and F12=Cancel shown while
-  # F5=Save stays dark.
   - '@map': COACTUP
     TRNNAME: CAUP
     TITLE01: '      AWS Mainframe Modernization       '
@@ -251,7 +216,7 @@ expected:
     CURTIME: {match: run-time}
     ACCTSID: '00000000001'
     ACSTTUS: 'Y'
-    OPNYEAR: '2014'
+    OPNYEAR: '2100'
     OPNMON: '11'
     OPNDAY: '20'
     ACRDLIM: '+      2,020.00'
@@ -273,7 +238,7 @@ expected:
     DOBYEAR: '1961'
     DOBMON: '06'
     DOBDAY: '08'
-    ACSTFCO: '851'
+    ACSTFCO: '700'
     ACSFNAM: 'Testfirst                '
     ACSMNAM: 'Testmiddle               '
     ACSLNAM: 'Testlast                 '
@@ -293,14 +258,14 @@ expected:
     ACSEFTC: '0053581756'
     ACSPFLG: 'Y'
     INFOMSG: 'Update account details presented above.      '
-    ERRMSG: 'FICO Score: should be between 300 and 850                                     '
+    ERRMSG: 'Open Date : Century is not valid.                                             '
     FKEYS: 'ENTER=Process F3=Exit'
     FKEY05: '       '
-    FKEY12: 'F12=Cancel'
-  # The change is refused, so neither master record is rewritten: both files
-  # keep their 50 records, account 00000000001 its repository values and
-  # customer 000000001 the invented values, FICO Score 700 included.
+    FKEY12: F12=Cancel
   file_state:
+    # Nothing is rewritten: account 00000000001 keeps its open date 2014-11-20
+    # and customer 000000001 the values loaded, and each file keeps its 50
+    # records.
     ACCTDATA:
       count: 50
       contains:
@@ -314,6 +279,7 @@ expected:
         ACCT-REISSUE-DATE: '2025-05-20'
         ACCT-CURR-CYC-CREDIT: '0.00'
         ACCT-CURR-CYC-DEBIT: '0.00'
+        ACCT-ADDR-ZIP: 'A000000000'
         ACCT-GROUP-ID: '          '
     CUSTDATA:
       count: 50

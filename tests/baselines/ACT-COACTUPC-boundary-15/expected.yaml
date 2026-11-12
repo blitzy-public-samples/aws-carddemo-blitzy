@@ -1,54 +1,40 @@
 # Derived baseline of scenario ACT-COACTUPC-boundary-15 (capture_platform:
-# derived, tag inferred-not-observed), authored from the app/ source and never
-# observed: no TPE region runs in CI. The Open Date February boundary at the
-# leap-year check: 2023-02-28, the last day of February in a year that is not
-# a leap year, is accepted.
-# Steps 1-3: USER0001 signs on, main-menu option 2 XCTLs to COACTUPC, and ENTER
-# with account 00000000001 shows the fetched account and customer with
-# 'Update account details presented above.' [app/cbl/COMEN01C.cbl:241-252]
-# [app/cbl/COACTUPC.cbl:2568-2580,2787-2865,2955-2981,3608-3884].
-# Step 4: 2023 / 02 / 28 over the open date 2014-11-20 is a change, so
-# 1200-EDIT-MAP-INPUTS moves 'Open Date' to WS-EDIT-VARIABLE-NAME and performs
-# EDIT-DATE-CCYYMMDD [app/cbl/COACTUPC.cbl:1478-1482]. Year 2023 is supplied,
-# numeric and of century 20; month 02 is supplied, within 1-12 and TEST-NUMVAL
-# 0; day 28 is supplied, TEST-NUMVAL 0 and within 1-31. In
-# EDIT-DAY-MONTH-YEAR day 28 is neither 31, nor February's 30, nor February's
-# 29, so the leap-year division never runs, the year, month and day flags stay
-# LOW-VALUES and WS-EDIT-DATE-IS-VALID holds [app/cpy/CSUTLDPY.cpy:18-279]
-# [app/cpy/CSUTLDWY.cpy:4-57]. EDIT-DATE-LE calls CSUTLDTC with '20230228'
-# and mask 'YYYYMMDD'; a real CEEDAYS is expected to accept the date, so
-# WS-SEVERITY-N is 0 and no ' validation error Sev code: ' message is composed
-# [app/cpy/CSUTLDPY.cpy:284-328] [app/cbl/CSUTLDTC.cbl:90-151]. That
-# acceptance is inferred (GAP-INF-001), and whether UniKix supplies CEEDAYS is
-# unconfirmed (GAP-MIS-010).
-# Every other field returns its fetched value and passes its edit, so
-# INPUT-ERROR stays off and ACUP-CHANGES-OK-NOT-CONFIRMED is set
-# [app/cbl/COACTUPC.cbl:1471-1675]. ENTER without PF5 never reaches the READ
-# UPDATE and REWRITE of 9600-WRITE-PROCESSING [app/cbl/COACTUPC.cbl:2586-2621].
-# 3203-SHOW-UPDATED-VALUES shows the new open date
-# [app/cbl/COACTUPC.cbl:2911-2913]. 3250-SETUP-INFOMSG moves
-# PROMPT-FOR-CONFIRMATION (the X(40) WS-INFO-MSG) to the 45-byte INFOMSGO and
-# the blank X(75) WS-RETURN-MSG to the 78-byte ERRMSGO
-# [app/cbl/COACTUPC.cbl:472-473,2955-2983], and 3390 makes F5=Save and
-# F12=Cancel bright [app/cbl/COACTUPC.cbl:3566-3581].
-# Screen values are whole BMS fields with their trailing spaces
-# (app/bms/COACTUP.bms, app/bms/COMEN01.bms); a dark field is captured as
-# blanks. CURDATE and CURTIME come from the region clock, hence the matchers.
-# messages holds the ERRMSG of every step, all blank. file_state holds the
-# records as the preconditions materialize them, decoded through CVACT01Y and
-# CVCUS01Y: nothing is rewritten before PF5, so both files keep their 50
-# records and account 00000000001 its open date 2014-11-20.
-# Open under GAP-INF-005 (derived ACT end-to-end baselines) and GAP-INF-012
-# (online-only copybooks such as CSUTLDPY and CSUTLDWY). The UniKix copies of
-# CSUTLDPY (GAP-DOC-024), CSUTLDTC (GAP-DOC-021), the COACTUPC amount edits
-# (GAP-DOC-022) and COACTUP.bms row 1 (GAP-DOC-025) differ, so a UniKix record
-# of this scenario is UniKix-copy behavior and never replaces this file. Only
-# `report.py --import-unikix` promotes this baseline; it is never edited by
-# hand to match a run.
+# derived), authored from the app/ source and never observed: no TPE region
+# runs in CI. Open until a UniKix run of the app/ build is imported:
+# GAP-INF-005 (derived ACT end-to-end baselines) and GAP-INF-012 (online-only
+# copybooks such as CSUTLDPY and CSUTLDWY).
+# Steps 1-3: USER0001 signs on, option 2 XCTLs to COACTUPC, and ENTER with
+# account 00000000001 shows the fetched account and customer with the change
+# prompt [app/cbl/COACTUPC.cbl:2787-2865,2955-2981].
+# Step 4, the Open Date boundary 2023-02-30: the date is a change, so
+# 1200-EDIT-MAP-INPUTS sets ACUP-CHANGES-NOT-OK and edits the fields in order;
+# Account Status Y passes, and the year (2023, century 20), month (02) and day
+# (30) edits pass. EDIT-DAY-MONTH-YEAR then finds WS-FEBRUARY AND WS-DAY-30
+# before any leap-year test, so 2023 not being a leap year plays no part, and,
+# the message being still off, composes TRIM('Open Date') ':Cannot have 30
+# days in this month.' (44 characters) into WS-RETURN-MSG. The GO TO skips
+# EDIT-DATE-LE, so CSUTLDTC is not called, and no later edit can replace the
+# message [app/cbl/COACTUPC.cbl:1460-1482] [app/cpy/CSUTLDPY.cpy:209-241]
+# [app/cpy/CSUTLDWY.cpy:16-31].
+# 2000-DECIDE-ACTION continues, so nothing is rewritten; 3203 shows the date as
+# typed, CSSETATY only colours OPNMON and OPNDAY red (neither is blank, so no
+# '*' is moved in), 3250 sets PROMPT-FOR-CHANGES and moves the message to
+# ERRMSG, and 3390 brightens FKEY12 because a change was made while FKEY05
+# stays dark [app/cbl/COACTUPC.cbl:2596-2597,2870-2952,2955-2981,3566-3581]
+# [app/cpy/CSSETATY.cpy:17-27].
+# This pins the app/ text: the UniKix CSUTLDPY drops TRIM, so its copy would
+# show 'Open Date' padded to 25 bytes before the suffix (GAP-DOC-024); such a
+# record is UniKix-copy behavior and never replaces this file.
+# Screen values are full BMS width with trailing spaces kept (ERRMSG 78,
+# INFOMSG 45), because screens compare exactly; messages holds the ERRMSG of
+# every step. CURDATE and CURTIME come from the region clock, so they are
+# matchers. file_state holds the records as the preconditions materialize them,
+# decoded through CVACT01Y and CVCUS01Y: both files keep their 50 records.
 file_state:
   ACCTDATA:
     contains:
     - ACCT-ACTIVE-STATUS: Y
+      ACCT-ADDR-ZIP: A000000000
       ACCT-CASH-CREDIT-LIMIT: '1020.00'
       ACCT-CREDIT-LIMIT: '2020.00'
       ACCT-CURR-BAL: '194.00'
@@ -85,7 +71,7 @@ messages:
 - '                                                                              '
 - '                                                                              '
 - '                                                                              '
-- '                                                                              '
+- 'Open Date:Cannot have 30 days in this month.                                  '
 screens:
 - '@map': COMEN01
   ERRMSG: '                                                                              '
@@ -99,62 +85,15 @@ screens:
   PGMNAME: COACTUPC
   TRNNAME: CAUP
 - '@map': COACTUP
-  AADDGRP: '          '
   ACCTSID: '00000000001'
-  ACRCYCR: +           .00
-  ACRCYDB: +           .00
-  ACRDLIM: +      2,020.00
-  ACSADL1: '100 Test Street                                   '
-  ACSADL2: 'Suite 1                                           '
-  ACSCITY: 'Raleigh                                           '
-  ACSCTRY: USA
-  ACSEFTC: 0053581756
   ACSFNAM: 'Testfirst                '
-  ACSGOVT: 'TESTGOVT0001        '
-  ACSHLIM: +      1,020.00
-  ACSLNAM: 'Testlast                 '
-  ACSMNAM: 'Testmiddle               '
-  ACSPFLG: Y
-  ACSPH1A: '919'
-  ACSPH1B: '555'
-  ACSPH1C: '0101'
-  ACSPH2A: '919'
-  ACSPH2B: '555'
-  ACSPH2C: '0102'
-  ACSSTTE: NC
-  ACSTFCO: '700'
   ACSTNUM: '000000001'
-  ACSTTUS: Y
-  ACSZIPC: '27601'
-  ACTSSN1: '123'
-  ACTSSN2: '45'
-  ACTSSN3: '6789'
-  ACURBAL: +        194.00
-  CURDATE:
-    format: '%m/%d/%y'
-    match: run-date
-  CURTIME:
-    match: run-time
-  DOBDAY: 08
-  DOBMON: '06'
-  DOBYEAR: '1961'
   ERRMSG: '                                                                              '
-  EXPDAY: '20'
-  EXPMON: '05'
-  EXPYEAR: '2025'
-  FKEY05: '       '
-  FKEY12: '          '
-  FKEYS: ENTER=Process F3=Exit
   INFOMSG: 'Update account details presented above.      '
   OPNDAY: '20'
   OPNMON: '11'
   OPNYEAR: '2014'
   PGMNAME: COACTUPC
-  RISDAY: '20'
-  RISMON: '05'
-  RISYEAR: '2025'
-  TITLE01: '      AWS Mainframe Modernization       '
-  TITLE02: '              CardDemo                  '
   TRNNAME: CAUP
 - '@map': COACTUP
   AADDGRP: '          '
@@ -196,15 +135,15 @@ screens:
   DOBDAY: 08
   DOBMON: '06'
   DOBYEAR: '1961'
-  ERRMSG: '                                                                              '
+  ERRMSG: 'Open Date:Cannot have 30 days in this month.                                  '
   EXPDAY: '20'
   EXPMON: '05'
   EXPYEAR: '2025'
-  FKEY05: F5=Save
+  FKEY05: '       '
   FKEY12: F12=Cancel
   FKEYS: ENTER=Process F3=Exit
-  INFOMSG: 'Changes validated.Press F5 to save           '
-  OPNDAY: '28'
+  INFOMSG: 'Update account details presented above.      '
+  OPNDAY: '30'
   OPNMON: '02'
   OPNYEAR: '2023'
   PGMNAME: COACTUPC

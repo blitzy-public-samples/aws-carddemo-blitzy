@@ -1,8 +1,8 @@
 # COACTUPC Open Date month boundary, upper edge inside the range: month 12 is
 # accepted. The Open Date month boundaries 00, 01, 12 and 13 are
-# ACT-COACTUPC-boundary-05 to -08, after the four FICO Score boundaries; month
-# 13, just outside, is -08. An accepted value shows as the next prompt rather
-# than the field's message.
+# ACT-COACTUPC-boundary-05 to -08, after the four century boundaries
+# (boundary-01 to -04); month 13, just outside, is -08. An accepted value shows
+# as the next prompt rather than the field's message.
 #
 # Steps 1-3 fetch account 00000000001 and customer 000000001 as
 # ACT-COACTUPC-alternate-04 does: sign-on through CC00, main-menu option 2,

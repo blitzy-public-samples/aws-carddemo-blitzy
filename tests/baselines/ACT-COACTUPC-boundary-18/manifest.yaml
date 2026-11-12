@@ -1,33 +1,31 @@
-# Manifest of the derived baseline of ACT-COACTUPC-boundary-18: an Open Date
-# of 2023-02-30 typed on the fetched COACTUP screen is refused with 'Open
-# Date:Cannot have 30 days in this month.' by the WS-FEBRUARY AND WS-DAY-30
-# check of EDIT-DAY-MONTH-YEAR, before the leap-year test, so the non-leap
-# year plays no part [app/cpy/CSUTLDPY.cpy:228-241]
-# [app/cpy/CSUTLDWY.cpy:16-33].
-# Only unikix can run the scenario, so expected.yaml is authored from the
-# source and is inferred-not-observed (GAP-INF-005, GAP-INF-012). It names no
-# execution_id or execution_fingerprint and holds no datasets/ until
-# report.py --import-unikix promotes an eligible UniKix run. The UniKix
-# CSUTLDPY drops FUNCTION TRIM from the composed message (GAP-DOC-024), so a
-# UniKix record of this scenario is UniKix-copy behavior and never promotes
-# this baseline; the identity names the app/ tree.
+# Manifest of the derived baseline of ACT-COACTUPC-boundary-18: USER0001
+# fetches account 00000000001 on COACTUP, types the leap day 2024-02-29 over
+# the Open Date and presses ENTER; EDIT-DAY-MONTH-YEAR divides 2024 by 4 with
+# no remainder, so the leap-year refusal is skipped, EDIT-DATE-LE's CSUTLDTC
+# call is expected to return severity 0, and INFOMSG shows 'Changes
+# validated.Press F5 to save' [app/cbl/COACTUPC.cbl:1478-1481]
+# [app/cpy/CSUTLDPY.cpy:243-296]. Only unikix can run the scenario, so
+# expected.yaml is authored from the source and is inferred-not-observed
+# (GAP-INF-005, GAP-INF-012, GAP-INF-001). It names no execution_id or
+# execution_fingerprint and holds no datasets/. A UniKix run never promotes
+# it: the UniKix CSUTLDPY and CSUTLDTC differ from app/ (GAP-DOC-024,
+# GAP-DOC-021), so its record is UniKix-copy behavior and this baseline stays
+# derived until an app/ build is observed (GAP-MIS-008).
 #
-# source_identity.units are every app/ source the four steps execute:
-# harness.results.source_identity gives no units for a steps-only scenario, so
-# the set is the COPY closure (inventory_tools.copy_closure) of COSGN00C,
-# which signs USER0001 on and XCTLs to COMEN01C [app/cbl/COSGN00C.cbl:221-237];
-# of COMEN01C, whose option 2 XCTLs to COACTUPC [app/cbl/COMEN01C.cbl:115-156];
-# of COACTUPC, which fetches and edits the account; and of CSUTLDTC; plus the
-# BMS sources of the maps COSGN00, COMEN01 and COACTUP. CSUTLDTC is listed
-# because it runs, although the Open Date itself skips EDIT-DATE-LE:
-# 1200-EDIT-MAP-INPUTS goes on to edit the valid Expiry Date, Reissue Date and
-# Date of Birth, which reach the CALL in EDIT-DATE-LE
-# [app/cbl/COACTUPC.cbl:1478-1541] [app/cpy/CSUTLDPY.cpy:276-296]. A source
-# identity names everything executed, so this set matches that of
-# ACT-COACTUPC-negative-022, the 2022-02-30 case of the same check. DFHAID and
-# DFHBMSCA are CICS-supplied, not app/ sources. source_commit is HEAD at
-# authoring; app/ is byte-identical to the suite's starting commit
-# 93ebec71ff7b59a68cedd7c501afe496a8eaa68d.
+# source_identity.units are the app/ units the four steps execute, each
+# program as harness.results computes it for a program run (its COPY closure
+# and the app/cbl units it CALLs), plus the BMS sources and symbolic
+# copybooks of the maps shown. harness.results.source_identity itself yields
+# no units for a steps-only scenario, so the set is built per program, as in
+# the other COACTUPC baselines. COSGN00C signs USER0001 on and XCTLs to
+# COMEN01C [app/cbl/COSGN00C.cbl:221-240]; COMEN01C, whose COMEN01 screen is
+# asserted, XCTLs option 2 to COACTUPC [app/cbl/COMEN01C.cbl:115-156]
+# [app/cpy/COMEN02Y.cpy:31-35]; COACTUPC runs every field edit
+# [app/cbl/COACTUPC.cbl:1460-1676]. CSUTLDTC is listed because it runs: the
+# Open Date and the later Expiry and Reissue Dates and Date of Birth reach its
+# CALL in EDIT-DATE-LE [app/cpy/CSUTLDPY.cpy:284-296]. DFHAID and DFHBMSCA are
+# CICS-supplied, not app/ sources. source_commit is HEAD at authoring; app/ is
+# byte-identical to the suite's starting commit.
 baseline_version: 1.0.0
 capture_date: '2026-11-11'
 capture_platform: derived

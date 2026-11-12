@@ -1233,7 +1233,7 @@ items:
   level: e2e
   name: COADM01C message 'Invalid key pressed. Please see below...'
   scenario_ids:
-  - MNU-COADM01C-negative-02
+  - MNU-COADM01C-negative-01
   source: app/cbl/COADM01C.cbl:101
   status: blocked
 - activation: always
@@ -1252,7 +1252,7 @@ items:
   level: e2e
   name: COADM01C message 'Please enter a valid option number...'
   scenario_ids:
-  - MNU-COADM01C-negative-01
+  - MNU-COADM01C-negative-02
   source: app/cbl/COADM01C.cbl:131-132
   status: blocked
 - activation: unreachable
@@ -4393,10 +4393,10 @@ items:
   level: e2e
   name: 'COACTUPC Open Date: century 19 or 20'
   scenario_ids:
-  - ACT-COACTUPC-boundary-19
-  - ACT-COACTUPC-boundary-20
-  - ACT-COACTUPC-boundary-21
-  - ACT-COACTUPC-boundary-22
+  - ACT-COACTUPC-boundary-01
+  - ACT-COACTUPC-boundary-02
+  - ACT-COACTUPC-boundary-03
+  - ACT-COACTUPC-boundary-04
   - ACT-COACTUPC-negative-014
   source: app/cpy/CSUTLDPY.cpy:77-81
   status: blocked
@@ -4599,7 +4599,7 @@ items:
   level: e2e
   name: 'COACTUPC Open Date: no 30th of February'
   scenario_ids:
-  - ACT-COACTUPC-boundary-18
+  - ACT-COACTUPC-boundary-15
   - ACT-COACTUPC-negative-022
   source: app/cpy/CSUTLDPY.cpy:234-238
   status: blocked
@@ -4626,9 +4626,9 @@ items:
   level: e2e
   name: 'COACTUPC Open Date: no 29th of February outside a leap year'
   scenario_ids:
-  - ACT-COACTUPC-boundary-15
   - ACT-COACTUPC-boundary-16
   - ACT-COACTUPC-boundary-17
+  - ACT-COACTUPC-boundary-18
   - ACT-COACTUPC-negative-023
   source: app/cpy/CSUTLDPY.cpy:264-268
   status: blocked
@@ -5579,10 +5579,10 @@ items:
   level: e2e
   name: 'COACTUPC SSN: First 3 chars: not 000, 666 or 900-999'
   scenario_ids:
-  - ACT-COACTUPC-boundary-25
-  - ACT-COACTUPC-boundary-26
-  - ACT-COACTUPC-boundary-27
-  - ACT-COACTUPC-boundary-28
+  - ACT-COACTUPC-boundary-19
+  - ACT-COACTUPC-boundary-20
+  - ACT-COACTUPC-boundary-21
+  - ACT-COACTUPC-boundary-22
   - ACT-COACTUPC-negative-064
   source: app/cbl/COACTUPC.cbl:2455-2460
   status: blocked
@@ -6143,10 +6143,10 @@ items:
   level: e2e
   name: 'COACTUPC FICO Score: 300 to 850'
   scenario_ids:
-  - ACT-COACTUPC-boundary-01
-  - ACT-COACTUPC-boundary-02
-  - ACT-COACTUPC-boundary-03
-  - ACT-COACTUPC-boundary-04
+  - ACT-COACTUPC-boundary-25
+  - ACT-COACTUPC-boundary-26
+  - ACT-COACTUPC-boundary-27
+  - ACT-COACTUPC-boundary-28
   - ACT-COACTUPC-negative-088
   source: app/cbl/COACTUPC.cbl:2521-2526
   status: blocked
@@ -13392,15 +13392,15 @@ items:
   level: unit
   name: CSUTLDTC date acceptance for masks YYYY-MM-DD and YYYYMMDD
   scenario_ids:
+  - ACT-COACTUPC-boundary-02
+  - ACT-COACTUPC-boundary-03
   - ACT-COACTUPC-boundary-06
   - ACT-COACTUPC-boundary-07
   - ACT-COACTUPC-boundary-10
   - ACT-COACTUPC-boundary-11
   - ACT-COACTUPC-boundary-13
-  - ACT-COACTUPC-boundary-15
-  - ACT-COACTUPC-boundary-17
-  - ACT-COACTUPC-boundary-20
-  - ACT-COACTUPC-boundary-21
+  - ACT-COACTUPC-boundary-16
+  - ACT-COACTUPC-boundary-18
   - ACT-COACTUPC-boundary-23
   - ACT-COACTUPC-boundary-24
   - ACT-COACTUPC-negative-024

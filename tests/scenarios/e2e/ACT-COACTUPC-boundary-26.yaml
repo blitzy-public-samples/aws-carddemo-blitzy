@@ -1,102 +1,89 @@
-# Boundary of the SSN first-part edit at 666, the one value from 001 to 899
-# that the edit forbids: COACTUPC refuses an account update whose first SSN
-# part is 666.
-# 1265-EDIT-US-SSN finds the part supplied, numeric and not zero, then tests it
-# against INVALID-SSN-PART1 (VALUES 0, 666, 900 THRU 999) and composes 'SSN:
-# First 3 chars: should not be 000, 666, or between 900 and 999'
-# [app/cbl/COACTUPC.cbl:117-123,2431-2464]. The edges of this item are 665
-# (accepted, boundary-25), 666 (refused, this scenario), 899 (accepted,
-# boundary-27) and 900 (refused, boundary-28); 950 inside the range is the
-# item's negative case, ACT-COACTUPC-negative-064.
+# COACTUPC accepts a FICO Score of 300, the lower edge of FICO-RANGE-IS-VALID
+# (VALUES 300 THROUGH 850 [app/cbl/COACTUPC.cbl:845-849]): 1245-EDIT-NUM-REQD
+# and 1275-EDIT-FICO-SCORE both pass, so no FICO message appears and the
+# change goes on to the confirmation prompt [app/cbl/COACTUPC.cbl:1545-1556,
+# 2109-2176,2514-2531]. The other FICO Score boundary scenarios take 299, 850
+# and 851; ACT-COACTUPC-negative-088 refuses 150, outside the accepted range.
 #
-# Steps 1-3 reach the fetched account as ACT-COACTUPC-alternate-04 does:
-# USER0001 signs on through CC00, chooses option 2 (Account Update) on COMEN01,
-# and enters account 00000000001. 9000-READ-ACCT reads CXACAIX by account id
-# (card 9680294154603697, customer 000000001, line 49 of
-# app/data/ASCII/cardxref.txt), ACCTDAT and CUSTDAT, keeps the records as the
-# old values in the COMMAREA and sets ACUP-SHOW-DETAILS; the screen shows them
-# with 'Update account details presented above.', every editable field
-# unprotected with its MDT on [app/cbl/COACTUPC.cbl:2568-2580,2787-2865,
-# 2955-3000,3441-3561,3608-3884].
-# Step 4 types 666 over the first SSN part (ACTSSN1, shown as '123') and
-# presses ENTER.
-# - 1100-RECEIVE-MAP moves the received '666' to ACUP-NEW-CUST-SSN-1
-#   [app/cbl/COACTUPC.cbl:1233-1238]. 1205-COMPARE-OLD-NEW finds
-#   ACUP-NEW-CUST-SSN-X ('666456789') unequal to the old SSN (123456789), so a
-#   change has occurred, and 1200-EDIT-MAP-INPUTS sets ACUP-CHANGES-NOT-OK and
-#   runs the field edits in screen order [app/cbl/COACTUPC.cbl:1460-1470,
-#   1681-1705,1754].
+# Steps 1-3 reach the fetched account as ACT-COACTUPC-normal-02 does: USER0001
+# signs on through CC00, chooses option 2 (Account Update) on COMEN01, and
+# enters account 00000000001. 9000-READ-ACCT reads CXACAIX by account id (card
+# 9680294154603697, customer 000000001), ACCTDAT and CUSTDAT, keeps the
+# records as the old values in the COMMAREA and sets ACUP-SHOW-DETAILS; the
+# screen shows them with 'Update account details presented above.', every
+# editable field unprotected with its MDT on [app/cbl/COACTUPC.cbl:2568-2580,
+# 2787-2865,2955-3000,3441-3561,3608-3884].
+# Step 4 types 300 over the FICO Score (ACSTFCO, shown as 700) and presses
+# ENTER.
+# - 1100-RECEIVE-MAP moves the received '300' to the 3-byte
+#   ACUP-NEW-CUST-FICO-SCORE-X, which ACUP-NEW-CUST-FICO-SCORE redefines as
+#   PIC 9(03) [app/cbl/COACTUPC.cbl:845-849,1279-1284]. 1205-COMPARE-OLD-NEW
+#   finds it unequal to the old score 700, so a change has occurred, and
+#   1200-EDIT-MAP-INPUTS sets ACUP-CHANGES-NOT-OK and runs the field edits in
+#   screen order [app/cbl/COACTUPC.cbl:1460-1470,1764-1768].
 # - Account Status, Open Date, Credit Limit, Expiry Date, Cash Credit Limit,
-#   Reissue Date, Current Balance and the two cycle amounts pass on the
-#   repository account [app/cbl/COACTUPC.cbl:1472-1527]. 1265-EDIT-US-SSN
-#   moves 'SSN: First 3 chars' to WS-EDIT-VARIABLE-NAME and the part to
-#   WS-EDIT-ALPHANUM-ONLY with length 3; 1245-EDIT-NUM-REQD finds '666'
-#   supplied, numeric and not zero, so it sets FLG-ALPHNANUM-ISVALID, which
-#   becomes FLG-EDIT-US-SSN-PART1-ISVALID [app/cbl/COACTUPC.cbl:1529-1531,
-#   2109-2175,2439-2445].
-#   The part is moved to WS-EDIT-US-SSN-PART1, whose numeric redefinition 666
-#   matches the single value 666 of INVALID-SSN-PART1, so the routine sets
-#   INPUT-ERROR and FLG-EDIT-US-SSN-PART1-NOT-OK and, WS-RETURN-MSG being
-#   still blank [app/cbl/COACTUPC.cbl:876], STRINGs the trimmed field name and
-#   ': should not be 000, 666, or between 900 and 999' into WS-RETURN-MSG
-#   [app/cbl/COACTUPC.cbl:2448-2464]. SSN parts 2 ('45') and 3 ('6789') pass
-#   [app/cbl/COACTUPC.cbl:2469-2487].
-# - Every later edit passes on the invented customer below; they only set
-#   their flags, since WS-RETURN-MSG is no longer blank
-#   [app/cbl/COACTUPC.cbl:1533-1676]. INPUT-ERROR keeps ACUP-CHANGES-NOT-OK,
-#   and 2000-DECIDE-ACTION continues on it, so 9600-WRITE-PROCESSING, the only
-#   READ UPDATE and REWRITE path, does not run [app/cbl/COACTUPC.cbl:2596-2597].
-# - 3203-SHOW-UPDATED-VALUES shows the received values, the valid amounts
-#   re-edited through +ZZZ,ZZZ,ZZZ.99 and the SSN parts as received; 3250 sets
-#   PROMPT-FOR-CHANGES and moves the message to ERRMSG; 3300 keeps the fields
-#   editable, puts the cursor on ACTSSN1 and marks it red through CSSETATY
-#   without the '*' of a blank field; 3390 makes F12=Cancel bright because
-#   changes were made, while F5=Save stays dark [app/cbl/COACTUPC.cbl:
-#   2870-2951,2955-2983,3077-3080,3297-3301,3566-3581]
-#   [app/cpy/CSSETATY.cpy:18-27].
+#   Reissue Date, the current balance and cycle amounts, SSN and Date of Birth
+#   pass on the repository account and the invented customer. 'FICO Score' is
+#   moved to WS-EDIT-VARIABLE-NAME and the score to WS-EDIT-ALPHANUM-ONLY with
+#   length 3; 1245-EDIT-NUM-REQD finds it supplied, all numeric and not zero,
+#   so 1275-EDIT-FICO-SCORE runs and finds FICO-RANGE-IS-VALID true: 300 is
+#   the first value of the range, so it CONTINUEs without INPUT-ERROR or a
+#   message [app/cbl/COACTUPC.cbl:1472-1556,2514-2516].
+# - The name, address, zip, phone, EFT and primary-holder edits and the
+#   state/zip cross edit pass on the invented customer, so INPUT-OK stands and
+#   1200-EDIT-MAP-INPUTS sets ACUP-CHANGES-OK-NOT-CONFIRMED
+#   [app/cbl/COACTUPC.cbl:1557-1674]. 2000-DECIDE-ACTION keeps that state on
+#   ENTER; only PF5 in that state reaches 9600-WRITE-PROCESSING, the READ
+#   UPDATE and REWRITE path [app/cbl/COACTUPC.cbl:2582-2615].
+# - 3203-SHOW-UPDATED-VALUES shows the received values, the amounts re-edited
+#   through +ZZZ,ZZZ,ZZZ.99 and the FICO Score as received; 3250 sets
+#   PROMPT-FOR-CONFIRMATION in WS-INFO-MSG, moved to INFOMSG, and moves the
+#   blank WS-RETURN-MSG to ERRMSG; 3300 leaves every field protected, and 3390
+#   makes F5=Save and F12=Cancel bright [app/cbl/COACTUPC.cbl:462-479,
+#   2870-2951,2955-2983,3001-3003,3566-3584].
 #
 # Expected values are derived from the source (no TPE region runs in CI):
-# - The message is TRIM('SSN: First 3 chars') followed by ': should not be
-#   000, 666, or between 900 and 999', 66 characters of the 75-byte
-#   WS-RETURN-MSG, shown in the 78-byte ERRMSG with trailing spaces. INFOMSG is
-#   the 40-byte WS-INFO-MSG in the 45-byte field. Fields are compared at their
+# - INFOMSG is the 40-byte WS-INFO-MSG in the 45-byte field; ERRMSG holds the
+#   blank 75-byte WS-RETURN-MSG in its 78 bytes. Fields are compared at their
 #   full BMS length, trailing spaces kept.
-# - The tpe adapter enters a field with EraseEOF before typing; '666' fills the
-#   3-byte ACTSSN1, and the screen shows it so.
+# - The tpe adapter enters a field with EraseEOF before typing; '300' fills the
+#   3-byte ACSTFCO, and the screen shows it as received.
 # - FKEY05 and FKEY12 keep their INITIAL text; a dark (ASKIP,DRK) field is
-#   captured as blanks. Colour and cursor position are not in the s3270 text
-#   capture and are not asserted.
+#   captured as blanks until 3390 makes it bright. Colour and cursor position
+#   are not in the s3270 text capture and are not asserted.
+# - AADDGRP shows ACCT-GROUP-ID, blank in every repository account
+#   (GAP-DEF-005); ACSZIPC is 5 bytes, so the 10-byte zip shows its first 5.
 # - CURDATE and CURTIME come from the region clock, hence the matchers and
 #   clock_mode relative.
 #
-# Customer 000000001 is replaced by invented data that passes every COACTUPC
-# edit, so the first SSN part is the only field refused: the repository record
-# has FICO 274, below 300, and zip 12546, which is not a North Carolina zip
-# [app/cbl/COACTUPC.cbl:2514-2558]. Account 00000000001 and its
-# cross-reference stay as in the repository.
+# Customer 000000001 is replaced by invented data that passes every other
+# COACTUPC edit, so the FICO Score decides the outcome and its old value 700
+# differs from 300: the repository record fails the Phone Number 2 area code,
+# the state/zip combination and the FICO range [app/cbl/COACTUPC.cbl:
+# 2225-2558]. Account 00000000001 and its cross-reference stay as in the
+# repository.
 id: ACT-COACTUPC-boundary-26
 level: e2e
 type: boundary
 description: >-
   USER0001 signs on, chooses main-menu option 2 (Account Update), fetches
-  account 00000000001, whose customer's SSN is 123-45-6789, types 666 over the
-  first SSN part and presses ENTER. 666 is the single forbidden value between
-  001 and 899, one above the accepted 665, so COACTUPC refuses the change: it
-  shows the received values again, editable, with 'SSN: First 3 chars: should
-  not be 000, 666, or between 900 and 999' in the message line, the first SSN
-  part as typed, the change prompt 'Update account details presented above.'
-  and F12=Cancel made visible. Nothing is saved: ACCTDATA and CUSTDATA still
-  hold the fetched records.
+  account 00000000001, whose customer has FICO Score 700, types 300 over the
+  FICO Score and presses ENTER. 300 is the lowest score within 300 to 850, so
+  COACTUPC accepts it: no FICO Score message appears, the received values are
+  shown with the score as typed and the confirmation prompt 'Changes
+  validated.Press F5 to save', and F5=Save and F12=Cancel are made visible.
+  PF5 is not pressed, so nothing is saved: ACCTDATA and CUSTDATA still hold
+  the fetched records.
 # Primary item first, then the program, the maps asserted, the transaction of
 # steps 3 and 4, the CSD files COACTUPC reads, and the online-only copybooks it
 # copies. Sign-on (CC00, COSGN00, USRSEC) and the menu transaction are
 # verified by the SEC and MNU scenarios; the batch record copybooks and the
 # data files are verified at the lowest level that executes them.
 inventory_ids:
-- INV-ACT-122  # COACTUPC SSN: First 3 chars: not 000, 666 or 900-999 (1265-EDIT-US-SSN)
+- INV-ACT-146  # COACTUPC FICO Score: 300 to 850 (1275-EDIT-FICO-SCORE)
 - INV-ACT-002  # COACTUPC program
 - INV-MNU-003  # COMEN01 map, where option 2 is entered
-- INV-ACT-004  # COACTUP map, the search, detail and refused-change screens
+- INV-ACT-004  # COACTUP map, the search, detail and validated-change screens
 - INV-CFG-009  # CAUP transaction, which runs the fetch and the field edits
 - INV-CFG-006  # CXACAIX CSD file: card cross-reference by account id
 - INV-CFG-001  # ACCTDAT CSD file: account master read
@@ -107,9 +94,9 @@ inventory_ids:
 - INV-LAY-007  # CSLKPCDY: the area-code and state/zip lookups the later edits pass
 - INV-LAY-008  # CSMSG01Y, copied by COACTUPC
 - INV-LAY-009  # CSMSG02Y: abend data, copied by COACTUPC
-- INV-LAY-010  # CSSETATY: the error attribute set on ACTSSN1
+- INV-LAY-010  # CSSETATY: the field attribute setting of 3300
 - INV-LAY-011  # CSSTRPFY: the AID mapping that selects the ENTER path
-- INV-LAY-013  # CSUTLDPY: the date edits the account dates pass
+- INV-LAY-013  # CSUTLDPY: the date edits the four dates pass
 - INV-LAY-014  # CSUTLDWY: the date-edit working storage
 - INV-LAY-019  # CVCRD01Y: CC-ACCT-ID and the AID flags
 tags:
@@ -117,16 +104,23 @@ tags:
 gap_ids:
 - GAP-INF-005  # ACT end-to-end baselines derived, never observed
 - GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
-# The UniKix COACTUPC drops TRIM from the field name in this message
-# (COACTUPC.cl2:2462-2468), so a UniKix run shows 'SSN: First 3 chars' padded
-# to 25 bytes before the colon and never verifies the item.
+# The four date edits run through CSUTLDTC, so the confirmation prompt rests on
+# CEEDAYS accepting the dates, which no run has observed.
+- GAP-INF-001
+# The UniKix copy changes code this scenario passes through: CSUTLDTC's Vstring
+# lengths (021), COACTUPC's field edits and change detection (022), CSUTLDPY's
+# date edits (024) and COACTUP's row 1 (025). A unikix run therefore observes
+# the copy's behaviour of those parts.
+- GAP-DOC-021
 - GAP-DOC-022
-# Cited because this scenario lists the COACTUP map (INV-ACT-004), as every
-# COACTUPC scenario does: the UniKix COACTUP.bms differs at row 1, columns
-# 1-9, where TRNNAME stands.
+- GAP-DOC-024
 - GAP-DOC-025
 preconditions:
   datasets:
+    # The 10 repository users, for the USER0001 sign-on.
+    USRSEC: {base: USRSEC}
+    # Account 00000000001 and its cross-reference record (card 9680294154603697,
+    # customer 000000001, read through the CXACAIX path) as in the repository.
     ACCTDATA: {base: ACCTDATA}
     CARDXREF: {base: CARDXREF}
     # Customer 000000001 replaced by invented data, as in the other COACTUPC
@@ -150,9 +144,8 @@ preconditions:
         CUST-GOVT-ISSUED-ID: TESTGOVT0001
         CUST-DOB-YYYY-MM-DD: '1961-06-08'
         CUST-EFT-ACCOUNT-ID: '0053581756'
-        CUST-PRI-CARD-HOLDER-IND: Y
+        CUST-PRI-CARD-HOLDER-IND: 'Y'
         CUST-FICO-CREDIT-SCORE: '700'
-    USRSEC: {base: USRSEC}
   parameters:
     clock_mode: relative
   faults: []
@@ -176,7 +169,7 @@ inputs:
   - aid: ENTER
     '@map': COACTUP
     fields:
-      ACTSSN1: '666'
+      ACSTFCO: '300'
 expected:
   screens:
   # One entry per step, each the screen the step ends on.
@@ -247,9 +240,9 @@ expected:
     FKEYS: 'ENTER=Process F3=Exit'
     FKEY05: '       '
     FKEY12: '          '
-  # The refused change: the received values again, the first SSN part as
-  # received, the SSN message, the change prompt, and F12=Cancel shown while
-  # F5=Save stays dark.
+  # The accepted change: the received values with the FICO Score as typed, no
+  # message in ERRMSG, the confirmation prompt, and F5=Save and F12=Cancel
+  # shown.
   - '@map': COACTUP
     TRNNAME: CAUP
     TITLE01: '      AWS Mainframe Modernization       '
@@ -275,13 +268,13 @@ expected:
     AADDGRP: '          '
     ACRCYDB: '+           .00'
     ACSTNUM: '000000001'
-    ACTSSN1: '666'
+    ACTSSN1: '123'
     ACTSSN2: '45'
     ACTSSN3: '6789'
     DOBYEAR: '1961'
     DOBMON: '06'
     DOBDAY: '08'
-    ACSTFCO: '700'
+    ACSTFCO: '300'
     ACSFNAM: 'Testfirst                '
     ACSMNAM: 'Testmiddle               '
     ACSLNAM: 'Testlast                 '
@@ -300,14 +293,14 @@ expected:
     ACSPH2C: '0102'
     ACSEFTC: '0053581756'
     ACSPFLG: 'Y'
-    INFOMSG: 'Update account details presented above.      '
-    ERRMSG: 'SSN: First 3 chars: should not be 000, 666, or between 900 and 999            '
+    INFOMSG: 'Changes validated.Press F5 to save           '
+    ERRMSG: '                                                                              '
     FKEYS: 'ENTER=Process F3=Exit'
-    FKEY05: '       '
-    FKEY12: 'F12=Cancel'
-  # The change is refused, so neither master record is rewritten: both files
-  # keep their 50 records, account 00000000001 its repository values and
-  # customer 000000001 the invented values, SSN 123456789 included.
+    FKEY05: F5=Save
+    FKEY12: F12=Cancel
+  # PF5 is not pressed, so neither master record is rewritten: both files keep
+  # their 50 records, account 00000000001 its repository values and customer
+  # 000000001 the invented values, FICO Score 700 included.
   file_state:
     ACCTDATA:
       count: 50

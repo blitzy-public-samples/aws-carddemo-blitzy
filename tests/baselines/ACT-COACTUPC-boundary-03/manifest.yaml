@@ -1,35 +1,35 @@
 # Manifest of the derived baseline of ACT-COACTUPC-boundary-03: USER0001
-# fetches account 00000000001 on COACTUP, types the FICO Score 850 over
-# customer 000000001's 700 and presses ENTER. 850 is the upper edge of
-# FICO-RANGE-IS-VALID (VALUES 300 THROUGH 850), so 1275-EDIT-FICO-SCORE only
-# CONTINUEs and the screen shows 'Changes validated.Press F5 to save'; PF5 is
-# not pressed, so nothing is rewritten
-# [app/cbl/COACTUPC.cbl:845-849,2514-2531].
-# Only unikix can run the scenario, so expected.yaml is authored from the
-# source and is inferred-not-observed (GAP-INF-005, GAP-INF-012). It names no
-# execution_id or execution_fingerprint and holds no datasets/. A UniKix run
-# never promotes it: the UniKix COACTUPC drops the TEST-NUMVAL-C amount edits
-# and the TRIM this path runs (GAP-DOC-022), so its record is UniKix-copy
-# behavior and this baseline stays derived until an app/ build is observed
-# (GAP-MIS-008).
+# fetches account 00000000001 on COACTUP, changes the Open Date year from 2014
+# to 2099, the last year of century 20, and presses ENTER. EDIT-YEAR-CCYY
+# accepts century 20 (THIS-CENTURY), the month and day edits pass and
+# EDIT-DATE-LE calls CSUTLDTC with the mask YYYYMMDD, so no Open Date message
+# appears and COACTUPC asks for confirmation without writing
+# [app/cbl/COACTUPC.cbl:1478-1482] [app/cpy/CSUTLDPY.cpy:64-90,284-296]
+# [app/cpy/CSUTLDWY.cpy:9-10]. Only unikix can run the scenario, so
+# expected.yaml is authored from the source and is inferred-not-observed
+# (GAP-INF-005, GAP-INF-012, GAP-INF-001). It names no execution_id or
+# execution_fingerprint and holds no datasets/. A UniKix run never promotes
+# it: the UniKix CSUTLDPY and CSUTLDTC differ (GAP-DOC-024, GAP-DOC-021), so
+# its record is UniKix-copy behavior and this baseline stays derived until an
+# app/ build is observed (GAP-MIS-008).
 #
-# source_identity.units are every app/ unit the four steps execute: the COPY
-# closure (inventory_tools.copy_closure) of COSGN00C, which signs USER0001 on
-# and XCTLs to COMEN01C [app/cbl/COSGN00C.cbl:230-238]; of COMEN01C, whose
-# option 2 XCTLs to COACTUPC [app/cbl/COMEN01C.cbl:145-155]; of COACTUPC,
-# which fetches the records and edits the changed screen; and of CSUTLDTC,
-# which the Open, Expiry and Reissue Date and Date of Birth edits CALL through
-# CSUTLDPY EDIT-DATE-LE before the FICO Score is edited
-# [app/cbl/COACTUPC.cbl:1478-1556] [app/cpy/CSUTLDPY.cpy:284-296]; plus the
-# BMS sources of the maps COSGN00, COMEN01 and COACTUP. DFHAID and DFHBMSCA
-# are CICS-supplied, not app/ sources, so they are absent. source_commit is
-# HEAD at authoring; app/ is byte-identical to the suite's starting commit.
+# source_identity.units are the app/ units the four steps execute, each
+# program as harness.results computes it for a program run (its COPY closure
+# and the app/cbl units it CALLs), plus the BMS sources of the maps shown,
+# the same set as the other four-step ACT-COACTUPC manifests. COSGN00C signs
+# USER0001 on and XCTLs to COMEN01C [app/cbl/COSGN00C.cbl:221-240];
+# COMEN01C, whose COMEN01 screen is asserted, XCTLs option 2 to COACTUPC
+# [app/cbl/COMEN01C.cbl:115-156] [app/cpy/COMEN02Y.cpy:31-35]. CSUTLDTC is
+# listed because the accepted Open Date reaches its CALL in EDIT-DATE-LE.
+# DFHAID and DFHBMSCA are CICS-supplied, not app/ sources. source_commit is
+# HEAD at authoring; app/ is byte-identical to the suite's starting commit
+# 93ebec71ff7b59a68cedd7c501afe496a8eaa68d.
 baseline_version: 1.0.0
 capture_date: '2026-11-11'
 capture_platform: derived
-source_commit: 33682eb490a8eec484c11e07de03bbf081f46f7b
+source_commit: 6d80d3de88b5ea32169cde8d73a3a57dd3b05906
 source_identity:
-  commit: 33682eb490a8eec484c11e07de03bbf081f46f7b
+  commit: 6d80d3de88b5ea32169cde8d73a3a57dd3b05906
   tree: app
   units:
     app/bms/COACTUP.bms: 60b261bd2d0c6c851cd78af963ce6c6e14444a9477ad6eb0f80f0e0d4f1f4f23

@@ -1,3 +1,22 @@
+# Manifest of the derived baseline of MNU-COADM01C-negative-01 (PF5 on the
+# admin menu). Only unikix can run the scenario, so expected.yaml is authored
+# from the source and is inferred-not-observed (GAP-INF-003, GAP-INF-012). It
+# names no execution_id or execution_fingerprint and holds no datasets/ until
+# an eligible UniKix run is imported (report.py --import-unikix).
+#
+# source_identity.units are the COPY closure, as harness.results computes it
+# for a program (symbolic maps in app/cpy-bms included), of each program the
+# steps run - COSGN00C for the CC00 sign-on, which XCTLs ADMIN001 to COADM01C
+# [app/cbl/COSGN00C.cbl:221-240], and COADM01C - plus the BMS sources of their
+# maps COSGN00 and COADM01. DFHAID and DFHBMSCA are CICS-supplied and not in
+# the repository. The expected screens are derived from COADM01C's reentry
+# WHEN OTHER path and its SEND-MENU-SCREEN header and option build
+# [app/cbl/COADM01C.cbl:92-103,172-263], CCDA-MSG-INVALID-KEY
+# [app/cpy/CSMSG01Y.cpy:20-21], the four options of COADM02Y that fill
+# OPTN001-OPTN004, the TITLE01/TITLE02 texts of COTTL01Y, the field lengths of
+# the COADM01 map, and CSDAT01Y, whose '/' and ':' fillers and 8-byte MM/DD/YY
+# and HH:MM:SS fields give the asserted CURDATE and CURTIME formats
+# [app/cpy/CSDAT01Y.cpy:30-41].
 baseline_version: 1.0.0
 capture_date: '2026-11-10'
 capture_platform: derived
@@ -7,8 +26,11 @@ source_identity:
   tree: app
   units:
     app/bms/COADM01.bms: 44a3f209e7fa8445355ab7ba687b3ac6e32ef4dfec225e04f4eb2bd57e39386a
+    app/bms/COSGN00.bms: 6747ba57e45fed7e52af728a1f8688ed8fab90b93e1234ab0a0bcae32fa39056
     app/cbl/COADM01C.cbl: 69842c4dd419ed70365682d65423d2744173f3eec695b25b5ed27bd29289608d
+    app/cbl/COSGN00C.cbl: 4f901ae6b113eebae60ae1d94b30f8cb9906d031a4419770bf56980bdf97e377
     app/cpy-bms/COADM01.CPY: ced4c34fdb3fa4284561d83ff8e273cef2a1b45cefc36e56c34da6fec5528006
+    app/cpy-bms/COSGN00.CPY: e2a2f8f6e76e1613cbd8f0baaca87d571a49a7bc219d16a732e4e4ecd7485407
     app/cpy/COADM02Y.cpy: 71015b5a8770e9e3733023cd6a6fa66dd4d8b528739b7a31e07433f71a044bc5
     app/cpy/COCOM01Y.cpy: 77097557ee4c365f62138328d3e280ce7aba5f81d418c6f16434f0fbb2aafa6c
     app/cpy/COTTL01Y.cpy: 5032bfa9428354bb4a62e8c82ba1efa7dcf6b80f27544ad99a81c8a8df8ed41b

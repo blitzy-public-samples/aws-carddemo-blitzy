@@ -1,26 +1,31 @@
 # Manifest of the derived baseline of ACT-COACTUPC-boundary-19: USER0001
-# fetches account 00000000001 on COACTUP and types the Open Date year 1899,
-# one below the lowest accepted century. EDIT-YEAR-CCYY finds century 18,
-# neither THIS-CENTURY nor LAST-CENTURY, and COACTUPC answers 'Open Date :
-# Century is not valid.' without rewriting anything [app/cpy/CSUTLDPY.cpy:63-84]
-# [app/cpy/CSUTLDWY.cpy:9-10] [app/cbl/COACTUPC.cbl:1478-1482]. Only unikix
-# can run the scenario, so expected.yaml is authored from the source and is
+# fetches account 00000000001 on COACTUP, types 665 over the first SSN part
+# and presses ENTER. 665 is the value just below the forbidden 666, so
+# 1265-EDIT-US-SSN accepts it (INVALID-SSN-PART1 is VALUES 0, 666, 900 THRU
+# 999) and the screen shows 'Changes validated.Press F5 to save'
+# [app/cbl/COACTUPC.cbl:117-123,1529-1531,2431-2489]. Only unikix can run the
+# scenario, so expected.yaml is authored from the source and is
 # inferred-not-observed (GAP-INF-005, GAP-INF-012). It names no execution_id
-# or execution_fingerprint and holds no datasets/ until report.py
-# --import-unikix promotes an eligible UniKix run. The UniKix copy of CSUTLDPY
-# differs (GAP-DOC-024), so the identity names the app/ tree.
+# or execution_fingerprint and holds no datasets/. A UniKix run never promotes
+# it: the UniKix COACTUPC changes the edits and the change detection on this
+# path (GAP-DOC-022), and its CSUTLDTC and CSUTLDPY the date edits it passes
+# (GAP-DOC-021, GAP-DOC-024); such a record is UniKix-copy behavior and this
+# baseline stays derived until an app/ build is observed (GAP-MIS-008).
 #
-# source_identity.units are every app/ source the four steps execute, not
-# only COACTUPC, CSUTLDPY and CSUTLDWY: the COPY closure
-# (inventory_tools.copy_closure) of COSGN00C, which signs USER0001 on; of
-# COMEN01C, whose option 2 XCTLs to COACTUPC and whose COMEN01 screen is
-# asserted; of COACTUPC, which fetches and edits the account; and of
-# CSUTLDTC, which runs in the last step because the valid Expiry, Reissue and
-# birth dates reach CALL 'CSUTLDTC' in EDIT-DATE-LE
-# [app/cpy/CSUTLDPY.cpy:274-296]; plus the BMS sources of the maps COSGN00,
-# COMEN01 and COACTUP. DFHAID and DFHBMSCA are CICS-supplied, not app/
-# sources. source_commit is HEAD at authoring; app/ there is byte-identical
-# to the suite's starting commit 93ebec71ff7b59a68cedd7c501afe496a8eaa68d.
+# source_identity.units are the app/ units the four steps execute, each
+# program as harness.results computes it for a program run (its COPY closure
+# and the app/cbl units it CALLs), plus the BMS sources and symbolic
+# copybooks of the maps shown. This is wider than COACTUPC's closure alone
+# because a source identity names every program that ran: COSGN00C signs
+# USER0001 on and XCTLs to COMEN01C [app/cbl/COSGN00C.cbl:221-240]; COMEN01C,
+# whose COMEN01 screen is asserted, XCTLs option 2 to COACTUPC
+# [app/cbl/COMEN01C.cbl:145-156] [app/cpy/COMEN02Y.cpy:31-35]; COACTUPC runs
+# the field edits. CSUTLDTC is listed because it runs: the valid Open, Expiry
+# and Reissue Dates and the Date of Birth are edited on this path and reach
+# its CALL in EDIT-DATE-LE [app/cbl/COACTUPC.cbl:1472-1543]
+# [app/cpy/CSUTLDPY.cpy:284-296]. DFHAID and DFHBMSCA are CICS-supplied, not
+# app/ sources. source_commit is HEAD at authoring; app/ is byte-identical to
+# the suite's starting commit 93ebec71ff7b59a68cedd7c501afe496a8eaa68d.
 baseline_version: 1.0.0
 capture_date: '2026-11-11'
 capture_platform: derived

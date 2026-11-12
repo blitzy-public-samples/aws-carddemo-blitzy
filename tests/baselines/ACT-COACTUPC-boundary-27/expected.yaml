@@ -1,37 +1,55 @@
-# Derived baseline of scenario ACT-COACTUPC-boundary-27 (capture_platform:
-# derived), authored from the app/ source and never observed: no TPE region
-# runs in CI. Open until a UniKix run of the app/ build is imported:
-# GAP-INF-005 (derived ACT end-to-end baselines) and GAP-INF-012 (online-only
-# copybooks such as CSSETATY).
-# Steps 1-3: USER0001 signs on, option 2 XCTLs to COACTUPC, and ENTER with
-# account 00000000001 shows the fetched account and customer with the change
-# prompt [app/cbl/COACTUPC.cbl:2787-2865,2955-2981].
-# Step 4: 899 over ACTSSN1 is a change, so 1200-EDIT-MAP-INPUTS sets
-# ACUP-CHANGES-NOT-OK and edits the fields in order. 1265-EDIT-US-SSN finds
-# '899' supplied, numeric and not zero, and 899 is the last value below the
-# 900-999 range of INVALID-SSN-PART1 (VALUES 0, 666, 900 THRU 999), so it sets
-# neither INPUT-ERROR nor a message; every other edit passes on the invented
-# customer, so ACUP-CHANGES-OK-NOT-CONFIRMED is set [app/cbl/COACTUPC.cbl:
-# 117-123,1460-1675,2431-2489]. ENTER without PF5 only continues, so nothing
-# is rewritten [app/cbl/COACTUPC.cbl:2582-2621]. 3203 shows the received
-# values with ACTSSN1 as typed; 3250 sets PROMPT-FOR-CONFIRMATION, moving the
-# X(40) WS-INFO-MSG to the 45-byte INFOMSG and the blank X(75) WS-RETURN-MSG
-# to the 78-byte ERRMSG; 3390 makes F5=Save and F12=Cancel bright
-# [app/cbl/COACTUPC.cbl:472-473,2870-2951,2955-2983,3566-3584].
-# The accepted value therefore shows as the next prompt, not as the SSN
-# message that ACT-COACTUPC-negative-064 (950) pins.
-# This pins the app/ behaviour: the UniKix COACTUPC changes its field edits
-# (GAP-DOC-022), so a UniKix record is UniKix-copy behaviour and never
-# replaces this file; only `report.py --import-unikix` promotes it.
-# Screen values are full BMS width with trailing spaces kept, because screens
-# compare exactly; a dark field is captured as blanks. CURDATE and CURTIME
-# come from the region clock, so they are matchers. file_state holds the
-# records as the preconditions materialize them, decoded through CVACT01Y and
-# CVCUS01Y.
+# Derived baseline of scenario ACT-COACTUPC-boundary-27 (capture_platform
+# derived, tag inferred-not-observed): USER0001 signs on, takes main-menu
+# option 2, fetches account 00000000001 on COACTUP, types the FICO Score 850
+# over customer 000000001's 700 and presses ENTER. 850 is the last value of
+# FICO-RANGE-IS-VALID (VALUES 300 THROUGH 850), so it is accepted: no FICO
+# Score message, the confirmation prompt instead, and nothing written before
+# PF5. The FICO Score boundaries are 299 and 851 (refused, boundary-25 and
+# boundary-28) and 300 and 850 (accepted, boundary-26 and this one).
+# Authored from the source, never captured:
+# - app/cbl/COMEN01C.cbl:241-252 with app/cpy/COMEN02Y.cpy:30-33 (OPTN002),
+#   and app/cbl/COMEN01C.cbl:144-155 (context 0, XCTL to COACTUPC);
+# - app/cbl/COACTUPC.cbl:880-886,964-973 (first entry), 2668-2692 (header:
+#   CAUP, COACTUPC, app/cpy/COTTL01Y.cpy titles, app/cpy/CSDAT01Y.cpy clock),
+#   2958-2959 (PROMPT-FOR-SEARCH-KEYS);
+# - step 3: 2568-2580 and 3608-3884 (CXACAIX, ACCTDAT and CUSTDAT read without
+#   UPDATE), 2787-2865 (3202-SHOW-ORIGINAL-VALUES, amounts through PIC
+#   +ZZZ,ZZZ,ZZZ.99, FICO 700), 2962-2963 (PROMPT-FOR-CHANGES), 3500-3561
+#   (fields unprotected with MDT on; F5 and F12 stay dark);
+# - step 4: 1279-1284 (the received '850' in the 3-byte
+#   ACUP-NEW-CUST-FICO-SCORE-X, redefined PIC 9(03) at 845-849), 1764-1768
+#   (unequal to the old 700, so a change), 1545-1556 and 2109-2176
+#   (1245-EDIT-NUM-REQD: supplied, numeric, not zero), 2514-2531
+#   (1275-EDIT-FICO-SCORE only CONTINUEs: no INPUT-ERROR and no ': should be
+#   between 300 and 850'), 1429-1676 (every other edit passes on the
+#   repository account and the invented customer, so
+#   ACUP-CHANGES-OK-NOT-CONFIRMED at 1671-1675), 2620-2621 (ENTER without PF5
+#   only continues: no READ UPDATE, no REWRITE), 2870-2949
+#   (3203-SHOW-UPDATED-VALUES, ACSTFCO '850' at 2926), 2966-2967 and 472-473
+#   ('Changes validated.Press F5 to save', the X(40) WS-INFO-MSG in the
+#   45-byte INFOMSGO), 2979-2981 (the blank X(75) WS-RETURN-MSG in the 78-byte
+#   ERRMSGO), 3001-3003 (all fields protected), 3578-3581 (F5=Save and
+#   F12=Cancel made bright);
+# - app/bms/COACTUP.bms for field lengths and the INITIAL texts of FKEYS,
+#   FKEY05 and FKEY12 (498-507); a dark field is captured as blanks.
+# Values are whole BMS fields with their trailing spaces. TRNNAME is pinned as
+# the CAUP COACTUPC moves, although app/bms/COACTUP.bms:487-488 also defines
+# an unnamed 9-byte field at row 1, column 1 (GAP-DOC-025).
+# file_state: nothing is rewritten before PF5, so both files keep their 50
+# records and the key records are the materialized fixtures, decoded whole
+# (FILLER included): ACCTDATA from app/data/ASCII/acctdata.txt, CUSTDATA with
+# the scenario's invented customer 000000001, FICO Score still 700.
+# Open under GAP-INF-005 (derived ACT end-to-end baselines) and GAP-INF-012
+# (online-only copybooks). Context: the UniKix COACTUPC amount edits
+# (GAP-DOC-022) and COACTUP.bms row 1 (GAP-DOC-025) differ. Only
+# `report.py --import-unikix` promotes this baseline; it is never edited by
+# hand to match a run.
 file_state:
   ACCTDATA:
     contains:
-    - ACCT-ACTIVE-STATUS: Y
+    - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+      ACCT-ACTIVE-STATUS: Y
+      ACCT-ADDR-ZIP: A000000000
       ACCT-CASH-CREDIT-LIMIT: '1020.00'
       ACCT-CREDIT-LIMIT: '2020.00'
       ACCT-CURR-BAL: '194.00'
@@ -63,6 +81,7 @@ file_state:
       CUST-PHONE-NUM-2: '(919)555-0102  '
       CUST-PRI-CARD-HOLDER-IND: Y
       CUST-SSN: '123456789'
+      CUSTOMER-RECORD.FILLER#1: '                                                                                                                                                                        '
     count: 50
 screens:
 - '@map': COMEN01
@@ -158,11 +177,11 @@ screens:
   ACSPH2B: '555'
   ACSPH2C: '0102'
   ACSSTTE: NC
-  ACSTFCO: '700'
+  ACSTFCO: '850'
   ACSTNUM: '000000001'
   ACSTTUS: Y
   ACSZIPC: '27601'
-  ACTSSN1: '899'
+  ACTSSN1: '123'
   ACTSSN2: '45'
   ACTSSN3: '6789'
   ACURBAL: +        194.00

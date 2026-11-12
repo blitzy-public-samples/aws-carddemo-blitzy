@@ -1,3 +1,4 @@
+# Derived baseline of ACT-COACTUPC-boundary-20 (capture_platform: derived), authored from app/cbl/COACTUPC.cbl:2431-2489 and never observed: 666 refused as the first SSN part.
 file_state:
   ACCTDATA:
     contains:
@@ -34,11 +35,6 @@ file_state:
       CUST-PRI-CARD-HOLDER-IND: Y
       CUST-SSN: '123456789'
     count: 50
-messages:
-- '                                                                              '
-- '                                                                              '
-- '                                                                              '
-- '                                                                              '
 screens:
 - '@map': COMEN01
   ERRMSG: '                                                                              '
@@ -137,7 +133,7 @@ screens:
   ACSTNUM: '000000001'
   ACSTTUS: Y
   ACSZIPC: '27601'
-  ACTSSN1: '123'
+  ACTSSN1: '666'
   ACTSSN2: '45'
   ACTSSN3: '6789'
   ACURBAL: +        194.00
@@ -149,17 +145,17 @@ screens:
   DOBDAY: 08
   DOBMON: '06'
   DOBYEAR: '1961'
-  ERRMSG: '                                                                              '
+  ERRMSG: 'SSN: First 3 chars: should not be 000, 666, or between 900 and 999            '
   EXPDAY: '20'
   EXPMON: '05'
   EXPYEAR: '2025'
-  FKEY05: F5=Save
+  FKEY05: '       '
   FKEY12: F12=Cancel
   FKEYS: ENTER=Process F3=Exit
-  INFOMSG: 'Changes validated.Press F5 to save           '
+  INFOMSG: 'Update account details presented above.      '
   OPNDAY: '20'
   OPNMON: '11'
-  OPNYEAR: '1900'
+  OPNYEAR: '2014'
   PGMNAME: COACTUPC
   RISDAY: '20'
   RISMON: '05'

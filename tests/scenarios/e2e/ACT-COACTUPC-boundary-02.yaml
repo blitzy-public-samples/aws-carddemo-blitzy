@@ -1,130 +1,134 @@
-# COACTUPC accepts a FICO Score of 300, the lower edge of FICO-RANGE-IS-VALID
-# (VALUES 300 THROUGH 850 [app/cbl/COACTUPC.cbl:845-849]): 1245-EDIT-NUM-REQD
-# and 1275-EDIT-FICO-SCORE both pass, so no FICO message appears and the
-# change goes on to the confirmation prompt [app/cbl/COACTUPC.cbl:1545-1556,
-# 2109-2176,2514-2531]. The other FICO Score boundary scenarios take 299, 850
-# and 851; ACT-COACTUPC-negative-088 refuses 150, outside the accepted range.
+# COACTUPC Open Date century edge: 1900, the first year of the lowest century
+# EDIT-YEAR-CCYY accepts. Of the four year boundaries of the Open Date edit
+# (1899, 1900, 2099, 2100), 1900 is accepted; 1899, whose century 18 is
+# refused with 'Open Date : Century is not valid.', is the boundary on the
+# other side. An accepted value shows as the next prompt, not as the field's
+# message.
 #
-# Steps 1-3 reach the fetched account as ACT-COACTUPC-normal-02 does: USER0001
-# signs on through CC00, chooses option 2 (Account Update) on COMEN01, and
-# enters account 00000000001. 9000-READ-ACCT reads CXACAIX by account id (card
-# 9680294154603697, customer 000000001), ACCTDAT and CUSTDAT, keeps the
-# records as the old values in the COMMAREA and sets ACUP-SHOW-DETAILS; the
-# screen shows them with 'Update account details presented above.', every
-# editable field unprotected with its MDT on [app/cbl/COACTUPC.cbl:2568-2580,
-# 2787-2865,2955-3000,3441-3561,3608-3884].
-# Step 4 types 300 over the FICO Score (ACSTFCO, shown as 700) and presses
-# ENTER.
-# - 1100-RECEIVE-MAP moves the received '300' to the 3-byte
-#   ACUP-NEW-CUST-FICO-SCORE-X, which ACUP-NEW-CUST-FICO-SCORE redefines as
-#   PIC 9(03) [app/cbl/COACTUPC.cbl:845-849,1279-1284]. 1205-COMPARE-OLD-NEW
-#   finds it unequal to the old score 700, so a change has occurred, and
-#   1200-EDIT-MAP-INPUTS sets ACUP-CHANGES-NOT-OK and runs the field edits in
-#   screen order [app/cbl/COACTUPC.cbl:1460-1470,1764-1768].
-# - Account Status, Open Date, Credit Limit, Expiry Date, Cash Credit Limit,
-#   Reissue Date, the current balance and cycle amounts, SSN and Date of Birth
-#   pass on the repository account and the invented customer. 'FICO Score' is
-#   moved to WS-EDIT-VARIABLE-NAME and the score to WS-EDIT-ALPHANUM-ONLY with
-#   length 3; 1245-EDIT-NUM-REQD finds it supplied, all numeric and not zero,
-#   so 1275-EDIT-FICO-SCORE runs and finds FICO-RANGE-IS-VALID true: 300 is
-#   the first value of the range, so it CONTINUEs without INPUT-ERROR or a
-#   message [app/cbl/COACTUPC.cbl:1472-1556,2514-2516].
-# - The name, address, zip, phone, EFT and primary-holder edits and the
-#   state/zip cross edit pass on the invented customer, so INPUT-OK stands and
-#   1200-EDIT-MAP-INPUTS sets ACUP-CHANGES-OK-NOT-CONFIRMED
-#   [app/cbl/COACTUPC.cbl:1557-1674]. 2000-DECIDE-ACTION keeps that state on
-#   ENTER; only PF5 in that state reaches 9600-WRITE-PROCESSING, the READ
-#   UPDATE and REWRITE path [app/cbl/COACTUPC.cbl:2582-2615].
-# - 3203-SHOW-UPDATED-VALUES shows the received values, the amounts re-edited
-#   through +ZZZ,ZZZ,ZZZ.99 and the FICO Score as received; 3250 sets
-#   PROMPT-FOR-CONFIRMATION in WS-INFO-MSG, moved to INFOMSG, and moves the
-#   blank WS-RETURN-MSG to ERRMSG; 3300 leaves every field protected, and 3390
-#   makes F5=Save and F12=Cancel bright [app/cbl/COACTUPC.cbl:462-479,
-#   2870-2951,2955-2983,3001-3003,3566-3584].
+# Steps 1-3 fetch account 00000000001 and customer 000000001 as
+# ACT-COACTUPC-alternate-04 does: sign-on through CC00, main-menu option 2,
+# then the account id on the COACTUP search screen. 2000-DECIDE-ACTION reads
+# CXACAIX, ACCTDAT and CUSTDAT, and 3202/3250 show the details with 'Update
+# account details presented above.' and every editable field unprotected with
+# MDT on, so all of them come back on the next AID
+# [app/cbl/COACTUPC.cbl:2568-2580,2787-2865,2955-3000,3500-3561,3608-3884].
+# Step 4 types 1900 over the fetched open-date year 2014 and presses ENTER;
+# OPNMON and OPNDAY come back as fetched, 11 and 20. 1100-RECEIVE-MAP moves
+# OPNYEARI to ACUP-NEW-OPEN-YEAR [app/cbl/COACTUPC.cbl:1144-1149],
+# 1205-COMPARE-OLD-NEW finds the open date changed, and 1200-EDIT-MAP-INPUTS
+# moves 'Open Date' to WS-EDIT-VARIABLE-NAME and performs EDIT-DATE-CCYYMMDD
+# through its exit [app/cbl/COACTUPC.cbl:1460-1482,1684-1704]:
+# - EDIT-YEAR-CCYY: 1900 is supplied and numeric, and WS-EDIT-DATE-CC-N is 19,
+#   LAST-CENTURY, so the century test continues and FLG-YEAR-ISVALID is set
+#   [app/cpy/CSUTLDPY.cpy:25-87] [app/cpy/CSUTLDWY.cpy:5-10].
+# - EDIT-MONTH: 11 is supplied, within 1-12 and TEST-NUMVAL 0
+#   [app/cpy/CSUTLDPY.cpy:91-144].
+# - EDIT-DAY: 20 is supplied, numeric and within 1-31
+#   [app/cpy/CSUTLDPY.cpy:150-204].
+# - EDIT-DAY-MONTH-YEAR: November is a 30-day month but the day is not 31,
+#   and it is not February. The year, month and day flags are all LOW-VALUES,
+#   so WS-EDIT-DATE-IS-VALID holds and control falls through to EDIT-DATE-LE
+#   [app/cpy/CSUTLDPY.cpy:209-279].
+# - EDIT-DATE-LE: CALL 'CSUTLDTC' with WS-EDIT-DATE-CCYYMMDD 19001120 and the
+#   mask YYYYMMDD. 1900-11-20 lies inside the Lilian range CEEDAYS supports
+#   (from 1582-10-15), so the expected severity is 0, the day flag is set valid
+#   and WS-EDIT-DATE-IS-VALID is set [app/cpy/CSUTLDPY.cpy:284-328]
+#   [app/cbl/CSUTLDTC.cbl:103-151]. That acceptance is known only through the
+#   stub (GAP-INF-001), which is why the CSUTLDTC date-acceptance item is
+#   listed.
+# Every other field comes back with the fetched values, which pass every edit
+# (ACT-COACTUPC-alternate-04), so INPUT-ERROR stays off and
+# ACUP-CHANGES-OK-NOT-CONFIRMED is set [app/cbl/COACTUPC.cbl:1484-1675].
+# Without PF5, 2000-DECIDE-ACTION does not run 9600-WRITE-PROCESSING, the sole
+# READ UPDATE and REWRITE path [app/cbl/COACTUPC.cbl:2585-2621].
+# 3203-SHOW-UPDATED-VALUES shows the received values with the year 1900,
+# 3250-SETUP-INFOMSG moves PROMPT-FOR-CONFIRMATION to INFOMSG and the blank
+# WS-RETURN-MSG to ERRMSG, 3300 leaves every field protected, and 3390 makes
+# F5=Save and F12=Cancel visible [app/cbl/COACTUPC.cbl:472-473,2870-2951,
+# 2955-2983,3001-3003,3566-3581].
 #
 # Expected values are derived from the source (no TPE region runs in CI):
-# - INFOMSG is the 40-byte WS-INFO-MSG in the 45-byte field; ERRMSG holds the
-#   blank 75-byte WS-RETURN-MSG in its 78 bytes. Fields are compared at their
-#   full BMS length, trailing spaces kept.
-# - The tpe adapter enters a field with EraseEOF before typing; '300' fills the
-#   3-byte ACSTFCO, and the screen shows it as received.
-# - FKEY05 and FKEY12 keep their INITIAL text; a dark (ASKIP,DRK) field is
-#   captured as blanks until 3390 makes it bright. Colour and cursor position
-#   are not in the s3270 text capture and are not asserted.
-# - AADDGRP shows ACCT-GROUP-ID, blank in every repository account
-#   (GAP-DEF-005); ACSZIPC is 5 bytes, so the 10-byte zip shows its first 5.
+# - Screen fields are compared at their full BMS length, trailing spaces kept.
+#   INFOMSG is the 34-character prompt in the 40-byte WS-INFO-MSG, moved to the
+#   45-byte INFOMSGO. ERRMSG is the 75-byte WS-RETURN-MSG, blank, in the 78-byte
+#   ERRMSGO, so it holds no Open Date message.
+# - The tpe adapter enters a field with EraseEOF before typing, so OPNYEAR
+#   holds exactly 1900.
+# - FKEY05 and FKEY12 keep their INITIAL text. On screen 3 they are dark
+#   (ASKIP,DRK), and the s3270 capture renders a zero-intensity field as blanks.
 # - CURDATE and CURTIME come from the region clock, hence the matchers and
 #   clock_mode relative.
 #
-# Customer 000000001 is replaced by invented data that passes every other
-# COACTUPC edit, so the FICO Score decides the outcome and its old value 700
-# differs from 300: the repository record fails the Phone Number 2 area code,
-# the state/zip combination and the FICO range [app/cbl/COACTUPC.cbl:
-# 2225-2558]. Account 00000000001 and its cross-reference stay as in the
-# repository.
+# Customer 000000001 is replaced by the invented data of the other COACTUPC
+# update scenarios, which passes every edit. The repository record has FICO
+# 274 and zip 12546, and either would be refused first
+# [app/cbl/COACTUPC.cbl:2514-2558]. Account 00000000001 and its
+# cross-reference stay as in the repository.
 id: ACT-COACTUPC-boundary-02
 level: e2e
 type: boundary
 description: >-
-  USER0001 signs on, chooses main-menu option 2 (Account Update), fetches
-  account 00000000001, whose customer has FICO Score 700, types 300 over the
-  FICO Score and presses ENTER. 300 is the lowest score within 300 to 850, so
-  COACTUPC accepts it: no FICO Score message appears, the received values are
-  shown with the score as typed and the confirmation prompt 'Changes
-  validated.Press F5 to save', and F5=Save and F12=Cancel are made visible.
-  PF5 is not pressed, so nothing is saved: ACCTDATA and CUSTDATA still hold
-  the fetched records.
-# Primary item first, then the program, the maps asserted, the transaction of
-# steps 3 and 4, the CSD files COACTUPC reads, and the online-only copybooks it
-# copies. Sign-on (CC00, COSGN00, USRSEC) and the menu transaction are
-# verified by the SEC and MNU scenarios; the batch record copybooks and the
-# data files are verified at the lowest level that executes them.
+  USER0001 signs on, chooses main-menu option 2 (Account Update) and fetches
+  account 00000000001 (opened 2014-11-20) with customer 000000001. The Open
+  Date year is changed to 1900, the lowest year of century 19, and ENTER is
+  pressed. The century is accepted and the date 1900-11-20 passes the CSUTLDTC
+  (CEEDAYS) check with the mask YYYYMMDD, so no Open Date message appears:
+  every edit passes, and COACTUPC shows the new open date, protected, with
+  'Changes validated.Press F5 to save', a blank message line and the F5=Save
+  and F12=Cancel keys. Nothing is saved before PF5.
+# Primary item first, then the CSUTLDTC date acceptance the call reaches, the
+# program, the maps asserted, the transaction of steps 3 and 4, the CSD files
+# COACTUPC reads, and the online-only copybooks it copies. INV-ACT-031
+# ('Changes validated.Press F5 to save') is verified by
+# ACT-COACTUPC-alternate-04 and INV-ACT-082 (the CSUTLDTC severity predicate)
+# by ACT-COACTUPC-negative-024. Sign-on (CC00, COSGN00, USRSEC) and the menu
+# transaction are verified by the SEC and MNU scenarios, and the batch record
+# copybooks and data files at the lowest level that executes them.
 inventory_ids:
-- INV-ACT-146  # COACTUPC FICO Score: 300 to 850 (1275-EDIT-FICO-SCORE)
+- INV-ACT-072  # COACTUPC Open Date: century 19 or 20 (EDIT-YEAR-CCYY, rule)
+- INV-UTL-003  # CSUTLDTC date acceptance for masks YYYY-MM-DD and YYYYMMDD, reached through EDIT-DATE-LE
 - INV-ACT-002  # COACTUPC program
 - INV-MNU-003  # COMEN01 map, where option 2 is entered
-- INV-ACT-004  # COACTUP map, the search, detail and validated-change screens
-- INV-CFG-009  # CAUP transaction, which runs the fetch and the field edits
+- INV-ACT-004  # COACTUP map, the search, detail and confirmation screens
+- INV-CFG-009  # CAUP transaction, which runs the fetch and the validation
 - INV-CFG-006  # CXACAIX CSD file: card cross-reference by account id
-- INV-CFG-001  # ACCTDAT CSD file: account master read
-- INV-CFG-005  # CUSTDAT CSD file: customer master read
+- INV-CFG-001  # ACCTDAT CSD file: account master read, never rewritten here
+- INV-CFG-005  # CUSTDAT CSD file: customer master read, never rewritten here
 - INV-LAY-002  # COCOM01Y: the COMMAREA carrying the context and ids
 - INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
 - INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
 - INV-LAY-007  # CSLKPCDY: the area-code and state/zip lookups the later edits pass
 - INV-LAY-008  # CSMSG01Y, copied by COACTUPC
 - INV-LAY-009  # CSMSG02Y: abend data, copied by COACTUPC
-- INV-LAY-010  # CSSETATY: the field attribute setting of 3300
+- INV-LAY-010  # CSSETATY: the per-field error attributes, none set here
 - INV-LAY-011  # CSSTRPFY: the AID mapping that selects the ENTER path
-- INV-LAY-013  # CSUTLDPY: the date edits the four dates pass
-- INV-LAY-014  # CSUTLDWY: the date-edit working storage
+- INV-LAY-013  # CSUTLDPY: EDIT-YEAR-CCYY and EDIT-DATE-LE
+- INV-LAY-014  # CSUTLDWY: WS-EDIT-DATE-CC-N with THIS-CENTURY and LAST-CENTURY
 - INV-LAY-019  # CVCRD01Y: CC-ACCT-ID and the AID flags
 tags:
 - inferred-not-observed
 gap_ids:
 - GAP-INF-005  # ACT end-to-end baselines derived, never observed
 - GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
-# The four date edits run through CSUTLDTC, so the confirmation prompt rests on
-# CEEDAYS accepting the dates, which no run has observed.
-- GAP-INF-001
-# The UniKix copy changes code this scenario passes through: CSUTLDTC's Vstring
-# lengths (021), COACTUPC's field edits and change detection (022), CSUTLDPY's
-# date edits (024) and COACTUP's row 1 (025). A unikix run therefore observes
-# the copy's behaviour of those parts.
-- GAP-DOC-021
-- GAP-DOC-022
+- GAP-INF-001  # which dates CEEDAYS accepts is known only through the stub
+- GAP-MIS-010  # whether UniKix supplies CEEDAYS
+# The UniKix copy of CSUTLDPY drops TRIM from the composed date-edit messages
+# and replaces TEST-NUMVAL in the month and day checks; it lists INV-ACT-072.
 - GAP-DOC-024
+# The UniKix copy of CSUTLDTC trims the Vstring lengths it passes to CEEDAYS,
+# so the date and mask CEEDAYS receives differ on UniKix; it lists INV-UTL-003.
+- GAP-DOC-021
+# The UniKix COACTUPC comments out the TEST-NUMVAL-C amount checks this path
+# runs, so the amounts re-edited on screen 4 may differ on UniKix.
+- GAP-DOC-022
+# The UniKix COACTUP.bms differs at row 1, columns 1-9, where TRNNAME stands.
 - GAP-DOC-025
 preconditions:
   datasets:
-    # The 10 repository users, for the USER0001 sign-on.
-    USRSEC: {base: USRSEC}
-    # Account 00000000001 and its cross-reference record (card 9680294154603697,
-    # customer 000000001, read through the CXACAIX path) as in the repository.
     ACCTDATA: {base: ACCTDATA}
     CARDXREF: {base: CARDXREF}
     # Customer 000000001 replaced by invented data, as in the other COACTUPC
-    # scenarios; the 168-byte FILLER keeps the repository record's spaces.
+    # update scenarios; the 168-byte FILLER keeps the repository record's spaces.
     CUSTDATA:
       base: CUSTDATA
       records:
@@ -144,8 +148,10 @@ preconditions:
         CUST-GOVT-ISSUED-ID: TESTGOVT0001
         CUST-DOB-YYYY-MM-DD: '1961-06-08'
         CUST-EFT-ACCOUNT-ID: '0053581756'
-        CUST-PRI-CARD-HOLDER-IND: 'Y'
+        CUST-PRI-CARD-HOLDER-IND: Y
         CUST-FICO-CREDIT-SCORE: '700'
+    # The 10 repository users, for the USER0001 sign-on.
+    USRSEC: {base: USRSEC}
   parameters:
     clock_mode: relative
   faults: []
@@ -166,10 +172,12 @@ inputs:
     '@map': COACTUP
     fields:
       ACCTSID: '00000000001'
+  # The lowest year of century 19; OPNMON and OPNDAY are left as fetched (11
+  # and 20).
   - aid: ENTER
     '@map': COACTUP
     fields:
-      ACSTFCO: '300'
+      OPNYEAR: '1900'
 expected:
   screens:
   # One entry per step, each the screen the step ends on.
@@ -240,9 +248,10 @@ expected:
     FKEYS: 'ENTER=Process F3=Exit'
     FKEY05: '       '
     FKEY12: '          '
-  # The accepted change: the received values with the FICO Score as typed, no
-  # message in ERRMSG, the confirmation prompt, and F5=Save and F12=Cancel
-  # shown.
+  # The year 1900 accepted: the validated change, protected, with the new open
+  # date, the confirmation prompt, the save and cancel keys shown, and a blank
+  # message line, so neither the century message nor a CSUTLDTC severity
+  # message appears.
   - '@map': COACTUP
     TRNNAME: CAUP
     TITLE01: '      AWS Mainframe Modernization       '
@@ -252,7 +261,7 @@ expected:
     CURTIME: {match: run-time}
     ACCTSID: '00000000001'
     ACSTTUS: 'Y'
-    OPNYEAR: '2014'
+    OPNYEAR: '1900'
     OPNMON: '11'
     OPNDAY: '20'
     ACRDLIM: '+      2,020.00'
@@ -274,7 +283,7 @@ expected:
     DOBYEAR: '1961'
     DOBMON: '06'
     DOBDAY: '08'
-    ACSTFCO: '300'
+    ACSTFCO: '700'
     ACSFNAM: 'Testfirst                '
     ACSMNAM: 'Testmiddle               '
     ACSLNAM: 'Testlast                 '
@@ -296,11 +305,16 @@ expected:
     INFOMSG: 'Changes validated.Press F5 to save           '
     ERRMSG: '                                                                              '
     FKEYS: 'ENTER=Process F3=Exit'
-    FKEY05: F5=Save
-    FKEY12: F12=Cancel
-  # PF5 is not pressed, so neither master record is rewritten: both files keep
-  # their 50 records, account 00000000001 its repository values and customer
-  # 000000001 the invented values, FICO Score 700 included.
+    FKEY05: 'F5=Save'
+    FKEY12: 'F12=Cancel'
+  # One ERRMSG value per step: blank throughout, the accepted year included.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - '                                                                              '
+  - '                                                                              '
+  # No PF5 yet, so neither master record is rewritten: both files keep their
+  # 50 records, and account 00000000001 keeps its open date 2014-11-20.
   file_state:
     ACCTDATA:
       count: 50

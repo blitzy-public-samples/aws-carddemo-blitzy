@@ -1,7 +1,37 @@
+# Derived baseline of scenario ACT-COACTUPC-boundary-04 (capture_platform:
+# derived), authored from the app/ source and never observed: no TPE region
+# runs in CI. Open until a UniKix run of the app/ build is imported:
+# GAP-INF-005 (derived ACT end-to-end baselines) and GAP-INF-012 (online-only
+# copybooks CSUTLDPY and CSUTLDWY).
+# Open Date year 2100, the upper refused edge of the century edit (1899 is
+# boundary-01; 1900 and 2099, accepted, are boundary-02 and -03).
+# Steps 1-3: USER0001 signs on, main menu option 2 XCTLs to COACTUPC, and
+# ENTER with account 00000000001 shows the fetched account and the invented
+# customer 000000001 with 'Update account details presented above.'
+# [app/cbl/COACTUPC.cbl:964-973,2787-2865,2955-2981].
+# Step 4: OPNYEAR '2100' over 2014 is a change, so 1200-EDIT-MAP-INPUTS sets
+# ACUP-CHANGES-NOT-OK; Account Status 'Y' passes, then EDIT-YEAR-CCYY finds
+# the year supplied and numeric with WS-EDIT-DATE-CC-N 21, neither
+# THIS-CENTURY (20) nor LAST-CENTURY (19), and, the message being still off,
+# STRINGs 'Open Date : Century is not valid.' (33 characters) into
+# WS-RETURN-MSG; no later edit can replace it and CSUTLDTC is not called
+# [app/cbl/COACTUPC.cbl:1460-1482] [app/cpy/CSUTLDPY.cpy:25-90]
+# [app/cpy/CSUTLDWY.cpy:5-10]. Nothing is rewritten; 3203 echoes the received
+# values, 3250 sets PROMPT-FOR-CHANGES and moves the message to ERRMSG, and
+# 3390 brightens F12=Cancel because a change is pending
+# [app/cbl/COACTUPC.cbl:2596-2597,2911-2913,2955-2981,3566-3584].
+# This pins the app/ text; a UniKix record of the copy's CSUTLDPY (GAP-DOC-024)
+# never replaces this file.
+# Screen values are full BMS width with trailing spaces kept (ERRMSG 78,
+# INFOMSG 45), because screens compare exactly. CURDATE and CURTIME come from
+# the region clock, so they are matchers. file_state holds the records as the
+# preconditions materialize them, decoded through CVACT01Y and CVCUS01Y,
+# unchanged because no REWRITE runs.
 file_state:
   ACCTDATA:
     contains:
     - ACCT-ACTIVE-STATUS: Y
+      ACCT-ADDR-ZIP: A000000000
       ACCT-CASH-CREDIT-LIMIT: '1020.00'
       ACCT-CREDIT-LIMIT: '2020.00'
       ACCT-CURR-BAL: '194.00'
@@ -128,7 +158,7 @@ screens:
   ACSPH2B: '555'
   ACSPH2C: '0102'
   ACSSTTE: NC
-  ACSTFCO: '851'
+  ACSTFCO: '700'
   ACSTNUM: '000000001'
   ACSTTUS: Y
   ACSZIPC: '27601'
@@ -144,7 +174,7 @@ screens:
   DOBDAY: 08
   DOBMON: '06'
   DOBYEAR: '1961'
-  ERRMSG: 'FICO Score: should be between 300 and 850                                     '
+  ERRMSG: 'Open Date : Century is not valid.                                             '
   EXPDAY: '20'
   EXPMON: '05'
   EXPYEAR: '2025'
@@ -154,7 +184,7 @@ screens:
   INFOMSG: 'Update account details presented above.      '
   OPNDAY: '20'
   OPNMON: '11'
-  OPNYEAR: '2014'
+  OPNYEAR: '2100'
   PGMNAME: COACTUPC
   RISDAY: '20'
   RISMON: '05'

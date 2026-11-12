@@ -1,40 +1,7 @@
-# Derived baseline of scenario ACT-COACTUPC-boundary-02: USER0001 signs on,
-# takes main menu option 2 'Account Update', fetches account 00000000001 on
-# COACTUP (transaction CAUP), types the FICO Score 300 over customer
-# 000000001's 700 and presses ENTER. 300 is the first value of
-# FICO-RANGE-IS-VALID (VALUES 300 THROUGH 850), so it is accepted: no FICO
-# Score message, and the confirmation prompt instead. Customer 000000001 is the
-# scenario's invented record, which passes every other edit of
-# 1200-EDIT-MAP-INPUTS.
-# Authored from the source, never captured:
-# - app/cbl/COSGN00C.cbl:230-238 (type U -> COMEN01C) and app/cbl/COMEN01C.cbl
-#   with app/cpy/COMEN02Y.cpy (option 2 -> COACTUPC, fresh entry);
-# - app/cbl/COACTUPC.cbl: 880-886,964-973 (fresh entry, search-key prompt);
-#   2568-2580,3608-3884 and 2787-2866 (fetch, fetched values shown,
-#   'Update account details presented above.'); 1279-1284 (the received '300'
-#   in ACUP-NEW-CUST-FICO-SCORE-X); 1460-1470 (a change from the old 700);
-#   1545-1556, 2109-2176 and 2514-2531 (1245-EDIT-NUM-REQD finds the score
-#   supplied, numeric and not zero, and 1275-EDIT-FICO-SCORE CONTINUEs since
-#   300 is in range [845-849]); 1557-1675 (the remaining edits pass, so
-#   ACUP-CHANGES-OK-NOT-CONFIRMED); 2582-2620 (ENTER, not PF5: nothing is
-#   written); 2700-2724 and 2870-2951 (3203-SHOW-UPDATED-VALUES echoes the
-#   received values, FICO 300, amounts through PIC +ZZZ,ZZZ,ZZZ.99);
-#   2955-2983 (PROMPT-FOR-CONFIRMATION in the 40-byte WS-INFO-MSG to the
-#   45-byte INFOMSG, the blank 75-byte WS-RETURN-MSG to the 78-byte ERRMSG);
-#   3566-3584 (F5=Save and F12=Cancel bright only while
-#   PROMPT-FOR-CONFIRMATION; dark fields are captured as blanks);
-# - header from app/cpy/COTTL01Y.cpy and app/cpy/CSDAT01Y.cpy, run-clock fields
-#   as matchers; field widths and INITIAL texts from app/bms/COACTUP.bms.
-# file_state asserts what the scenario asserts: with no PF5 neither master is
-# rewritten, so both keep 50 records, account 00000000001 its repository
-# values (ACCT-GROUP-ID blank) and customer 000000001 the invented values,
-# FICO Score 700 included.
-# Only `report.py --import-unikix` promotes it, from imported UniKix evidence;
-# it is never edited by hand to match a run.
 file_state:
   ACCTDATA:
     contains:
-    - ACCT-ACTIVE-STATUS: 'Y'
+    - ACCT-ACTIVE-STATUS: Y
       ACCT-CASH-CREDIT-LIMIT: '1020.00'
       ACCT-CREDIT-LIMIT: '2020.00'
       ACCT-CURR-BAL: '194.00'
@@ -48,14 +15,14 @@ file_state:
     count: 50
   CUSTDATA:
     contains:
-    - CUST-ADDR-COUNTRY-CD: 'USA'
+    - CUST-ADDR-COUNTRY-CD: USA
       CUST-ADDR-LINE-1: '100 Test Street                                   '
       CUST-ADDR-LINE-2: 'Suite 1                                           '
       CUST-ADDR-LINE-3: 'Raleigh                                           '
-      CUST-ADDR-STATE-CD: 'NC'
+      CUST-ADDR-STATE-CD: NC
       CUST-ADDR-ZIP: '27601     '
       CUST-DOB-YYYY-MM-DD: '1961-06-08'
-      CUST-EFT-ACCOUNT-ID: '0053581756'
+      CUST-EFT-ACCOUNT-ID: 0053581756
       CUST-FICO-CREDIT-SCORE: '700'
       CUST-FIRST-NAME: 'Testfirst                '
       CUST-GOVT-ISSUED-ID: 'TESTGOVT0001        '
@@ -64,59 +31,64 @@ file_state:
       CUST-MIDDLE-NAME: 'Testmiddle               '
       CUST-PHONE-NUM-1: '(919)555-0101  '
       CUST-PHONE-NUM-2: '(919)555-0102  '
-      CUST-PRI-CARD-HOLDER-IND: 'Y'
+      CUST-PRI-CARD-HOLDER-IND: Y
       CUST-SSN: '123456789'
     count: 50
+messages:
+- '                                                                              '
+- '                                                                              '
+- '                                                                              '
+- '                                                                              '
 screens:
-- '@map': 'COMEN01'
+- '@map': COMEN01
   ERRMSG: '                                                                              '
   OPTN002: '02. Account Update                      '
-  PGMNAME: 'COMEN01C'
-  TRNNAME: 'CM00'
-- '@map': 'COACTUP'
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COACTUP
   ACCTSID: '           '
   ERRMSG: '                                                                              '
   INFOMSG: 'Enter or update id of account to update      '
-  PGMNAME: 'COACTUPC'
-  TRNNAME: 'CAUP'
-- '@map': 'COACTUP'
+  PGMNAME: COACTUPC
+  TRNNAME: CAUP
+- '@map': COACTUP
   AADDGRP: '          '
   ACCTSID: '00000000001'
-  ACRCYCR: '+           .00'
-  ACRCYDB: '+           .00'
-  ACRDLIM: '+      2,020.00'
+  ACRCYCR: +           .00
+  ACRCYDB: +           .00
+  ACRDLIM: +      2,020.00
   ACSADL1: '100 Test Street                                   '
   ACSADL2: 'Suite 1                                           '
   ACSCITY: 'Raleigh                                           '
-  ACSCTRY: 'USA'
-  ACSEFTC: '0053581756'
+  ACSCTRY: USA
+  ACSEFTC: 0053581756
   ACSFNAM: 'Testfirst                '
   ACSGOVT: 'TESTGOVT0001        '
-  ACSHLIM: '+      1,020.00'
+  ACSHLIM: +      1,020.00
   ACSLNAM: 'Testlast                 '
   ACSMNAM: 'Testmiddle               '
-  ACSPFLG: 'Y'
+  ACSPFLG: Y
   ACSPH1A: '919'
   ACSPH1B: '555'
   ACSPH1C: '0101'
   ACSPH2A: '919'
   ACSPH2B: '555'
   ACSPH2C: '0102'
-  ACSSTTE: 'NC'
+  ACSSTTE: NC
   ACSTFCO: '700'
   ACSTNUM: '000000001'
-  ACSTTUS: 'Y'
+  ACSTTUS: Y
   ACSZIPC: '27601'
   ACTSSN1: '123'
   ACTSSN2: '45'
   ACTSSN3: '6789'
-  ACURBAL: '+        194.00'
+  ACURBAL: +        194.00
   CURDATE:
     format: '%m/%d/%y'
-    match: 'run-date'
+    match: run-date
   CURTIME:
-    match: 'run-time'
-  DOBDAY: '08'
+    match: run-time
+  DOBDAY: 08
   DOBMON: '06'
   DOBYEAR: '1961'
   ERRMSG: '                                                                              '
@@ -125,73 +97,73 @@ screens:
   EXPYEAR: '2025'
   FKEY05: '       '
   FKEY12: '          '
-  FKEYS: 'ENTER=Process F3=Exit'
+  FKEYS: ENTER=Process F3=Exit
   INFOMSG: 'Update account details presented above.      '
   OPNDAY: '20'
   OPNMON: '11'
   OPNYEAR: '2014'
-  PGMNAME: 'COACTUPC'
+  PGMNAME: COACTUPC
   RISDAY: '20'
   RISMON: '05'
   RISYEAR: '2025'
   TITLE01: '      AWS Mainframe Modernization       '
   TITLE02: '              CardDemo                  '
-  TRNNAME: 'CAUP'
-- '@map': 'COACTUP'
+  TRNNAME: CAUP
+- '@map': COACTUP
   AADDGRP: '          '
   ACCTSID: '00000000001'
-  ACRCYCR: '+           .00'
-  ACRCYDB: '+           .00'
-  ACRDLIM: '+      2,020.00'
+  ACRCYCR: +           .00
+  ACRCYDB: +           .00
+  ACRDLIM: +      2,020.00
   ACSADL1: '100 Test Street                                   '
   ACSADL2: 'Suite 1                                           '
   ACSCITY: 'Raleigh                                           '
-  ACSCTRY: 'USA'
-  ACSEFTC: '0053581756'
+  ACSCTRY: USA
+  ACSEFTC: 0053581756
   ACSFNAM: 'Testfirst                '
   ACSGOVT: 'TESTGOVT0001        '
-  ACSHLIM: '+      1,020.00'
+  ACSHLIM: +      1,020.00
   ACSLNAM: 'Testlast                 '
   ACSMNAM: 'Testmiddle               '
-  ACSPFLG: 'Y'
+  ACSPFLG: Y
   ACSPH1A: '919'
   ACSPH1B: '555'
   ACSPH1C: '0101'
   ACSPH2A: '919'
   ACSPH2B: '555'
   ACSPH2C: '0102'
-  ACSSTTE: 'NC'
-  ACSTFCO: '300'
+  ACSSTTE: NC
+  ACSTFCO: '700'
   ACSTNUM: '000000001'
-  ACSTTUS: 'Y'
+  ACSTTUS: Y
   ACSZIPC: '27601'
   ACTSSN1: '123'
   ACTSSN2: '45'
   ACTSSN3: '6789'
-  ACURBAL: '+        194.00'
+  ACURBAL: +        194.00
   CURDATE:
     format: '%m/%d/%y'
-    match: 'run-date'
+    match: run-date
   CURTIME:
-    match: 'run-time'
-  DOBDAY: '08'
+    match: run-time
+  DOBDAY: 08
   DOBMON: '06'
   DOBYEAR: '1961'
   ERRMSG: '                                                                              '
   EXPDAY: '20'
   EXPMON: '05'
   EXPYEAR: '2025'
-  FKEY05: 'F5=Save'
-  FKEY12: 'F12=Cancel'
-  FKEYS: 'ENTER=Process F3=Exit'
+  FKEY05: F5=Save
+  FKEY12: F12=Cancel
+  FKEYS: ENTER=Process F3=Exit
   INFOMSG: 'Changes validated.Press F5 to save           '
   OPNDAY: '20'
   OPNMON: '11'
-  OPNYEAR: '2014'
-  PGMNAME: 'COACTUPC'
+  OPNYEAR: '1900'
+  PGMNAME: COACTUPC
   RISDAY: '20'
   RISMON: '05'
   RISYEAR: '2025'
   TITLE01: '      AWS Mainframe Modernization       '
   TITLE02: '              CardDemo                  '
-  TRNNAME: 'CAUP'
+  TRNNAME: CAUP

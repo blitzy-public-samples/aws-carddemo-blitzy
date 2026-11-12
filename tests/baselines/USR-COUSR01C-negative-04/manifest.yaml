@@ -6,12 +6,11 @@
 # or execution_fingerprint and holds no datasets/*.bin until report.py
 # --import-unikix promotes an eligible UniKix run.
 #
-# source_identity.units are COUSR01C's COPY closure
-# (inventory_tools.copy_closure), which includes the symbolic map COUSR01.CPY,
-# plus the BMS source of its map COUSR01. The sign-on and admin-menu steps only
-# reach the Add User screen, whose routing their own scenarios pin, so
-# COSGN00C and COADM01C are not listed. DFHAID and DFHBMSCA are CICS-supplied
-# and not in the repository.
+# source_identity.units are the COPY closure (inventory_tools.copy_closure),
+# which includes the symbolic maps in app/cpy-bms, of each program the steps
+# run - COSGN00C for the CC00 sign-on, COADM01C for admin option 2 and
+# COUSR01C - plus the BMS sources of their maps COSGN00, COADM01 and COUSR01.
+# DFHAID and DFHBMSCA are CICS-supplied and not in the repository.
 baseline_version: 1.0.0
 capture_date: '2026-11-10'
 capture_platform: derived
@@ -21,9 +20,16 @@ source_identity:
   commit: 8da594ed14d23cf59dfd713f29eb2f8084c0316b
   tree: app
   units:
+    app/bms/COADM01.bms: 44a3f209e7fa8445355ab7ba687b3ac6e32ef4dfec225e04f4eb2bd57e39386a
+    app/bms/COSGN00.bms: 6747ba57e45fed7e52af728a1f8688ed8fab90b93e1234ab0a0bcae32fa39056
     app/bms/COUSR01.bms: f79efda027a728fad77ca163b1a85851e099df5d3ce6876309274dbb2b67dff9
+    app/cbl/COADM01C.cbl: 69842c4dd419ed70365682d65423d2744173f3eec695b25b5ed27bd29289608d
+    app/cbl/COSGN00C.cbl: 4f901ae6b113eebae60ae1d94b30f8cb9906d031a4419770bf56980bdf97e377
     app/cbl/COUSR01C.cbl: aa131b1e3382dc6d101b42f1c97d4fb0c2fdd706819ed9f9a0187c82b30f3019
+    app/cpy-bms/COADM01.CPY: ced4c34fdb3fa4284561d83ff8e273cef2a1b45cefc36e56c34da6fec5528006
+    app/cpy-bms/COSGN00.CPY: e2a2f8f6e76e1613cbd8f0baaca87d571a49a7bc219d16a732e4e4ecd7485407
     app/cpy-bms/COUSR01.CPY: a263a33ce46ea0b50ade18e4e18dd27dc848a516a9851a16d015c7240de82926
+    app/cpy/COADM02Y.cpy: 71015b5a8770e9e3733023cd6a6fa66dd4d8b528739b7a31e07433f71a044bc5
     app/cpy/COCOM01Y.cpy: 77097557ee4c365f62138328d3e280ce7aba5f81d418c6f16434f0fbb2aafa6c
     app/cpy/COTTL01Y.cpy: 5032bfa9428354bb4a62e8c82ba1efa7dcf6b80f27544ad99a81c8a8df8ed41b
     app/cpy/CSDAT01Y.cpy: 61dd7b01d974c13cd47f71774c613dd67996418a22fae730d09b246c0b710ad7
