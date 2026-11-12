@@ -1,39 +1,14 @@
 """Harness self-tests.
 
 These check the instruments every business assertion depends on: the
-layouts against the copybooks and LISTCAT and the layout file's
-no-follow write, the codecs and their descriptor bounds, the EBCDIC fixture
+layouts against the copybooks and LISTCAT, the codecs, the EBCDIC fixture
 cross-check and the approved fixture sources, the frozen inventory, the
-scenario, baseline and result files
-against the closed id manifest and the scenario schema, the gap register and
-the seam rule, the configuration (markers, ``commands.yaml``, the adapter
-contract and the documented launch: the README's GnuCOBOL block, pasted into
-a shell without errexit, builds only a verified archive; the README launch
-and the workflow's Work root step start pytest only with
-``PYTEST_DEBUG_TEMPROOT`` naming a new owner-only folder of the work root,
-which the upload leaves out; the workflow uses exactly the four pinned action
-tags, whose Node processes take ``NODE_OPTIONS=--tls-min-v1.3`` from the
-job's env only), the baseline version-bump check and the protected-tree
+scenario, baseline and result files against the closed id manifest and the
+scenario schema, the gap register and the seam rule, the configuration
+(markers, ``commands.yaml``, the adapter contract, the documented launch and
+the CI workflow), the baseline version-bump check and the protected-tree
 check, with the harness and adapter code that runs scenarios and records,
-compares and reports their outcomes: among it the scenario deadline over
-decoding, comparison, the diff and the record's text, the bounded reading of
-imported UniKix raw evidence, the binding of each ``validation.yaml`` to the
-``result.yaml`` it was judged from (a planted, copied or tampered verdict
-counts nowhere and ``--check`` names it), the refusal to regenerate, import
-or revalidate while a scenario file or ``validation.yaml`` cannot be read,
-the record of a run the schema check stops, which names the baseline
-version it stands against, the formula neutralization of the CSV reports'
-cells, the work-root admission (a root of the user's own that its owner can
-read, write and search and that no one else can write, a resolved path
-free of the characters a shell reads inside cobc's double quotes and of
-characters that are not printable and within the length limit, and under
-``unikix`` free of whitespace and quotes) with the fallback conftest and
-``capture.py`` take from a refused root, the runner's working directories
-made and filled through descriptors that follow no link, the build's
-compile paths relative to its build directory and its refusal of a cobc
-argument holding shell text, and the GnuCOBOL build's refusal of a unit id,
-compile flag or build destination that could leave its build directory and
-of a linked, shared-writable or swapped build cache directory.
+compares and reports their outcomes, including the work-root admission.
 
 They are not inventory scenarios and never verify an inventory item on their
 own.

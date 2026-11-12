@@ -1239,4 +1239,3 @@ def run_jobs(
         job_results=job_results,
         elapsed_s=time.monotonic() - started,
     )
-

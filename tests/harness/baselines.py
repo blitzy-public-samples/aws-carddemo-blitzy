@@ -2034,7 +2034,10 @@ def _reason_texts(codes: Any) -> Any:
     if isinstance(codes, list):
         return [_reason_text(code) for code in codes]
     if isinstance(codes, Mapping) and not is_matcher(codes):
-        return {key: (_reason_texts(value) if key in ("records", "contains") else value) for key, value in codes.items()}
+        return {
+            key: (_reason_texts(value) if key in ("records", "contains") else value)
+            for key, value in codes.items()
+        }
     return codes
 
 
