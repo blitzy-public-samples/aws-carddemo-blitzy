@@ -10,9 +10,10 @@ Program runs (``run_program``)
     when a scenario injects a token (GAP-STB-002), and, for the unit
     ``programs.yaml`` gives a ``tiot`` (CBSTM03A) and no other,
     ``LD_PRELOAD`` of the page-zero shim with ``CARDDEMO_JOB``,
-    ``CARDDEMO_STEP`` and ``CARDDEMO_DDS`` (GAP-STB-003); ``LD_PRELOAD``
-    names the shim relative to the working directory, because ld.so splits
-    it at every space and colon, which the work root's path may hold. The
+    ``CARDDEMO_STEP`` and ``CARDDEMO_DDS`` (GAP-STB-003). ``LD_PRELOAD`` names
+    the shim, and ``COB_LIBRARY_PATH`` the modules, relative to the working
+    directory: ld.so splits the first at every space and colon, libcob the
+    second at every colon, and the work root's path may hold them. The
     unit is launched as ``programs.yaml`` ``run`` says: its executable,
     ``PARMDRV <unit> <parm>`` (GAP-STB-004) or ``DTCDRV``. The deadline kills
     the group (``datasets.ProcessTimeout``, a ``ScenarioTimeout``).
@@ -669,9 +670,10 @@ def run_program(
             )
         extra["CARDDEMO_CEEDAYS_FEEDBACK"] = ceedays_feedback
     extra.update(_tiot_environment(cache, unit, config, tiot, root))
-    env = runtime_env(cache, extra)
+    env = runtime_env(cache, extra, cwd=root)
     build = os.fspath(Path(cache.dir).resolve())
-    # The build cache from the working directory too, as LD_PRELOAD names it.
+    # The build cache from the working directory too, as LD_PRELOAD and
+    # COB_LIBRARY_PATH name it.
     prefixes = sorted(
         (
             (os.fspath(root), ""),

@@ -668,27 +668,43 @@ def runtime_env(
     cache: BuildCache,
     extra: Mapping[str, Any] | None = None,
     *,
+    cwd: str | os.PathLike[str],
     home: str | os.PathLike[str] | None = None,
 ) -> dict[str, str]:
-    """The environment of a batch program, loader or unloader run.
+    """The environment of a batch program, loader or unloader run in ``cwd``,
+    the directory ``run_process`` starts it in.
 
     A fresh mapping: ``PATH`` is the cobc bin directory then ``/usr/bin`` and
     ``/bin``; ``LD_LIBRARY_PATH`` the GnuCOBOL library directories;
     ``LANG``/``LC_ALL`` ``C``; ``TZ`` ``UTC``; ``COB_LIBRARY_PATH`` the module
-    directory (CBACT04C, CSUTLDTC and the CEE3ABD and CEEDAYS stubs); ``HOME``
-    is ``home`` when given, else ``run_process`` sets the working directory.
-    ``COB_FILE_PATH`` is never set, so relative names would not be prefixed;
-    callers pass absolute ``DD_<ddname>`` paths. ``extra`` comes last."""
+    directory (CBACT04C, CSUTLDTC and the CEE3ABD and CEEDAYS stubs), named
+    relative to ``cwd``, because libcob splits it at every colon, which the
+    work root's path may hold; a relative path that still holds one raises
+    ``DatasetError``. ``HOME`` is ``home`` when given, else ``run_process``
+    sets the working directory. ``COB_FILE_PATH`` is never set, so relative
+    names would not be prefixed; callers pass absolute ``DD_<ddname>``
+    paths. ``extra`` comes last."""
     path_dirs: list[str] = []
     for directory in (os.fspath(cache.cobc_bin_dir), "/usr/bin", "/bin"):
         if directory not in path_dirs:
             path_dirs.append(directory)
+    modules = os.path.relpath(
+        os.path.realpath(os.fspath(cache.module_dir)), os.path.realpath(os.fspath(cwd))
+    )
+    if os.sep not in modules:
+        modules = os.path.join(os.curdir, modules)  # a path from cwd, never a bare name
+    if os.pathsep in modules:
+        raise DatasetError(
+            f"the module directory's path from the working directory, {modules!r}, holds a "
+            f"{os.pathsep!r}, at which libcob splits COB_LIBRARY_PATH; keep the build cache "
+            f"under the work root or on a path without one"
+        )
     env = {
         "PATH": os.pathsep.join(path_dirs),
         "LANG": "C",
         "LC_ALL": "C",
         "TZ": "UTC",
-        "COB_LIBRARY_PATH": os.fspath(cache.module_dir),
+        "COB_LIBRARY_PATH": modules,
     }
     if cache.lib_dirs:
         env["LD_LIBRARY_PATH"] = os.pathsep.join(os.fspath(entry) for entry in cache.lib_dirs)
@@ -1101,8 +1117,12 @@ class DatasetStore:
         self, executable: Path, args: Sequence[str], dds: Mapping[str, Path]
     ) -> ProcessResult:
         cache = self._require_cache()
-        env = runtime_env(cache, {f"DD_{name}": os.fspath(path) for name, path in dds.items()})
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        env = runtime_env(
+            cache,
+            {f"DD_{name}": os.fspath(path) for name, path in dds.items()},
+            cwd=self.data_dir,
+        )
         return run_process(
             [executable, *args], env=env, cwd=self.data_dir, deadline=self._deadline()
         )

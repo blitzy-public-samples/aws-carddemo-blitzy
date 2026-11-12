@@ -105,7 +105,11 @@ Isolation
     across runs is which adapters have had their ``environment()``
     successfully written, which never affects an outcome. Inside the
     repository the runner writes only through ``harness.results``
-    (``write_runtime``, ``write_environment``).
+    (``write_runtime``, ``write_environment``). The runner takes no lock:
+    it empties ``<work root>/<scenario_id>/`` before each run, so one work
+    root serves one session at a time, which ``conftest.py`` and
+    ``capture.py`` ensure by holding the root's session lock
+    (``harness.lock_work_root``) while they run.
 """
 
 from __future__ import annotations

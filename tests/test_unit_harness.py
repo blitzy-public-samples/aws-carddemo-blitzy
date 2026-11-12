@@ -405,7 +405,19 @@ so nothing it makes lies outside that root. The same values given as
 ``--work-root`` stop ``capture.py`` with exit status 2. When no temporary
 root outside the repository can be made, conftest stops with a usage error
 that names the refused value too. A usable root is used as configured,
-created when missing, kept, and gets no warning.
+created when missing, kept, and gets no warning. ``usable_work_root`` with
+``owner_only`` must accept and refuse the same modes and owners as the
+UniKix deployment's ``_check_work_root``, with the same reason, and create a
+missing root 0700 under umask 002; under ``unikix`` conftest must replace a
+group-writable root with a private temporary one and a warning saying
+``chmod go-w``, while gnucobol-batch uses it. Session lock: conftest holds
+``<root>/_session.lock`` on a configured root, the only file it leaves
+there, until ``pytest_unconfigure``; the lock records the holder's pid, UTC
+time and clipped command line, refuses a planted link, directory or FIFO,
+and is released empty and reusable. A root held by another process or
+another open file description stops conftest with a usage error and
+``capture.py`` with exit status 2, each naming the root and the holder's
+pid; ``capture.py`` releases its lock however its run ends.
 
 Region stage observations: ``base.region_stage_observation`` and
 ``parse_region_stage`` must round-trip ``@BEFORE:<JOB>:@REGION-FILES`` and
@@ -512,7 +524,9 @@ from harness import (  # noqa: E402
     SCENARIOS_DIR,
     TESTS_ROOT,
     UNIKIX_EVIDENCE_DIR,
+    WORK_ROOT_LOCK_NAME,
     HarnessError,
+    WorkRootBusy,
     baselines,
     capture,
     codec,
@@ -521,11 +535,13 @@ from harness import (  # noqa: E402
     inventory_tools,
     layouts,
     load_yaml,
+    lock_work_root,
     report,
     results,
     runner,
     scenarios,
     sha256_file,
+    usable_work_root,
 )
 from harness import capture as capture_cli  # noqa: E402
 
@@ -3243,6 +3259,36 @@ LAUNCH_SEPARATOR_ROOTS = [
     pytest.param("work root", id="space"),
     pytest.param("work:root", id="colon"),
 ]
+# datasets.runtime_env cases, inside launch_root: the work root holding the
+# build cache, the directory the run starts in, the COB_LIBRARY_PATH it gets,
+# and whether that path is refused because libcob would split it at the
+# colon. The run starts in the scenario working directory (run_program), its
+# data directory (DatasetStore loaders and unloaders), the work root
+# (page0_probe), or inside the build cache.
+MODULE_PATH_ROOT = "work sp:ace"
+MODULE_PATH_CASES = [
+    pytest.param(
+        MODULE_PATH_ROOT, f"{MODULE_PATH_ROOT}/{LAUNCH_SCENARIO}",
+        f"../_build/{LAUNCH_BUILD_KEY}/modules", False, id="scenario-workdir",
+    ),
+    pytest.param(
+        MODULE_PATH_ROOT, f"{MODULE_PATH_ROOT}/{LAUNCH_SCENARIO}/data",
+        f"../../_build/{LAUNCH_BUILD_KEY}/modules", False, id="data-dir",
+    ),
+    pytest.param(
+        MODULE_PATH_ROOT, MODULE_PATH_ROOT, f"_build/{LAUNCH_BUILD_KEY}/modules", False,
+        id="work-root",
+    ),
+    pytest.param(
+        MODULE_PATH_ROOT, f"{MODULE_PATH_ROOT}/_build/{LAUNCH_BUILD_KEY}", "./modules", False,
+        id="build-dir-bare-name",
+    ),
+    pytest.param(
+        "cache sp:ace", f"{MODULE_PATH_ROOT}/{LAUNCH_SCENARIO}",
+        f"../../cache sp:ace/_build/{LAUNCH_BUILD_KEY}/modules", True,
+        id="cache-outside-the-work-root-refused",
+    ),
+]
 LAUNCH_CC_TIMEOUT_S = 120
 # The folder beside the library that cc runs in, with it as cc's TMPDIR.
 LAUNCH_CC_SCRATCH_PREFIX = "cc-tmp-"
@@ -3463,6 +3509,27 @@ def test_run_program_refuses_a_shim_path_ld_so_would_split(
     with pytest.raises(HarnessError, match="at which ld.so splits LD_PRELOAD"):
         _launch(cache, "CBSTM03A", workdir)
     assert not (workdir / jobs.EVIDENCE_SUBDIR).exists()
+
+
+@pytest.mark.parametrize(("cache_root", "cwd", "modules", "refused"), MODULE_PATH_CASES)
+def test_runtime_env_names_the_modules_by_a_path_libcob_keeps_whole(
+    launch_root: Path, cache_root: str, cwd: str, modules: str, refused: bool
+) -> None:
+    """COB_LIBRARY_PATH is the module directory's path from the run's cwd, so
+    the colon and the space of the work root's path never reach it; a path
+    that still holds a colon is refused, naming it."""
+    cache = _LaunchCache(launch_root / cache_root)
+    cache.module_dir.mkdir(parents=True)
+    directory = launch_root / cwd
+    directory.mkdir(parents=True, exist_ok=True)
+    if refused:
+        with pytest.raises(datasets.DatasetError, match=re.escape(repr(modules))) as failure:
+            datasets.runtime_env(cache, cwd=directory)
+        assert "at which libcob splits COB_LIBRARY_PATH" in str(failure.value)
+        return
+    library_path = datasets.runtime_env(cache, cwd=directory)["COB_LIBRARY_PATH"]
+    assert library_path == modules
+    assert (directory / library_path).resolve() == cache.module_dir.resolve()
 
 
 @pytest.mark.parametrize(("field", "name"), LAUNCH_BAD_TIOT_NAMES)
@@ -3982,22 +4049,28 @@ def test_toolchain_probe_kills_a_hung_probes_group_and_runs_once(
     monkeypatch.setattr(build, "_TOOL_PROBE_TIMEOUT_S", BUILD_HANG_PROBE_S)
     monkeypatch.setattr(build, "_TOOLCHAINS", {})
     monkeypatch.setattr(build, "_TOOLCHAIN_FAILURES", {})
-    path = os.pathsep.join([str(fake_bin), "/usr/bin", "/bin"])
+    # The fake's folder is on PATH relative to the case's folder, the working
+    # directory while the case probes: a PATH entry cannot hold ':', and the
+    # session work root's path may. shutil.which then gives the fake by its
+    # absolute path, the one the message names.
+    path = os.pathsep.join([os.path.join(os.curdir, fake_bin.name), "/usr/bin", "/bin"])
     expected = (
         f"cannot run {shlex.join([str(cobc), '--version'])}: it did not finish within "
         f"{BUILD_HANG_PROBE_S} s. {build._SETUP_HINT}"
     )
     child: int | None = None
     try:
-        with pytest.raises(build.ToolchainUnavailable) as first:
-            build._probe_toolchain(path, "", ())
-        child = int(pid_file.read_text(encoding="utf-8"))
-        assert _awaited(
-            lambda: _process_gone(child, BUILD_HANG_CHILD),
-            time.monotonic() + PROCESS_SCOPE_WAIT_S,
-        ), f"the probe's child {child} outlived it"
-        with pytest.raises(build.ToolchainUnavailable) as second:
-            build._probe_toolchain(path, "", ())
+        with monkeypatch.context() as in_case:
+            in_case.chdir(build_memo_root)
+            with pytest.raises(build.ToolchainUnavailable) as first:
+                build._probe_toolchain(path, "", ())
+            child = int(pid_file.read_text(encoding="utf-8"))
+            assert _awaited(
+                lambda: _process_gone(child, BUILD_HANG_CHILD),
+                time.monotonic() + PROCESS_SCOPE_WAIT_S,
+            ), f"the probe's child {child} outlived it"
+            with pytest.raises(build.ToolchainUnavailable) as second:
+                build._probe_toolchain(path, "", ())
     finally:
         if child is not None and not _process_gone(child, BUILD_HANG_CHILD):
             os.kill(child, signal.SIGKILL)
@@ -7807,7 +7880,12 @@ def test_fixture_padding(carddemo_repo_root: Path, fixture_padding_root: Path) -
 
 
 def _cli(
-    repo_root: Path, script: str, *args: str, work_root: Path, extra_env: Mapping[str, str] | None = None
+    repo_root: Path,
+    script: str,
+    *args: str,
+    work_root: Path,
+    extra_env: Mapping[str, str] | None = None,
+    launcher: tuple[str, ...] = (),
 ) -> subprocess.CompletedProcess:
     """Run ``python tests/harness/<script> <args>`` from the repository root,
     writing no bytecode into the checkout.
@@ -7816,11 +7894,13 @@ def _cli(
     ``CARDDEMO_TEST_WORKDIR`` set to ``work_root`` (the session's
     carddemo_work_root, or a folder of a case's own inside it) whatever the
     variable held here, so a scratch folder the script makes stays inside the
-    session work root even when the variable is unset or unusable and conftest
-    made the root. ``extra_env`` cannot replace that variable or
-    ``PYTHONDONTWRITEBYTECODE``."""
+    session work root even when the variable is unset or unusable and
+    conftest made the root. ``extra_env`` cannot replace that variable or
+    ``PYTHONDONTWRITEBYTECODE``. ``launcher`` goes between the interpreter and
+    the script's path, so a ``-c`` bootstrap given there receives the path and
+    ``args`` in its ``sys.argv`` and runs the script itself."""
     return subprocess.run(
-        [sys.executable, str(repo_root / "tests" / "harness" / script), *args],
+        [sys.executable, *launcher, str(repo_root / "tests" / "harness" / script), *args],
         cwd=repo_root,
         capture_output=True,
         text=True,
@@ -8305,13 +8385,19 @@ def _assert_fresh_temporary_root(root: Path, case: Path) -> None:
     assert root != case.parent, "the session work root is reused instead of a fresh one"
 
 
-def _configure_session(monkeypatch: pytest.MonkeyPatch) -> tuple[SimpleNamespace, list[Warning]]:
+def _configure_session(
+    monkeypatch: pytest.MonkeyPatch, adapter: str | None = None
+) -> tuple[SimpleNamespace, list[Warning]]:
     """A stand-in for pytest's config after conftest's ``pytest_configure``,
-    with the config-time warnings it gave."""
+    with the config-time warnings it gave, for ``CARDDEMO_ADAPTER`` set to
+    ``adapter`` (unset when ``None``)."""
     # pytest imports tests/conftest.py as the module `conftest`.
     import conftest
 
-    monkeypatch.delenv("CARDDEMO_ADAPTER", raising=False)
+    if adapter is None:
+        monkeypatch.delenv("CARDDEMO_ADAPTER", raising=False)
+    else:
+        monkeypatch.setenv("CARDDEMO_ADAPTER", adapter)
     given: list[Warning] = []
     config = SimpleNamespace(
         stash=pytest.Stash(),
@@ -8365,12 +8451,145 @@ def test_conftest_uses_a_usable_work_root(
         root.mkdir(parents=True)
     _set_work_root_variable(monkeypatch, str(root))
     config, given = _configure_session(monkeypatch)
-    assert config.stash[conftest.WORK_ROOT_KEY] == root
-    assert conftest.CREATED_WORK_ROOT_KEY not in config.stash
-    assert given == []
-    assert root.is_dir() and not any(root.iterdir()), "the write probe stays in the work root"
-    conftest.pytest_unconfigure(config)
+    try:
+        assert config.stash[conftest.WORK_ROOT_KEY] == root
+        assert conftest.CREATED_WORK_ROOT_KEY not in config.stash
+        assert given == []
+        # Only the session lock, which names this process; the write probe is gone.
+        assert sorted(path.name for path in root.iterdir()) == [WORK_ROOT_LOCK_NAME]
+        assert (root / WORK_ROOT_LOCK_NAME).read_text(encoding="utf-8").startswith(f"pid {os.getpid()}, since ")
+        assert config.stash[conftest.WORK_ROOT_LOCK_KEY].held
+        with pytest.raises(WorkRootBusy):
+            lock_work_root(root)
+    finally:
+        conftest.pytest_unconfigure(config)
     assert root.is_dir(), "pytest_unconfigure removes a configured work root"
+    assert not config.stash[conftest.WORK_ROOT_LOCK_KEY].held, "pytest_unconfigure keeps the work root locked"
+    assert (root / WORK_ROOT_LOCK_NAME).read_text(encoding="utf-8") == "", "the released lock still names a holder"
+    with lock_work_root(root):
+        pass
+
+
+# Work-root modes held to the UniKix deployment's rule: accepted only without
+# the group and other write bits, whatever the setgid and sticky bits.
+OWNER_ONLY_MODES = [0o700, 0o750, 0o755, 0o775, 0o757, 0o777, 0o2775, 0o1777]
+
+
+@pytest.mark.parametrize("foreign", [pytest.param(False, id="own"), pytest.param(True, id="foreign-owner")])
+@pytest.mark.parametrize("mode", OWNER_ONLY_MODES, ids=lambda mode: f"{mode:04o}")
+def test_owner_only_work_root_matches_the_unikix_deployment(
+    monkeypatch: pytest.MonkeyPatch, work_root_case: Path, mode: int, foreign: bool
+) -> None:
+    """``usable_work_root(owner_only=True)`` accepts and refuses exactly the
+    work roots the UniKix deployment's ``_check_work_root`` does, for the
+    same reason, while the default admission, which gnucobol-batch uses,
+    accepts them all and changes nothing. Another owner is simulated through
+    ``os.geteuid``, so the case holds whoever runs the suite."""
+    root = work_root_case / "root"
+    root.mkdir()
+    os.chmod(root, mode)
+    actual = stat.S_IMODE(os.stat(root).st_mode)
+    owner = os.stat(root).st_uid
+    if foreign:
+        monkeypatch.setattr(os, "geteuid", lambda: owner + 1)
+    refusals: list[str | None] = []
+    for check in (unikix_adapter.deploy._check_work_root, functools.partial(usable_work_root, owner_only=True)):
+        try:
+            check(root)
+        except HarnessError as exc:
+            refusals.append(str(exc))
+        else:
+            refusals.append(None)
+    if foreign:
+        reason = f"is owned by uid {owner}, not {owner + 1}; choose another work root"
+    elif actual & (stat.S_IWGRP | stat.S_IWOTH):
+        reason = (
+            f"is writable by group or others (mode {actual:04o}), so they could plant links in it; "
+            "run chmod go-w on it or choose another work root"
+        )
+    else:
+        reason = None
+    if reason is None:
+        assert refusals == [None, None], refusals
+    else:
+        assert refusals == [f"work root {root} {reason}", f"{root} {reason}"], refusals
+    assert usable_work_root(root) == root
+    assert stat.S_IMODE(os.stat(root).st_mode) == actual and not any(root.iterdir()), "the admission changed the root"
+
+
+@pytest.mark.parametrize(
+    ("owner_only", "mode"), [pytest.param(True, 0o700, id="owner-only"), pytest.param(False, 0o775, id="default")]
+)
+def test_work_root_made_under_umask_002(work_root_case: Path, owner_only: bool, mode: int) -> None:
+    """A missing work root made under umask 002, as an operator's shell may
+    have it: the owner-only admission creates it private, so the UniKix
+    deployment accepts it, while the default admission leaves the umask's
+    mode; missing parents get the umask's mode either way."""
+    root = work_root_case / "made" / "root"
+    previous = os.umask(0o002)
+    try:
+        assert usable_work_root(root, owner_only=owner_only) == root
+    finally:
+        os.umask(previous)
+    # Permission bits only: a setgid bit is inherited from the folder above.
+    assert os.stat(root).st_mode & 0o777 == mode
+    assert os.stat(root.parent).st_mode & 0o777 == 0o775
+    if owner_only:
+        unikix_adapter.deploy._check_work_root(root)
+
+
+@pytest.mark.parametrize(
+    ("adapter", "mode", "used"),
+    [
+        pytest.param("unikix", 0o775, False, id="unikix-group-writable"),
+        pytest.param("unikix", 0o700, True, id="unikix-private"),
+        pytest.param("gnucobol-batch", 0o775, True, id="gnucobol-batch-group-writable"),
+    ],
+)
+def test_conftest_holds_a_unikix_work_root_to_the_deployment_rule(
+    monkeypatch: pytest.MonkeyPatch,
+    work_root_case: Path,
+    case_temporary_directory: Path,
+    adapter: str,
+    mode: int,
+    used: bool,
+) -> None:
+    """Under ``unikix`` a configured work root that group or others can write
+    to, which the deployment would refuse in every scenario, is replaced by a
+    fresh private temporary root with a warning saying to run ``chmod go-w``;
+    gnucobol-batch, which has no such rule, uses it as configured."""
+    import conftest
+
+    root = work_root_case / "work root"
+    root.mkdir()
+    os.chmod(root, mode)
+    _set_work_root_variable(monkeypatch, str(root))
+    config, given = _configure_session(monkeypatch, adapter)
+    session_root = config.stash[conftest.WORK_ROOT_KEY]
+    try:
+        assert config.stash[conftest.ADAPTER_NAME_KEY] == adapter
+        if used:
+            assert session_root == root and given == [], given
+            assert conftest.CREATED_WORK_ROOT_KEY not in config.stash
+        else:
+            _assert_fresh_temporary_root(session_root, work_root_case)
+            assert os.stat(session_root).st_mode & 0o777 == 0o700, "the replacement root is not private"
+            assert [type(warning) for warning in given] == [pytest.PytestConfigWarning], given
+            text = str(given[0])
+            assert text.startswith(
+                f"{WORKDIR_VARIABLE}={str(root)!r} is not a usable work root: "
+                f"{root} is writable by group or others (mode {mode:04o})"
+            ), text
+            assert "run chmod go-w on it" in text, text
+            assert f"the fresh temporary work root {session_root} instead" in text, text
+    finally:
+        conftest.pytest_unconfigure(config)
+    assert stat.S_IMODE(os.stat(root).st_mode) == mode, "the configured root's mode was changed"
+    if not used:
+        try:
+            assert not session_root.exists(), "pytest_unconfigure keeps the empty temporary work root the session made"
+        finally:
+            shutil.rmtree(session_root, ignore_errors=True)
 
 
 def _temporary_directory_in_repository(monkeypatch: pytest.MonkeyPatch) -> str:
@@ -8492,6 +8711,320 @@ def test_capture_uses_a_usable_work_root(
     assert capture._work_root(str(root) if source == "option" else None) == (root, False)
     assert root.is_dir() and not any(root.iterdir()), "the write probe stays in the work root"
     assert capsys.readouterr().err == ""
+
+
+def test_lock_work_root_records_its_holder(monkeypatch: pytest.MonkeyPatch, work_root_case: Path) -> None:
+    """The session lock replaces the record a holder that ended left, a
+    longer one included, with one line naming this process (pid, UTC time,
+    command line with line breaks shown as ``?`` and clipped to 200
+    characters) on a descriptor no child inherits. A refused session reads
+    that line back without waiting, or, after re-reading an empty record
+    every poll interval up to the wait bound, says the holder has not
+    recorded itself yet; release empties the record, keeps the file and may
+    be repeated, and the lock can then be taken again."""
+    path = work_root_case / WORK_ROOT_LOCK_NAME
+    path.write_text(
+        f"pid 1, since 2000-01-01T00:00:00Z, running a session that ended\n{'its second line ' * 40}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sys, "argv", ["pytest", "tests/\nnext", "x" * 400])
+    lock = lock_work_root(work_root_case)
+    try:
+        assert lock.held and lock.root == work_root_case and lock.path == path
+        assert not os.get_inheritable(lock._descriptor), "a child process would inherit the lock"
+        record = path.read_text(encoding="utf-8")
+        matched = re.fullmatch(rf"pid {os.getpid()}, since \d{{4}}-\d\d-\d\dT\d\d:\d\d:\d\dZ, running (.+)\n", record)
+        assert matched, record
+        command = matched.group(1)
+        assert len(command) == 200, command
+        assert command.startswith("pytest tests/?next xxx") and command.endswith("x..."), command
+        slept: list[float] = []
+
+        def no_wait(seconds: float) -> None:
+            raise AssertionError(f"a refusal whose holder record is present waited {seconds} s")
+
+        def sleep(seconds: float) -> None:
+            slept.append(seconds)
+            time.sleep(seconds)
+
+        monkeypatch.setattr("harness.time", SimpleNamespace(monotonic=time.monotonic, sleep=no_wait))
+        with pytest.raises(WorkRootBusy) as busy:
+            lock_work_root(work_root_case)
+        assert busy.value.root == work_root_case and busy.value.holder == record.rstrip("\n"), busy.value
+        monkeypatch.setattr("harness.time", SimpleNamespace(monotonic=time.monotonic, sleep=sleep))
+        monkeypatch.setattr("harness._HOLDER_WAIT_S", 0.05)
+        monkeypatch.setattr("harness._HOLDER_POLL_S", 0.01)
+        os.truncate(path, 0)  # as a holder shows before it has written its record
+        with pytest.raises(WorkRootBusy, match=r" \(it has not recorded itself yet\); "):
+            lock_work_root(work_root_case)
+        # Polled every interval at most, and for no longer than the bound.
+        assert slept and all(0 < seconds <= 0.01 for seconds in slept), slept
+        assert sum(slept) <= 0.05 + 1e-9, slept
+    finally:
+        lock.release()
+    assert not lock.held and path.is_file() and path.read_text(encoding="utf-8") == ""
+    lock.release()
+    with lock_work_root(work_root_case) as again:
+        assert again.held
+    assert not again.held
+
+
+def test_lock_work_root_names_a_holder_that_records_itself_late(
+    monkeypatch: pytest.MonkeyPatch, work_root_case: Path
+) -> None:
+    """A session refused while the holder has taken the lock but not yet
+    written its record re-reads the record and names the holder as soon as
+    the record appears, well before the wait bound."""
+    monkeypatch.setattr("harness._HOLDER_WAIT_S", 60.0)
+    path = work_root_case / WORK_ROOT_LOCK_NAME
+    line = "pid 4242, since 2000-01-01T00:00:00Z, running a holder that records itself late"
+    holder = lock_work_root(work_root_case)
+    try:
+        os.truncate(path, 0)  # the holder has locked but not written its record yet
+        writer = threading.Timer(0.1, path.write_text, args=(f"{line}\n",), kwargs={"encoding": "utf-8"})
+        started = time.monotonic()
+        writer.start()
+        try:
+            with pytest.raises(WorkRootBusy) as busy:
+                lock_work_root(work_root_case)
+            waited = time.monotonic() - started
+        finally:
+            writer.join()
+    finally:
+        holder.release()
+    assert busy.value.holder == line, busy.value
+    assert 0.1 <= waited < 30, f"the refused session waited {waited:.3f} s for a record written after 0.1 s"
+
+
+def test_lock_work_root_takes_a_root_whose_unrecorded_holder_ends(
+    monkeypatch: pytest.MonkeyPatch, work_root_case: Path
+) -> None:
+    """A session refused while the holder has not yet recorded itself takes
+    the lock once that holder ends during the wait, instead of refusing a
+    root no session holds any more."""
+    monkeypatch.setattr("harness._HOLDER_WAIT_S", 60.0)
+    path = work_root_case / WORK_ROOT_LOCK_NAME
+    holder = lock_work_root(work_root_case)
+    try:
+        os.truncate(path, 0)  # the holder has locked but not written its record yet
+        ender = threading.Timer(0.1, holder.release)
+        started = time.monotonic()
+        ender.start()
+        try:
+            lock = lock_work_root(work_root_case)
+            waited = time.monotonic() - started
+        finally:
+            ender.join()
+    finally:
+        holder.release()
+    try:
+        assert lock.held and 0.1 <= waited < 30, f"the lock was taken after {waited:.3f} s"
+        assert path.read_text(encoding="utf-8").startswith(f"pid {os.getpid()}, since ")
+    finally:
+        lock.release()
+
+
+def _plant_symbolic_link(path: Path) -> Path | None:
+    target = path.parent / "target"
+    target.write_text("kept\n", encoding="utf-8")
+    path.symlink_to(target)
+    return target
+
+
+def _plant_directory(path: Path) -> Path | None:
+    path.mkdir()
+    return None
+
+
+def _plant_fifo(path: Path) -> Path | None:
+    os.mkfifo(path)
+    return None
+
+
+@pytest.mark.parametrize(
+    ("plant", "reason"),
+    [
+        pytest.param(_plant_symbolic_link, "is a symbolic link, which is never followed", id="symbolic-link"),
+        pytest.param(_plant_directory, "is not a regular file", id="directory"),
+        pytest.param(_plant_fifo, "is not a regular file", id="fifo"),
+    ],
+)
+def test_lock_work_root_refuses_a_planted_lock(work_root_case: Path, plant: Callable, reason: str) -> None:
+    """A session lock that is a symbolic link, a directory or a FIFO is
+    refused with the reason, never followed or written through, and is not
+    taken for another session's lock."""
+    path = work_root_case / WORK_ROOT_LOCK_NAME
+    target = plant(path)
+    with pytest.raises(HarnessError) as refused:
+        lock_work_root(work_root_case)
+    assert not isinstance(refused.value, WorkRootBusy), refused.value
+    assert str(refused.value) == f"the session lock {path} {reason}; remove it or choose another work root"
+    if target is not None:
+        assert path.is_symlink() and target.read_text(encoding="utf-8") == "kept\n", "the link was followed"
+
+
+def _hold_in_this_process(root: Path) -> tuple[int, Callable[[], None]]:
+    """Hold ``root``'s session lock through another open file description of
+    this process; the holder's pid and how to end it."""
+    lock = lock_work_root(root)
+    return os.getpid(), lock.release
+
+
+# A child process that holds the session lock of the work root argv[2] (with
+# tests/ as argv[1]) until its standard input closes.
+LOCK_HOLDER_CHILD = """\
+import sys
+
+sys.path.insert(0, sys.argv[1])
+import harness
+
+with harness.lock_work_root(sys.argv[2]):
+    print("locked", flush=True)
+    sys.stdin.read()
+"""
+
+
+def _hold_in_another_process(root: Path) -> tuple[int, Callable[[], None]]:
+    """Hold ``root``'s session lock in a child process; its pid and how to end
+    it."""
+    child = subprocess.Popen(
+        [sys.executable, "-B", "-c", LOCK_HOLDER_CHILD, str(TESTS_ROOT), str(root)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+
+    def release() -> None:
+        child.stdin.close()
+        child.wait(timeout=60)
+        child.stdout.close()
+
+    line = child.stdout.readline()
+    if line != "locked\n":
+        release()
+        pytest.fail(f"the holder process did not take the lock: {line!r}")
+    return child.pid, release
+
+
+WORK_ROOT_HOLDERS = [
+    pytest.param(_hold_in_this_process, id="this-process"),
+    pytest.param(_hold_in_another_process, id="another-process"),
+]
+
+
+def _busy_text(root: Path, holder: int) -> str:
+    """The start of the refusal of the work root ``root`` held by pid ``holder``."""
+    return f"the work root {root} is in use by another session (pid {holder}, since "
+
+
+@pytest.mark.parametrize("hold", WORK_ROOT_HOLDERS)
+def test_conftest_refuses_a_work_root_another_session_holds(
+    monkeypatch: pytest.MonkeyPatch, work_root_case: Path, hold: Callable
+) -> None:
+    """A configured work root whose session lock another session holds, in
+    another process or through another open file description of this one,
+    stops the session with a usage error naming the root and the holder's
+    pid, so the two never empty each other's working directories; once the
+    holder ends, the same root is used."""
+    import conftest
+
+    root = work_root_case / "shared"
+    root.mkdir()
+    _set_work_root_variable(monkeypatch, str(root))
+    holder, release = hold(root)
+    try:
+        with pytest.raises(pytest.UsageError) as stopped:
+            _configure_session(monkeypatch)
+    finally:
+        release()
+    message = str(stopped.value)
+    assert message.startswith(f"{WORKDIR_VARIABLE}: {_busy_text(root, holder)}"), message
+    assert message.endswith(
+        "; give each concurrent session its own work root, or wait for that session to end"
+    ), message
+    config, given = _configure_session(monkeypatch)
+    try:
+        assert config.stash[conftest.WORK_ROOT_KEY] == root and given == [], given
+        assert (root / WORK_ROOT_LOCK_NAME).read_text(encoding="utf-8").startswith(f"pid {os.getpid()}, since ")
+    finally:
+        conftest.pytest_unconfigure(config)
+
+
+@pytest.mark.parametrize("source", [pytest.param("variable", id="variable"), pytest.param("option", id="option")])
+@pytest.mark.parametrize("hold", WORK_ROOT_HOLDERS)
+def test_capture_refuses_a_work_root_another_session_holds(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    work_root_case: Path,
+    source: str,
+    hold: Callable,
+) -> None:
+    """``capture.py`` on a work root another run or session holds, named by
+    ``CARDDEMO_TEST_WORKDIR`` or ``--work-root``, stops with exit status 2
+    naming the root and the holder's pid, before any capture runs."""
+    from harness import capture
+
+    root = work_root_case / "shared"
+    root.mkdir()
+    _set_work_root_variable(monkeypatch, str(root) if source == "variable" else None)
+    option = ["--work-root", str(root)] if source == "option" else []
+    monkeypatch.setattr(capture, "make_adapter", _no_capture_adapter)
+    holder, release = hold(root)
+    try:
+        with pytest.raises(SystemExit) as stopped:
+            capture.main([CAPTURE_SCENARIO_ID, *option])
+    finally:
+        release()
+    assert stopped.value.code == 2
+    error = capsys.readouterr().err
+    assert f"capture.py: error: {_busy_text(root, holder)}" in error, error
+
+
+@pytest.mark.parametrize("ending", ["setup-fails", "capture-raises"])
+def test_capture_releases_the_work_root_it_locked(
+    monkeypatch: pytest.MonkeyPatch, work_root_case: Path, ending: str
+) -> None:
+    """``capture.py`` holds a configured work root's session lock while it
+    captures and gives it up however the run ends: when the adapter cannot
+    be set up (exit status 1) and when a capture raises, after closing the
+    adapter."""
+    from harness import capture
+
+    root = work_root_case / "work root"
+    _set_work_root_variable(monkeypatch, str(root))
+    held: list[bool] = []
+
+    def assert_held() -> None:
+        with pytest.raises(WorkRootBusy):
+            lock_work_root(root)
+        held.append(True)
+
+    if ending == "setup-fails":
+
+        def make_adapter(work_root: Path) -> None:
+            assert_held()
+            raise HarnessError("no adapter (simulated)")
+
+        monkeypatch.setattr(capture, "make_adapter", make_adapter)
+        assert capture.main([CAPTURE_SCENARIO_ID]) == 1
+    else:
+        closed: list[bool] = []
+
+        def fail(scenario_id: str, bump: str | None, adapter: object) -> None:
+            assert_held()
+            raise RuntimeError("the capture failed (simulated)")
+
+        adapter = SimpleNamespace(close=lambda: closed.append(True))
+        monkeypatch.setattr(capture, "make_adapter", lambda work_root: adapter)
+        monkeypatch.setattr(capture, "capture", fail)
+        with pytest.raises(RuntimeError, match="simulated"):
+            capture.main([CAPTURE_SCENARIO_ID])
+        assert closed == [True], "the adapter was not closed"
+    assert held == [True], "the capture ran without holding the work root"
+    assert (root / WORK_ROOT_LOCK_NAME).read_text(encoding="utf-8") == "", "the released lock still names a holder"
+    with lock_work_root(root):
+        pass
 
 
 @pytest.mark.parametrize("make", [pytest.param(case.values[0], id=case.id) for case in REPLACED_WORK_ROOTS])
@@ -8784,17 +9317,19 @@ def test_baseline_bumps(carddemo_repo_root: Path, carddemo_work_root: Path, card
 
 
 # The prefix of the scratch folder baselines.check_bumps makes for its YAML
-# reads, and a tracer a child process imports at start-up as `sitecustomize`
-# when its folder comes first on PYTHONPATH: it appends the real path of every
-# folder tempfile.mkdtemp makes (TemporaryDirectory's included) to the log
-# beside it, then runs the `sitecustomize` it shadows, if there is one.
+# reads; a tracer module that appends the real path of every folder
+# tempfile.mkdtemp makes (TemporaryDirectory's included) to the log beside it;
+# and the bootstrap a child runs as `python -B -c MKDTEMP_TRACER_BOOTSTRAP
+# <tracer file> <script> <args>`. The bootstrap loads the tracer from its file,
+# then runs the script as __main__ with the sys.argv, sys.path[0] and exit
+# status a plain `python <script> <args>` gives it. Both paths travel in argv,
+# never on PYTHONPATH, which splits at os.pathsep, so a work root whose path
+# holds ':' or spaces is traced like any other.
 BUMP_SCRATCH_PREFIX = "carddemo-bumps-"
 MKDTEMP_TRACER_LOG = "mkdtemp.log"
+MKDTEMP_TRACER_MODULE = "carddemo_mkdtemp_tracer"
 MKDTEMP_TRACER = f"""\
-import importlib.machinery
-import importlib.util
 import os
-import sys
 import tempfile
 
 _FOLDER = os.path.dirname(os.path.abspath(__file__))
@@ -8810,12 +9345,22 @@ def mkdtemp(suffix=None, prefix=None, dir=None):
 
 
 tempfile.mkdtemp = mkdtemp
+"""
+MKDTEMP_TRACER_BOOTSTRAP = f"""\
+import importlib.util
+import os
+import runpy
+import sys
 
-_shadowed = importlib.machinery.PathFinder.find_spec(
-    "sitecustomize", [entry for entry in sys.path if os.path.abspath(entry or os.curdir) != _FOLDER]
-)
-if _shadowed is not None and _shadowed.loader is not None:
-    _shadowed.loader.exec_module(importlib.util.module_from_spec(_shadowed))
+_tracer, _script, *_arguments = sys.argv[1:]
+_spec = importlib.util.spec_from_file_location({MKDTEMP_TRACER_MODULE!r}, _tracer)
+_module = importlib.util.module_from_spec(_spec)
+sys.modules[_spec.name] = _module
+_spec.loader.exec_module(_module)
+sys.argv[:] = [_script, *_arguments]
+if not sys.flags.safe_path:
+    sys.path[0] = os.path.dirname(os.path.realpath(_script))
+runpy.run_path(_script, run_name="__main__")
 """
 
 
@@ -8824,16 +9369,20 @@ def test_baseline_bumps_scratch_stays_in_the_work_root(carddemo_repo_root: Path,
     root ``_cli`` hands it, whatever ``CARDDEMO_TEST_WORKDIR`` holds in this
     process, as the tracer records in the child. The work root is a folder of
     the case's own, narrower than the session's, so a scratch folder made in
-    the session root or in the temporary directory is caught alike. Only
-    where the scratch lies is judged here: the bump verdict, which uncommitted
-    baseline changes decide, is test_baseline_bumps', so the command need only
-    end with a verdict (exit 0 or 1 and its summary line, no traceback)."""
+    the session root or in the temporary directory is caught alike. The child
+    loads the tracer through MKDTEMP_TRACER_BOOTSTRAP, which takes the
+    tracer's path from its arguments, so the session work root's path may hold
+    ':' or spaces. Only where the scratch lies is judged here: the bump
+    verdict, which uncommitted baseline changes decide, is
+    test_baseline_bumps', so the command need only end with a verdict (exit 0
+    or 1 and its summary line, no traceback)."""
     work_root = work_root_case / "work root"
     work_root.mkdir()
     tracer = work_root_case / "tracer"
     tracer.mkdir()
-    (tracer / "sitecustomize.py").write_text(MKDTEMP_TRACER, encoding="utf-8")
-    search_path = os.pathsep.join(filter(None, [str(tracer), os.environ.get("PYTHONPATH")]))
+    tracer_file = tracer / f"{MKDTEMP_TRACER_MODULE}.py"
+    tracer_file.write_text(MKDTEMP_TRACER, encoding="utf-8")
+    launcher = ("-B", "-c", MKDTEMP_TRACER_BOOTSTRAP, str(tracer_file))
     completed = _cli(
         carddemo_repo_root,
         "baselines.py",
@@ -8841,7 +9390,7 @@ def test_baseline_bumps_scratch_stays_in_the_work_root(carddemo_repo_root: Path,
         "--base",
         "HEAD",
         work_root=work_root,
-        extra_env={"PYTHONPATH": search_path},
+        launcher=launcher,
     )
     verdict = completed.stderr.splitlines()[-1:] or [""]
     assert (
@@ -8850,7 +9399,8 @@ def test_baseline_bumps_scratch_stays_in_the_work_root(carddemo_repo_root: Path,
         and verdict[0].startswith("baselines.py: ")
         and verdict[0].endswith(" against HEAD")
     ), (
-        f"{' '.join(map(str, completed.args[1:]))} exited {completed.returncode} without a bump verdict\n"
+        f"{' '.join(map(str, completed.args[1 + len(launcher) :]))} under the mkdtemp tracer "
+        f"exited {completed.returncode} without a bump verdict\n"
         f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
     )
     log = tracer / MKDTEMP_TRACER_LOG
@@ -8871,9 +9421,10 @@ def test_protected_tree(carddemo_repo_root: Path, carddemo_work_root: Path) -> N
     _assert_passes(_cli(carddemo_repo_root, "report.py", "--check-protected", work_root=carddemo_work_root))
 
 
-# A git the protected-tree check finds first on PATH: ``rev-parse --verify``
-# and ``rev-parse --is-shallow-repository`` run the case's shell commands, and
-# every call they let through fails as a fatal git error does.
+# A git the protected-tree check runs in place of the real one:
+# ``rev-parse --verify`` and ``rev-parse --is-shallow-repository`` run the
+# case's shell commands, and every call they let through fails as a fatal git
+# error does.
 FAKE_GIT_FAILURE = "fatal: simulated git failure"
 FAKE_GIT_SCRIPT = """\
 #!/bin/sh
@@ -8883,6 +9434,37 @@ case "$1 $2" in
 esac
 echo "{failure}" >&2
 exit 128
+"""
+# Runs the script after the fake git's path in its arguments, every git
+# command the script starts through subprocess executing that fake. The fake
+# is named by its path, never through PATH: the fake lies in the session work
+# root, whose path may hold ':', and a PATH entry cannot.
+FAKE_GIT_BOOTSTRAP = """\
+import os
+import runpy
+import subprocess
+import sys
+
+_git, _script, *_arguments = sys.argv[1:]
+
+
+class _FakeGitPopen(subprocess.Popen):
+    def __init__(self, args, *positional, **keywords):
+        if (
+            isinstance(args, (list, tuple))
+            and list(args[:1]) == ["git"]
+            and len(positional) < 2
+            and keywords.get("executable") is None
+        ):
+            keywords["executable"] = _git
+        super().__init__(args, *positional, **keywords)
+
+
+subprocess.Popen = _FakeGitPopen
+sys.argv[:] = [_script, *_arguments]
+if not sys.flags.safe_path:
+    sys.path[0] = os.path.dirname(os.path.realpath(_script))
+runpy.run_path(_script, run_name="__main__")
 """
 
 
@@ -8900,7 +9482,9 @@ def test_protected_tree_names_the_git_failure_cause(
     """git failing in any other way than "no such commit" stops the check
     with git's own message (exit 2). A base that names no commit is a finding
     (exit 1) naming the base, and the advice to fetch the full history
-    appears only when git says the clone is shallow."""
+    appears only when git says the clone is shallow. The child runs the
+    check through FAKE_GIT_BOOTSTRAP, which gives every git command the fake
+    by its path, so the session work root's path may hold ':' or spaces."""
     fake = work_root_case / "bin"
     fake.mkdir()
     git = fake / "git"
@@ -8911,7 +9495,7 @@ def test_protected_tree_names_the_git_failure_cause(
         "report.py",
         "--check-protected",
         work_root=work_root_case,
-        extra_env={"PATH": f"{fake}{os.pathsep}{os.environ['PATH']}"},
+        launcher=("-B", "-c", FAKE_GIT_BOOTSTRAP, str(git)),
     )
     shown = f"exited {completed.returncode}\nstdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
     assert completed.returncode == returncode and "Traceback" not in completed.stderr, shown

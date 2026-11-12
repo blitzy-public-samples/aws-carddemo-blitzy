@@ -27,6 +27,8 @@ environment variable, and imports neither the harness submodules nor
 from __future__ import annotations
 
 import decimal
+import errno
+import fcntl
 import hashlib
 import io
 import os
@@ -36,7 +38,8 @@ import stat
 import subprocess
 import sys
 import tempfile
-from datetime import date, datetime
+import time
+from datetime import date, datetime, timezone
 from pathlib import Path, PurePath, PureWindowsPath
 from typing import Any, Callable
 
@@ -60,6 +63,9 @@ __all__ = [
     "SCENARIOS_DIR",
     "TESTS_ROOT",
     "UNIKIX_EVIDENCE_DIR",
+    "WORK_ROOT_LOCK_NAME",
+    "WorkRootBusy",
+    "WorkRootLock",
     "YAMLLoadError",
     "YAMLStructureError",
     "YAML_MAX_ALIAS_WEIGHT",
@@ -70,6 +76,7 @@ __all__ = [
     "dump_yaml",
     "git_head",
     "load_yaml",
+    "lock_work_root",
     "relpath",
     "sha256_file",
     "sha256_hex",
@@ -922,9 +929,12 @@ def display_path(path: str | PurePath) -> str:
 # The directory usable_work_root makes in a work root, and removes at once,
 # to prove that working directories can be created and removed there.
 _WORK_ROOT_PROBE_PREFIX = ".carddemo-probe-"
+# The write bits that make a directory writable by someone other than its
+# owner; an owner-only work root has neither.
+_SHARED_WRITE_BITS = stat.S_IWGRP | stat.S_IWOTH
 
 
-def usable_work_root(configured: str | PurePath) -> Path:
+def usable_work_root(configured: str | PurePath, *, owner_only: bool = False) -> Path:
     """The resolved work root ``configured`` names, created when missing, or
     ``HarnessError`` saying why it cannot be one.
 
@@ -938,6 +948,13 @@ def usable_work_root(configured: str | PurePath) -> Path:
     as given: ``~`` is not expanded, and a relative path is taken from the
     current folder. It reads no environment variable; the caller passes the
     configured text and decides what replaces a refused root.
+
+    ``owner_only`` applies the rule the UniKix deployment
+    (``adapters/unikix/deploy.py``) holds a work root to: a missing root is
+    created with mode ``0o700``, and the resolved root must be owned by the
+    effective user and writable by neither group nor others, since anyone
+    else who can write to it could plant the links and files the deployment
+    writes through or trusts. Its missing parents get the default mode.
     """
     if not isinstance(configured, (str, PurePath)):
         raise TypeError(f"configured must be str or a path, not {type(configured).__name__}")
@@ -957,13 +974,15 @@ def usable_work_root(configured: str | PurePath) -> Path:
     if REPO_ROOT in root.parents:
         raise HarnessError(f"the path resolves to {display_path(root)}, inside the repository")
     try:
-        root.mkdir(parents=True, exist_ok=True)
+        root.mkdir(mode=0o700 if owner_only else 0o777, parents=True, exist_ok=True)
     except OSError as exc:
         if os.path.exists(root) and not os.path.isdir(root):
             raise HarnessError(f"{root} is not a directory") from None
         raise HarnessError(f"{root} cannot be created: {exc}") from None
     if not root.is_dir():
         raise HarnessError(f"{root} is not a directory")
+    if owner_only:
+        _check_owner_only(root)
     try:
         probe = tempfile.mkdtemp(prefix=_WORK_ROOT_PROBE_PREFIX, dir=root)
     except OSError as exc:
@@ -973,3 +992,214 @@ def usable_work_root(configured: str | PurePath) -> Path:
     except OSError as exc:
         raise HarnessError(f"a directory made in {root} cannot be removed: {exc}") from None
     return root
+
+
+def _check_owner_only(root: Path) -> None:
+    """``HarnessError`` unless the directory ``root`` is the effective user's
+    own and writable by neither group nor others, worded as the UniKix
+    deployment refuses such a root."""
+    try:
+        status = os.stat(root)
+    except OSError as exc:
+        raise HarnessError(f"{root} cannot be inspected: {exc.strerror or exc}") from None
+    if status.st_uid != os.geteuid():
+        raise HarnessError(f"{root} is owned by uid {status.st_uid}, not {os.geteuid()}; choose another work root")
+    if status.st_mode & _SHARED_WRITE_BITS:
+        raise HarnessError(
+            f"{root} is writable by group or others (mode {stat.S_IMODE(status.st_mode):04o}), so they could "
+            "plant links in it; run chmod go-w on it or choose another work root"
+        )
+
+
+# The lock file a session holds in its configured work root for as long as it
+# runs. Each scenario runs in <work root>/<scenario_id>/, which a run empties
+# first, so two sessions sharing a root would delete each other's live
+# working directories. Underscored like _build and _unikix_zip, so it never
+# names a scenario's directory.
+WORK_ROOT_LOCK_NAME = "_session.lock"
+# The most of the holder's command line its record keeps, and the most of a
+# record a refused session reads back.
+_HOLDER_COMMAND_CHARS = 200
+_HOLDER_RECORD_BYTES = 1024
+# How long, in seconds, a refused session keeps re-reading an empty holder
+# record, and how often. A holder writes its record just after it takes the
+# lock, and a holder that ends empties it, so a session refused in between
+# reads no record; the moment that takes is far below this bound. A record
+# that is present ends the wait at once, so a refusal that can name its
+# holder never waits.
+_HOLDER_WAIT_S = 1.0
+_HOLDER_POLL_S = 0.02
+
+
+class WorkRootBusy(HarnessError):
+    """The work root ``root`` is locked by another session, which ``holder``
+    describes as its record gives it."""
+
+    def __init__(self, root: Path, holder: str) -> None:
+        self.root = root
+        self.holder = holder
+        super().__init__(
+            f"the work root {root} is in use by another session ({holder}); give each concurrent session "
+            "its own work root, or wait for that session to end"
+        )
+
+
+class WorkRootLock:
+    """The exclusive lock ``lock_work_root`` took on a work root, held until
+    ``release``, the end of a ``with`` block or the end of the process."""
+
+    def __init__(self, root: Path, path: Path, descriptor: int) -> None:
+        self.root = root
+        self.path = path
+        self._descriptor: int | None = descriptor
+
+    @property
+    def held(self) -> bool:
+        """Whether this lock is still held."""
+        return self._descriptor is not None
+
+    def release(self) -> None:
+        """Empty the holder record and give the lock up; nothing when it is
+        already released. The lock file stays, so every later session locks
+        the same file: removing it would let two sessions each lock a file
+        of that name."""
+        descriptor, self._descriptor = self._descriptor, None
+        if descriptor is None:
+            return
+        try:
+            os.ftruncate(descriptor, 0)
+        except OSError:
+            pass  # the record only names the holder; closing still releases the lock
+        finally:
+            os.close(descriptor)
+
+    def __enter__(self) -> WorkRootLock:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.release()
+
+
+def _printable(text: str) -> str:
+    """``text`` with every character that is not printable, a line break
+    included, shown as ``?``, so a record stays one line."""
+    return "".join(character if character.isprintable() else "?" for character in text)
+
+
+def _holder_record() -> str:
+    """This process as the lock's record names it: its pid, the UTC time it
+    took the lock and its command line, clipped."""
+    command = _printable(" ".join(sys.argv)) or "?"
+    if len(command) > _HOLDER_COMMAND_CHARS:
+        command = command[: _HOLDER_COMMAND_CHARS - 3] + "..."
+    since = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return f"pid {os.getpid()}, since {since}, running {command}"
+
+
+def _try_lock(descriptor: int, path: Path) -> bool:
+    """Whether the exclusive lock of the session lock ``path``, open as
+    ``descriptor``, was taken without waiting; ``False`` when another open
+    file description holds it, and ``HarnessError`` with the reason when it
+    cannot be locked at all."""
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return False
+    except OSError as exc:
+        raise HarnessError(f"the session lock {path} cannot be locked: {exc.strerror or exc}") from None
+    return True
+
+
+def _read_holder(descriptor: int, path: Path) -> str | None:
+    """The first line of the holder record of the session lock ``path``,
+    which another session holds, read through ``descriptor`` without taking
+    the lock. A record that is present is returned at once. An empty one is
+    what a holder shows between taking the lock and writing its record, so
+    it is read again every ``_HOLDER_POLL_S`` seconds until a read made
+    ``_HOLDER_WAIT_S`` seconds after the first, and the lock is tried before
+    each re-read: ``None`` when it was taken because its holder ended
+    meanwhile, and "it has not recorded itself yet" when the record stays
+    empty while the lock stays held."""
+    deadline = time.monotonic() + _HOLDER_WAIT_S
+    while True:
+        # Timed before the read, so the record is given up on only after a
+        # read made once the whole bound has passed, however this session is
+        # delayed between the two.
+        now = time.monotonic()
+        try:
+            data = os.pread(descriptor, _HOLDER_RECORD_BYTES, 0)
+        except OSError:
+            data = b""
+        holder = _printable(data.decode("utf-8", "replace").split("\n", 1)[0]).strip()
+        if holder:
+            return holder
+        if now >= deadline:
+            return "it has not recorded itself yet"
+        time.sleep(min(_HOLDER_POLL_S, deadline - now))
+        if _try_lock(descriptor, path):
+            return None
+
+
+def lock_work_root(root: str | PurePath) -> WorkRootLock:
+    """Take the exclusive lock of the work root ``root`` for this session,
+    or raise ``WorkRootBusy`` naming the root and the session that holds it.
+
+    The lock is an ``fcntl.flock`` on ``<root>/_session.lock``, taken without
+    waiting. It locks an open file description, so it excludes other
+    processes and other descriptions in this one alike, and the kernel
+    releases it when its holder exits, however it ends; the descriptor is
+    close-on-exec, so no child process inherits it. The file is created
+    when missing, never opened through a symbolic link, and must be a
+    regular file. Once locked it holds one line naming this session
+    (``_holder_record``), written over whatever a holder that ended left
+    there before the file is cut to its length, so the file is never
+    emptied in between. A refused session reads that line back
+    (``_read_holder``): at once when it is there, and otherwise after
+    waiting at most ``_HOLDER_WAIT_S`` seconds for the holder that has just
+    locked to write it, taking the lock instead should that holder end
+    meanwhile. ``HarnessError`` with the reason when the file cannot be
+    opened, locked or written."""
+    work = Path(root)
+    path = work / WORK_ROOT_LOCK_NAME
+    try:
+        descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o644)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise HarnessError(
+                f"the session lock {path} is a symbolic link, which is never followed; remove it or choose "
+                "another work root"
+            ) from None
+        if exc.errno == errno.EISDIR:
+            raise HarnessError(
+                f"the session lock {path} is not a regular file; remove it or choose another work root"
+            ) from None
+        raise HarnessError(f"the session lock {path} cannot be opened: {exc.strerror or exc}") from None
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise HarnessError(
+                f"the session lock {path} is not a regular file; remove it or choose another work root"
+            )
+        # Made before the lock is taken, so a refused session finds the
+        # record written as soon after the lock as possible.
+        record = f"{_holder_record()}\n".encode("utf-8")
+        if not _try_lock(descriptor, path):
+            holder = _read_holder(descriptor, path)
+            if holder is not None:
+                raise WorkRootBusy(work, holder)
+            record = f"{_holder_record()}\n".encode("utf-8")  # locked only now, after the wait
+        try:
+            written = os.pwrite(descriptor, record, 0)
+            os.ftruncate(descriptor, written)
+        except OSError as exc:
+            raise HarnessError(
+                f"this session cannot be recorded in the session lock {path}: {exc.strerror or exc}"
+            ) from None
+        if written != len(record):
+            raise HarnessError(
+                f"this session cannot be recorded in the session lock {path}: only {written} of "
+                f"{len(record)} bytes were written"
+            )
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return WorkRootLock(work, path, descriptor)

@@ -304,7 +304,7 @@ class GnuCOBOLBatchAdapter(Adapter):
         try:
             outcome = _datasets.run_process(
                 [cache.probe],
-                env=_datasets.runtime_env(cache),
+                env=_datasets.runtime_env(cache, cwd=self.work_root),
                 cwd=self.work_root,
                 deadline=time.monotonic() + _PROBE_TIMEOUT_S,
             )

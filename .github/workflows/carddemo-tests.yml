@@ -213,8 +213,8 @@ jobs:
           fi
 
       # The runner removes a passing scenario's working directory, so only the
-      # failing ones remain under the work root; the build cache and the
-      # extracted UniKix zip are left out.
+      # failing ones remain under the work root; the build cache, the
+      # extracted UniKix zip and the sessions' lock file are left out.
       - name: Upload reports
         if: always()
         uses: actions/upload-artifact@v7.0.2
@@ -226,3 +226,4 @@ jobs:
             ${{ env.CARDDEMO_TEST_WORKDIR }}
             !${{ env.CARDDEMO_TEST_WORKDIR }}/_build
             !${{ env.CARDDEMO_TEST_WORKDIR }}/_unikix_zip
+            !${{ env.CARDDEMO_TEST_WORKDIR }}/_session.lock

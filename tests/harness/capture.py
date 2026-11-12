@@ -70,10 +70,14 @@ repository. A configured root is used only when ``harness.usable_work_root``
 accepts it (not blank, outside the repository, a directory, created when
 missing, and writable). An unusable ``--work-root`` is a usage error; an
 unusable ``CARDDEMO_TEST_WORKDIR`` is named on stderr with the reason, and the
-new temporary root replaces it. Version planning parses HEAD's YAML in a
-temporary folder inside the work root. Inside the repository the script
-writes only under ``tests/baselines/``, besides the git-ignored runtime files
-the runner writes under ``tests/reports/runtime/``: ``baselines.write``
+new temporary root replaces it. A configured root serves one run or pytest
+session at a time, since each scenario's ``<work root>/<scenario_id>/`` is
+emptied before it runs: the capture holds ``<work root>/_session.lock``
+(``harness.lock_work_root``) until it ends, and a root another run or session
+holds is a usage error naming that holder. Version planning parses HEAD's
+YAML in a temporary folder inside the work root. Inside the repository the
+script writes only under ``tests/baselines/``, besides the git-ignored runtime
+files the runner writes under ``tests/reports/runtime/``: ``baselines.write``
 publishes each ``<id>/`` whole, under a lock on that folder, through a staging
 directory ``.<id>.<pid>.<8 hex>.new`` beside it (and, where the kernel cannot
 exchange two names, a pre-image ``.<id>.<pid>.<8 hex>.old``), so an
@@ -100,7 +104,7 @@ _TESTS_ROOT = str(Path(__file__).resolve().parents[1])
 if _TESTS_ROOT not in sys.path:
     sys.path.insert(0, _TESTS_ROOT)
 
-from harness import REPO_ROOT, HarnessError, git_head, usable_work_root  # noqa: E402
+from harness import REPO_ROOT, HarnessError, git_head, lock_work_root, usable_work_root  # noqa: E402
 from harness import baselines as _baselines  # noqa: E402
 from harness import results as _results  # noqa: E402
 from harness import runner as _runner  # noqa: E402
@@ -681,12 +685,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         work_root, created = _work_root(args.work_root)
     except (CaptureError, OSError) as exc:
         parser.error(str(exc))
+    # A configured root may be named by another capture or pytest session,
+    # whose working directories a run would delete; a temporary one is this
+    # run's alone.
+    lock = None
+    if not created:
+        try:
+            lock = lock_work_root(work_root)
+        except HarnessError as exc:
+            parser.error(str(exc))
     try:
         ids = select_all() if args.all else list(dict.fromkeys(args.scenario_ids))
         adapter = make_adapter(work_root)
     except (HarnessError, ImportError, AttributeError, OSError) as exc:
         print(f"capture.py: cannot set up the {ADAPTER} capture: {type(exc).__name__}: {exc}", file=sys.stderr)
         _discard(work_root, created, [])
+        if lock is not None:
+            lock.release()
         return 1
     captures: list[Captured] = []
     try:
@@ -695,10 +710,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             captures.append(captured)
             _report(captured, args.all)
     finally:
-        close = getattr(adapter, "close", None)
-        if callable(close):
-            close()
-        _discard(work_root, created, captures)
+        try:
+            close = getattr(adapter, "close", None)
+            if callable(close):
+                close()
+            _discard(work_root, created, captures)
+        finally:
+            if lock is not None:
+                lock.release()
     return _summarize(captures, args.all)
 
 

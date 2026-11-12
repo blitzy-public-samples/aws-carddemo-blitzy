@@ -14,13 +14,24 @@ Environment
     ``CARDDEMO_TEST_WORKDIR``
         The work root: the per-scenario working directories, the build cache,
         the extracted UniKix zip and the UniKix deployment root. It must lie
-        outside the repository, and it is created when missing. Unset, the
-        session silently uses a fresh ``tempfile.mkdtemp(prefix="carddemo-")``
-        root. Set to a value that cannot be a work root (blank, inside the
-        repository, not a directory, not creatable or not writable), it gives
-        a warning naming the refused value and why, then uses the same fresh
-        temporary root instead. Only when that temporary root would lie inside
-        the repository, or cannot be made, is it a usage error.
+        outside the repository, and it is created when missing. Under
+        ``unikix`` it must also be the user's own and writable by neither
+        group nor others (``chmod go-w``), as the UniKix deployment requires;
+        a missing one is created with mode 0700. Unset, the session silently
+        uses a fresh ``tempfile.mkdtemp(prefix="carddemo-")`` root. Set to a
+        value that cannot be a work root (blank, inside the repository, not a
+        directory, not creatable, not writable, or, under ``unikix``, not the
+        user's own or writable by group or others), it gives a warning naming
+        the refused value and why, then uses the same fresh temporary root
+        instead. Only when that temporary root would lie inside the
+        repository, or cannot be made, is it a usage error. A configured root
+        serves one session at a time: each scenario runs in a fresh
+        ``<work root>/<scenario_id>/``, so two sessions sharing a root would
+        delete each other's working directories. The session therefore holds
+        ``<work root>/_session.lock`` (``harness.lock_work_root``) until it
+        ends, and a second session that names a held root stops with a usage
+        error naming the root and the session holding it. Give each
+        concurrent session its own work root.
 
 Options
     ``--carddemo-order=forward|reverse``
@@ -89,7 +100,7 @@ if TYPE_CHECKING:
 # PYTHONDONTWRITEBYTECODE itself.
 sys.dont_write_bytecode = True
 
-from harness import MARKER_FOR_ADAPTER, HarnessError, usable_work_root  # noqa: E402
+from harness import MARKER_FOR_ADAPTER, HarnessError, WorkRootLock, lock_work_root, usable_work_root  # noqa: E402
 
 TESTS_ROOT = Path(__file__).resolve().parent
 REPO_ROOT = TESTS_ROOT.parent
@@ -99,6 +110,11 @@ WORKDIR_ENV = "CARDDEMO_TEST_WORKDIR"
 WORK_ROOT_PREFIX = "carddemo-"
 
 DEFAULT_ADAPTER = "gnucobol-batch"
+# Adapters whose deployment refuses a work root that is not the user's own or
+# that group or others can write to (adapters/unikix/deploy.py), so the
+# session holds the configured root to the same rule and replaces one it
+# refuses, as it replaces any other unusable root.
+OWNER_ONLY_ADAPTERS = frozenset({"unikix"})
 
 # Adapter name -> (module, class). The module is imported only when a scenario
 # test first needs the adapter, so selecting one adapter never imports the
@@ -112,6 +128,10 @@ ADAPTER_NAME_KEY = pytest.StashKey[str]()
 WORK_ROOT_KEY = pytest.StashKey[Path]()
 # Set only when this session made the work root with mkdtemp.
 CREATED_WORK_ROOT_KEY = pytest.StashKey[Path]()
+# Set only when the work root is the configured one: the lock this session
+# holds on it until pytest_unconfigure. A root made with mkdtemp is this
+# session's alone, so it needs none.
+WORK_ROOT_LOCK_KEY = pytest.StashKey[WorkRootLock]()
 
 SCENARIO_PARAMETER = "scenario"
 
@@ -168,15 +188,17 @@ def _refuse_inside_repository(path: Path, what: str) -> None:
         )
 
 
-def _work_root() -> tuple[Path, bool, str | None]:
-    """The session's resolved work root, whether this session created it, and
-    the warning to give when ``CARDDEMO_TEST_WORKDIR`` is set but not used
-    (``None`` otherwise).
+def _work_root(adapter: str = DEFAULT_ADAPTER) -> tuple[Path, bool, str | None]:
+    """The session's resolved work root for ``adapter``, whether this session
+    created it, and the warning to give when ``CARDDEMO_TEST_WORKDIR`` is set
+    but not used (``None`` otherwise).
 
     A set value is used only when ``harness.usable_work_root`` accepts it: not
     blank, neither the repository nor inside it (checked before anything is
     created, so a refused root leaves nothing behind), created when missing,
-    a directory, and writable. A refused or unset value is replaced by a fresh
+    a directory, and writable; for an adapter of ``OWNER_ONLY_ADAPTERS`` also
+    the user's own and writable by neither group nor others, created with
+    mode 0700 when missing. A refused or unset value is replaced by a fresh
     ``tempfile.mkdtemp(prefix="carddemo-")`` root, which this session owns.
     That root must lie outside the repository too: when the temporary
     directory lies inside it, or no temporary root can be made, there is no
@@ -188,7 +210,7 @@ def _work_root() -> tuple[Path, bool, str | None]:
     refused = None
     if configured is not None:
         try:
-            return usable_work_root(configured), False, None
+            return usable_work_root(configured, owner_only=adapter in OWNER_ONLY_ADAPTERS), False, None
         except HarnessError as exc:
             refused = f"{WORKDIR_ENV}={configured!r} is not a usable work root: {exc}"
     try:
@@ -204,9 +226,24 @@ def _work_root() -> tuple[Path, bool, str | None]:
     return root, True, f"{refused}; this session uses the fresh temporary work root {root} instead"
 
 
+def _lock_work_root(root: Path) -> WorkRootLock:
+    """The lock of the configured work root ``root``, held until
+    ``pytest_unconfigure``. Two sessions sharing a root would empty each
+    other's live scenario working directories, so a root another session
+    holds is a usage error naming the root and that session, as is a lock
+    that cannot be taken."""
+    try:
+        return lock_work_root(root)
+    except HarnessError as exc:
+        raise pytest.UsageError(f"{WORKDIR_ENV}: {exc}") from exc
+
+
 def pytest_configure(config: pytest.Config) -> None:
-    config.stash[ADAPTER_NAME_KEY] = _selected_adapter()
-    root, created, warning = _work_root()
+    adapter = _selected_adapter()
+    config.stash[ADAPTER_NAME_KEY] = adapter
+    root, created, warning = _work_root(adapter)
+    if not created:
+        config.stash[WORK_ROOT_LOCK_KEY] = _lock_work_root(root)
     config.stash[WORK_ROOT_KEY] = root
     if created:
         config.stash[CREATED_WORK_ROOT_KEY] = root
@@ -217,6 +254,9 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 def pytest_unconfigure(config: pytest.Config) -> None:
+    lock = config.stash.get(WORK_ROOT_LOCK_KEY, None)
+    if lock is not None:
+        lock.release()
     root = config.stash.get(CREATED_WORK_ROOT_KEY, None)
     if root is None:
         return
