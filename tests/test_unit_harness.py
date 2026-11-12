@@ -2,7 +2,8 @@
 
 These check the instruments every business assertion depends on: the
 layouts against the copybooks and LISTCAT, the codecs, the EBCDIC fixture
-cross-check, the frozen inventory, the scenario, baseline and result files
+cross-check and the approved fixture sources, the frozen inventory, the
+scenario, baseline and result files
 against the closed id manifest and the scenario schema, the gap register and
 the seam rule, the configuration (markers, ``commands.yaml`` and the adapter
 contract), the baseline version-bump check and the protected-tree check,
@@ -8264,6 +8265,178 @@ def test_fixture_padding(carddemo_repo_root: Path, fixture_padding_root: Path) -
         fixtures.repository_dataset("CARDXREF", root)
 
 
+USRSEC_SOURCE = "app/data/EBCDIC/AWS.M2.CARDDEMO.USRSEC.PS"
+DUSRSECJ_MEMBER = "app/jcl/DUSRSECJ.jcl"
+# What a refusal states after the path it refuses.
+FIXTURE_SOURCE_RULE = (
+    "is not an approved fixture source; approved fixture sources are the files below app/data/"
+)
+
+# A copy of the committed CARDXREF entry with one key replaced: the key, its
+# value, and the field the refusal names before the value.
+FIXTURE_SOURCE_REFUSALS = {
+    "source-git-metadata": ("source", ".git/config", "source"),
+    "source-program": ("source", "app/cbl/CBACT01C.cbl", "source"),
+    "source-hidden-data-file": ("source", "app/data/EBCDIC/.gitkeep", "source"),
+    "source-fixture-definitions": ("source", "tests/fixtures/datasets.yaml", "source"),
+    "records-counterpart-git-metadata": (
+        "cross_check",
+        {"source": ".git/HEAD", "encoding": "cp037"},
+        "cross_check.source (records form)",
+    ),
+    "instream-counterpart-other-job": (
+        "cross_check",
+        {"source": "app/jcl/ACCTFILE.jcl", "encoding": "ascii", "form": "instream"},
+        "cross_check.source (instream form)",
+    ),
+    "instream-alias-counterpart-other-job": (
+        "cross_check",
+        {"source": "app/jcl/ACCTFILE.jcl", "encoding": "jcl-instream"},
+        "cross_check.source (instream form)",
+    ),
+    "records-counterpart-dusrsecj": (
+        "cross_check",
+        {"source": DUSRSECJ_MEMBER, "encoding": "ascii"},
+        "cross_check.source (records form)",
+    ),
+}
+
+
+def _fixture_document_with(name: str, key: str, value: object) -> object:
+    """The committed datasets.yaml document with ``key`` of the entry
+    ``name`` set to ``value``."""
+    document = copy.deepcopy(load_yaml(FIXTURES_FILE))
+    entry = next(entry for entry in document["datasets"] if entry["name"] == name)
+    entry[key] = value
+    return document
+
+
+def test_committed_fixture_sources_are_approved() -> None:
+    # The committed definitions name only approved fixture sources, so the
+    # document parses, here as in fixtures.specs(), and USRSEC is still
+    # cross-checked against DUSRSECJ's in-stream SYSUT1 lines.
+    definitions = fixtures.specs()
+    assert definitions
+    assert fixtures._parse_document(load_yaml(FIXTURES_FILE), FIXTURES_FILE) == definitions
+    assert definitions["USRSEC"].cross_check == fixtures.CrossCheck(DUSRSECJ_MEMBER, "ascii", "instream", (35, 44))
+
+
+@pytest.mark.parametrize("case", sorted(FIXTURE_SOURCE_REFUSALS))
+def test_fixture_source_definition_refused(case: str) -> None:
+    # A dataset source or cross-check counterpart that is not an approved
+    # fixture source fails the whole document when it is loaded, before any
+    # file is read.
+    key, value, field = FIXTURE_SOURCE_REFUSALS[case]
+    named = value["source"] if isinstance(value, dict) else value
+    expected = f"tests/fixtures/datasets.yaml CARDXREF.{field} {named!r} {FIXTURE_SOURCE_RULE}"
+    with pytest.raises(fixtures.FixtureError, match=re.escape(expected)) as raised:
+        fixtures._parse_document(_fixture_document_with("CARDXREF", key, value), FIXTURES_FILE)
+    assert raised.value.dataset == "CARDXREF"
+
+
+FIXTURE_SOURCE_ROOT_PREFIX = "unit-fixture-source-"
+# The Git metadata of each case's repository root, and the text it holds on
+# every line. It has more lines than DUSRSECJ's in-stream range 35-44, so a
+# read of it as in-stream data would reach the comparison.
+FIXTURE_SOURCE_METADATA = ".git/config"
+FIXTURE_SOURCE_MARKER = "carddemo-fixture-source-marker"
+FIXTURE_SOURCE_DECOY = "decoy"
+
+# Each case's repository root: the files copied into it from the checkout
+# (path in the root -> checkout path), its symbolic links (link -> target,
+# both in the root), the fixtures function called and its logical dataset,
+# and the purpose and repository-relative path the refusal names, or None
+# where the link stays inside the data area and the dataset reads as in the
+# checkout.
+FIXTURE_SOURCE_LINKS = {
+    "source-to-git-metadata": (
+        {},
+        {CARDXREF_SOURCE: FIXTURE_SOURCE_METADATA},
+        "repository_dataset",
+        "CARDXREF",
+        ("source", CARDXREF_SOURCE),
+    ),
+    "records-counterpart-to-git-metadata": (
+        {CARDXREF_SOURCE: CARDXREF_SOURCE},
+        {"app/data/EBCDIC/AWS.M2.CARDDEMO.CARDXREF.PS": FIXTURE_SOURCE_METADATA},
+        "verify",
+        "CARDXREF",
+        ("cross-check counterpart", "app/data/EBCDIC/AWS.M2.CARDDEMO.CARDXREF.PS"),
+    ),
+    "instream-counterpart-to-git-metadata": (
+        {USRSEC_SOURCE: USRSEC_SOURCE},
+        {DUSRSECJ_MEMBER: FIXTURE_SOURCE_METADATA},
+        "verify",
+        "USRSEC",
+        ("cross-check counterpart", DUSRSECJ_MEMBER),
+    ),
+    "data-area-to-another-directory": (
+        {f"{FIXTURE_SOURCE_DECOY}/ASCII/cardxref.txt": CARDXREF_SOURCE},
+        {"app/data": FIXTURE_SOURCE_DECOY},
+        "repository_dataset",
+        "CARDXREF",
+        ("source", CARDXREF_SOURCE),
+    ),
+    "source-to-another-data-file": (
+        {"app/data/ASCII/cardxref-copy.txt": CARDXREF_SOURCE},
+        {CARDXREF_SOURCE: "app/data/ASCII/cardxref-copy.txt"},
+        "repository_dataset",
+        "CARDXREF",
+        None,
+    ),
+}
+
+
+@pytest.fixture
+def fixture_source_root(carddemo_work_root: Path) -> Iterator[Path]:
+    """A fresh directory of this case's own inside the session work root
+    (carddemo_work_root), never under pytest's basetemp, removed afterwards."""
+    directory = Path(tempfile.mkdtemp(prefix=FIXTURE_SOURCE_ROOT_PREFIX, dir=carddemo_work_root))
+    try:
+        yield directory
+    finally:
+        shutil.rmtree(directory)
+
+
+@pytest.mark.parametrize("case", sorted(FIXTURE_SOURCE_LINKS))
+def test_fixture_source_resolved_target(carddemo_repo_root: Path, fixture_source_root: Path, case: str) -> None:
+    # The target a fixture path resolves to must itself be an approved
+    # fixture source: a link to Git metadata, or a data area that is a link
+    # elsewhere in the repository root, is refused unread, and the refusal
+    # shows neither the target nor its text. A link from one data file to
+    # another stays readable.
+    copies, links, function, logical, refused = FIXTURE_SOURCE_LINKS[case]
+    root = fixture_source_root / "repository"
+    metadata = root / FIXTURE_SOURCE_METADATA
+    metadata.parent.mkdir(parents=True)
+    metadata.write_text(
+        "[core]\n" + "".join(f"\t{FIXTURE_SOURCE_MARKER} = {number}\n" for number in range(1, 61)),
+        encoding="ascii",
+    )
+    for copied, origin in copies.items():
+        (root / copied).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(carddemo_repo_root / origin, root / copied)
+    for link, target in links.items():
+        (root / link).parent.mkdir(parents=True, exist_ok=True)
+        (root / link).symlink_to(os.path.relpath(root / target, (root / link).parent))
+    read = getattr(fixtures, function)
+    if refused is None:
+        assert read(logical, root) == read(logical, carddemo_repo_root)
+        return
+    with pytest.raises(fixtures.FixtureError) as raised:
+        read(logical, root)
+    message = str(raised.value)
+    purpose, path = refused
+    assert not isinstance(raised.value, fixtures.FixtureMismatch), message
+    assert raised.value.dataset == logical
+    assert (
+        f"{logical}: its {purpose} {path} does not lead to an approved fixture source, so it is not read; "
+        f"approved fixture sources are the files below app/data/"
+    ) in message
+    for hidden in (FIXTURE_SOURCE_MARKER, ".git", FIXTURE_SOURCE_DECOY, str(fixture_source_root)):
+        assert hidden not in message, message
+
+
 def _cli(
     repo_root: Path,
     script: str,
@@ -9846,20 +10019,26 @@ def test_baseline_bumps_scratch_stays_in_the_work_root(carddemo_repo_root: Path,
 def test_protected_tree(carddemo_repo_root: Path, carddemo_work_root: Path) -> None:
     _require_commit(
         carddemo_repo_root,
-        inventory_tools.load()["header"]["protected_base"],
-        remedy="The inventory header's protected_base must be the suite's starting commit, "
-        "and this clone's history must hold it.",
+        PROTECTED_BASE,
+        remedy="This clone's history must hold the suite's starting commit, the base of the protected-tree check.",
     )
     _assert_passes(_cli(carddemo_repo_root, "report.py", "--check-protected", work_root=carddemo_work_root))
 
 
-# A git the protected-tree check runs in place of the real one:
-# ``rev-parse --verify`` and ``rev-parse --is-shallow-repository`` run the
-# case's shell commands, and every call they let through fails as a fatal git
-# error does.
+# A git the protected-tree check runs in place of the real one: past the
+# check's global options, ``rev-parse --verify`` and ``rev-parse
+# --is-shallow-repository`` run the case's shell commands, and every call they
+# let through fails as a fatal git error does.
 FAKE_GIT_FAILURE = "fatal: simulated git failure"
 FAKE_GIT_SCRIPT = """\
 #!/bin/sh
+while :; do
+  case "$1" in
+    -c) shift 2 ;;
+    -*) shift ;;
+    *) break ;;
+  esac
+done
 case "$1 $2" in
   "rev-parse --verify") {verify} ;;
   "rev-parse --is-shallow-repository") {shallow} ;;
@@ -9937,8 +10116,530 @@ def test_protected_tree_names_the_git_failure_cause(
     else:
         assert completed.stdout.startswith("protected tree: 1 finding(s)"), shown
         assert says in completed.stdout, shown
-        assert f"the protected base {inventory_tools.load()['header']['protected_base']} " in completed.stdout, shown
+        assert f"the protected base {PROTECTED_BASE} " in completed.stdout, shown
     assert ("fetch-depth" in completed.stdout + completed.stderr) is advises, shown
+
+
+@pytest.mark.parametrize("tampered", ["HEAD", "head-commit", "option-like"])
+def test_protected_tree_checks_against_the_starting_commit(
+    carddemo_repo_root: Path, work_root_case: Path, monkeypatch: pytest.MonkeyPatch, tampered: str
+) -> None:
+    """The protected-tree check diffs against the starting commit whatever the
+    inventory header's protected_base holds, so a change that rewrites the
+    header to HEAD, or to a later commit already holding a change under
+    app/, cannot move the base. A header value other than the starting commit
+    is a finding naming the value, and the value never reaches git: an
+    option-looking one is never read as git's --output, whose file would
+    then exist."""
+    leak = work_root_case / "leak"
+    value = {
+        "HEAD": "HEAD",
+        "head-commit": _git_output(carddemo_repo_root, "rev-parse", "--verify", "HEAD^{commit}").decode().strip(),
+        "option-like": f"--output={leak}",
+    }[tampered]
+    inventory = inventory_tools.load()
+    tampered_inventory = {**inventory, "header": {**inventory["header"], "protected_base": value}}
+    monkeypatch.setattr(report._inventory, "load", lambda *args, **kwargs: tampered_inventory)
+    calls: list[list[str]] = []
+    run_git = report._git
+
+    def recording_git(args: list[str], **keywords: bool | bytes | None) -> subprocess.CompletedProcess | None:
+        calls.append(list(args))
+        return run_git(args, **keywords)
+
+    monkeypatch.setattr(report, "_git", recording_git)
+    findings = report.check_protected()
+    named = [finding for finding in findings if "protected_base" in finding]
+    # The finding clips a long value, so only the start of its repr is sure to
+    # appear whatever the work root's path.
+    assert len(named) == 1 and named[0].startswith(
+        f"the inventory header's protected_base {repr(value)[:60]}"
+    ), findings
+    assert f" is not the starting commit {PROTECTED_BASE}; " in named[0], findings
+    assert [argv for argv in calls if any(value in arg for arg in argv)] == [], calls
+    options = list(report._PROTECTED_GIT_OPTIONS)
+    assert [argv for argv in calls if argv[len(options) :][:1] == ["diff"]] == [
+        [*options, "diff", "--exit-code", "--name-status", PROTECTED_BASE, "--", "app", "samples", "diagrams"]
+    ], calls
+    assert not leak.exists()
+
+
+# The protected tree, and a line a case appends to a file of a copy of it.
+PROTECTED_PATHS = ("app", "samples", "diagrams")
+PROTECTED_APPENDED = b"      * QA HIDDEN\n"
+# 60 new files and one changed one: 61 status entries, 11 past the 50 a
+# protected-tree finding names.
+PROTECTED_MANY = tuple(f"app/cbl/QA{number:02d}.cbl" for number in range(1, 61))
+# How the finding of the check's comparison of the files on disk begins.
+PROTECTED_ON_DISK = (
+    "files under app/, samples/ or diagrams/ whose bytes or mode on disk differ from the starting commit: "
+)
+
+
+def _protected_copy_git(tree: Path, env: Mapping[str, str], *args: str) -> subprocess.CompletedProcess:
+    """``git <args>`` in the copy ``tree`` with the copy's ``env``, so it reads
+    and writes only the copy and its own index, never the checkout's."""
+    return subprocess.run(
+        ["git", *args],
+        cwd=tree,
+        env={**os.environ, **env},
+        capture_output=True,
+        text=True,
+        timeout=CLI_TIMEOUT_S,
+        check=False,
+    )
+
+
+@pytest.mark.parametrize(
+    ("marks", "appended", "created", "excluded", "returncode", "says", "omits", "hides"),
+    [
+        pytest.param((), (), (), (), 0, ("protected tree: ok",), (), False, id="clean"),
+        pytest.param(
+            ("--assume-unchanged", "app/cbl/CBACT02C.cbl"),
+            ("app/cbl/CBACT02C.cbl",),
+            (),
+            (),
+            1,
+            (
+                "protected tree: 2 finding(s)",
+                "git does not compare: app/cbl/CBACT02C.cbl (assume-unchanged)",
+                f"{PROTECTED_ON_DISK}app/cbl/CBACT02C.cbl (content)\n",
+            ),
+            (),
+            True,
+            id="assume-unchanged",
+        ),
+        pytest.param(
+            ("--skip-worktree", "app/cbl/CBACT03C.cbl"),
+            ("app/cbl/CBACT03C.cbl",),
+            (),
+            (),
+            1,
+            (
+                "protected tree: 2 finding(s)",
+                "git does not compare: app/cbl/CBACT03C.cbl (skip-worktree)",
+                f"{PROTECTED_ON_DISK}app/cbl/CBACT03C.cbl (content)\n",
+            ),
+            (),
+            True,
+            id="skip-worktree",
+        ),
+        pytest.param(
+            (),
+            (),
+            ("app/cbl/hidden.cbl",),
+            ("app/cbl/hidden.cbl",),
+            1,
+            (
+                "protected tree: 2 finding(s)",
+                "an ignore rule hides from the status: app/cbl/hidden.cbl",
+                f"{PROTECTED_ON_DISK}app/cbl/hidden.cbl (not in the starting commit)\n",
+            ),
+            (),
+            True,
+            id="ignored",
+        ),
+        pytest.param(
+            (),
+            ("app/cbl/CBTRN02C.cbl",),
+            PROTECTED_MANY,
+            (),
+            1,
+            (
+                "protected tree: 3 finding(s)",
+                "M\tapp/cbl/CBTRN02C.cbl",
+                "?? app/cbl/QA49.cbl; ... and 11 more (61 in all)",
+                f"{PROTECTED_ON_DISK}app/cbl/CBTRN02C.cbl (content); app/cbl/QA01.cbl (not in the starting commit); ",
+                "app/cbl/QA49.cbl (not in the starting commit); ... and 11 more (61 in all)\n",
+            ),
+            ("QA50", "QA60"),
+            False,
+            id="many",
+        ),
+    ],
+)
+def test_protected_tree_names_hidden_and_listed_changes(
+    carddemo_repo_root: Path,
+    work_root_case: Path,
+    marks: tuple[str, ...],
+    appended: tuple[str, ...],
+    created: tuple[str, ...],
+    excluded: tuple[str, ...],
+    returncode: int,
+    says: tuple[str, ...],
+    omits: tuple[str, ...],
+    hides: bool,
+) -> None:
+    """The protected-tree check, run on a copy of the protected tree with an
+    index of its own and the checkout's history, so no case touches the
+    checkout. A clean copy passes. An index entry marked assume-unchanged or
+    skip-worktree, and an untracked file an excludes file hides, are each a
+    finding naming the path, although both commands of the check see
+    nothing, and the comparison of the files on disk names the changed or
+    added file as well. A list longer than 50 entries names 50 and counts
+    the rest."""
+    tree = work_root_case / "tree"
+    for folder in PROTECTED_PATHS:
+        shutil.copytree(carddemo_repo_root / folder, tree / folder, symlinks=True)
+    git_dir = _git_output(carddemo_repo_root, "rev-parse", "--absolute-git-dir").decode().strip()
+    index = work_root_case / "index"
+    shutil.copyfile(Path(git_dir) / "index", index)
+    env = {"GIT_DIR": git_dir, "GIT_WORK_TREE": str(tree), "GIT_INDEX_FILE": str(index)}
+    if excluded:
+        excludes = work_root_case / "excludes"
+        excludes.write_text("".join(f"{path}\n" for path in excluded), encoding="utf-8")
+        env.update(GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="core.excludesFile", GIT_CONFIG_VALUE_0=str(excludes))
+    if marks:
+        marked = _protected_copy_git(tree, env, "update-index", *marks)
+        assert marked.returncode == 0, marked.stderr
+    for path in appended:
+        with (tree / path).open("ab") as changed:
+            changed.write(PROTECTED_APPENDED)
+    for path in created:
+        (tree / path).write_bytes(b"IDENTIFICATION DIVISION.\n")
+    if hides:
+        # Both commands of the check see nothing: only the hidden-change
+        # checks can name the change.
+        for command in (
+            ("diff", "--exit-code", "--name-status", PROTECTED_BASE, "--", *PROTECTED_PATHS),
+            ("status", "--porcelain", "--untracked-files=all", "--", *PROTECTED_PATHS),
+        ):
+            seen = _protected_copy_git(tree, env, *command)
+            assert (seen.returncode, seen.stdout) == (0, ""), (command, seen.stdout, seen.stderr)
+    completed = _cli(carddemo_repo_root, "report.py", "--check-protected", work_root=work_root_case, extra_env=env)
+    shown = f"exited {completed.returncode}\nstdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
+    assert completed.returncode == returncode and "Traceback" not in completed.stderr, shown
+    assert [text for text in says if text not in completed.stdout] == [], shown
+    assert [text for text in omits if text in completed.stdout] == [], shown
+
+
+# The tracked file the local-git cases below change in their copy, and what a
+# case that cannot find the starting commit is told.
+PROTECTED_CHANGED = "app/cbl/CBACT02C.cbl"
+PROTECTED_BASE_REMEDY = (
+    "This clone's history must hold the suite's starting commit, the base of the protected-tree check."
+)
+# An fsmonitor hook that answers git's version 2 query with a fresh token and
+# no changed path, so git takes every file it last saw unchanged to be
+# unchanged still.
+PROTECTED_LYING_FSMONITOR = "#!/bin/sh\nprintf 'carddemo-self-test\\0'\n"
+
+
+def _protected_scratch_copy(repo_root: Path, folder: Path) -> tuple[Path, dict[str, str]]:
+    """``(tree, env)``: a copy of the protected tree in ``folder``, with a copy
+    of the checkout's index and a repository of the case's own whose HEAD is
+    the checkout's HEAD. That repository borrows the checkout's objects
+    through its ``objects/info/alternates`` file, never through
+    ``GIT_ALTERNATE_OBJECT_DIRECTORIES``, whose ':'-separated value cannot
+    name a work root whose path holds ':'. ``env`` gives git that repository,
+    the copy and its index, so git reads the checkout's objects and writes
+    only inside ``folder``: a ref, a config or a hook a case adds never
+    reaches the checkout's .git."""
+    tree = folder / "tree"
+    for name in PROTECTED_PATHS:
+        shutil.copytree(repo_root / name, tree / name, symlinks=True)
+    index, objects = (
+        _git_output(repo_root, "rev-parse", "--path-format=absolute", "--git-path", name).decode().strip()
+        for name in ("index", "objects")
+    )
+    shutil.copyfile(index, folder / "index")
+    repository = folder / "repository"
+    subprocess.run([*GIT_LOCAL, "init", "-q", str(repository)], check=True, capture_output=True, timeout=CLI_TIMEOUT_S)
+    (repository / ".git" / "objects" / "info" / "alternates").write_text(f"{objects}\n", encoding="utf-8")
+    env = {"GIT_DIR": str(repository / ".git"), "GIT_WORK_TREE": str(tree), "GIT_INDEX_FILE": str(folder / "index")}
+    head = _git_output(repo_root, "rev-parse", "--verify", "HEAD^{commit}").decode().strip()
+    updated = _protected_copy_git(tree, env, "update-ref", "HEAD", head)
+    assert updated.returncode == 0, updated.stderr
+    return tree, env
+
+
+def _assert_protected_change_named(
+    repo_root: Path,
+    folder: Path,
+    tree: Path,
+    env: Mapping[str, str],
+    says: str = f"changed since {PROTECTED_BASE} under app/, samples/ or diagrams/: M\t{PROTECTED_CHANGED}",
+) -> None:
+    """Both commands of the protected-tree check, run by plain git in the copy
+    ``tree`` with ``env``, see nothing, and yet the check (exit 1) says
+    ``says``: by default that ``PROTECTED_CHANGED`` changed since the
+    starting commit, which only the check's own git options expose."""
+    for command in (
+        ("diff", "--exit-code", "--name-status", PROTECTED_BASE, "--", *PROTECTED_PATHS),
+        ("status", "--porcelain", "--untracked-files=all", "--", *PROTECTED_PATHS),
+    ):
+        seen = _protected_copy_git(tree, env, *command)
+        assert (seen.returncode, seen.stdout) == (0, ""), (command, seen.stdout, seen.stderr)
+    completed = _cli(repo_root, "report.py", "--check-protected", work_root=folder, extra_env=env)
+    shown = f"exited {completed.returncode}\nstdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
+    assert completed.returncode == 1 and "Traceback" not in completed.stderr, shown
+    assert says in completed.stdout, shown
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        pytest.param("core.fsmonitor", None, id="fsmonitor-hook"),
+        pytest.param("core.trustCtime", "false", id="trust-ctime-false"),
+        pytest.param("core.checkStat", "minimal", id="check-stat-minimal"),
+    ],
+)
+def test_protected_tree_overrides_local_settings_that_hide_a_change(
+    carddemo_repo_root: Path, work_root_case: Path, key: str, value: str | None
+) -> None:
+    """A local git setting that makes git trust its record of a tracked file
+    hides a change to it from both commands of the protected-tree check: an
+    fsmonitor hook that reports nothing changed, given an appended line, or
+    a change-time or stat check turned off, given a same-size edit whose
+    modification time is put back. The check overrides each one and names
+    the file. The setting comes through GIT_CONFIG_COUNT, which the check's
+    ``git -c`` overrides, and the copy's repository is the case's own."""
+    _require_commit(carddemo_repo_root, PROTECTED_BASE, remedy=PROTECTED_BASE_REMEDY)
+    tree, env = _protected_scratch_copy(carddemo_repo_root, work_root_case)
+    if value is None:
+        hook = work_root_case / "fsmonitor"
+        hook.write_text(PROTECTED_LYING_FSMONITOR, encoding="utf-8")
+        hook.chmod(0o755)
+        # git runs the hook through the shell, and the work root's path may
+        # hold spaces.
+        value = shlex.quote(str(hook))
+    env.update(GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0=key, GIT_CONFIG_VALUE_0=value)
+    # Under the setting, plain git records the copy's files in its index:
+    # their stat data and, for fsmonitor, the hook's token.
+    for _ in range(2):
+        recorded = _protected_copy_git(tree, env, "status", "--porcelain", "--", *PROTECTED_PATHS)
+        assert (recorded.returncode, recorded.stdout) == (0, ""), (recorded.stdout, recorded.stderr)
+    changed = tree / PROTECTED_CHANGED
+    if key == "core.fsmonitor":
+        with changed.open("ab") as appended:
+            appended.write(PROTECTED_APPENDED)
+    else:
+        before = changed.stat()
+        # git may compare the change time to the second only, so the edit
+        # waits for a later second than the one the index recorded.
+        while time.time_ns() < (before.st_ctime_ns // 10**9 + 1) * 10**9 + 50_000_000:
+            time.sleep(0.05)
+        text = changed.read_bytes()
+        edited = text.replace(b"PROGRAM-ID", b"PROGRAM-QA", 1)
+        assert edited != text and len(edited) == len(text)
+        with changed.open("r+b") as rewritten:
+            rewritten.write(edited)
+        os.utime(changed, ns=(before.st_atime_ns, before.st_mtime_ns))
+    _assert_protected_change_named(carddemo_repo_root, work_root_case, tree, env)
+
+
+def test_protected_tree_ignores_a_replace_ref_for_the_base(carddemo_repo_root: Path, work_root_case: Path) -> None:
+    """A replace ref that stands a commit holding a changed tree in for the
+    starting commit hides the change from both commands of the
+    protected-tree check, while ``git rev-parse --verify`` still prints the
+    starting commit's own id. The check reads no replace ref and names the
+    file. The ref lives in the copy's repository, never in the checkout's."""
+    _require_commit(carddemo_repo_root, PROTECTED_BASE, remedy=PROTECTED_BASE_REMEDY)
+    tree, env = _protected_scratch_copy(carddemo_repo_root, work_root_case)
+    with (tree / PROTECTED_CHANGED).open("ab") as appended:
+        appended.write(PROTECTED_APPENDED)
+    # The stand-in's tree is the starting commit's with the changed file, built
+    # in an index of its own, and the copy's index and HEAD then match it.
+    stand_in_env = {**env, "GIT_INDEX_FILE": str(work_root_case / "stand-in-index")}
+    for args in (("read-tree", PROTECTED_BASE), ("update-index", "--", PROTECTED_CHANGED)):
+        done = _protected_copy_git(tree, stand_in_env, *args)
+        assert done.returncode == 0, (args, done.stderr)
+    written = _protected_copy_git(tree, stand_in_env, "write-tree")
+    assert written.returncode == 0, written.stderr
+    stand_in = _protected_copy_git(tree, env, *GIT_LOCAL[1:], "commit-tree", written.stdout.strip(), "-m", "stand-in")
+    assert stand_in.returncode == 0, stand_in.stderr
+    for args in (
+        ("replace", PROTECTED_BASE, stand_in.stdout.strip()),
+        ("update-ref", "HEAD", PROTECTED_BASE),
+        ("update-index", "--", PROTECTED_CHANGED),
+    ):
+        done = _protected_copy_git(tree, env, *args)
+        assert done.returncode == 0, (args, done.stderr)
+    verified = _protected_copy_git(tree, env, "rev-parse", "--verify", "--quiet", f"{PROTECTED_BASE}^{{commit}}")
+    assert verified.stdout.strip() == PROTECTED_BASE, (verified.stdout, verified.stderr)
+    _assert_protected_change_named(carddemo_repo_root, work_root_case, tree, env)
+
+
+# What the cases below put on disk in a copy: a clean filter that turns the
+# edited file back into the starting commit's bytes, a FIFO, the target of a
+# symbolic link, which no finding may show, an added file, and a file name
+# holding control characters.
+PROTECTED_LYING_CLEAN = "sed -e s/PROGRAM-QA/PROGRAM-ID/"
+PROTECTED_FIFO = "app/cbl/QA-FIFO"
+PROTECTED_LINK_TARGET = "QA-LINK-TARGET-never-shown"
+PROTECTED_ADDED = "app/cbl/QA-EXTRA.cbl"
+PROTECTED_CONTROL_NAME = "app/cbl/QA\x1b[31mRED\n.cbl"
+
+
+@pytest.mark.parametrize(
+    ("change", "config", "entry", "hidden"),
+    [
+        pytest.param(
+            "filtered-edit",
+            ("filter.carddemo-qa.clean", PROTECTED_LYING_CLEAN),
+            f"{PROTECTED_CHANGED} (content)",
+            True,
+            id="lying-clean-filter",
+        ),
+        pytest.param(
+            "chmod",
+            ("core.fileMode", "false"),
+            f"{PROTECTED_CHANGED} (mode 100644 -> 100755)",
+            True,
+            id="file-mode-false",
+        ),
+        pytest.param("fifo", None, f"{PROTECTED_FIFO} (FIFO, neither a regular file nor a symlink)", True, id="fifo"),
+        pytest.param(
+            "symlink", None, f"{PROTECTED_CHANGED} (content, mode 100644 -> 120000)", False, id="symlink-for-file"
+        ),
+        pytest.param(
+            "directory-link", None, "app/qa-link (not in the starting commit)", False, id="symlink-to-directory"
+        ),
+        pytest.param("create", None, f"{PROTECTED_ADDED} (not in the starting commit)", False, id="untracked-file"),
+        pytest.param("delete", None, f"{PROTECTED_CHANGED} (missing)", False, id="missing-file"),
+        pytest.param(
+            "control-name",
+            None,
+            f"{PROTECTED_CONTROL_NAME!r} (not in the starting commit)",
+            False,
+            id="control-character-name",
+        ),
+    ],
+)
+def test_protected_tree_compares_the_files_on_disk(
+    carddemo_repo_root: Path,
+    work_root_case: Path,
+    change: str,
+    config: tuple[str, str] | None,
+    entry: str,
+    hidden: bool,
+) -> None:
+    """The protected-tree check reads the copy's files from disk and names
+    each one whose bytes or mode differ from the starting commit, with how.
+    A clean filter that turns the edited file back into the starting
+    commit's bytes (the attribute in the copy repository's info/attributes,
+    the filter through GIT_CONFIG_COUNT), core.fileMode=false over an added
+    execute bit, and a FIFO, which git never lists, each hide the change
+    from both commands of the check and from its other findings, so the
+    comparison on disk is the one finding. A symbolic link in place of a
+    file, a link to a directory (one entry, never followed), an added file,
+    a deleted file and a name holding control characters are named too, and
+    no output shows a link's target or a raw control character."""
+    _require_commit(carddemo_repo_root, PROTECTED_BASE, remedy=PROTECTED_BASE_REMEDY)
+    tree, env = _protected_scratch_copy(carddemo_repo_root, work_root_case)
+    if config is not None:
+        env.update(GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0=config[0], GIT_CONFIG_VALUE_0=config[1])
+    changed = tree / PROTECTED_CHANGED
+    if change == "filtered-edit":
+        info = Path(env["GIT_DIR"]) / "info"
+        info.mkdir(exist_ok=True)
+        (info / "attributes").write_text(f"{PROTECTED_CHANGED} filter=carddemo-qa\n", encoding="utf-8")
+        text = changed.read_bytes()
+        edited = text.replace(b"PROGRAM-ID", b"PROGRAM-QA", 1)
+        assert edited != text
+        changed.write_bytes(edited)
+    elif change == "chmod":
+        changed.chmod(changed.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    elif change == "fifo":
+        os.mkfifo(tree / PROTECTED_FIFO)
+    elif change == "symlink":
+        changed.unlink()
+        changed.symlink_to(PROTECTED_LINK_TARGET)
+    elif change == "directory-link":
+        (tree / "app" / "qa-link").symlink_to("cbl", target_is_directory=True)
+    elif change == "create":
+        (tree / PROTECTED_ADDED).write_bytes(b"IDENTIFICATION DIVISION.\n")
+    elif change == "delete":
+        changed.unlink()
+    else:
+        (tree / PROTECTED_CONTROL_NAME).write_bytes(b"IDENTIFICATION DIVISION.\n")
+    finding = f"  - {PROTECTED_ON_DISK}{entry}\n"
+    if hidden:
+        _assert_protected_change_named(
+            carddemo_repo_root, work_root_case, tree, env, says=f"protected tree: 1 finding(s)\n{finding}"
+        )
+        return
+    completed = _cli(carddemo_repo_root, "report.py", "--check-protected", work_root=work_root_case, extra_env=env)
+    shown = f"exited {completed.returncode}\nstdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
+    assert completed.returncode == 1 and "Traceback" not in completed.stderr, shown
+    assert finding in completed.stdout, shown
+    output = completed.stdout + completed.stderr
+    assert [text for text in (PROTECTED_LINK_TARGET, "app/qa-link/", "\x1b") if text in output] == [], shown
+
+
+def test_protected_tree_reads_this_checkout_when_git_compares_another(
+    carddemo_repo_root: Path, work_root_case: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A core.worktree that points git at a pristine copy hides a change in
+    this checkout from both commands of the protected-tree check and from
+    its comparison of git's work tree, since all of them read the copy. The
+    check reads this checkout's own files as well and names the change. The
+    case's copy stands in for this checkout (``report.REPO_ROOT``), and its
+    repository's config names a second, pristine copy."""
+    _require_commit(carddemo_repo_root, PROTECTED_BASE, remedy=PROTECTED_BASE_REMEDY)
+    tree, env = _protected_scratch_copy(carddemo_repo_root, work_root_case)
+    pristine = work_root_case / "pristine"
+    for name in PROTECTED_PATHS:
+        shutil.copytree(carddemo_repo_root / name, pristine / name, symlinks=True)
+    configured = _protected_copy_git(tree, env, "config", "core.worktree", str(pristine))
+    assert configured.returncode == 0, configured.stderr
+    del env["GIT_WORK_TREE"]
+    monkeypatch.delenv("GIT_WORK_TREE", raising=False)
+    with (tree / PROTECTED_CHANGED).open("ab") as appended:
+        appended.write(PROTECTED_APPENDED)
+    toplevel = _protected_copy_git(tree, env, "rev-parse", "--show-toplevel")
+    assert toplevel.stdout.strip() == str(pristine), (toplevel.stdout, toplevel.stderr)
+    for command in (
+        ("diff", "--exit-code", "--name-status", PROTECTED_BASE, "--", *PROTECTED_PATHS),
+        ("status", "--porcelain", "--untracked-files=all", "--", *PROTECTED_PATHS),
+    ):
+        seen = _protected_copy_git(tree, env, *command)
+        assert (seen.returncode, seen.stdout) == (0, ""), (command, seen.stdout, seen.stderr)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(report, "REPO_ROOT", tree)
+    assert report.check_protected() == [
+        "files under app/, samples/ or diagrams/ of this checkout, which is not the work tree git compares, whose "
+        f"bytes or mode on disk differ from the starting commit: {PROTECTED_CHANGED} (content)"
+    ]
+
+
+def test_protected_tree_takes_blob_ids_from_git_outside_sha1(
+    carddemo_repo_root: Path, work_root_case: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """In a repository whose object format is not SHA-1 the comparison of the
+    files on disk takes each blob id from ``git hash-object --no-filters
+    --stdin``, given the bytes read from disk, instead of hashing them
+    itself. The case's git says ``sha256`` when asked the object format and
+    runs every other call as it is, so its ids still match the starting
+    commit's: the clean copy has no finding, with one hash-object call per
+    file, and a changed file is named with its content and mode."""
+    _require_commit(carddemo_repo_root, PROTECTED_BASE, remedy=PROTECTED_BASE_REMEDY)
+    tree, env = _protected_scratch_copy(carddemo_repo_root, work_root_case)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    # The copy stands in for this checkout, so only its files are read.
+    monkeypatch.setattr(report, "REPO_ROOT", tree)
+    options = len(report._PROTECTED_GIT_OPTIONS)
+    hashed: list[list[str]] = []
+    run_git = report._git
+
+    def sha256_git(args: list[str], **keywords: bool | bytes | None) -> subprocess.CompletedProcess | None:
+        if list(args[options:]) == ["rev-parse", "--show-object-format"]:
+            return subprocess.CompletedProcess(list(args), 0, "sha256\n", "")
+        if list(args[options:][:1]) == ["hash-object"]:
+            hashed.append(list(args[options:]))
+        return run_git(args, **keywords)
+
+    monkeypatch.setattr(report, "_git", sha256_git)
+    assert report.check_protected() == []
+    files = _git_output(carddemo_repo_root, "ls-tree", "-r", "--name-only", PROTECTED_BASE, "--", *PROTECTED_PATHS)
+    assert hashed == [["hash-object", "--no-filters", "--stdin"]] * len(files.splitlines())
+    changed = tree / PROTECTED_CHANGED
+    with changed.open("ab") as appended:
+        appended.write(PROTECTED_APPENDED)
+    changed.chmod(changed.stat().st_mode | stat.S_IXUSR)
+    assert f"{PROTECTED_ON_DISK}{PROTECTED_CHANGED} (content, mode 100644 -> 100755)" in report.check_protected()
 
 
 # --------------------------------------------------------------------------

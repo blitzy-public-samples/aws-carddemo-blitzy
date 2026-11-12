@@ -4,9 +4,15 @@
 turns a scenario's ``preconditions.datasets`` (and its parameter files) into
 the exact bytes the adapters load, and cross-checks the repository's ASCII
 data against the EBCDIC copies. It reads ``app/`` and writes nothing: the
-runner writes the returned bytes into the scenario's working directory. A
-source or cross-check path is read only when, symbolic links followed, it
-leads to a regular file inside the repository; any other is refused unread.
+runner writes the returned bytes into the scenario's working directory.
+Fixtures come only from approved fixture sources: a dataset source, or a
+cross-check counterpart of the ``records`` form, is a file below
+``app/data/``, and the one ``instream`` counterpart is
+``app/jcl/DUSRSECJ.jcl``; no path component may start with ``.``. A
+definition naming any other path is refused when ``datasets.yaml`` is
+loaded, and a path is read only when, symbolic links followed, it leads to
+a regular file inside the repository that is itself an approved fixture
+source; any other is refused unread.
 
 Repository data (``repository_dataset``)
     ``ascii`` sources are split on ``\\n``; one trailing empty line is dropped,
@@ -122,6 +128,18 @@ _INSTREAM_START_RE = re.compile(r"^//\S*\s+DD\s+(?:\*|DATA)(?:\s|,|$)")
 _NO_SOURCE = frozenset({"", "built", "none", "null"})
 _ENTRY_KEYS = frozenset({"base", "records", "omit_keys"})
 
+# The approved fixture sources. A file below the data area, none of whose path
+# components starts with ".", may be a dataset source or a records-form
+# cross-check counterpart; the one in-stream counterpart is the SYSUT1 data of
+# DUSRSECJ, the USRSEC users it loads.
+_DATA_AREA = PurePosixPath("app/data")
+_INSTREAM_COUNTERPART = PurePosixPath("app/jcl/DUSRSECJ.jcl")
+_APPROVED_SOURCES = (
+    f"approved fixture sources are the files below {_DATA_AREA}/ (a dataset source or a "
+    f"records-form cross-check counterpart) and {_INSTREAM_COUNTERPART} (the instream-form "
+    f"counterpart), with no path component starting with '.'"
+)
+
 
 class FixtureError(HarnessError):
     """A dataset definition, repository file or precondition that cannot be
@@ -201,7 +219,9 @@ class CrossCheck:
     ``form`` is ``records`` (fixed records, or text lines for ascii) or
     ``instream`` (JCL in-stream data lines); ``lines`` is the 1-based
     inclusive line range of the in-stream data, or ``None`` to take the
-    first in-stream block of the member."""
+    first in-stream block of the member. ``path`` is repository-relative: a
+    file below ``app/data/`` for the ``records`` form, and exactly
+    ``app/jcl/DUSRSECJ.jcl`` for the ``instream`` form."""
 
     path: str
     encoding: str
@@ -259,8 +279,8 @@ class DatasetField:
 @dataclass(frozen=True)
 class DatasetSpec:
     """One logical dataset of ``tests/fixtures/datasets.yaml``. ``source`` is
-    the repository-relative data file, or ``None`` for a dataset that
-    scenarios, programs or jobs build."""
+    the repository-relative data file, a file below ``app/data/``, or
+    ``None`` for a dataset that scenarios, programs or jobs build."""
 
     name: str
     source: str | None
@@ -403,6 +423,30 @@ def _relative_path(value: Any, what: str) -> str:
     return path.as_posix()
 
 
+def _approved_source(path: PurePosixPath, form: str) -> bool:
+    """Whether the repository-relative ``path`` is an approved fixture source
+    of ``form``: for ``records`` (a dataset source, or a cross-check
+    counterpart of that form) a file below ``app/data/``, for ``instream``
+    exactly ``app/jcl/DUSRSECJ.jcl``. A path with a component that starts
+    with ``.``, Git metadata or a hidden file such as ``.gitkeep``, is never
+    approved, and neither is any other form."""
+    if any(part.startswith(".") for part in path.parts):
+        return False
+    if form == "records":
+        return _DATA_AREA in path.parents
+    return form == "instream" and path == _INSTREAM_COUNTERPART
+
+
+def _require_approved(path: str, value: Any, what: str, form: str) -> str:
+    """``path``, the repository-relative form of the definition's ``value``,
+    refused unless it is an approved fixture source of ``form``."""
+    if not _approved_source(PurePosixPath(path), form):
+        raise FixtureError(
+            f"{what} {_brief(value)} is not an approved fixture source; {_APPROVED_SOURCES}"
+        )
+    return path
+
+
 def _span(value: Any, what: str) -> tuple[int, int]:
     """A 1-based inclusive range written ``"a-b"``, ``"a"``, ``[a, b]``,
     ``{from: a, to: b}`` or a single integer."""
@@ -475,7 +519,7 @@ def _alternate_keys(value: Any, what: str, record_length: int) -> tuple[Alternat
 def _source(value: Any, what: str) -> str | None:
     if value is None or (isinstance(value, str) and value.strip().lower() in _NO_SOURCE):
         return None
-    return _relative_path(value, what)
+    return _require_approved(_relative_path(value, what), value, what, "records")
 
 
 def _encoding(entry: Mapping[str, Any], source: str | None, what: str) -> str:
@@ -495,7 +539,8 @@ def _cross_check(value: Any, what: str) -> CrossCheck | None:
             f"{what} must be a mapping {{source, encoding, form?, lines?}} or none, "
             f"got {_brief(value)}"
         )
-    path = _relative_path(value.get("source", value.get("path")), f"{what}.source")
+    source = value.get("source", value.get("path"))
+    path = _relative_path(source, f"{what}.source")
     encoding = value.get("encoding", "cp037")
     form = value.get("form")
     if encoding == "jcl-instream":
@@ -510,6 +555,7 @@ def _cross_check(value: Any, what: str) -> CrossCheck | None:
         raise FixtureError(f"{what}.form {_brief(form)} is not records or instream")
     if form == "instream" and encoding != "ascii":
         raise FixtureError(f"{what}: in-stream JCL data is text, so its encoding is ascii")
+    _require_approved(path, source, f"{what}.source ({form} form)", form)
     lines = value.get("lines")
     span = _span(lines, f"{what}.lines") if lines is not None else None
     if span is not None and form != "instream":
@@ -760,20 +806,31 @@ def _root(repo_root: str | Path) -> str:
     return str(Path(repo_root).resolve())
 
 
-def _read_repository_file(definition: DatasetSpec, relative: str, root: str, purpose: str) -> bytes:
-    """The bytes of a repository file the dataset needs. ``root`` is the
-    resolved repository root. The path is read only when, symbolic links
-    followed, it leads to a regular file inside the repository: one that
-    leads out of it, or to a directory, device or FIFO, is refused unread.
-    An absent file is a missing prerequisite under the dataset's ``GAP-MIS``
-    entry; without one it is an error in the checkout or in the definition.
-    Messages name only the repository-relative path, never where it leads."""
+def _read_repository_file(
+    definition: DatasetSpec, relative: str, root: str, purpose: str, form: str
+) -> bytes:
+    """The bytes of a repository file the dataset needs, read as fixture data
+    of ``form`` (``records`` or ``instream``). ``root`` is the resolved
+    repository root. The path is read only when, symbolic links followed, it
+    leads to a regular file inside the repository whose path relative to the
+    root is an approved fixture source of ``form`` (``_approved_source``): one
+    that leads out of the repository, to any other file in it, or to a
+    directory, device or FIFO, is refused unread. An absent file is a missing
+    prerequisite under the dataset's ``GAP-MIS`` entry; without one it is an
+    error in the checkout or in the definition. Messages name only the
+    repository-relative path, never where it leads."""
     what = f"{definition.name}: its {purpose} {relative}"
     try:
         resolved = (Path(root) / relative).resolve()
         if not resolved.is_relative_to(root):
             raise FixtureError(
                 f"{what} resolves outside the repository through a symbolic link, so it is not read",
+                definition.name,
+            )
+        if not _approved_source(PurePosixPath(resolved.relative_to(root).as_posix()), form):
+            raise FixtureError(
+                f"{what} does not lead to an approved fixture source, so it is not read; "
+                f"{_APPROVED_SOURCES}",
                 definition.name,
             )
         if not stat.S_ISREG(resolved.stat().st_mode):
@@ -860,7 +917,7 @@ def _repository_records(definition: DatasetSpec, root: str) -> tuple[bytes, ...]
             f"records instead",
             definition.name,
         )
-    data = _read_repository_file(definition, definition.source, root, "source")
+    data = _read_repository_file(definition, definition.source, root, "source", "records")
     records = _decode_source(
         data,
         definition.encoding,
@@ -918,7 +975,9 @@ def _instream_lines(data: bytes, check: CrossCheck, what: str, dataset: str) -> 
 
 def _counterpart_records(definition: DatasetSpec, root: str) -> list[str]:
     check = definition.cross_check
-    data = _read_repository_file(definition, check.path, root, "cross-check counterpart")
+    data = _read_repository_file(
+        definition, check.path, root, "cross-check counterpart", check.form
+    )
     what = f"{definition.name} cross-check counterpart {check.path}"
     if check.form == "instream":
         records = _pad_lines(

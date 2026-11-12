@@ -90,6 +90,7 @@ import errno
 import fcntl
 import fnmatch
 import functools
+import hashlib
 import importlib.metadata
 import io
 import os
@@ -2299,9 +2300,14 @@ _ENVIRONMENT_HEADING = "\n## Environment\n"
 _STATUS_HEADER = ("verified", "failing", "blocked", "implemented-unexecuted", "not-covered", "total")
 
 
-def _run(argv: Sequence[str]) -> subprocess.CompletedProcess | None:
+def _run(
+    argv: Sequence[str], *, binary: bool = False, stdin: bytes | None = None
+) -> subprocess.CompletedProcess | None:
+    """``argv`` run from the repository root, its output captured as text,
+    or as bytes when ``binary``, which ``stdin`` (bytes) needs; ``None``
+    when it cannot start or times out."""
     try:
-        return subprocess.run(list(argv), capture_output=True, text=True, check=False,
+        return subprocess.run(list(argv), capture_output=True, text=not binary, input=stdin, check=False,
                               timeout=_SUBPROCESS_TIMEOUT_S, cwd=str(REPO_ROOT))
     except (OSError, subprocess.SubprocessError):
         return None
@@ -3987,22 +3993,53 @@ def _unit_programs(record: Mapping[str, Any]) -> set[str]:
     return {Path(unit).stem.upper() for unit in units if isinstance(unit, str) and Path(unit).parent.name == "cbl"}
 
 
-def _git(args: Sequence[str]) -> subprocess.CompletedProcess | None:
-    return _run(["git", *args])
+def _git(
+    args: Sequence[str], *, binary: bool = False, stdin: bytes | None = None
+) -> subprocess.CompletedProcess | None:
+    return _run(["git", *args], binary=binary, stdin=stdin)
 
 
 def _git_message(completed: subprocess.CompletedProcess) -> str:
     """git's error output in ``completed`` on one line, clipped; empty when
-    git printed none."""
-    return _clip(" ".join((completed.stderr or "").split()), 500)
+    git printed none. Output captured as bytes is read as UTF-8, an invalid
+    byte replaced."""
+    stderr = completed.stderr or ""
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode("utf-8", "replace")
+    return _clip(" ".join(stderr.split()), 500)
 
 
-def _protected_git(args: Sequence[str], accepted: tuple[int, ...] = (0,)) -> subprocess.CompletedProcess:
-    """``git <args>`` for the protected-tree check, when it exits with one of
-    ``accepted``. ``ReportError`` when git cannot start, times out or exits
-    otherwise, with git's own message: the tree then cannot be checked,
-    which is no finding about the tree."""
-    completed = _git(args)
+# The global options of every git call the protected-tree check makes, so
+# that no local git state hides a change and the check changes none: no
+# replace ref stands in for the base or its tree, no fsmonitor hook or daemon
+# vouches for unchanged files and no untracked cache for an unchanged
+# directory, every stat field and the change time are compared whatever
+# core.checkStat and core.trustCtime say, and git writes no index, so turning
+# these off never drops the caller's own index extensions.
+_PROTECTED_GIT_OPTIONS = (
+    "--no-replace-objects",
+    "--no-optional-locks",
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.untrackedCache=false",
+    "-c",
+    "core.checkStat=default",
+    "-c",
+    "core.trustCtime=true",
+)
+
+
+def _protected_git(
+    args: Sequence[str], accepted: tuple[int, ...] = (0,), *, binary: bool = False, stdin: bytes | None = None
+) -> subprocess.CompletedProcess:
+    """``git <_PROTECTED_GIT_OPTIONS> <args>`` for the protected-tree check,
+    when it exits with one of ``accepted``; its output is bytes when
+    ``binary``, and ``stdin`` is its input. ``ReportError`` when git cannot
+    start, times out or exits otherwise, naming the subcommand from ``args``
+    with git's own message: the tree then cannot be checked, which is no
+    finding about the tree."""
+    completed = _git([*_PROTECTED_GIT_OPTIONS, *args], binary=binary, stdin=stdin)
     command = f"git {' '.join(args[:2])}"
     if completed is None:
         raise ReportError(f"{command} cannot be run (git does not start or times out), "
@@ -4013,46 +4050,327 @@ def _protected_git(args: Sequence[str], accepted: tuple[int, ...] = (0,)) -> sub
     return completed
 
 
-def check_protected(base: str | None = None) -> list[str]:
-    """No change under ``app/``, ``samples/`` or ``diagrams/``: ``git diff``
-    against the inventory header's ``protected_base`` (the starting commit)
-    is empty, and so is ``git status`` of those paths.
+# How many entries a protected-tree finding names before it counts the rest.
+_PROTECTED_LISTED = 50
 
-    The findings: the base names no commit of this clone (``git rev-parse
-    --verify`` exits 1), with git's message when it prints one and, only
-    when ``git rev-parse --is-shallow-repository`` prints ``true``, the
-    advice to fetch the full history; a change the diff lists or reports by
-    its exit 1; a working-tree change the status lists. ``ReportError`` when
+
+def _protected_listing(entries: Sequence[str]) -> str:
+    """``entries`` joined with ``"; "``: the first ``_PROTECTED_LISTED`` of
+    them and, when there are more, ``... and <n> more (<total> in all)``."""
+    listing = "; ".join(entries[:_PROTECTED_LISTED])
+    if len(entries) > _PROTECTED_LISTED:
+        listing += f"; ... and {len(entries) - _PROTECTED_LISTED} more ({len(entries)} in all)"
+    return listing
+
+
+def _protected_header_findings() -> list[str]:
+    """A finding when the inventory header's ``protected_base`` is not exactly
+    ``PROTECTED_BASE``, a missing or non-text value included; none when it
+    is, or when the inventory cannot be loaded, which ``inventory_tools.py
+    --check`` reports. The value is only shown, through its repr and
+    clipped, so no control character reaches the output; it never reaches
+    git."""
+    try:
+        header = _inventory.load()["header"]
+    except HarnessError:
+        return []
+    value = header.get("protected_base")
+    if isinstance(value, str) and value == PROTECTED_BASE:
+        return []
+    if "protected_base" in header:
+        said = f"the inventory header's protected_base {_clip(repr(value), 120)} is not"
+    else:
+        said = "the inventory header has no protected_base, which must be"
+    return [f"{said} the starting commit {PROTECTED_BASE}; the protected tree is checked against the starting commit"]
+
+
+# The git modes of a regular file, of one whose owner may execute it, and of
+# a symbolic link, whose blob is its link text.
+_PROTECTED_FILE_MODE, _PROTECTED_EXECUTABLE_MODE, _PROTECTED_SYMLINK_MODE = "100644", "100755", "120000"
+# How the comparison on disk opens a directory or a file of the protected
+# tree: never through a symbolic link, never waiting on a FIFO put in its
+# place after it was examined, and never left open in a child process.
+_PROTECTED_DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+_PROTECTED_FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+# What an entry on disk that git cannot track is, by its file type.
+_PROTECTED_UNTRACKABLE = {
+    stat.S_IFIFO: "FIFO",
+    stat.S_IFSOCK: "socket",
+    stat.S_IFBLK: "block device",
+    stat.S_IFCHR: "character device",
+}
+
+
+def _protected_shown(path: bytes) -> str:
+    """The repository-relative ``path`` as a protected-tree finding shows it:
+    as it is when it is printable UTF-8, else through its repr, so no
+    control character, invalid byte or invisible formatting character
+    reaches the output."""
+    try:
+        text = path.decode("utf-8")
+    except UnicodeDecodeError:
+        return repr(path)
+    return text if text.isprintable() else repr(text)
+
+
+def _protected_base_files(base: str, paths: Sequence[str]) -> dict[bytes, tuple[str, str]]:
+    """Each file of ``paths`` in the commit ``base``, by its path from the top
+    of the tree, with its git mode and object id, from ``git ls-tree -r -z
+    --full-tree``: the commit's own tree, whatever the index, the attributes
+    or a replace ref say. ``ReportError`` when git prints an entry of
+    another shape."""
+    listing = _protected_git(["ls-tree", "-r", "-z", "--full-tree", base, "--", *paths], binary=True).stdout
+    files: dict[bytes, tuple[str, str]] = {}
+    for entry in listing.split(b"\0"):
+        if not entry:
+            continue
+        described, tab, path = entry.partition(b"\t")
+        fields = described.split(b" ")
+        if not tab or not path or len(fields) != 3:
+            raise ReportError(f"git ls-tree printed {_clip(repr(entry), 120)}, not <mode> <type> <id> and a path, "
+                              "so the protected tree cannot be checked")
+        mode, _kind, object_id = (field.decode("ascii", "replace") for field in fields)
+        files[path] = (mode, object_id)
+    return files
+
+
+def _protected_disk_files(
+    top: bytes, paths: Sequence[str], blob_id: Callable[[bytes], str]
+) -> tuple[dict[bytes, tuple[str, str]], dict[bytes, str]]:
+    """``(files, untrackable)``: what lies under ``paths`` in the work tree
+    ``top``, read from disk with no git in between, by path from ``top``.
+
+    ``files`` holds each regular file and symbolic link with the git mode
+    and ``blob_id`` of the bytes git would store: ``100755`` when the
+    owner's execute bit is set, else ``100644``, and for a link ``120000``
+    and its link text. A link is never followed, so a link to a directory is
+    one entry. ``untrackable`` names what each other entry is (a FIFO, a
+    socket, a device). Every directory and file is opened from its parent's
+    descriptor, never through a symbolic link, so nothing outside ``paths``
+    is read. An entry that vanishes meanwhile is left out. ``ReportError``
+    when ``top`` or an entry cannot be read, naming at most the entry's
+    path from ``top``."""
+    files: dict[bytes, tuple[str, str]] = {}
+    untrackable: dict[bytes, str] = {}
+    try:
+        top_directory = os.open(top, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    except OSError as exc:
+        raise ReportError(f"git's work tree cannot be opened ({exc.strerror or exc}), "
+                          "so the protected tree cannot be checked") from exc
+    # Each open directory, the path its entries take, and its names still to
+    # read: the depth of the tree bounds how many are open at once.
+    pending: list[tuple[int, bytes, list[bytes]]] = [(top_directory, b"", [*map(os.fsencode, paths)])]
+    path = b""
+    try:
+        while pending:
+            directory, prefix, names = pending[-1]
+            if not names:
+                pending.pop()
+                os.close(directory)
+                continue
+            name = names.pop()
+            path = prefix + name
+            try:
+                found = os.stat(name, dir_fd=directory, follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            if stat.S_ISDIR(found.st_mode):
+                opened = os.open(name, _PROTECTED_DIRECTORY_FLAGS, dir_fd=directory)
+                try:
+                    pending.append((opened, path + b"/", [*map(os.fsencode, os.listdir(opened))]))
+                except BaseException:
+                    os.close(opened)
+                    raise
+                continue
+            if stat.S_ISLNK(found.st_mode):
+                files[path] = (_PROTECTED_SYMLINK_MODE, blob_id(os.readlink(name, dir_fd=directory)))
+                continue
+            chunks: list[bytes] = []
+            if stat.S_ISREG(found.st_mode):
+                opened = os.open(name, _PROTECTED_FILE_FLAGS, dir_fd=directory)
+                try:
+                    # What was opened decides, in case the entry was replaced
+                    # since it was examined.
+                    found = os.fstat(opened)
+                    while stat.S_ISREG(found.st_mode) and (chunk := os.read(opened, 1 << 20)):
+                        chunks.append(chunk)
+                finally:
+                    os.close(opened)
+            if not stat.S_ISREG(found.st_mode):
+                untrackable[path] = _PROTECTED_UNTRACKABLE.get(stat.S_IFMT(found.st_mode), "special file")
+            else:
+                mode = _PROTECTED_EXECUTABLE_MODE if found.st_mode & stat.S_IXUSR else _PROTECTED_FILE_MODE
+                files[path] = (mode, blob_id(b"".join(chunks)))
+    except OSError as exc:
+        raise ReportError(f"{_protected_shown(path)} cannot be read on disk ({exc.strerror or exc}), "
+                          "so the protected tree cannot be checked") from exc
+    finally:
+        for directory, _prefix, _names in pending:
+            os.close(directory)
+    return files, untrackable
+
+
+def _protected_differing(
+    expected: Mapping[bytes, tuple[str, str]], files: Mapping[bytes, tuple[str, str]], untrackable: Mapping[bytes, str]
+) -> list[str]:
+    """Each path, as ``_protected_shown`` shows it, where the ``files`` and
+    ``untrackable`` entries found on disk differ from the ``expected`` files
+    of the starting commit, with how: ``content``, ``mode <base> -> <disk>``
+    or both, ``missing``, ``not in the starting commit``, or what an entry
+    git cannot track is. Sorted by path; empty when nothing differs."""
+    differing = []
+    for path in sorted(expected.keys() | files.keys() | untrackable.keys()):
+        if path in untrackable:
+            said = f"{untrackable[path]}, neither a regular file nor a symlink"
+        elif path not in files:
+            said = "missing"
+        elif path not in expected:
+            said = "not in the starting commit"
+        else:
+            (mode, object_id), (base_mode, base_id) = files[path], expected[path]
+            changes = ["content"] if object_id != base_id else []
+            if mode != base_mode:
+                changes.append(f"mode {base_mode} -> {mode}")
+            if not changes:
+                continue
+            said = ", ".join(changes)
+        differing.append(f"{_protected_shown(path)} ({said})")
+    return differing
+
+
+def _protected_disk_findings(base: str, paths: Sequence[str]) -> list[str]:
+    """A finding listing each file under ``paths`` of git's work tree whose
+    bytes or mode on disk differ from the commit ``base``, is missing on
+    disk, or is not in ``base``, and each entry git cannot track; none when
+    the files on disk are exactly the commit's. When this checkout is not
+    git's work tree (``GIT_WORK_TREE``, or a ``core.worktree`` that points
+    git at other files), its own files get a finding of their own, so git
+    comparing another directory hides no change here. Blob ids are SHA-1
+    hashed here in a SHA-1 repository and come from ``git hash-object
+    --no-filters`` in any other, so no attribute or filter driver shapes
+    them."""
+    printed = _protected_git(["rev-parse", "--show-toplevel"], binary=True).stdout
+    top = printed[:-1] if printed.endswith(b"\n") else printed
+    if not top:
+        raise ReportError("git rev-parse --show-toplevel names no work tree, so the protected tree cannot be checked")
+    if _protected_git(["rev-parse", "--show-object-format"]).stdout.strip() == "sha1":
+        def blob_id(data: bytes) -> str:
+            return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+    else:
+        def blob_id(data: bytes) -> str:
+            hashed = _protected_git(["hash-object", "--no-filters", "--stdin"], binary=True, stdin=data)
+            return hashed.stdout.decode("ascii", "replace").strip()
+    expected = _protected_base_files(base, paths)
+    trees = [(top, "")]
+    checkout = os.fsencode(REPO_ROOT)
+    try:
+        elsewhere = not os.path.samestat(os.stat(top), os.stat(checkout))
+    except OSError:
+        elsewhere = True
+    if elsewhere:
+        trees.append((checkout, " of this checkout, which is not the work tree git compares,"))
+    findings = []
+    for tree, where in trees:
+        differing = _protected_differing(expected, *_protected_disk_files(tree, paths, blob_id))
+        if differing:
+            findings.append(f"files under app/, samples/ or diagrams/{where} whose bytes or mode on disk differ from "
+                            "the starting commit: " + _protected_listing(differing))
+    return findings
+
+
+def check_protected() -> list[str]:
+    """No change under ``app/``, ``samples/`` or ``diagrams/``: ``git diff``
+    against the starting commit ``PROTECTED_BASE`` is empty, and so is ``git
+    status`` of those paths.
+
+    The base is always that trusted constant, never the inventory header's
+    ``protected_base``, which a change can rewrite along with the tree: a
+    header value other than the starting commit is a finding of its own and
+    never reaches git. The other findings: the base names no commit of this
+    clone (``git rev-parse --verify`` exits 1), with git's message when it
+    prints one and, only when ``git rev-parse --is-shallow-repository``
+    prints ``true``, the advice to fetch the full history; the base
+    resolving to any other object id; a change the diff lists or reports by
+    its exit 1; a working-tree change the status lists; the two local
+    changes neither command sees: an index entry marked assume-unchanged or
+    skip-worktree (``git ls-files -v``), whose working file git no longer
+    compares, and an untracked file an ignore rule hides (``git ls-files
+    --others --ignored --exclude-standard``); and, from reading the files of
+    git's work tree directly (``_protected_disk_findings``), and of this
+    checkout too when git's work tree lies elsewhere, each file whose bytes
+    or mode on disk differ from the starting commit's tree (``git
+    ls-tree``), that is missing on disk or that the starting commit lacks,
+    and each entry that is neither a regular file nor a symbolic link. That
+    comparison goes through no index, attribute or filter driver and no
+    ``core.fileMode``, which git's own comparison trusts and no global
+    option overrides: a clean filter that turns changed bytes back into the
+    starting commit's blob, or a mode change git ignores, is still named.
+    Each finding names at most ``_PROTECTED_LISTED`` entries and counts the
+    rest. Every git call runs with ``_PROTECTED_GIT_OPTIONS``: replace refs,
+    the fsmonitor hook or daemon and the untracked cache turned off, every
+    stat field and the change time compared, and no index written, so no
+    replace ref for the base, fsmonitor answer or relaxed stat setting hides
+    a change, and the check changes no local git state. ``ReportError`` when
     git cannot start, times out, or exits otherwise (no repository, a fatal
-    error, dubious ownership), with git's own message."""
-    if base is None:
-        try:
-            base = _inventory.load()["header"].get("protected_base") or PROTECTED_BASE
-        except HarnessError:
-            base = PROTECTED_BASE
+    error, dubious ownership), with git's own message, or when a file of the
+    protected tree cannot be read."""
+    findings = _protected_header_findings()
     paths = ("app", "samples", "diagrams")
-    verify = _protected_git(["rev-parse", "--verify", "--quiet", f"{base}^{{commit}}"], accepted=(0, 1))
+    verify = _protected_git(["rev-parse", "--verify", "--quiet", f"{PROTECTED_BASE}^{{commit}}"], accepted=(0, 1))
     if verify.returncode == 1:
-        finding = f"the protected base {base} is not a commit of this clone"
+        finding = f"the protected base {PROTECTED_BASE} is not a commit of this clone"
         detail = _git_message(verify)
         if detail:
             finding += f": {detail}"
         # A shallow probe that fails counts as not shallow: the advice to fetch
         # the full history is given only where git says the history is cut.
-        shallow = _git(["rev-parse", "--is-shallow-repository"])
+        shallow = _git([*_PROTECTED_GIT_OPTIONS, "rev-parse", "--is-shallow-repository"])
         if shallow is not None and shallow.returncode == 0 and shallow.stdout.strip() == "true":
             finding += ("; the clone is shallow, so the base is not in this clone's history; fetch the full "
                         "history (actions/checkout fetch-depth: 0) and check again")
-        return [finding]
-    findings = []
+        return [*findings, finding]
+    # Only that very commit is the base: git can resolve the 40 digits to
+    # another object (a prefix of a SHA-256 id), and the diff takes the id
+    # git resolved, never a name git would resolve again.
+    base = verify.stdout.strip()
+    if base != PROTECTED_BASE:
+        return [*findings, f"the protected base {PROTECTED_BASE} resolves to {_clip(repr(base), 120)}, "
+                           "not to the starting commit itself"]
     diff = _protected_git(["diff", "--exit-code", "--name-status", base, "--", *paths], accepted=(0, 1))
     if diff.returncode == 1 or diff.stdout.strip():
         changed = [line for line in diff.stdout.splitlines() if line.strip()]
-        findings.append(f"changed since {base} under app/, samples/ or diagrams/: " + "; ".join(changed[:50]))
+        findings.append(f"changed since {base} under app/, samples/ or diagrams/: " + _protected_listing(changed))
     status = _protected_git(["status", "--porcelain", "--untracked-files=all", "--", *paths])
     if status.stdout.strip():
         changed = [line for line in status.stdout.splitlines() if line.strip()]
-        findings.append("working-tree changes under app/, samples/ or diagrams/: " + "; ".join(changed[:50]))
+        findings.append("working-tree changes under app/, samples/ or diagrams/: " + _protected_listing(changed))
+    # _PROTECTED_GIT_OPTIONS turns off replace refs, fsmonitor and the
+    # untracked cache and makes git compare every stat field, but no option
+    # stops the diff and the status from trusting an index entry marked
+    # assume-unchanged (a lowercase tag) or skip-worktree (S, s), from
+    # skipping an untracked file an ignore rule covers, from taking a clean
+    # filter's output for a file's bytes, or from ignoring modes under
+    # core.fileMode=false, so that local git state can still hide a change
+    # from both. The two ls-files calls name the index flags and the ignored
+    # files, which no clean checkout of these paths has; the comparison of the
+    # files on disk after them names every changed byte and mode. Without -z
+    # git C-quotes the paths, so no raw control character reaches a finding.
+    unwatched = []
+    for line in _protected_git(["ls-files", "-v", "--", *paths]).stdout.splitlines():
+        tag, _, path = line.partition(" ")
+        flags = [flag for flag, marked in (("assume-unchanged", tag.islower()), ("skip-worktree", tag in ("S", "s")))
+                 if marked]
+        if flags:
+            unwatched.append(f"{path} ({', '.join(flags)})")
+    if unwatched:
+        findings.append("index entries under app/, samples/ or diagrams/ whose working files git does not compare: "
+                        + _protected_listing(unwatched))
+    ignored = _protected_git(["ls-files", "--others", "--ignored", "--exclude-standard", "--", *paths])
+    hidden = [line for line in ignored.stdout.splitlines() if line.strip()]
+    if hidden:
+        findings.append("untracked files under app/, samples/ or diagrams/ that an ignore rule hides from the status: "
+                        + _protected_listing(hidden))
+    findings.extend(_protected_disk_findings(base, paths))
     return findings
 
 
