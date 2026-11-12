@@ -687,6 +687,66 @@ def test_tpe_drives_the_steps_again_when_the_region_day_changes(
         assert "day_changes" not in capture.run_date
 
 
+# Each accepted TN3270 address, the host it gives and its Connect argument:
+# localhost, in any case, is pinned to 127.0.0.1 and never resolved, and a
+# numeric host keeps its canonical form.
+LOOPBACK_ADDRESSES = [
+    pytest.param("localhost:2001", "127.0.0.1", "127.0.0.1:2001", id="localhost"),
+    pytest.param("LOCALHOST:2001", "127.0.0.1", "127.0.0.1:2001", id="localhost-upper-case"),
+    pytest.param("127.0.0.1:2001", "127.0.0.1", "127.0.0.1:2001", id="ipv4"),
+    pytest.param("127.1.2.3:23", "127.1.2.3", "127.1.2.3:23", id="ipv4-loopback-network"),
+    pytest.param("[::1]:4444", "::1", "[::1]:4444", id="ipv6"),
+    pytest.param("[0:0:0:0:0:0:0:1]:4444", "::1", "[::1]:4444", id="ipv6-long-form"),
+]
+# S3270.connect on a terminal that starts no process: each case's address
+# built by hand on CONNECT_PORT, and the one action it must send, or None when
+# it must be refused under GAP-MIS-005 with nothing sent.
+CONNECT_PORT = 2001
+CONNECT_CASES = [
+    pytest.param("localhost", f"Connect(127.0.0.1:{CONNECT_PORT})", id="localhost-pinned"),
+    pytest.param("example.com", None, id="host-name-refused"),
+    pytest.param("10.0.0.5", None, id="beyond-loopback-refused"),
+]
+# An ok reply's 12 status fields: unlocked, formatted, connected to 127.0.0.1,
+# model 3279-2's 24 x 80.
+CONNECTED_STATUS = ("U", "F", "U", "C(127.0.0.1)", "I", "4", "24", "80", "0", "0", "0x0", "-")
+
+
+@pytest.mark.parametrize(("value", "host", "connect_arg"), LOOPBACK_ADDRESSES)
+def test_tpe_address_is_a_numeric_loopback_address(value: str, host: str, connect_arg: str) -> None:
+    address = tpe.parse_address(value)
+    assert address.host == host
+    assert address.connect_arg == str(address) == connect_arg
+
+
+@pytest.mark.parametrize(("host", "connect"), CONNECT_CASES)
+def test_tpe_connect_sends_only_a_numeric_loopback_address(host: str, connect: str | None) -> None:
+    terminal = object.__new__(tpe.S3270)  # no s3270 process is started
+    sent: list[str] = []
+    waits: list[str] = []
+
+    def command(action: str) -> tpe.Reply:
+        sent.append(action)
+        return tpe.Reply(action, (), CONNECTED_STATUS, True)
+
+    def wait_unlock() -> tpe.Reply:
+        waits.append(host)
+        return tpe.Reply("Wait(1,Unlock)", (), CONNECTED_STATUS, True)
+
+    terminal.command = command
+    terminal.wait_unlock = wait_unlock
+    address = tpe.TN3270Address(host, CONNECT_PORT)
+    if connect is None:
+        with pytest.raises(base.AdapterUnavailable) as caught:
+            terminal.connect(address)
+        assert caught.value.gap_id == "GAP-MIS-005"
+        assert f"{host}:{CONNECT_PORT}" in caught.value.reason
+        assert (sent, waits) == ([], [])
+    else:
+        terminal.connect(address)
+        assert (sent, waits) == ([connect], [host])
+
+
 # UniKixAdapter.prepare's CSD utility gate, on a session marked started whose
 # commands and BPE service are fakes: any use of them past the scenario checks
 # (a probe, a submission, a reset) raises _BeyondTheGate, so a case that ends

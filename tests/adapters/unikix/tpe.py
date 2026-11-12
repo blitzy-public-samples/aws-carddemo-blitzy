@@ -22,7 +22,10 @@ Address
     be the literal ``localhost``, an IPv4 address in ``127.0.0.0/8`` or
     ``::1``; no name is resolved. Anything else is refused with
     ``AdapterUnavailable(..., "GAP-MIS-005")``, so no scenario reaches beyond
-    loopback.
+    loopback. ``localhost`` is connected as ``127.0.0.1``, and
+    ``S3270.connect`` validates its address again before sending
+    ``Connect``, so only a numeric loopback address reaches ``s3270``: no
+    resolver decides where the connection leads.
 Screens
     After every AID the driver waits for the keyboard to unlock and reads the
     screen with ``Ascii1(1,1,24,80)``: 24 rows of exactly 80 characters, every
@@ -197,6 +200,9 @@ _BRACKETED_RE = re.compile(r"\[([^\[\]]+)\]:([0-9]+)")
 _PORT_RE = re.compile(r"[0-9]{1,5}")
 _IPV6_LOOPBACK = ipaddress.IPv6Address("::1")
 _IPV4_LOOPBACK = ipaddress.IPv4Network("127.0.0.0/8")
+# localhost is never resolved: s3270 would ask the host's resolver, which may
+# answer with an address beyond loopback, so s3270 is given this one instead.
+_LOCALHOST_ADDRESS = "127.0.0.1"
 
 
 # --------------------------------------------------------------------------
@@ -205,7 +211,9 @@ _IPV4_LOOPBACK = ipaddress.IPv4Network("127.0.0.0/8")
 
 
 class TN3270Address(NamedTuple):
-    """A validated loopback listener address."""
+    """A validated loopback listener address. ``parse_address`` gives it a
+    numeric ``host``, ``localhost`` becoming ``127.0.0.1``; ``S3270.connect``
+    validates it again, so one built by hand reaches nothing else."""
 
     host: str
     port: int
@@ -236,7 +244,10 @@ def parse_address(value: str | None) -> TN3270Address:
 
     Raises ``AdapterUnavailable(reason, "GAP-MIS-005")`` when the value is
     unset or empty, has no valid port (1-65535), or names a host that is not
-    loopback: ``localhost``, ``127.0.0.0/8`` or ``::1``."""
+    loopback: ``localhost``, ``127.0.0.0/8`` or ``::1``. The address returned
+    is always numeric: ``localhost``, in any case, is ``127.0.0.1`` and never
+    resolved, and any other host is its address in canonical form
+    (``[0:0:0:0:0:0:0:1]`` gives ``[::1]``)."""
     if value is None or not value.strip():
         raise AdapterUnavailable(f"{ADDRESS_ENV} not set", LISTENER_GAP)
     text = value.strip()
@@ -265,8 +276,9 @@ def parse_address(value: str | None) -> TN3270Address:
     bracketed = match is not None
     if not _is_loopback(host, bracketed):
         raise AdapterUnavailable(f"non-loopback TN3270 address refused: {text!r}", LISTENER_GAP)
-    canonical = str(ipaddress.ip_address(host)) if bracketed else host
-    return TN3270Address(canonical, int(port_text))
+    if not bracketed and host.lower() == "localhost":
+        host = _LOCALHOST_ADDRESS  # never resolved (see _LOCALHOST_ADDRESS)
+    return TN3270Address(str(ipaddress.ip_address(host)), int(port_text))
 
 
 def address_from_env() -> TN3270Address:
@@ -625,11 +637,17 @@ class S3270:
         return reply
 
     def connect(self, address: TN3270Address) -> None:
-        """``Connect`` to the listener, then wait for the keyboard."""
-        reply = self.command(f"Connect({address.connect_arg})")
+        """``Connect`` to the listener, then wait for the keyboard.
+
+        ``address`` is validated again by ``parse_address`` before anything is
+        sent, so s3270 only ever receives a numeric loopback address
+        (``localhost`` as ``127.0.0.1``); any other is
+        ``AdapterUnavailable(..., "GAP-MIS-005")`` with nothing sent."""
+        target = parse_address(str(address))
+        reply = self.command(f"Connect({target.connect_arg})")
         if not reply.ok:
             raise AdapterUnavailable(
-                f"TN3270 connect failed: {address}: {reply.detail}", LISTENER_GAP
+                f"TN3270 connect failed: {target}: {reply.detail}", LISTENER_GAP
             )
         self.wait_unlock()
 
