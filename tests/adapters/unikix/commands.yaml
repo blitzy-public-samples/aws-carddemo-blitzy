@@ -13,6 +13,17 @@
 #   PARMFILES, SEQFILES, MIGAPP_DIR and COBCPY, the installation variables UNIKIX, INSTEBM, VCOBOL, KIXLICDIR
 #   and JAVA_HOME, and MBMSUB once batchenv has been sourced. It runs in the entry's `cwd` or, when absent,
 #   in the default directory: $PROJECT_ROOT once it exists, else the deployment root.
+# - Every command and probe starts with TMPDIR, TMP and TEMP set to <deployment root>/tmp, _JAVA_OPTIONS set
+#   to exactly -Djava.io.tmpdir=<deployment root>/tmp -XX:+PerfDisableSharedMem, and JAVA_TOOL_OPTIONS (and
+#   JDK_JAVA_OPTIONS when set) ending in those options, because a JVM ignores TMPDIR and HotSpot writes
+#   /tmp/hsperfdata_<user> otherwise. HotSpot reads _JAVA_OPTIONS after the command line, so it wins over a
+#   -Djava.io.tmpdir a vendor script passes; every JVM therefore prints "Picked up JAVA_TOOL_OPTIONS" and
+#   "Picked up _JAVA_OPTIONS" on stderr. Every command's shell holds TMPDIR, TMP, TEMP and _JAVA_OPTIONS
+#   read-only, as do the shells that source the environment file, userenv and batchenv: a command, or a
+#   script it sources, that assigns, exports or unsets one gets bash's "readonly variable" error (a failed
+#   plain assignment also skips the rest of its line) and the owned value stays. A userenv or batchenv whose
+#   JAVA_TOOL_OPTIONS or JDK_JAVA_OPTIONS name another java.io.tmpdir, or hold an unmatched quote, is refused
+#   under GAP-MIS-003 or GAP-MIS-006.
 # - Placeholders in {braces} (member, map, job, file, operation, queue, dsn, clock, job_number) are filled by
 #   the caller.
 #   In `command` each value is shell-quoted and $VAR is expanded by bash; `cwd` is filled and expanded by
@@ -165,8 +176,9 @@ entries:
     source: https://docs.aws.amazon.com/m2/latest/userguide/tutorial-unikix-runtime.html
     notes: >-
       Expected to create $KIXSYS/bin/userenv, which region_install sources and env.py merges into the
-      captured environment; env.py then checks that KIXSYS, KIXDATA and EBMHOME still lie inside the
-      deployment root.
+      captured environment. env.py sources it right after this entry, before region_install runs, and refuses
+      one that moves a deployment path (KIXSYS, KIXDATA, EBMHOME among them) or the JVM's temporary files out
+      of the deployment root; TMPDIR, TMP, TEMP and _JAVA_OPTIONS are read-only there and in region_install.
 
   region_install:
     action: install the region resource lists
@@ -287,7 +299,7 @@ entries:
     source: https://docs.aws.amazon.com/m2/latest/userguide/tutorial-unikix-runtime.html
     notes: >-
       Starts the batch manager of the node at $EBMHOME. Unconfirmed whether it needs batchenv sourced first;
-      env.py sources it into the captured environment once the node exists.
+      env.py sources it through bpe_env once the node exists.
 
   bpe_stop:
     action: stop BPE
@@ -309,8 +321,11 @@ entries:
     status: unconfirmed
     source: zip bin/carddemo.env:42-48; https://docs.aws.amazon.com/m2/latest/userguide/tutorial-unikix-runtime.html
     notes: >-
-      env.py sources this file into the captured environment after deployment (source_runtime_scripts) and
-      reads MBMSUB from the result; this entry checks that it sources cleanly.
+      env.py sources batchenv after deployment (source_runtime_scripts) by running this command in the
+      environment userenv left, with set -a, and keeps what it exports, MBMSUB included. The probe gates it
+      (command null or a failed probe leaves batchenv unavailable, so every entry that needs $MBMSUB is
+      refused), timeout_s bounds it, and an override changes what is sourced. Takes no placeholders; the
+      command's output is logged, the environment never.
 
   bpe_system:
     action: start the BPE subsystem
@@ -882,8 +897,10 @@ entries:
 
   # ---------------------------------------------------------------------------------------------------------
   # Version probes, recorded verbatim in environment.yaml. Installation paths as in zip bin/carddemo.env.
-  # The flag forms are unconfirmed; a failing probe or command is recorded as text, never raised.
-  # report.py --import-unikix closes GAP-MIS-009 only once each of these entries is status: confirmed.
+  # The flag forms are unconfirmed; a failing probe or command is recorded as text, never raised, and a
+  # command that exits 0 and prints nothing as "no output: <id> exited 0 and printed nothing", which names
+  # no version. report.py --import-unikix closes GAP-MIS-009 only once each of these entries is
+  # status: confirmed.
   # ---------------------------------------------------------------------------------------------------------
   version_tpe:
     action: record the TPE installation

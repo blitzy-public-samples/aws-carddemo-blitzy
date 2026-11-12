@@ -932,6 +932,12 @@ _WORK_ROOT_PROBE_PREFIX = ".carddemo-probe-"
 # The write bits that make a directory writable by someone other than its
 # owner; an owner-only work root has neither.
 _SHARED_WRITE_BITS = stat.S_IWGRP | stat.S_IWOTH
+# What an owner-only work root's path never holds: the UniKix deployment names
+# its temporary directory, below the work root, in JVM option variables, which
+# a JVM splits at whitespace and reads quotes in. The same pattern as
+# _JVM_UNSAFE_PATH_RE in adapters/unikix/env.py, kept here because this
+# package does not import the adapters.
+_JVM_UNSAFE_PATH_RE = re.compile(r"[\s'\"]")
 
 
 def usable_work_root(configured: str | PurePath, *, owner_only: bool = False) -> Path:
@@ -950,11 +956,14 @@ def usable_work_root(configured: str | PurePath, *, owner_only: bool = False) ->
     configured text and decides what replaces a refused root.
 
     ``owner_only`` applies the rule the UniKix deployment
-    (``adapters/unikix/deploy.py``) holds a work root to: a missing root is
-    created with mode ``0o700``, and the resolved root must be owned by the
-    effective user and writable by neither group nor others, since anyone
-    else who can write to it could plant the links and files the deployment
-    writes through or trusts. Its missing parents get the default mode.
+    (``adapters/unikix/deploy.py``) holds a work root to: the resolved path
+    holds no whitespace and no quote, which the JVM option variables naming
+    the deployment's temporary directory below it cannot carry, checked
+    before anything is created; a missing root is created with mode
+    ``0o700``; and the resolved root must be owned by the effective user and
+    writable by neither group nor others, since anyone else who can write to
+    it could plant the links and files the deployment writes through or
+    trusts. Its missing parents get the default mode.
     """
     if not isinstance(configured, (str, PurePath)):
         raise TypeError(f"configured must be str or a path, not {type(configured).__name__}")
@@ -973,6 +982,8 @@ def usable_work_root(configured: str | PurePath, *, owner_only: bool = False) ->
         raise HarnessError("the path is the repository itself")
     if REPO_ROOT in root.parents:
         raise HarnessError(f"the path resolves to {display_path(root)}, inside the repository")
+    if owner_only:
+        _check_owner_only_path(root)
     try:
         root.mkdir(mode=0o700 if owner_only else 0o777, parents=True, exist_ok=True)
     except OSError as exc:
@@ -992,6 +1003,17 @@ def usable_work_root(configured: str | PurePath, *, owner_only: bool = False) ->
     except OSError as exc:
         raise HarnessError(f"a directory made in {root} cannot be removed: {exc}") from None
     return root
+
+
+def _check_owner_only_path(root: Path) -> None:
+    """``HarnessError`` when the path ``root`` holds whitespace or a quote,
+    worded as the UniKix deployment refuses such a root; nothing is read
+    from the file system."""
+    if _JVM_UNSAFE_PATH_RE.search(str(root)):
+        raise HarnessError(
+            f"{root} holds whitespace or a quote, which a JVM option variable cannot carry; "
+            "choose another work root"
+        )
 
 
 def _check_owner_only(root: Path) -> None:

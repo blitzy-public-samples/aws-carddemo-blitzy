@@ -10,12 +10,17 @@ under GAP-MIS-009 and this module writes nothing.
     ``BASE_DIR=$HOME/unikixdemo`` with the test-owned deployment root
     ``<work root>/unikix/<execution_id>/`` and recomputes every variable
     derived from it with the definitions of ``carddemo.env``, so the region,
-    the BPE node and their catalogs belong to this run alone.
+    the BPE node and their catalogs belong to this run alone. Once the
+    deployment exists, ``source_runtime_scripts`` merges the deployment's
+    ``userenv``, which it sources itself, and its ``batchenv``, which the
+    ``bpe_env`` entry sources through ``CommandSet.capture``.
 ``CommandSet``
     The only executor of UniKix commands. It runs entries of
-    ``commands.yaml`` by id and nothing else. Each outcome follows the
-    adapter's command rule: a missing capability (command ``null``, failed
-    probe, non-zero exit, own ``timeout_s`` exceeded) is
+    ``commands.yaml`` by id and nothing else: ``run`` returns what a command
+    printed, ``capture`` the environment a command that sources a script
+    leaves. Each outcome follows the adapter's command rule: a missing
+    capability (command ``null``, failed probe, non-zero exit, own
+    ``timeout_s`` exceeded) is
     ``AdapterUnavailable`` with the entry's gap while the scenario deadline
     has not passed, and expiry of the deadline is ``ScenarioTimeout``. The
     deadline takes precedence: it is checked again once a probe or command
@@ -31,7 +36,8 @@ under GAP-MIS-009 and this module writes nothing.
 
 Probe results are cached per environment *generation*. ``load`` starts
 generation 0, and every ``source_runtime_scripts`` call, made once the
-deployment exists, starts the next one. Probes that test the deployed tree
+deployment exists, starts the next one (``capture`` probes its entry afresh
+for that next generation). Probes that test the deployed tree
 (``$MBMSUB``, ``$EBMHOME/batchenv``, ``$KIXSYS/unikixrc.cfg``) are therefore
 re-run against it instead of keeping the answer they gave before deployment.
 The ``$MBMSUB`` containment check is never cached: it is made on every probe
@@ -39,17 +45,37 @@ and run, so a submission directory changed within a generation is seen at
 once.
 
 Every write stays inside the deployment root: the empty ``home/`` used as
-``HOME``, ``logs/commands.log``, and unlinked spool files for command output.
+``HOME``, ``logs/commands.log``, unlinked spool files for command output, and
+``tmp/``, the temporary directory of every command and both sourcing stages.
+``load`` makes the root, ``home/``, ``tmp/`` and ``logs/`` real directories
+of the effective user before it sources anything; every process start
+checks the root, ``tmp/`` and ``logs/`` again, every log write the root and
+``logs/``, and a log file is never opened through a link, so no write goes
+through a planted link.
+``TMPDIR``, ``TMP`` and ``TEMP`` name ``tmp/``; ``_JAVA_OPTIONS`` is exactly
+``-Djava.io.tmpdir=<it> -XX:+PerfDisableSharedMem``, and ``JAVA_TOOL_OPTIONS``
+(and ``JDK_JAVA_OPTIONS`` when set) end with the same options, because a JVM
+ignores ``TMPDIR`` and HotSpot otherwise writes ``/tmp/hsperfdata_<user>``;
+HotSpot reads ``_JAVA_OPTIONS`` after the command line, so it wins over a
+vendor script's own ``-Djava.io.tmpdir``. They are set again at the start
+of every process, and every bash started for the deployment holds
+``TMPDIR``, ``TMP``, ``TEMP`` and ``_JAVA_OPTIONS`` read-only
+(``_TEMP_HOLD``): the environment file, userenv, batchenv, a command and a
+script it sources cannot change them. A runtime script that leaves JVM
+options naming another ``java.io.tmpdir``, or with an unmatched quote,
+makes its stage unavailable.
 Python 3.11 standard library and PyYAML only. Nothing here uses the network.
 """
 
 from __future__ import annotations
 
+import errno
 import os
 import re
 import shlex
 import shutil
 import signal
+import stat
 import string
 import subprocess
 import sys
@@ -98,6 +124,8 @@ COMMANDS_FILE = Path(__file__).resolve().with_name("commands.yaml")
 _GAP_INSTALLATION = "GAP-MIS-009"  # no usable UniKix installation
 _GAP_USERENV = "GAP-MIS-003"  # region creation, of which $KIXSYS/bin/userenv is part
 _GAP_BATCHENV = "GAP-MIS-006"  # BPE submission, of which $EBMHOME/batchenv is part
+# The commands.yaml entry that sources $EBMHOME/batchenv.
+_BPE_ENV_ENTRY = "bpe_env"
 
 # PR_BPENODE_NAME and PR_BPESUBSYS_NAME of carddemo.env.
 BPE_NODE_NAME = "bpenode"
@@ -120,8 +148,56 @@ DEPLOYMENT_PATH_VARS = (
     "PARMFILES",
     "SEQFILES",
     "HOME",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
 )
-_DEPLOYMENT_RECORD_VARS = DEPLOYMENT_PATH_VARS + ("EBMSYS", "COBCPY", "MBMSUB")
+_DEPLOYMENT_RECORD_VARS = DEPLOYMENT_PATH_VARS + (
+    "EBMSYS",
+    "COBCPY",
+    "MBMSUB",
+    "JAVA_TOOL_OPTIONS",
+    "_JAVA_OPTIONS",
+)
+
+# The owned temporary directory <deployment root>/tmp. Native tools take it
+# from TMPDIR, or TMP and TEMP. A JVM ignores all three: on Linux
+# java.io.tmpdir defaults to /tmp, so it is passed as an option, and HotSpot
+# writes /tmp/hsperfdata_<user>/<pid> whatever java.io.tmpdir says unless
+# shared performance memory is disabled.
+_TEMP_DIR_NAME = "tmp"
+_TEMP_DIR_MODE = 0o700
+# <deployment root>/logs: commands.log and the spool files of command output.
+_LOG_DIR_NAME = "logs"
+_COMMANDS_LOG = "commands.log"
+_OWNED_DIR_MODE = 0o755
+_SHARED_WRITE = stat.S_IWGRP | stat.S_IWOTH
+_TEMP_VARS = ("TMPDIR", "TMP", "TEMP")
+# Every JVM reads JAVA_TOOL_OPTIONS; the java launcher reads JDK_JAVA_OPTIONS
+# after it and HotSpot reads _JAVA_OPTIONS after the command line, so only
+# _JAVA_OPTIONS wins over a -Djava.io.tmpdir a vendor script passes itself.
+# The last occurrence of an option wins, so the owned options go last in each.
+_JVM_OPTION_VARS = ("JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS")
+# Both are always set; _JAVA_OPTIONS holds the owned options alone.
+_JVM_ALWAYS_SET = ("JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS")
+_JVM_OWNED_ONLY = "_JAVA_OPTIONS"
+_JVM_TMPDIR = "-Djava.io.tmpdir="
+_JVM_PERF_OFF = "-XX:+PerfDisableSharedMem"
+_JVM_PERF_ON = "-XX:-PerfDisableSharedMem"
+_HSPERFDATA = "/tmp/hsperfdata_<user>"
+# What separates the options of a JVM option variable: C isspace().
+_JVM_SPACE = frozenset(" \t\n\v\f\r")
+_JVM_QUOTES = frozenset("'\"")
+# A JVM option variable is split at whitespace and reads quotes. deploy.py's
+# work-root check uses this pattern too; harness/__init__.py holds the same
+# one for the owner-only work-root admission, since the harness does not
+# import the adapters.
+_JVM_UNSAFE_PATH_RE = re.compile(r"[\s'\"]")
+# The first statement of every bash this module starts for a deployment: what
+# that bash runs or sources afterwards (the environment file, userenv,
+# batchenv, a command, a script a command sources) can then neither assign,
+# export nor unset the four temporary-file settings it names.
+_TEMP_HOLD = "readonly TMPDIR TMP TEMP _JAVA_OPTIONS"
 
 VERSION_ENTRIES = (
     "version_tpe",
@@ -154,8 +230,8 @@ _SHELL_ARTIFACTS = frozenset({"_", "SHLVL", "PWD", "OLDPWD"})
 # --noprofile --norc, which would bring back startup files from outside the
 # deployment, so neither is passed on.
 _STARTUP_FILE_VARS = frozenset({"BASH_ENV", "ENV"})
-# An env -0 entry without "=", printed between the two snapshots of
-# source_runtime_scripts.
+# An env -0 entry without "=", printed right before the env -0 of a sourced
+# script, so an environment is taken only from a shell that reached it.
 _SNAPSHOT_MARK = "--carddemo-runtime-snapshot--"
 
 
@@ -296,6 +372,207 @@ def _mbmsub_refusal(value: str | None, root: str | os.PathLike[str] | None) -> s
     return ""
 
 
+def _own_directory(path: Path, mode: int = _OWNED_DIR_MODE) -> Path:
+    """``path``, created with ``mode`` when it is missing. It must then be a
+    real directory, not a symbolic link, of the effective user, or
+    ``HarnessError`` names it; group and other write bits are removed.
+    Passed each directory after its parent, before anything is written
+    below it, so no write is sent elsewhere through a planted link.
+    ``deploy.py`` checks the same directories again before it deploys."""
+    try:
+        os.mkdir(path, mode)
+    except FileExistsError:
+        pass
+    except OSError as exc:
+        raise HarnessError(
+            f"cannot create the deployment directory {path}: {exc.strerror or exc}"
+        ) from None
+    try:
+        status = os.lstat(path)
+    except OSError as exc:
+        raise HarnessError(
+            f"cannot inspect the deployment directory {path}: {exc.strerror or exc}"
+        ) from None
+    if stat.S_ISLNK(status.st_mode):
+        problem = "is a symbolic link"
+    elif not stat.S_ISDIR(status.st_mode):
+        problem = "is not a directory"
+    elif status.st_uid != os.geteuid():
+        problem = f"is owned by uid {status.st_uid}, not {os.geteuid()}"
+    else:
+        problem = ""
+    if problem:
+        raise HarnessError(
+            f"deployment directory {path} {problem}; remove it or choose another work root"
+        )
+    if status.st_mode & _SHARED_WRITE:
+        try:
+            os.chmod(path, stat.S_IMODE(status.st_mode) & ~_SHARED_WRITE)
+        except OSError as exc:
+            raise HarnessError(
+                f"cannot make the deployment directory {path} writable by its owner only: "
+                f"{exc.strerror or exc}"
+            ) from None
+    return path
+
+
+def _temp_dir(root: str | os.PathLike[str]) -> Path:
+    """``<root>/tmp``, the owned temporary directory, checked again with the
+    root before every process (``_own_directory``): either is created when
+    missing (``tmp/`` ``0700``), and a link or another user's directory that
+    replaced it since ``load`` raises ``HarnessError``."""
+    return _own_directory(_own_directory(Path(root)) / _TEMP_DIR_NAME, _TEMP_DIR_MODE)
+
+
+def _log_dir(root: str | os.PathLike[str]) -> Path:
+    """``<root>/logs``, where command output is spooled and ``commands.log``
+    is written, checked again with the root before every process and every
+    log write (``_own_directory``): either is created when missing (``logs/``
+    ``0755``), and a link or another user's directory that replaced it since
+    ``load`` raises ``HarnessError``."""
+    return _own_directory(_own_directory(Path(root)) / _LOG_DIR_NAME)
+
+
+def _append_log(log: Path, text: str) -> None:
+    """Append ``text`` to the file ``log``, created when missing, never
+    through a symbolic link: one planted there raises ``HarnessError`` naming
+    it, and nothing is written."""
+    try:
+        descriptor = os.open(log, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o666)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise HarnessError(
+                f"the log file {log} is a symbolic link; remove it or choose another work root"
+            ) from None
+        raise
+    with open(descriptor, "a", encoding="utf-8", newline="\n") as handle:
+        handle.write(text)
+
+
+class _UnmatchedQuote(ValueError):
+    """A JVM option variable holds a quote it never closes. HotSpot and the
+    java launcher refuse to start on one."""
+
+
+def _jvm_options(value: str) -> list[tuple[str, str]]:
+    """The options of the JVM option variable ``value`` as ``(raw,
+    decoded)`` pairs, split as HotSpot splits ``JAVA_TOOL_OPTIONS`` and
+    ``_JAVA_OPTIONS`` and the java launcher ``JDK_JAVA_OPTIONS``: whitespace
+    separates options, and a single or double quote groups everything up to
+    the next same quote, whitespace included, anywhere in an option
+    (``-Dx="a b"``). ``raw`` is the option as written, ``decoded`` the
+    option the JVM gets, its quotes removed. No backslash escapes. A quote
+    that is never closed raises ``_UnmatchedQuote``."""
+    options: list[tuple[str, str]] = []
+    index, end = 0, len(value)
+    while True:
+        while index < end and value[index] in _JVM_SPACE:
+            index += 1
+        if index == end:
+            return options
+        start = index
+        decoded: list[str] = []
+        while index < end and value[index] not in _JVM_SPACE:
+            char = value[index]
+            if char in _JVM_QUOTES:
+                close = value.find(char, index + 1)
+                if close < 0:
+                    raise _UnmatchedQuote()
+                decoded.append(value[index + 1 : close])
+                index = close + 1
+            else:
+                decoded.append(char)
+                index += 1
+        options.append((value[start:index], "".join(decoded)))
+
+
+def _unmatched_quote(variables: Mapping[str, str]) -> str | None:
+    """The first JVM option variable of ``variables`` with a quote it never
+    closes (``_jvm_options``), or ``None``."""
+    for name in _JVM_OPTION_VARS:
+        try:
+            _jvm_options(variables.get(name, ""))
+        except _UnmatchedQuote:
+            return name
+    return None
+
+
+def _temp_option(decoded: str) -> bool:
+    """Whether the decoded JVM option sets ``java.io.tmpdir`` or
+    ``PerfDisableSharedMem``, which only the owned options may set."""
+    return decoded.startswith(_JVM_TMPDIR) or decoded in (_JVM_PERF_OFF, _JVM_PERF_ON)
+
+
+def _contain_temp(variables: dict[str, str], temp_dir: str | os.PathLike[str]) -> dict[str, str]:
+    """Point every temporary-file setting of ``variables`` at ``temp_dir``,
+    in place, and return ``variables``.
+
+    ``TMPDIR``, ``TMP`` and ``TEMP`` become ``temp_dir``, and
+    ``_JAVA_OPTIONS`` exactly the owned options ``-Djava.io.tmpdir=<temp_dir>
+    -XX:+PerfDisableSharedMem`` (see ``_TEMP_DIR_NAME``). ``JAVA_TOOL_OPTIONS``
+    always, and ``JDK_JAVA_OPTIONS`` when it is set, keep each option as
+    written except those that set ``java.io.tmpdir`` or
+    ``PerfDisableSharedMem`` (read as a JVM reads them, ``_jvm_options``),
+    one space apart, and end with the owned options. Applying it again
+    changes nothing. ``HarnessError`` when ``temp_dir`` holds whitespace or
+    a quote, which a JVM option variable would split or decode, or when one
+    of those variables has an unmatched quote: ``load`` and
+    ``_runtime_escape`` refuse such a value, so only a later change to
+    ``vars`` brings one here."""
+    path = os.fspath(temp_dir)
+    if _JVM_UNSAFE_PATH_RE.search(path):
+        raise HarnessError(
+            f"the temporary directory {path!r} holds whitespace or a quote, which a JVM "
+            "option variable cannot carry; choose another work root"
+        )
+    for name in _TEMP_VARS:
+        variables[name] = path
+    owned = [f"{_JVM_TMPDIR}{path}", _JVM_PERF_OFF]
+    for name in _JVM_OPTION_VARS:
+        if name == _JVM_OWNED_ONLY:
+            variables[name] = " ".join(owned)
+            continue
+        if name not in _JVM_ALWAYS_SET and name not in variables:
+            continue  # JAVA_TOOL_OPTIONS reaches every JVM; JDK_JAVA_OPTIONS matters only when set
+        try:
+            options = _jvm_options(variables.get(name, ""))
+        except _UnmatchedQuote:
+            raise HarnessError(f"UniKix variable {name} has an unmatched quote") from None
+        kept = [raw for raw, decoded in options if not _temp_option(decoded)]
+        variables[name] = " ".join(kept + owned)
+    return variables
+
+
+def _jvm_temp_escape(variables: Mapping[str, str], root: Path) -> str:
+    """How the JVM option variables of ``variables``, which hold no
+    unmatched quote (``_unmatched_quote``), let a JVM write a temporary file
+    outside ``root``, or ``""`` when they do not. Each option is read as the
+    JVM gets it, quotes removed (``_jvm_options``). ``JAVA_TOOL_OPTIONS``,
+    which every JVM reads, and ``_JAVA_OPTIONS``, which HotSpot reads after
+    the command line, must name a ``java.io.tmpdir`` inside ``root`` last and
+    disable shared performance memory last. ``JDK_JAVA_OPTIONS``, read
+    between them, must not do otherwise last."""
+    for name in _JVM_OPTION_VARS:
+        value = variables.get(name)
+        always = name in _JVM_ALWAYS_SET
+        if value is None and not always:
+            continue
+        options = [decoded for _raw, decoded in _jvm_options(value or "")]
+        tmpdirs = [option[len(_JVM_TMPDIR) :] for option in options if option.startswith(_JVM_TMPDIR)]
+        if tmpdirs:
+            last = tmpdirs[-1]
+            if not os.path.isabs(last) or not _inside(last, root):
+                return f"{name} sets {_JVM_TMPDIR}{last} last"
+        elif always:
+            return f"{name} sets no -Djava.io.tmpdir, so java.io.tmpdir is /tmp"
+        perf = [option for option in options if option in (_JVM_PERF_OFF, _JVM_PERF_ON)]
+        if perf and perf[-1] == _JVM_PERF_ON:
+            return f"{name} sets {_JVM_PERF_ON} last, so HotSpot writes {_HSPERFDATA}"
+        if not perf and always:
+            return f"{name} lacks {_JVM_PERF_OFF}, so HotSpot writes {_HSPERFDATA}"
+    return ""
+
+
 def _derived(root: str, unikix: str, inherited_cobcpy: str) -> dict[str, str]:
     """The deployment variables, with the definitions of ``carddemo.env``
     under ``BASE_DIR=<deployment root>``. ``PR``, ``PARMFILES`` and
@@ -360,6 +637,7 @@ class UniKixEnvironment:
         self.work_root = work_root
         self.deployment_root = deployment_root
         self.home = deployment_root / "home"
+        self.temp_dir = deployment_root / _TEMP_DIR_NAME
         self.vars = variables
         self.generation = 0
         self.runtime_scripts = {"userenv": "not-sourced", "batchenv": "not-sourced"}
@@ -388,21 +666,35 @@ class UniKixEnvironment:
     ) -> UniKixEnvironment:
         """Source ``$CARDDEMO_UNIKIX_ENV`` and derive the deployment variables.
 
-        ``deployment_root`` is ``<work root>/unikix/<execution_id>``; only its
-        ``home/`` is created here. ``environ`` defaults to ``os.environ`` and
-        supplies ``CARDDEMO_UNIKIX_ENV`` and ``PATH``, nothing else. The file
-        is sourced with ``HOME`` set to that empty ``home/``, so the
-        ``userenv`` and ``batchenv`` of an operator's own ``$HOME/unikixdemo``
-        are never sourced.
+        ``deployment_root`` is ``<work root>/unikix/<execution_id>``. Before
+        the file is sourced, each directory from below the work root down to
+        the root, its ``home/``, its ``tmp/`` (``0700``) and its ``logs/`` is
+        created when missing and must be a real directory of the effective
+        user, never a symbolic link (``_own_directory``). ``environ`` defaults to
+        ``os.environ`` and supplies ``CARDDEMO_UNIKIX_ENV`` and ``PATH``,
+        nothing else. The file is sourced with ``HOME`` set to that empty
+        ``home/``, so the ``userenv`` and ``batchenv`` of an operator's own
+        ``$HOME/unikixdemo`` are never sourced, and with ``TMPDIR``, ``TMP``,
+        ``TEMP`` and ``_JAVA_OPTIONS`` owned (``_contain_temp``) and
+        read-only, so the file cannot change or unset them while it is
+        sourced. Whatever the file exports, ``HOME`` is then ``home/`` and
+        every temporary-file setting points at ``tmp/``, the JVM's
+        ``java.io.tmpdir`` included.
 
         Raises ``AdapterUnavailable`` with GAP-MIS-009 when the variable is
         unset or names no readable file, before anything is created; when
         sourcing the file returns non-zero (a syntax error, which stops bash
-        reading it, or a failing last command) or times out; and when
-        ``UNIKIX``, ``INSTEBM``, ``VCOBOL``, ``KIXLICDIR`` or ``JAVA_HOME`` is
-        unset, is not an absolute path, is missing or is not a directory.
-        Raises ``HarnessError`` when the deployment root or a derived path
-        lies outside where it must."""
+        reading it, or a failing last command, such as one that assigns,
+        exports or unsets ``TMPDIR``, ``TMP``, ``TEMP`` or ``_JAVA_OPTIONS``)
+        or times out; when the file leaves ``JAVA_TOOL_OPTIONS`` or
+        ``JDK_JAVA_OPTIONS`` with an unmatched quote, on which no JVM starts;
+        and when ``UNIKIX``, ``INSTEBM``, ``VCOBOL``, ``KIXLICDIR`` or
+        ``JAVA_HOME`` is unset, is not an absolute path, is missing or is not
+        a directory. Raises ``HarnessError``, naming the path, when the
+        deployment root does not lie below the work root, when one of the
+        directories above is a link, not a directory or another user's, or a
+        derived path lies outside the root, and when ``tmp/`` holds
+        whitespace or a quote."""
         source = os.environ if environ is None else environ
         setting = (source.get(ENV_VARIABLE) or "").strip()
         if not setting:
@@ -418,14 +710,33 @@ class UniKixEnvironment:
 
         work = Path(os.path.abspath(work_root))
         root = Path(os.path.abspath(deployment_root))
-        if root.resolve() == work.resolve() or not _inside(root, work):
+        try:
+            below = root.relative_to(work).parts
+        except ValueError:
+            below = ()
+        if not below or root.resolve() == work.resolve() or not _inside(root, work):
             raise HarnessError(f"deployment root {root} must lie below the work root {work}")
-        home = root / "home"
-        home.mkdir(parents=True, exist_ok=True)
+        # Every directory below the work root that the file, and later every
+        # command, writes in is a real one of this user before the file is
+        # sourced, so no write goes through a link planted there.
+        work.mkdir(parents=True, exist_ok=True)
+        directory = work
+        for part in below:
+            directory = _own_directory(directory / part)
+        home = _own_directory(root / "home")
+        temp = _own_directory(root / _TEMP_DIR_NAME, _TEMP_DIR_MODE)
+        # The session-start probes spool output and append commands.log here
+        # before deploy.py checks the deployment tree again.
+        _own_directory(root / _LOG_DIR_NAME)
 
-        captured, sourcing_output = _source_env_file(env_file, home, root, source)
+        captured, sourcing_output = _source_env_file(env_file, home, temp, root, source)
         inherited_cobcpy = captured.get("COBCPY", "")
         variables = _settings(captured)
+        quoted = _unmatched_quote(variables)
+        if quoted:
+            raise AdapterUnavailable(
+                f"{quoted} set by {env_file} has an unmatched quote", _GAP_INSTALLATION
+            )
         # The BPE submission directory is the test node's, which only the
         # deployment's batchenv supplies. A value the file exported, or left
         # from a batchenv it sourced, names another node's directory, so
@@ -433,6 +744,7 @@ class UniKixEnvironment:
         variables.pop("MBMSUB", None)
         variables.update(_derived(str(root), variables.get("UNIKIX", ""), inherited_cobcpy))
         variables["HOME"] = str(home)
+        _contain_temp(variables, temp)
 
         for name in REQUIRED_INSTALLATION_VARS:
             value = variables.get(name, "")
@@ -469,7 +781,17 @@ class UniKixEnvironment:
     @property
     def log_dir(self) -> Path:
         """``<deployment root>/logs``, where ``commands.log`` is written."""
-        return self.deployment_root / "logs"
+        return self.deployment_root / _LOG_DIR_NAME
+
+    def append_log(self, name: str, text: str) -> Path:
+        """Append ``text`` to the file ``name`` in ``log_dir`` and return its
+        path. The root and ``log_dir`` are checked again first (``_log_dir``)
+        and the file is never opened through a link (``_append_log``), so a
+        link or another user's directory planted since ``load`` raises
+        ``HarnessError`` and nothing is written."""
+        log = _log_dir(self.deployment_root) / name
+        _append_log(log, text)
+        return log
 
     @property
     def mbmsub(self) -> str | None:
@@ -498,44 +820,88 @@ class UniKixEnvironment:
             if not variables.get(name) or not _inside(variables[name], self.deployment_root)
         ]
 
+    def _runtime_escape(self, snapshot: Mapping[str, str]) -> str:
+        """Why a runtime script's ``snapshot`` cannot be kept, as the rest of
+        ``"<script> ..."``, or ``""``: it moves a derived path that is unset or
+        outside the deployment root, leaves a JVM option variable with an
+        unmatched quote (``_unmatched_quote``), on which no JVM starts, or
+        moves the JVM's temporary files elsewhere (``_jvm_temp_escape``).
+        ``TMPDIR``, ``TMP``, ``TEMP`` and ``_JAVA_OPTIONS`` are held
+        read-only while the script runs (``_TEMP_HOLD``), so they are checked
+        only as a defence. Such a stage is refused rather than repaired: a
+        command that sources the script again itself, as ``region_install``
+        sources ``userenv``, would run with what it sets."""
+        outside = self._outside_paths(snapshot)
+        if outside:
+            name, value = outside[0]
+            return f"moves {name} outside the deployment root: {value}"
+        quoted = _unmatched_quote(snapshot)
+        if quoted:
+            return f"leaves {quoted} with an unmatched quote"
+        jvm = _jvm_temp_escape(snapshot, self.deployment_root)
+        if jvm:
+            return f"moves the JVM's temporary files outside the deployment root: {jvm}"
+        return ""
+
     # ------------------------------------------------------ runtime scripts
 
-    def source_runtime_scripts(self, *, deadline_left: float | None = None) -> dict[str, str]:
+    def source_runtime_scripts(
+        self, commands: CommandSet, *, deadline_left: float | None = None
+    ) -> dict[str, str]:
         """Merge ``$KIXSYS/bin/userenv`` and then ``$EBMHOME/batchenv sys1``
         into ``vars``, as ``carddemo.env`` sources them once they exist.
 
-        Called by ``deploy.py`` after it has created the region and the BPE
-        node. A script is sourced only when it is a file inside the
-        deployment root. Both run in one bash started from the environment
-        ``load`` produced, with its inherited ``COBCPY``, so batchenv sees
-        what userenv set, and a script that extends a variable, such as
+        Called by ``deploy.py`` with the session's ``commands``: once
+        ``region_create_script`` has made userenv, so that userenv is vetted
+        before ``region_install`` sources it, and again once the BPE node
+        exists, when batchenv is sourced too. A script is sourced only when
+        it is a file inside the deployment root. userenv, which no
+        ``commands.yaml`` entry names, is sourced here in a bash of its own,
+        bounded by ``SOURCE_TIMEOUT_S``, starting from the environment
+        ``load`` produced with its inherited ``COBCPY``. batchenv is sourced
+        by running the ``bpe_env`` entry through ``commands.capture`` in what
+        userenv exported, so batchenv sees what userenv set, the entry's
+        probe gates it, its ``timeout_s`` bounds it, and an operator's
+        override of its command is what runs; ``$EBMHOME`` is then the one
+        userenv left. A script that extends a variable, such as
         ``PATH=<dir>:$PATH``, extends it once however often this is called.
-        The scripts are the ones that environment names, and the bash starts
-        in its ``PROJECT_ROOT`` once that exists. ``COBCPY`` is then extended
+        Each bash starts in ``PROJECT_ROOT`` once that exists, with the owned
+        temporary directory (``_contain_temp``) and ``TMPDIR``, ``TMP``,
+        ``TEMP`` and ``_JAVA_OPTIONS`` read-only (``_TEMP_HOLD``): a script
+        line that assigns, exports or unsets one fails with ``readonly
+        variable`` and changes nothing, so a temporary file the script makes
+        afterwards lands in ``tmp/``; only as its last line does it fail the
+        script's ``.``. ``COBCPY`` is then extended
         again from whatever the scripts left, as ``bin/compile`` would extend
-        it in a shell where they had been sourced. When neither script is
+        it in a shell where they had been sourced, and the temporary-file
+        settings are pointed at ``tmp/`` again. When neither script is
         sourced, ``vars`` returns to what ``load`` produced. Every call starts
         a new ``generation``.
 
-        Returns the state of each script: ``sourced``, ``absent`` or
-        ``outside-deployment-root``. Raises ``AdapterUnavailable`` with
-        GAP-MIS-003 when userenv fails, times out or moves a deployment path
-        out of the deployment root, and with GAP-MIS-006 when batchenv
-        does. ``MBMSUB`` is kept as the scripts leave it and is not checked
-        here. ``CommandSet`` refuses each command that uses ``$MBMSUB``,
-        under that entry's own gap (GAP-MIS-006 for ``bpe_submit``,
-        GAP-MIS-007 for the dataset and catalog entries), while it does not
-        resolve inside the deployment root; the commands that do not use it
-        (region, listener, build) stay available.
+        Returns the state of each script: ``sourced``, ``absent``,
+        ``outside-deployment-root`` or, for batchenv, ``unavailable`` when
+        ``bpe_env`` has ``command: null`` or its probe fails. Raises
+        ``AdapterUnavailable`` with GAP-MIS-003 when userenv fails, times
+        out, moves a deployment path or the JVM's temporary files out of the
+        deployment root, or leaves a JVM option variable with an unmatched
+        quote (``_runtime_escape``), and with GAP-MIS-006 when batchenv does
+        or ``bpe_env`` exits non-zero or exceeds its own ``timeout_s``.
+        ``MBMSUB`` is kept as the scripts leave it and is not checked here;
+        it stays unset unless they export it. ``CommandSet`` refuses each
+        command that uses ``$MBMSUB``, under that entry's own gap
+        (GAP-MIS-006 for ``bpe_submit``, GAP-MIS-007 for the dataset and
+        catalog entries), while it does not resolve inside the deployment
+        root; the commands that do not use it (region, listener, build) stay
+        available.
 
         ``deadline_left`` is the seconds left before the scenario deadline
-        when the caller has one; ``None`` bounds the sourcing by
-        ``SOURCE_TIMEOUT_S`` alone. With it, the sourcing is bounded by the
-        smaller of the two, and the deadline takes precedence as it does in
-        ``CommandSet.run``: ``ScenarioTimeout`` is raised when it has passed
-        before the bash starts, when it stopped the bash, and when it passed
-        while the bash ran, the ``AdapterUnavailable`` it supersedes kept as
-        its ``__cause__``. ``vars`` and ``generation`` are then unchanged."""
+        when the caller has one; ``None`` bounds each stage by its own limit
+        alone. With it, each stage is bounded by the smaller of the two, and
+        the deadline takes precedence as it does in ``CommandSet.run``:
+        ``ScenarioTimeout`` is raised when it has passed before a stage
+        starts, when it stopped one, and when it passed while one ran, the
+        ``AdapterUnavailable`` it supersedes kept as its ``__cause__``.
+        ``vars`` and ``generation`` are unchanged whenever this raises."""
         deadline: float | None = None
         if deadline_left is not None:
             if deadline_left <= 0:
@@ -544,137 +910,140 @@ class UniKixEnvironment:
                 )
             deadline = time.monotonic() + deadline_left
         during = "the sourcing of the runtime scripts"
+        temp = _temp_dir(self.deployment_root)
         start = dict(self._load_vars)
         start["COBCPY"] = self._load_inherited_cobcpy
-        scripts = {
-            "userenv": Path(start.get("KIXSYS", "")) / "bin" / "userenv",
-            "batchenv": Path(start.get("EBMHOME", "")) / "batchenv",
-        }
+        _contain_temp(start, temp)
+        current = start
+        output = ""
         states: dict[str, str] = {}
-        sourced: dict[str, str] = {}
-        for key, script in scripts.items():
-            if not script.is_file():
-                states[key] = "absent"
-            elif not _inside(script, self.deployment_root):
-                states[key] = "outside-deployment-root"
-            else:
-                states[key] = "sourced"
-                sourced[key] = str(script)
 
-        if sourced:
-            # $1 userenv, $2 batchenv, $3 the snapshot mark. A failing "."
-            # ends bash before the snapshot of its phase, which attributes it.
-            body = (
-                'set -a; if [ -n "$1" ]; then . "$1" 1>&2 || exit $?; fi; env -0; '
-                f"printf '%s\\0' \"$3\"; "
-                f'if [ -n "$2" ]; then . "$2" {BPE_SUBSYSTEM} 1>&2 || exit $?; fi; env -0'
-            )
-            argv = [
-                _bash(),
-                "--noprofile",
-                "--norc",
-                "-c",
-                body,
-                "carddemo-runtime",
-                sourced.get("userenv", ""),
-                sourced.get("batchenv", ""),
-                _SNAPSHOT_MARK,
-            ]
-            first_gap = _GAP_USERENV if "userenv" in sourced else _GAP_BATCHENV
-            self.log_dir.mkdir(parents=True, exist_ok=True)
-            # The directory _default_cwd picks for the load-time environment; the
-            # line above has created the deployment root if it had gone.
-            project = start.get("PROJECT_ROOT", "")
-            cwd = project if os.path.isdir(project) else str(self.deployment_root)
+        userenv = Path(start.get("KIXSYS", "")) / "bin" / "userenv"
+        states["userenv"] = self._script_state(userenv)
+        if states["userenv"] == "sourced":
+            current, stderr = self._source_userenv(userenv, start, deadline, during)
+            self._refuse_escape(userenv, current, _GAP_USERENV, deadline, during)
+            output += stderr
+
+        batchenv = Path(current.get("EBMHOME", "")) / "batchenv"
+        states["batchenv"] = self._script_state(batchenv)
+        if states["batchenv"] == "sourced":
             left = None if deadline is None else deadline - time.monotonic()
             if left is not None and left <= 0:
-                raise ScenarioTimeout(
-                    "scenario deadline passed before the runtime scripts were sourced"
-                )
-            limit = float(SOURCE_TIMEOUT_S) if left is None else min(float(SOURCE_TIMEOUT_S), left)
-            deadline_capped = left is not None and left <= SOURCE_TIMEOUT_S
-            try:
-                done = _run_process(
-                    argv,
-                    env=start,
-                    cwd=cwd,
-                    timeout=limit,
-                    spool_dir=str(self.log_dir),
-                )
-            except OSError as exc:
-                _unavailable(
-                    AdapterUnavailable(
-                        f"cannot source the runtime scripts: {exc.strerror or exc}", first_gap
-                    ),
-                    deadline,
-                    during,
-                )
-            snapshots = _snapshots(done.stdout)
-            # One snapshot: the failure came before the mark, so from userenv.
-            failed_key = "userenv" if len(snapshots) < 2 else "batchenv"
-            failed_gap = _GAP_USERENV if failed_key == "userenv" else _GAP_BATCHENV
-            if done.timed_out:
-                if deadline_capped:
-                    raise ScenarioTimeout(
-                        f"sourcing {scripts[failed_key]} was stopped at the scenario deadline "
-                        f"after {limit:.0f}s"
-                    )
-                _unavailable(
-                    AdapterUnavailable(
-                        f"sourcing {scripts[failed_key]} exceeded {SOURCE_TIMEOUT_S}s", failed_gap
-                    ),
-                    deadline,
-                    during,
-                )
-            if done.returncode != 0 or len(snapshots) != 2:
-                _unavailable(
-                    AdapterUnavailable(
-                        f"sourcing {scripts[failed_key]} exited {done.returncode}", failed_gap
-                    ),
-                    deadline,
-                    during,
-                )
-            for key, gap, snapshot in (
-                ("userenv", _GAP_USERENV, snapshots[0]),
-                ("batchenv", _GAP_BATCHENV, snapshots[1]),
-            ):
-                outside = self._outside_paths(snapshot)
-                if outside:
-                    name, value = outside[0]
-                    _unavailable(
-                        AdapterUnavailable(
-                            f"{scripts[key]} moves {name} outside the deployment root: {value}",
-                            gap,
-                        ),
-                        deadline,
-                        during,
-                    )
-            if _expired(deadline):
-                raise ScenarioTimeout(
-                    f"scenario deadline passed during {during}; superseded: its exit status "
-                    f"{done.returncode}"
-                )
-            merged = _settings(snapshots[1])
+                raise ScenarioTimeout(f"scenario deadline passed before {batchenv} was sourced")
+            captured = commands.capture(_BPE_ENV_ENTRY, self, start=current, deadline_left=left)
+            if captured is None:
+                states["batchenv"] = "unavailable"
+            else:
+                current, stderr = captured
+                self._refuse_escape(batchenv, current, _GAP_BATCHENV, deadline, during)
+                output += stderr
+
+        if _expired(deadline):
+            raise ScenarioTimeout(f"scenario deadline passed during {during}")
+        if current is start:
+            self.vars = dict(self._load_vars)
+            self._inherited_cobcpy = self._load_inherited_cobcpy
+        else:
+            merged = dict(current)
             self._inherited_cobcpy = merged.get("COBCPY", "")
             merged["COBCPY"] = _cobcpy(
                 self._inherited_cobcpy, merged["MIGAPP_DIR"], merged.get("UNIKIX", "")
             )
-            self.vars = merged
-            self.sourcing_output += _text(done.stderr)
-        else:
-            self.vars = dict(self._load_vars)
-            self._inherited_cobcpy = self._load_inherited_cobcpy
+            self.vars = _contain_temp(merged, temp)
+            self.sourcing_output += output
 
         self.runtime_scripts = states
         self.generation += 1
         return dict(states)
 
+    def _script_state(self, script: Path) -> str:
+        """``sourced`` when ``script`` is a file inside the deployment root,
+        else ``absent`` or ``outside-deployment-root``."""
+        if not script.is_file():
+            return "absent"
+        if not _inside(script, self.deployment_root):
+            return "outside-deployment-root"
+        return "sourced"
+
+    def _source_userenv(
+        self, script: Path, start: dict[str, str], deadline: float | None, during: str
+    ) -> tuple[dict[str, str], str]:
+        """Source ``script`` with ``set -a`` in a bash started from ``start``,
+        ``TMPDIR``, ``TMP``, ``TEMP`` and ``_JAVA_OPTIONS`` read-only
+        (``_TEMP_HOLD``), and return what it exported (``_settings``) and its
+        output, which goes to stderr. A failing ``.`` ends bash before the
+        environment is printed. Bounded by ``SOURCE_TIMEOUT_S`` capped at ``deadline``; a
+        failure or timeout is ``AdapterUnavailable`` with GAP-MIS-003, unless
+        the deadline stopped it or has passed (``ScenarioTimeout``)."""
+        body = (
+            f'{_TEMP_HOLD}; set -a; . "$1" 1>&2 || exit $?; '
+            f"printf '%s\\0' {shlex.quote(_SNAPSHOT_MARK)}; env -0"
+        )
+        argv = [_bash(), "--noprofile", "--norc", "-c", body, "carddemo-userenv", str(script)]
+        spool = _log_dir(self.deployment_root)
+        # The directory _default_cwd picks for the load-time environment; the
+        # line above has checked the deployment root again.
+        project = start.get("PROJECT_ROOT", "")
+        cwd = project if os.path.isdir(project) else str(self.deployment_root)
+        left = None if deadline is None else deadline - time.monotonic()
+        if left is not None and left <= 0:
+            raise ScenarioTimeout(f"scenario deadline passed before {script} was sourced")
+        limit = float(SOURCE_TIMEOUT_S) if left is None else min(float(SOURCE_TIMEOUT_S), left)
+        deadline_capped = left is not None and left <= SOURCE_TIMEOUT_S
+        try:
+            done = _run_process(argv, env=start, cwd=cwd, timeout=limit, spool_dir=str(spool))
+        except OSError as exc:
+            _unavailable(
+                AdapterUnavailable(f"cannot source {script}: {exc.strerror or exc}", _GAP_USERENV),
+                deadline,
+                during,
+            )
+        if done.timed_out:
+            if deadline_capped:
+                raise ScenarioTimeout(
+                    f"sourcing {script} was stopped at the scenario deadline after {limit:.0f}s"
+                )
+            _unavailable(
+                AdapterUnavailable(f"sourcing {script} exceeded {SOURCE_TIMEOUT_S}s", _GAP_USERENV),
+                deadline,
+                during,
+            )
+        snapshots = _snapshots(done.stdout)
+        if done.returncode != 0 or len(snapshots) != 2:
+            _unavailable(
+                AdapterUnavailable(f"sourcing {script} exited {done.returncode}", _GAP_USERENV),
+                deadline,
+                during,
+            )
+        return _settings(snapshots[1]), _text(done.stderr)
+
+    def _refuse_escape(
+        self,
+        script: Path,
+        snapshot: Mapping[str, str],
+        gap: str,
+        deadline: float | None,
+        during: str,
+    ) -> None:
+        """``AdapterUnavailable`` with ``gap`` when the environment
+        ``script`` left cannot be kept (``_runtime_escape``);
+        ``ScenarioTimeout`` instead once the deadline has passed."""
+        escape = self._runtime_escape(snapshot)
+        if escape:
+            _unavailable(AdapterUnavailable(f"{script} {escape}", gap), deadline, during)
+
     # ---------------------------------------------------------- records
 
     def versions(self, commands: CommandSet) -> dict[str, str]:
         """The output of every ``version_*`` entry, keyed by entry id, for
-        ``environment.yaml`` (GAP-MIS-009). A failure is recorded as text and
-        never raised."""
+        ``environment.yaml`` (GAP-MIS-009). Every value is non-empty text, as
+        the evidence import requires. A failure is recorded as text and never
+        raised: ``not defined in commands.yaml``, ``unavailable: <reason>``,
+        or ``exit status <rc>`` followed by the output. A probe that exits 0
+        and prints nothing, or only whitespace (``ls -1`` of an empty
+        directory), is recorded as ``no output: <id> exited 0 and printed
+        nothing`` (or ``only whitespace``), which names no version."""
         found: dict[str, str] = {}
         for entry_id in VERSION_ENTRIES:
             try:
@@ -688,13 +1057,19 @@ class UniKixEnvironment:
             text = result.stdout + result.stderr
             if result.returncode != 0:
                 text = f"exit status {result.returncode}\n{text}"
+            elif not text.strip():
+                printed = "only whitespace" if text else "nothing"
+                text = f"no output: {entry_id} exited 0 and printed {printed}"
             found[entry_id] = _clip(text)[0]
         return found
 
     def as_record(self) -> dict[str, Any]:
         """The environment as ``environment.yaml`` records it: installation
-        paths, deployment paths, the environment file and its sha256, and
-        the runtime script states. It is never a dump of ``vars``."""
+        paths, deployment paths (the temporary directory included) with the
+        ``JAVA_TOOL_OPTIONS`` and ``_JAVA_OPTIONS`` that carry it to every
+        JVM, the environment file and its sha256, and the runtime script
+        states. It is never a
+        dump of ``vars``."""
         return {
             "env_file": str(self.env_file),
             "env_file_sha256": self.env_file_sha256,
@@ -707,12 +1082,16 @@ class UniKixEnvironment:
 
 
 def _source_env_file(
-    env_file: Path, home: Path, root: Path, source: Mapping[str, str]
+    env_file: Path, home: Path, temp: Path, root: Path, source: Mapping[str, str]
 ) -> tuple[dict[str, str], str]:
     """Source ``env_file`` with ``set -a`` in a bash that has only ``PATH``,
-    the empty ``HOME`` and ``LANG=C``. Returns the exported environment and
-    the file's own output, which goes to stderr so that stdout holds only
-    ``env -0``.
+    the empty ``HOME``, ``LANG=C`` and the owned temporary directory
+    ``temp`` (``_contain_temp``), with ``TMPDIR``, ``TMP``, ``TEMP`` and
+    ``_JAVA_OPTIONS`` read-only (``_TEMP_HOLD``), so the file cannot change
+    or unset them while it runs and its own temporary files land in
+    ``temp``. Returns the exported
+    environment and the file's own output, which goes to stderr so that
+    stdout holds only ``env -0``.
 
     Sourcing fails when the file exits non-zero or ``.`` returns non-zero:
     after a syntax error, which stops bash reading the file, or a failing last
@@ -720,15 +1099,19 @@ def _source_env_file(
     ``source_runtime_scripts`` applies to each script. A command that fails
     earlier in the file does not fail ``.``, as in the operator's own shell,
     so that file is accepted and the command's message stays in the returned
-    output. A failure, a timeout or an empty environment raises
-    ``AdapterUnavailable`` with GAP-MIS-009."""
-    minimal = {"PATH": source.get("PATH") or os.defpath, "HOME": str(home), "LANG": "C"}
+    output. An assignment, ``export`` or ``unset`` of a read-only variable is
+    such a command: bash reports ``readonly variable`` and goes on. A
+    failure, a timeout or an empty environment raises ``AdapterUnavailable``
+    with GAP-MIS-009."""
+    minimal = _contain_temp(
+        {"PATH": source.get("PATH") or os.defpath, "HOME": str(home), "LANG": "C"}, temp
+    )
     argv = [
         _bash(),
         "--noprofile",
         "--norc",
         "-c",
-        'set -a; . "$1" 1>&2 || exit $?; env -0',
+        f'{_TEMP_HOLD}; set -a; . "$1" 1>&2 || exit $?; env -0',
         "carddemo-env",
         str(env_file),
     ]
@@ -1280,6 +1663,17 @@ class _Probe:
     reason: str
 
 
+@dataclass(frozen=True)
+class _EnvironmentView:
+    """The environment ``CommandSet.capture`` probes and runs an entry in:
+    ``vars`` of its own, under the deployment root and the generation of the
+    environment that will hold what it captures."""
+
+    vars: dict[str, str]
+    deployment_root: Path | None
+    generation: int
+
+
 def _entry(entry_id: Any, raw: Any, where: str) -> CommandEntry:
     """Validate one ``commands.yaml`` entry; every problem is reported at once."""
     if not isinstance(entry_id, str) or not _ENTRY_ID_RE.fullmatch(entry_id):
@@ -1434,15 +1828,41 @@ def _default_cwd(env: Any) -> str:
 
 
 def _spool_dir(env: Any) -> Path:
-    """Where command output is spooled and ``commands.log`` is written:
-    ``<deployment root>/logs``, or the default working directory for an
-    environment that names no deployment root."""
+    """Where command output is spooled: ``<deployment root>/logs``, checked
+    again with the root (``_log_dir``), or the default working directory for
+    an environment that names no deployment root."""
     root = getattr(env, "deployment_root", None)
     if root is None:
         return Path(_default_cwd(env))
-    logs = Path(root) / "logs"
-    logs.mkdir(parents=True, exist_ok=True)
-    return logs
+    return _log_dir(root)
+
+
+def _process_env(env: Any) -> dict[str, str]:
+    """The environment a process of ``env`` starts with: ``env.vars`` with
+    every temporary-file setting pointed again at ``<deployment root>/tmp``
+    (``_contain_temp``), which is checked again first (``_temp_dir``), so no
+    change to ``vars`` lets a command write temporary files elsewhere. An
+    environment that names no deployment root passes ``vars`` unchanged."""
+    variables = dict(env.vars)
+    root = getattr(env, "deployment_root", None)
+    if root is not None:
+        _contain_temp(variables, _temp_dir(root))
+    return variables
+
+
+def _shell(script: str, env: Any, *args: str) -> list[str]:
+    """``bash --noprofile --norc -c <script> [args]`` for a process of
+    ``env``. When ``env`` names a deployment root, so that ``_process_env``
+    contains its temporary files, ``_TEMP_HOLD`` runs first, on a line of its
+    own: ``script``, and every script it sources in that bash, then cannot
+    change ``TMPDIR``, ``TMP``, ``TEMP`` or ``_JAVA_OPTIONS``. An assignment,
+    ``export`` or ``unset`` of one fails with bash's ``readonly variable``
+    (a failed plain assignment also skips the rest of its line) and the
+    owned value stays. Only the shell is held: a program it starts gets the
+    owned values and may change them for its own children."""
+    if getattr(env, "deployment_root", None) is not None:
+        script = f"{_TEMP_HOLD}\n{script}"
+    return [_bash(), "--noprofile", "--norc", "-c", script, *args]
 
 
 def _submission_refusal(entry: CommandEntry, env: Any) -> str:
@@ -1658,10 +2078,10 @@ class CommandSet:
         probe the deadline stopped has no verdict to cache, so it raises
         ``ScenarioTimeout``; one that exceeded its own limit has failed."""
         cwd = _default_cwd(env)
-        argv = [_bash(), "--noprofile", "--norc", "-c", entry.probe]
+        argv = _shell(entry.probe, env)
         try:
             done = _run_process(
-                argv, env=env.vars, cwd=cwd, timeout=limit, spool_dir=str(_spool_dir(env))
+                argv, env=_process_env(env), cwd=cwd, timeout=limit, spool_dir=str(_spool_dir(env))
             )
         except OSError as exc:
             reason = f"probe could not start: {exc.strerror or exc}"
@@ -1703,9 +2123,15 @@ class CommandSet:
         plain shell context (``_command_placeholders``).
 
         The command runs as ``bash --noprofile --norc -c <command>`` in the
-        entry's ``cwd`` (``$VAR`` expanded), or else in ``$PROJECT_ROOT``.
-        It is bounded by ``timeout_s``, capped at ``deadline_left``, the
-        seconds left before the scenario deadline when the caller has one.
+        entry's ``cwd`` (``$VAR`` expanded), or else in ``$PROJECT_ROOT``,
+        with ``env.vars`` and, when ``env`` names a deployment root, every
+        temporary-file setting pointed again at its ``tmp/``
+        (``_process_env``) and held read-only in that bash (``_shell``), so
+        neither the command nor a script it sources can move them; the log
+        holds the command as rendered, without that hold. The probe runs the
+        same way. It is bounded by
+        ``timeout_s``, capped at ``deadline_left``, the seconds left before
+        the scenario deadline when the caller has one.
 
         * ``command: null``, a failed probe, a ``cwd`` whose variable is
           unset or whose directory is missing, or, for an entry whose command
@@ -1769,10 +2195,10 @@ class CommandSet:
         limit = float(entry.timeout_s) if left is None else min(float(entry.timeout_s), left)
         deadline_capped = left is not None and left <= entry.timeout_s
 
-        argv = [_bash(), "--noprofile", "--norc", "-c", command]
+        argv = _shell(command, env)
         try:
             done = _run_process(
-                argv, env=env.vars, cwd=cwd, timeout=limit, spool_dir=str(_spool_dir(env))
+                argv, env=_process_env(env), cwd=cwd, timeout=limit, spool_dir=str(_spool_dir(env))
             )
         except OSError as exc:
             reason = f"could not start: {exc.strerror or exc}"
@@ -1815,6 +2241,139 @@ class CommandSet:
                 f"{result.returncode}"
             )
         return result
+
+    # -------------------------------------------------------------- capture
+
+    def capture(
+        self,
+        entry_id: str,
+        env: Any,
+        *,
+        start: Mapping[str, str],
+        deadline_left: float | None = None,
+    ) -> tuple[dict[str, str], str] | None:
+        """Run the entry ``entry_id`` as a script sourced into ``start`` and
+        return ``(environment, stderr)``: what the shell has exported when
+        the command ends, and the command's output. ``None`` when the entry
+        is unavailable: ``command: null``, or a probe that failed.
+
+        ``env`` supplies the deployment root and the generation; ``start``
+        is the environment of the next generation, which the entry is probed
+        in afresh and runs with. The command runs as ``bash --noprofile
+        --norc -c 'set -a; { <command>\\n} 1>&2 || exit $?; env -0'`` in the
+        entry's ``cwd``, or else in ``$PROJECT_ROOT``, with the owned
+        temporary directory held read-only as for ``run``, so the script it
+        sources cannot move ``TMPDIR``, ``TMP``, ``TEMP`` or
+        ``_JAVA_OPTIONS``, bounded by ``timeout_s`` capped
+        at ``deadline_left``. Its output goes to stderr, which is logged and
+        returned; stdout is the exported environment and is never logged.
+        The environment returned has the shell's own variables, ``BASH_ENV``
+        and ``ENV`` removed.
+
+        Outcomes follow ``run`` with ``check`` true: a refusal is logged; the
+        own timeout raises ``AdapterUnavailable("<id> exceeded
+        <timeout_s>s", gap)``, a non-zero exit, or a command that ends the
+        shell before the environment is printed,
+        ``AdapterUnavailable("<id> exited <rc>", gap)``; the scenario
+        deadline takes precedence as it does there. An entry with
+        placeholders raises ``HarnessError``: no caller value is passed."""
+        entry = self._entries[entry_id]
+        if entry.placeholders:
+            names = ", ".join("{" + name + "}" for name in sorted(entry.placeholders))
+            raise HarnessError(f"{entry_id}: an entry captured as a script takes no {names}")
+        deadline: float | None = None
+        if deadline_left is not None:
+            if deadline_left <= 0:
+                raise ScenarioTimeout(f"scenario deadline passed before {entry_id} started")
+            deadline = time.monotonic() + deadline_left
+        view = _EnvironmentView(
+            dict(start), getattr(env, "deployment_root", None), getattr(env, "generation", 0) + 1
+        )
+
+        available, reason = self._probe(entry, view, refresh=True, deadline=deadline)
+        if entry.command is None or not available:
+            reason = reason or "probe failed"
+            self._record(
+                view, "run", entry_id, entry.command, None, None, "refused", 0.0, reason=reason
+            )
+            if _expired(deadline):
+                raise ScenarioTimeout(
+                    f"scenario deadline passed during {entry_id}; superseded: {entry_id} "
+                    f"unavailable: {reason}"
+                )
+            return None
+
+        if entry.cwd is None:
+            cwd = _default_cwd(view)
+        else:
+            try:
+                cwd = _expand_cwd(entry, entry.cwd, {}, view)
+            except AdapterUnavailable as exc:
+                self._record(
+                    view, "run", entry_id, entry.command, None, None, "refused", 0.0,
+                    reason=exc.reason.removeprefix(f"{entry_id} unavailable: "),
+                )
+                _unavailable(exc, deadline, entry_id)
+        left = None if deadline is None else deadline - time.monotonic()
+        if left is not None and left <= 0:
+            raise ScenarioTimeout(f"scenario deadline passed before {entry_id} started")
+        limit = float(entry.timeout_s) if left is None else min(float(entry.timeout_s), left)
+        deadline_capped = left is not None and left <= entry.timeout_s
+
+        # The newline ends a trailing comment; the mark shows env -0 was reached.
+        body = (
+            f"set -a; {{\n{entry.command}\n}} 1>&2 || exit $?; "
+            f"printf '%s\\0' {shlex.quote(_SNAPSHOT_MARK)}; env -0"
+        )
+        argv = _shell(body, view, f"carddemo-{entry_id}")
+        try:
+            done = _run_process(
+                argv,
+                env=_process_env(view),
+                cwd=cwd,
+                timeout=limit,
+                spool_dir=str(_spool_dir(view)),
+            )
+        except OSError as exc:
+            reason = f"could not start: {exc.strerror or exc}"
+            self._record(
+                view, "run", entry_id, entry.command, cwd, None, "not-started", 0.0, reason=reason
+            )
+            _unavailable(AdapterUnavailable(f"{entry_id} {reason}", entry.gap), deadline, entry_id)
+
+        if done.timed_out:
+            # Killing a group that ignores SIGTERM can outlast the deadline too.
+            outcome = "deadline" if deadline_capped or _expired(deadline) else "timeout"
+        else:
+            outcome = "completed"
+        stderr = _text(done.stderr)
+        self._record(
+            view, "run", entry_id, entry.command, cwd, done.returncode, outcome, done.elapsed_s,
+            stderr=stderr,
+        )
+        if done.timed_out:
+            if deadline_capped:
+                raise ScenarioTimeout(
+                    f"{entry_id} was stopped at the scenario deadline after {limit:.0f}s"
+                )
+            _unavailable(
+                AdapterUnavailable(f"{entry_id} exceeded {entry.timeout_s}s", entry.gap),
+                deadline,
+                entry_id,
+            )
+        snapshots = _snapshots(done.stdout)
+        if done.returncode != 0 or len(snapshots) != 2:
+            _unavailable(
+                AdapterUnavailable(f"{entry_id} exited {done.returncode}", entry.gap),
+                deadline,
+                entry_id,
+            )
+        if _expired(deadline):
+            raise ScenarioTimeout(
+                f"scenario deadline passed during {entry_id}; superseded: its exit status "
+                f"{done.returncode}"
+            )
+        return _settings(snapshots[1]), stderr
 
     # ------------------------------------------------------------------ log
 
@@ -1869,7 +2428,10 @@ class CommandSet:
         reason: str = "",
     ) -> None:
         """Append one log entry. Output is cut to ``LOG_LIMIT_BYTES``; the
-        environment is never logged, so no exported value reaches the log."""
+        environment is never logged, so no exported value reaches the log.
+        ``commands.log`` is written only once the root and ``logs/`` pass
+        again (``_log_dir``), never through a link (``_append_log``); either
+        failing raises ``HarnessError`` with the entry kept in memory alone."""
         out, out_cut = _clip(stdout)
         err, err_cut = _clip(stderr)
         record: dict[str, Any] = {
@@ -1894,7 +2456,4 @@ class CommandSet:
             record["seq"] = len(self._log) + 1
             self._log.append(record)
             if root is not None:
-                logs = Path(root) / "logs"
-                logs.mkdir(parents=True, exist_ok=True)
-                with open(logs / "commands.log", "a", encoding="utf-8", newline="\n") as handle:
-                    handle.write(f"---\n{dump_yaml(record)}")
+                _append_log(_log_dir(root) / _COMMANDS_LOG, f"---\n{dump_yaml(record)}")

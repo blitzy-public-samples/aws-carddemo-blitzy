@@ -46,7 +46,7 @@ Evidence is immutable. `EvidenceWriter` claims a scenario directory by creating 
 - **`environment.yaml`** — the facts a record is checked against on import:
   - the installation paths, as the operator's environment file sets them. The zip's `bin/carddemo.env` sets `UNIKIX=/opt/software/TPE`, `INSTEBM=/opt/software/BPE/INSTEBM`, `VCOBOL=/opt/software/COBOL`, `KIXLICDIR=/opt/unikix`, `JAVA_HOME` (derived from `/etc/alternatives/java`) and `TPE_AGENT=/opt/software/NTT_DATA_TPE_Agent`
   - the deployment paths under the test-owned deployment root, the environment file with its sha256, and the availability of every `commands.yaml` entry
-  - the output of the version probes `version_tpe`, `version_bpe`, `version_vcobol`, `version_licence`, `version_java` and `version_s3270`. These versions are unpinned and first become known here (GAP-MIS-009); a failed probe is recorded as its failure text
+  - the output of the version probes `version_tpe`, `version_bpe`, `version_vcobol`, `version_licence`, `version_java` and `version_s3270`. These versions are unpinned and first become known here (GAP-MIS-009); a failed probe is recorded as its failure text, and a probe that exits 0 and prints nothing, or only whitespace, as `no output: <entry id> exited 0 and printed nothing` (or `only whitespace`). Neither names a version, so GAP-MIS-009 stays open on it while the record stays importable
   - the `s3270` path and the listener address
   - `run_date`: `bpe_job_start_date` and `first_step_screen_date`, the run date that relative-clock matchers are judged against, each null when the scenario showed none. No confirmed UniKix command sets the clock (GAP-MIS-015)
 

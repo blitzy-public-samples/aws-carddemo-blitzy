@@ -41,9 +41,10 @@ Writes go only to ``<work root>/_unikix_zip`` (once, through its temporary
 sibling ``_unikix_zip.tmp-<pid>``), its ``.sha256`` marker (through a
 temporary sibling ``._unikix_zip.sha256.<pid>.<hex>.tmp``) and ``.lock``
 file beside it, and ``<work root>/unikix/<execution_id>/``. A work root
-another user owns, or that group or others can write to, is refused, and no
-marker, lock, log, deployment directory, staging file or ``bin/deploy_app``
-copy is written through a symbolic link. Nothing under ``app/``,
+whose path holds whitespace or a quote, another user owns, or that group or
+others can write to, is refused, and no marker, lock, log, deployment
+directory, staging file or ``bin/deploy_app`` copy is written through a
+symbolic link. Nothing under ``app/``,
 ``samples/`` or ``diagrams/`` is written, the zip is only read, and
 ``samples/m2/mf/CardDemo_runtime.zip`` is never opened.
 """
@@ -71,7 +72,12 @@ if _TESTS_ROOT not in sys.path:
     sys.path.insert(0, _TESTS_ROOT)
 
 from adapters.base import DEFAULT_DEADLINE_S, AdapterUnavailable, ScenarioTimeout  # noqa: E402
-from adapters.unikix.env import CommandResult, CommandSet, UniKixEnvironment  # noqa: E402
+from adapters.unikix.env import (  # noqa: E402
+    _JVM_UNSAFE_PATH_RE,
+    CommandResult,
+    CommandSet,
+    UniKixEnvironment,
+)
 from harness import REPO_ROOT, HarnessError, sha256_file, sha256_hex  # noqa: E402
 
 __all__ = [
@@ -270,8 +276,9 @@ def extract_zip(
 ) -> Path:
     """Extract the UniKix zip into ``<work root>/_unikix_zip/`` and return it.
 
-    The work root is created ``0700`` when missing; one that another user
-    owns, or that group or others can write to, raises ``HarnessError``. An
+    The work root is created ``0700`` when missing; one whose path holds
+    whitespace or a quote, that another user owns, or that group or others
+    can write to, raises ``HarnessError``. An
     extraction whose marker ``<work root>/_unikix_zip.sha256`` names the
     zip's sha256, and whose tree matches the zip (the same entries and
     nothing else, no symbolic link, each file's bytes, files ``0444`` and
@@ -688,10 +695,19 @@ def _refuse_protected(path: Path, what: str, repo_root: Path) -> None:
 
 
 def _check_work_root(work: Path) -> None:
-    """``HarnessError`` unless ``work`` is a directory of the effective user
-    that neither group nor others can write to: in any other, someone else
-    can have planted the links and files this module would write through or
-    trust. A symbolic link naming it must be the user's own as well."""
+    """``HarnessError`` unless the path ``work`` holds no whitespace and no
+    quote, and ``work`` is a directory of the effective user that neither
+    group nor others can write to. The path is checked first: the JVM option
+    variables name the deployment's temporary directory below it
+    (``env._contain_temp``), and a JVM splits them at whitespace and reads
+    quotes. In any other directory, someone else can have planted the links
+    and files this module would write through or trust. A symbolic link
+    naming it must be the user's own as well."""
+    if _JVM_UNSAFE_PATH_RE.search(str(work)):
+        raise HarnessError(
+            f"work root {work} holds whitespace or a quote, which a JVM option variable "
+            "cannot carry; choose another work root"
+        )
     try:
         link = os.lstat(work)
         status = os.stat(work)
@@ -755,9 +771,9 @@ def deploy(
     ``commands`` its ``CommandSet``. ``zip_dir``, when given, must be what
     ``extract_zip`` returned for the same work root; either way the
     extraction is obtained through ``extract_zip``, which makes it or checks
-    it against the zip. The work root must pass ``extract_zip``'s ownership
-    check. ``<work root>/unikix``, the root, its ``home/``, ``logs/`` and
-    ``logs/build/`` must be real directories of the effective user (made
+    it against the zip. The work root must pass ``extract_zip``'s work-root
+    check. ``<work root>/unikix``, the root, its ``home/``, ``tmp/``, ``logs/``
+    and ``logs/build/`` must be real directories of the effective user (made
     ``0755`` when missing, group and other write bits removed) before the
     root is checked for an earlier deployment or anything is written below
     it. No log, staging file, project directory or ``bin/deploy_app`` copy
@@ -771,12 +787,17 @@ def deploy(
        ``0755``, files ``0644``) and its ``vct.lst`` BPE node path (missing
        → GAP-MIS-003);
     2. the ``bin/create_project`` tree (directories ``0755``),
-       ``region_create`` and ``region_create_script``;
+       ``region_create`` and ``region_create_script``, then
+       ``env.source_runtime_scripts(commands)``: ``region_install`` sources
+       ``userenv`` itself, so one that moves a deployment path or temporary
+       files out, or that resolves (symlinks followed) outside the root, is
+       refused (GAP-MIS-003) before it runs; an absent one is left to
+       ``region_install``;
     3. the ``bin/deploy_app`` copies from the staging copy, then
        ``region_install``;
     4. ``bpe_node_create`` and ``bpe_catalog_import``, then
-       ``env.source_runtime_scripts()`` so later commands see ``userenv``
-       and ``batchenv``;
+       ``env.source_runtime_scripts(commands)`` again so later commands see
+       ``userenv`` and ``batchenv``, the latter sourced by ``bpe_env``;
     5. ``build_kixclt`` and ``build_vcc_online`` for every ``.cl2``,
        ``build_vcc_batch`` for every ``.cbl`` and ``build_kixbms`` for every
        ``.bms``, each output moved as ``bin/compile`` and ``bin/compbms`` move
@@ -925,11 +946,15 @@ def _deploy(
     source = extraction / APP_DIR_NAME
     if not source.is_dir():
         raise HarnessError(f"{extraction} holds no {APP_DIR_NAME}/")
-    # Hardened first, each directory after its parent: env.py creates the
-    # root with the umask's mode, so until then someone else could plant the
-    # names checked below, or a link the writes below would follow.
+    # Hardened first, each directory after its parent: env.py made the root,
+    # home/, tmp/ and logs/ this user's own when it loaded, but logs/build/ is
+    # new here and any of them can have been swapped since, so until then
+    # someone else could plant the names checked below, or a link the writes
+    # below would follow.
     log_dir = root / "logs" / "build"
-    for directory in (work / "unikix", root, root / "home", root / "logs", log_dir):
+    for directory in (
+        work / "unikix", root, root / "home", root / "tmp", root / "logs", log_dir
+    ):
         _own_directory(directory)
     occupied = [
         name
@@ -952,16 +977,29 @@ def _deploy(
     _create_project_tree(root)
     progress.run(commands, "region_create", env)
     progress.run(commands, "region_create_script", env)
+    # region_install sources userenv itself, so a userenv that moves a
+    # deployment path or temporary files out is refused before it runs, and
+    # so is one that resolves outside the root, which env.py neither sources
+    # nor checks. An absent one is left to region_install: its own "." then
+    # fails, and an operator's override of it may source none.
+    progress.step, progress.gap = "sourcing userenv", _GAP_REGION
+    states = env.source_runtime_scripts(commands, deadline_left=progress.time_left())
+    if states["userenv"] == "outside-deployment-root":
+        raise AdapterUnavailable(
+            f"{env.path('KIXSYS') / 'bin' / 'userenv'} resolves outside the deployment root "
+            f"{root}; region_install would source it unchecked",
+            _GAP_REGION,
+        )
     progress.begin("the bin/deploy_app copies", _GAP_REGION)
     _copy_application(staging, env)
     progress.run(commands, "region_install", env)
 
     progress.run(commands, "bpe_node_create", env)
     _import_bpe_catalog(staging, env, commands, progress)
-    # userenv and batchenv are sourced in one bash, so a stop there is
+    # userenv, then batchenv through the bpe_env entry: a stop there is
     # attributed to region creation, of which userenv, sourced first, is part.
     progress.step, progress.gap = "sourcing userenv and batchenv", _GAP_REGION
-    env.source_runtime_scripts(deadline_left=progress.time_left())
+    env.source_runtime_scripts(commands, deadline_left=progress.time_left())
 
     built_members = _build_programs(staging, env, commands, log_dir, progress)
     maps = _build_maps(staging, env, commands, log_dir, progress)
@@ -1000,8 +1038,9 @@ def _check_environment(env: UniKixEnvironment, root: Path, staging: Path) -> Non
 def _own_directory(path: Path) -> None:
     """Create ``path`` with mode ``0755`` when it is missing. It must be a
     real directory of the effective user, or ``HarnessError``. Group and
-    other write bits are removed: ``env.py`` creates the root and its
-    ``home/`` with the mode the umask allows. The caller passes each
+    other write bits are removed. ``env.py`` has made the root, its
+    ``home/``, ``tmp/`` and ``logs/`` the same way before it sourced the
+    environment file; they are checked again here. The caller passes each
     directory after its parent, the work root having passed
     ``_check_work_root``, and before it looks into ``path`` or writes below
     it, so once ``path`` passes nobody else can swap it or add an entry to

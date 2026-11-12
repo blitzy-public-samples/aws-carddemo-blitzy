@@ -15,16 +15,20 @@ Environment
         The work root: the per-scenario working directories, the build cache,
         the extracted UniKix zip and the UniKix deployment root. It must lie
         outside the repository, and it is created when missing. Under
-        ``unikix`` it must also be the user's own and writable by neither
-        group nor others (``chmod go-w``), as the UniKix deployment requires;
-        a missing one is created with mode 0700. Unset, the session silently
-        uses a fresh ``tempfile.mkdtemp(prefix="carddemo-")`` root. Set to a
-        value that cannot be a work root (blank, inside the repository, not a
-        directory, not creatable, not writable, or, under ``unikix``, not the
-        user's own or writable by group or others), it gives a warning naming
-        the refused value and why, then uses the same fresh temporary root
-        instead. Only when that temporary root would lie inside the
-        repository, or cannot be made, is it a usage error. A configured root
+        ``unikix`` its resolved path must also hold no whitespace and no
+        quote, which the JVM option variables naming the deployment's
+        temporary directory cannot carry, and it must be the user's own and
+        writable by neither group nor others (``chmod go-w``), as the UniKix
+        deployment requires; a missing one is created with mode 0700. Unset,
+        the session silently uses a fresh
+        ``tempfile.mkdtemp(prefix="carddemo-")`` root. Set to a value that
+        cannot be a work root (blank, inside the repository, not a directory,
+        not creatable, not writable, or, under ``unikix``, a path holding
+        whitespace or a quote, not the user's own or writable by group or
+        others), it gives a warning naming the refused value and why, then
+        uses the same fresh temporary root instead. Only when that temporary
+        root would lie inside the repository, or cannot be made, is it a
+        usage error. A configured root
         serves one session at a time: each scenario runs in a fresh
         ``<work root>/<scenario_id>/``, so two sessions sharing a root would
         delete each other's working directories. The session therefore holds
@@ -110,10 +114,11 @@ WORKDIR_ENV = "CARDDEMO_TEST_WORKDIR"
 WORK_ROOT_PREFIX = "carddemo-"
 
 DEFAULT_ADAPTER = "gnucobol-batch"
-# Adapters whose deployment refuses a work root that is not the user's own or
-# that group or others can write to (adapters/unikix/deploy.py), so the
-# session holds the configured root to the same rule and replaces one it
-# refuses, as it replaces any other unusable root.
+# Adapters whose deployment refuses a work root whose path holds whitespace or
+# a quote, that is not the user's own or that group or others can write to
+# (adapters/unikix/deploy.py), so the session holds the configured root to the
+# same rule and replaces one it refuses, as it replaces any other unusable
+# root.
 OWNER_ONLY_ADAPTERS = frozenset({"unikix"})
 
 # Adapter name -> (module, class). The module is imported only when a scenario
@@ -197,8 +202,9 @@ def _work_root(adapter: str = DEFAULT_ADAPTER) -> tuple[Path, bool, str | None]:
     blank, neither the repository nor inside it (checked before anything is
     created, so a refused root leaves nothing behind), created when missing,
     a directory, and writable; for an adapter of ``OWNER_ONLY_ADAPTERS`` also
-    the user's own and writable by neither group nor others, created with
-    mode 0700 when missing. A refused or unset value is replaced by a fresh
+    a path holding no whitespace and no quote, and the user's own and
+    writable by neither group nor others, created with mode 0700 when
+    missing. A refused or unset value is replaced by a fresh
     ``tempfile.mkdtemp(prefix="carddemo-")`` root, which this session owns.
     That root must lie outside the repository too: when the temporary
     directory lies inside it, or no temporary root can be made, there is no

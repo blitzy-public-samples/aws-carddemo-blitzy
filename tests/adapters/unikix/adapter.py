@@ -2312,8 +2312,10 @@ class UniKixAdapter(Adapter):
         """Append ``problems`` to ``_SESSION_CLOSE_LOG`` in the deployment
         root's log folder, one line each: the UTC time, the execution id and
         the problem with its whitespace runs, line breaks included, made one
-        space (the full command records are in ``commands.log``). Best
-        effort: returns where they were appended, or why they could not be."""
+        space (the full command records are in ``commands.log``), written
+        only inside the deployment root (``UniKixEnvironment.append_log``).
+        Best effort: returns where they were appended, or why they could not
+        be."""
         where: Any = _SESSION_CLOSE_LOG
         try:
             where = Path(self._env.log_dir) / _SESSION_CLOSE_LOG
@@ -2321,9 +2323,7 @@ class UniKixAdapter(Adapter):
             lines = "".join(
                 f"{stamp} {self.execution_id} {' '.join(problem.split())}\n" for problem in problems
             )
-            where.parent.mkdir(parents=True, exist_ok=True)
-            with open(where, "a", encoding="utf-8", newline="\n") as handle:
-                handle.write(lines)
+            self._env.append_log(_SESSION_CLOSE_LOG, lines)
         except Exception as exc:  # the stop failures are raised whatever the write did
             return f"the diagnostics could not be appended to {where}: {exc}"
         return f"diagnostics appended to {where}"

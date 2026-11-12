@@ -83,6 +83,25 @@ which the observation rule still blocks under GAP-MIS-011. Neither reaches
 naming GAP-MIS-016 for each CFG-CBADMCDJ-normal-01 run and nothing for
 CFG-OPENFIL-normal-01.
 
+UniKix temporary files and batchenv: on a fake installation whose
+environment file sets its own ``TMPDIR`` and JVM tmpdir, ``UniKixEnvironment``
+must point ``TMPDIR``, ``TMP``, ``TEMP``, ``_JAVA_OPTIONS`` and
+``JAVA_TOOL_OPTIONS`` (read as a JVM reads it, quotes included) at an owned
+``<deployment root>/tmp`` and record them, refuse a link at the root, its
+``home/`` or ``tmp/`` before sourcing anything, hold the first four
+read-only while the file, userenv, batchenv and every command and probe run
+(so their temporary files land there, and only a last line that changes one
+blocks, under GAP-MIS-009, -003 or -006), make every command's temporary
+files there whatever ``vars`` says, and block a userenv or batchenv whose JVM
+options move them out or hold an unmatched quote under GAP-MIS-003 or
+GAP-MIS-006.
+``source_runtime_scripts`` must source batchenv by running the ``bpe_env``
+entry as an operator overrode it, never logging its stdout; leave batchenv
+``unavailable``, ``MBMSUB`` unset, when that entry has no command or its
+probe fails; block under GAP-MIS-006 when it exceeds its own ``timeout_s``,
+exits non-zero or ends the shell first; and raise ``ScenarioTimeout`` when the
+scenario deadline stops it.
+
 JOBS capture: ``UniKixAdapter``'s ``@TDQ:JOBS`` capture, on fakes, must
 attribute only ``TRNRPT00`` jobs absent from the listing taken just before
 the first step (again after a day-change restart) whose listed time, to its
@@ -406,12 +425,16 @@ so nothing it makes lies outside that root. The same values given as
 root outside the repository can be made, conftest stops with a usage error
 that names the refused value too. A usable root is used as configured,
 created when missing, kept, and gets no warning. ``usable_work_root`` with
-``owner_only`` must accept and refuse the same modes and owners as the
-UniKix deployment's ``_check_work_root``, with the same reason, and create a
-missing root 0700 under umask 002; under ``unikix`` conftest must replace a
-group-writable root with a private temporary one and a warning saying
-``chmod go-w``, while gnucobol-batch uses it. Session lock: conftest holds
-``<root>/_session.lock`` on a configured root, the only file it leaves
+``owner_only`` must accept and refuse the same paths, modes and owners as
+the UniKix deployment's ``_check_work_root``, with the same reason, refusing
+a path that holds whitespace or a quote before anything else, with the same
+pattern as the UniKix environment, and create a missing root 0700 under
+umask 002; under ``unikix`` conftest must replace a root whose path holds
+whitespace or a quote, or a group-writable one, with a private temporary one
+and a warning naming the rule (``chmod go-w`` for the mode), while
+gnucobol-batch uses it. Under a session work root whose path holds
+whitespace or a quote, each case expects what that path gets. Session lock:
+conftest holds ``<root>/_session.lock`` on a configured root, the only file it leaves
 there, until ``pytest_unconfigure``; the lock records the holder's pid, UTC
 time and clipped command line, refuses a planted link, directory or FIFO,
 and is released empty and reusable. A root held by another process or
@@ -507,11 +530,12 @@ _TESTS_ROOT = str(Path(__file__).resolve().parent)
 if _TESTS_ROOT not in sys.path:
     sys.path.insert(0, _TESTS_ROOT)
 
+import harness  # noqa: E402
 from adapters import base  # noqa: E402
 from adapters.gnucobol_batch import build, datasets, jobs  # noqa: E402
 from adapters.gnucobol_batch.adapter import GnuCOBOLBatchAdapter  # noqa: E402
 from adapters.unikix import adapter as unikix_adapter  # noqa: E402
-from adapters.unikix import bpe, evidence, tpe  # noqa: E402
+from adapters.unikix import bpe, deploy, evidence, tpe  # noqa: E402
 from adapters.unikix import env as unikix_env  # noqa: E402
 from adapters.unikix.adapter import UniKixAdapter  # noqa: E402
 from harness import (  # noqa: E402
@@ -2221,6 +2245,714 @@ def test_unikix_write_evidence_writes_the_command_log_without_elapsed_times(
     assert written["capture_summary"]["sysout"] == {"adapter/commands.log": "adapter/commands.log"}
     # The session's own log keeps them.
     assert all(unikix_env.LOG_ELAPSED_KEY in entry for entry in commands.log)
+
+
+# The UniKix environment on a fake installation: an environment file naming
+# empty installation directories, which also sets TMPDIR and a JVM tmpdir of
+# its own, and fake userenv and batchenv scripts in the deployment root. Every
+# bash runs for real, inside a work root of the case's own.
+UNIKIX_TEMP_ROOT_PREFIX = "unit-unikix-temp-"
+UNIKIX_TEMP_EXECUTION = "unikix-temp-case"
+UNIKIX_TEMP_VARS = ("TMPDIR", "TMP", "TEMP")
+UNIKIX_JVM_OWNED = "-XX:+PerfDisableSharedMem"
+UNIKIX_BPE_ENV_OVERRIDE = '. "$EBMHOME/batchenv" sys1 && export CARDDEMO_BPE_OVERRIDE=1'
+# A folder of the case outside the deployment root and the work root; OUTSIDE
+# in a case's shell text stands for its path.
+UNIKIX_OUTSIDE = "outside"
+# The UniKix environment refuses a deployment whose tmp/ path holds
+# whitespace or a quote, which the JVM option variables naming it cannot
+# carry (env.py _contain_temp). Every folder of a session work root whose
+# path holds one holds it too, so there a case needing a fake deployment is
+# skipped for that reason alone; under any other work root it runs.
+UNIKIX_UNSAFE_TEMP_REFUSAL = (
+    "the temporary directory {path!r} holds whitespace or a quote, which a JVM option variable "
+    "cannot carry; choose another work root"
+)
+UNIKIX_UNSAFE_ROOT_SKIP = (
+    "the session work root's path holds whitespace or a quote, which a JVM option variable cannot "
+    "carry, so no UniKix deployment, whose tmp/ the JVM options name, can lie inside it; run "
+    "under a work root holding neither to cover this case"
+)
+
+
+def _holds_jvm_unsafe_text(path: str | os.PathLike[str]) -> bool:
+    """Whether ``path`` holds whitespace or a quote, which a JVM option
+    variable splits at or reads."""
+    return any(char.isspace() or char in "'\"" for char in os.fspath(path))
+
+
+def _skip_where_no_deployment_fits(temp: str | os.PathLike[str]) -> None:
+    """Skip the case (UNIKIX_UNSAFE_ROOT_SKIP) when ``temp``, the tmp/ of
+    its fake deployment, holds whitespace or a quote."""
+    if _holds_jvm_unsafe_text(os.path.abspath(temp)):
+        pytest.skip(UNIKIX_UNSAFE_ROOT_SKIP)
+
+
+@pytest.fixture
+def unikix_temp_root(carddemo_work_root: Path) -> Iterator[Path]:
+    """A fresh, empty folder of this case's own inside the session work root
+    (carddemo_work_root), never under pytest's basetemp, removed afterwards."""
+    directory = Path(tempfile.mkdtemp(prefix=UNIKIX_TEMP_ROOT_PREFIX, dir=carddemo_work_root))
+    try:
+        yield directory
+    finally:
+        shutil.rmtree(directory)
+
+
+def _fake_unikix_environment(
+    case_root: Path, extra: tuple[str, ...] = ()
+) -> unikix_env.UniKixEnvironment:
+    """``UniKixEnvironment.load`` of a fake environment file under
+    ``case_root``, its deployment root ``<case_root>/work/unikix/<id>``;
+    ``extra`` lines end the file. A load refused because that root's tmp/
+    holds whitespace or a quote skips the case
+    (``_skip_where_no_deployment_fits``); any other refusal, such as a
+    planted link found first, reaches the case."""
+    lines = []
+    for name in unikix_env.REQUIRED_INSTALLATION_VARS:
+        directory = case_root / "installation" / name.lower()
+        directory.mkdir(parents=True)
+        lines.append(f"{name}={directory}")
+    lines += [
+        "BASE_DIR=$HOME/unikixdemo",
+        "TMPDIR=/var/tmp",
+        "JAVA_TOOL_OPTIONS='-Djava.io.tmpdir=/tmp -Xmx64m'",
+        *extra,
+    ]
+    env_file = case_root / "carddemo.env"
+    env_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    work = case_root / "work"
+    root = work / "unikix" / UNIKIX_TEMP_EXECUTION
+    try:
+        return unikix_env.UniKixEnvironment.load(
+            work,
+            root,
+            environ={unikix_env.ENV_VARIABLE: str(env_file), "PATH": os.environ.get("PATH", os.defpath)},
+        )
+    except HarnessError as exc:
+        temp = os.path.abspath(root / "tmp")
+        if str(exc) == UNIKIX_UNSAFE_TEMP_REFUSAL.format(path=temp):
+            _skip_where_no_deployment_fits(temp)
+        raise
+
+
+def _fake_runtime_scripts(
+    environment: unikix_env.UniKixEnvironment, *, userenv: str = "", batchenv: str = ""
+) -> dict[str, Path]:
+    """Write ``$KIXSYS/bin/userenv`` and ``$EBMHOME/batchenv``, each ending
+    with the given line; batchenv exports an ``MBMSUB`` inside the root, its
+    arguments and what it saw of userenv."""
+    scripts = {
+        "userenv": (environment.path("KIXSYS") / "bin" / "userenv", ["USERENV_SEEN=1", userenv]),
+        "batchenv": (
+            environment.path("EBMHOME") / "batchenv",
+            [
+                'MBMSUB="$EBMHOME/submit"',
+                'BATCHENV_ARGS="$*"',
+                'BATCHENV_SAW_USERENV="$USERENV_SEEN"',
+                "echo batchenv sourced",
+                batchenv,
+            ],
+        ),
+    }
+    for path, lines in scripts.values():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return {key: path for key, (path, _lines) in scripts.items()}
+
+
+def _one_command(case_root: Path, command: str, probe: str) -> unikix_env.CommandSet:
+    """A ``CommandSet`` of the single entry ``temp_case``."""
+    entry = unikix_env.CommandEntry(
+        id="temp_case",
+        action="make a temporary file",
+        command=command,
+        probe=probe,
+        timeout_s=10,
+        gap="GAP-MIS-003",
+        status="unconfirmed",
+        source="unit case",
+        notes="unit case",
+    )
+    return unikix_env.CommandSet({entry.id: entry}, case_root / "commands.yaml")
+
+
+def _outside(case_root: Path) -> Path:
+    """The case's empty ``UNIKIX_OUTSIDE`` folder."""
+    outside = case_root / UNIKIX_OUTSIDE
+    outside.mkdir()
+    return outside
+
+
+def _bpe_env_commands(case_root: Path, **changes: object) -> unikix_env.CommandSet:
+    """The committed commands.yaml, its ``bpe_env`` entry changed as an
+    operator would override it, loaded from a copy under ``case_root``."""
+    document = yaml.safe_load(unikix_env.COMMANDS_FILE.read_text(encoding="utf-8"))
+    document["entries"]["bpe_env"].update(changes)
+    path = case_root / "commands.yaml"
+    path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    return unikix_env.CommandSet.load(path)
+
+
+def test_unikix_load_points_every_temporary_file_setting_at_the_deployment_tmp(
+    unikix_temp_root: Path,
+) -> None:
+    environment = _fake_unikix_environment(unikix_temp_root)
+    temp = environment.deployment_root / "tmp"
+    assert temp.is_dir() and stat.S_IMODE(temp.stat().st_mode) & 0o077 == 0
+    assert {name: environment.vars[name] for name in UNIKIX_TEMP_VARS} == dict.fromkeys(
+        UNIKIX_TEMP_VARS, str(temp)
+    )
+    # The file's own options are kept, its tmpdir replaced by the owned one,
+    # last; _JAVA_OPTIONS, read after the command line, holds the owned alone.
+    owned = f"-Djava.io.tmpdir={temp} {UNIKIX_JVM_OWNED}"
+    assert environment.vars["JAVA_TOOL_OPTIONS"] == f"-Xmx64m {owned}"
+    assert environment.vars["_JAVA_OPTIONS"] == owned
+    assert "JDK_JAVA_OPTIONS" not in environment.vars
+    deployment = environment.as_record()["deployment"]
+    assert [deployment[name] for name in UNIKIX_TEMP_VARS] == [str(temp)] * 3
+    assert deployment["JAVA_TOOL_OPTIONS"] == f"-Xmx64m {owned}"
+    assert deployment["_JAVA_OPTIONS"] == owned
+
+
+# JVM options whose values hold whitespace inside quotes, as a JVM reads them.
+UNIKIX_QUOTED_JVM_OPTIONS = '-Xmx64m -Djava.io.tmpdir="/a directory/tmp" -Dkeep="x y"'
+UNIKIX_UNMATCHED_JVM_OPTIONS = "-Xmx64m -Dx='open"
+
+
+@pytest.mark.parametrize("name", ["JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS"])
+def test_unikix_load_reads_jvm_options_as_a_jvm_does(unikix_temp_root: Path, name: str) -> None:
+    environment = _fake_unikix_environment(unikix_temp_root, (f"{name}='{UNIKIX_QUOTED_JVM_OPTIONS}'",))
+    temp = environment.deployment_root / "tmp"
+    owned = f"-Djava.io.tmpdir={temp} {UNIKIX_JVM_OWNED}"
+    # The quoted tmpdir goes whole; every other option stays as written.
+    assert environment.vars[name] == f'-Xmx64m -Dkeep="x y" {owned}'
+    # Without a backslash, a JVM splits and unquotes options as a POSIX shell does.
+    assert shlex.split(environment.vars[name]) == ["-Xmx64m", "-Dkeep=x y", *owned.split()]
+    assert environment.vars["_JAVA_OPTIONS"] == owned
+    again = unikix_env._contain_temp(dict(environment.vars), temp)
+    assert again == environment.vars
+
+
+@pytest.mark.parametrize("name", ["JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS"])
+def test_unikix_load_refuses_jvm_options_with_an_unmatched_quote(unikix_temp_root: Path, name: str) -> None:
+    with pytest.raises(base.AdapterUnavailable) as caught:
+        _fake_unikix_environment(unikix_temp_root, (f'{name}="{UNIKIX_UNMATCHED_JVM_OPTIONS}"',))
+    env_file = os.path.abspath(unikix_temp_root / "carddemo.env")
+    assert (caught.value.reason, caught.value.gap_id) == (
+        f"{name} set by {env_file} has an unmatched quote",
+        "GAP-MIS-009",
+    )
+
+
+# A link planted, before load, where a directory of the deployment goes: the
+# temporary directory, HOME and the log folder point out of the work root;
+# the root and its parent at a folder beside them inside it, which passes the
+# work-root check.
+UNIKIX_PLANTED_LINKS = [
+    pytest.param(f"unikix/{UNIKIX_TEMP_EXECUTION}/tmp", False, id="tmp"),
+    pytest.param(f"unikix/{UNIKIX_TEMP_EXECUTION}/home", False, id="home"),
+    pytest.param(f"unikix/{UNIKIX_TEMP_EXECUTION}/logs", False, id="logs"),
+    pytest.param(f"unikix/{UNIKIX_TEMP_EXECUTION}", True, id="root"),
+    pytest.param("unikix", True, id="root-parent"),
+]
+
+
+@pytest.mark.parametrize(("link", "inside_work"), UNIKIX_PLANTED_LINKS)
+def test_unikix_load_refuses_a_planted_link_before_sourcing_the_file(
+    unikix_temp_root: Path, link: str, inside_work: bool
+) -> None:
+    work = unikix_temp_root / "work"
+    target = work / "elsewhere" if inside_work else _outside(unikix_temp_root)
+    target.mkdir(parents=True, exist_ok=True)
+    planted = work / link
+    planted.parent.mkdir(parents=True, exist_ok=True)
+    planted.symlink_to(target, target_is_directory=True)
+    with pytest.raises(HarnessError) as caught:
+        _fake_unikix_environment(
+            unikix_temp_root, ("MADE=$(mktemp)", 'printf "%s\\n" "$MADE" > "$HOME/made-path"')
+        )
+    assert str(caught.value) == (
+        f"deployment directory {planted} is a symbolic link; remove it or choose another work root"
+    )
+    # The file never ran, so nothing was written through the link.
+    assert list(target.iterdir()) == []
+
+
+# Lines that try to move a temporary-file setting while the environment file is
+# sourced. The held case follows one with what the file then sees, a temporary
+# file it makes and an ordinary last assignment.
+UNIKIX_TEMP_CHANGES = {
+    "assign-tmpdir": ("TMPDIR=/var/tmp", "TMPDIR: readonly variable"),
+    "export-tmp": ("export TMP=/tmp", "TMP: readonly variable"),
+    "unset-temp": ("unset TEMP", "unset: TEMP: cannot unset: readonly variable"),
+    "assign-java-options": ("_JAVA_OPTIONS=-Djava.io.tmpdir=/tmp", "_JAVA_OPTIONS: readonly variable"),
+}
+UNIKIX_HELD_TAIL = ('SEEN="$TMPDIR:$TMP:$TEMP:$_JAVA_OPTIONS"', "MADE=$(mktemp)", "SOURCED=1")
+
+
+@pytest.mark.parametrize(
+    ("change", "message"), list(UNIKIX_TEMP_CHANGES.values()), ids=list(UNIKIX_TEMP_CHANGES)
+)
+def test_unikix_environment_file_cannot_move_temporary_files_while_it_is_sourced(
+    unikix_temp_root: Path, change: str, message: str
+) -> None:
+    environment = _fake_unikix_environment(unikix_temp_root, (change, *UNIKIX_HELD_TAIL))
+    temp = environment.deployment_root / "tmp"
+    owned = f"-Djava.io.tmpdir={temp} {UNIKIX_JVM_OWNED}"
+    assert environment.vars["SEEN"] == ":".join([str(temp)] * 3 + [owned])
+    made = Path(environment.vars["MADE"])
+    assert made.parent == temp and made.is_file()
+    assert environment.vars["SOURCED"] == "1"
+    # The change's own line, the last that holds it (the helper sets TMPDIR too).
+    lines = environment.env_file.read_text(encoding="utf-8").splitlines()
+    line = len(lines) - lines[::-1].index(change)
+    assert f"{environment.env_file}: line {line}: {message}" in environment.sourcing_output
+
+
+@pytest.mark.parametrize(
+    "change", [change for change, _message in UNIKIX_TEMP_CHANGES.values()], ids=list(UNIKIX_TEMP_CHANGES)
+)
+def test_unikix_environment_file_ending_in_a_temporary_file_change_is_unavailable(
+    unikix_temp_root: Path, change: str
+) -> None:
+    with pytest.raises(base.AdapterUnavailable) as caught:
+        _fake_unikix_environment(unikix_temp_root, (change,))
+    env_file = os.path.abspath(unikix_temp_root / "carddemo.env")
+    assert (caught.value.reason, caught.value.gap_id) == (f"sourcing {env_file} exited 1", "GAP-MIS-009")
+
+
+def test_unikix_commands_and_probes_write_temporary_files_in_the_deployment_tmp(
+    unikix_temp_root: Path,
+) -> None:
+    environment = _fake_unikix_environment(unikix_temp_root)
+    temp = environment.deployment_root / "tmp"
+    # vars changed after load: every process starts contained all the same.
+    environment.vars.update(
+        TMPDIR="/tmp", TEMP="/tmp", JAVA_TOOL_OPTIONS="-Djava.io.tmpdir=/tmp", _JAVA_OPTIONS="-Xint"
+    )
+    commands = _one_command(
+        unikix_temp_root,
+        'printf "%s\\n" "$TMPDIR" "$TMP" "$TEMP" "$JAVA_TOOL_OPTIONS" "$_JAVA_OPTIONS"; mktemp',
+        'printf %s "$TMPDIR"',
+    )
+    *settings, made = commands.run("temp_case", environment).stdout.splitlines()
+    owned = f"-Djava.io.tmpdir={temp} {UNIKIX_JVM_OWNED}"
+    assert settings == [str(temp)] * 3 + [owned, owned]
+    assert Path(made).parent == temp and Path(made).is_file()
+    assert [record["stdout"] for record in commands.log if record["kind"] == "probe"] == [str(temp)]
+
+
+# Commands, and a script one sources, that move TMPDIR before making a
+# temporary file; each runs as both the probe and the command.
+UNIKIX_COMMAND_MOVES = {
+    "export": "export TMPDIR=OUTSIDE; mktemp",
+    "assignment-line": "TMPDIR=OUTSIDE\nmktemp",
+    "prefix-assignment": "TMPDIR=OUTSIDE mktemp",
+    "sourced-script": '. "$BASE_DIR/moves-tmpdir"; mktemp',
+}
+
+
+@pytest.mark.parametrize("command", list(UNIKIX_COMMAND_MOVES.values()), ids=list(UNIKIX_COMMAND_MOVES))
+def test_unikix_commands_and_probes_cannot_move_their_temporary_files(
+    unikix_temp_root: Path, command: str
+) -> None:
+    environment = _fake_unikix_environment(unikix_temp_root)
+    temp = environment.deployment_root / "tmp"
+    outside = _outside(unikix_temp_root)
+    (environment.deployment_root / "moves-tmpdir").write_text(f"export TMPDIR={outside}\n", encoding="utf-8")
+    command = command.replace("OUTSIDE", str(outside))
+    commands = _one_command(unikix_temp_root, command, command)
+    result = commands.run("temp_case", environment)
+    probe, run = commands.log
+    made = [Path(probe["stdout"].strip()), Path(result.stdout.strip())]
+    assert sorted(temp.iterdir()) == sorted(made) and list(outside.iterdir()) == []
+    assert all("TMPDIR: readonly variable" in text for text in (probe["stderr"], result.stderr))
+    # The log holds what was rendered, never the hold that ran before it.
+    assert (probe["command"], run["command"]) == (command, command)
+
+
+# Runtime-script lines that move a held setting and then make a temporary
+# file, the line bash refuses first, and its message for it.
+UNIKIX_SCRIPT_MOVES = {
+    "export-tmpdir": (
+        ("export TMPDIR=OUTSIDE", "MADE=$(mktemp)"), "export TMPDIR=OUTSIDE", "TMPDIR: readonly variable"
+    ),
+    "restore-tmpdir": (
+        ('SAVED_TMPDIR="$TMPDIR"', "export TMPDIR=OUTSIDE", "MADE=$(mktemp)", 'TMPDIR="$SAVED_TMPDIR"'),
+        "export TMPDIR=OUTSIDE",
+        "TMPDIR: readonly variable",
+    ),
+    "unset-temp": (
+        ("unset TMP TEMP", "MADE=$(mktemp)"), "unset TMP TEMP", "unset: TMP: cannot unset: readonly variable"
+    ),
+    "assign-java-options": (
+        ("_JAVA_OPTIONS=-Djava.io.tmpdir=OUTSIDE", "MADE=$(mktemp)"),
+        "_JAVA_OPTIONS=-Djava.io.tmpdir=OUTSIDE",
+        "_JAVA_OPTIONS: readonly variable",
+    ),
+}
+
+
+def _script_moves(case: str, outside: Path, tail: tuple[str, ...] = ()) -> tuple[str, str, str]:
+    """The ``UNIKIX_SCRIPT_MOVES`` ``case`` as script text ending in
+    ``tail``, its refused line and bash's message, ``OUTSIDE`` replaced."""
+    lines, refused, message = UNIKIX_SCRIPT_MOVES[case]
+    text = "\n".join(line.replace("OUTSIDE", str(outside)) for line in (*lines, *tail))
+    return text, refused.replace("OUTSIDE", str(outside)), message
+
+
+@pytest.mark.parametrize("script", ["userenv", "batchenv"])
+@pytest.mark.parametrize("case", list(UNIKIX_SCRIPT_MOVES))
+def test_unikix_runtime_scripts_cannot_move_held_temporary_settings(
+    unikix_temp_root: Path, script: str, case: str
+) -> None:
+    environment = _fake_unikix_environment(unikix_temp_root)
+    temp = environment.deployment_root / "tmp"
+    owned = f"-Djava.io.tmpdir={temp} {UNIKIX_JVM_OWNED}"
+    outside = _outside(unikix_temp_root)
+    text, refused, message = _script_moves(
+        case, outside, ('SEEN="$TMPDIR:$TMP:$TEMP:$_JAVA_OPTIONS"', "SOURCED=1")
+    )
+    paths = _fake_runtime_scripts(environment, **{script: text})
+    assert environment.source_runtime_scripts(unikix_env.CommandSet.load()) == {
+        "userenv": "sourced",
+        "batchenv": "sourced",
+    }
+    made = Path(environment.vars["MADE"])
+    assert sorted(temp.iterdir()) == [made] and list(outside.iterdir()) == []
+    # What the script itself saw after its change, before anything re-asserted it.
+    assert environment.vars["SEEN"] == ":".join([str(temp)] * 3 + [owned])
+    assert environment.vars["SOURCED"] == "1"
+    lines = paths[script].read_text(encoding="utf-8").splitlines()
+    assert f"{paths[script]}: line {lines.index(refused) + 1}: {message}" in environment.sourcing_output
+
+
+@pytest.mark.parametrize(
+    ("script", "reason", "gap"),
+    [
+        pytest.param("userenv", "sourcing {path} exited 1", "GAP-MIS-003", id="userenv"),
+        pytest.param("batchenv", "bpe_env exited 1", "GAP-MIS-006", id="batchenv"),
+    ],
+)
+def test_unikix_runtime_script_ending_in_a_held_setting_change_is_unavailable(
+    unikix_temp_root: Path, script: str, reason: str, gap: str
+) -> None:
+    environment = _fake_unikix_environment(unikix_temp_root)
+    loaded = dict(environment.vars)
+    temp = environment.deployment_root / "tmp"
+    outside = _outside(unikix_temp_root)
+    # The restore, its last line, is refused too, which fails its ".".
+    text, _refused, _message = _script_moves("restore-tmpdir", outside)
+    paths = _fake_runtime_scripts(environment, **{script: text})
+    with pytest.raises(base.AdapterUnavailable) as caught:
+        environment.source_runtime_scripts(unikix_env.CommandSet.load())
+    assert (caught.value.reason, caught.value.gap_id) == (reason.format(path=paths[script]), gap)
+    assert environment.vars == loaded and environment.generation == 0
+    # Its temporary file was made in tmp/ all the same.
+    assert len(list(temp.iterdir())) == 1 and list(outside.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("script", "line", "gap", "refusal"),
+    [
+        pytest.param(
+            "userenv", 'JAVA_TOOL_OPTIONS="$JAVA_TOOL_OPTIONS -Djava.io.tmpdir=/tmp"', "GAP-MIS-003",
+            "moves the JVM's temporary files outside the deployment root: "
+            "JAVA_TOOL_OPTIONS sets -Djava.io.tmpdir=/tmp last",
+            id="userenv-jvm-tmpdir",
+        ),
+        pytest.param(
+            "batchenv", 'JAVA_TOOL_OPTIONS="$JAVA_TOOL_OPTIONS -Djava.io.tmpdir=/tmp"', "GAP-MIS-006",
+            "moves the JVM's temporary files outside the deployment root: "
+            "JAVA_TOOL_OPTIONS sets -Djava.io.tmpdir=/tmp last",
+            id="batchenv-jvm-tmpdir",
+        ),
+        pytest.param(
+            "userenv", "JAVA_TOOL_OPTIONS=\"$JAVA_TOOL_OPTIONS -Djava.io.tmpdir='/outside dir'\"",
+            "GAP-MIS-003",
+            "moves the JVM's temporary files outside the deployment root: "
+            "JAVA_TOOL_OPTIONS sets -Djava.io.tmpdir=/outside dir last",
+            id="userenv-jvm-tmpdir-quoted",
+        ),
+        pytest.param(
+            "batchenv", "JDK_JAVA_OPTIONS=-Djava.io.tmpdir=/var/tmp", "GAP-MIS-006",
+            "moves the JVM's temporary files outside the deployment root: "
+            "JDK_JAVA_OPTIONS sets -Djava.io.tmpdir=/var/tmp last",
+            id="batchenv-jdk-java-options",
+        ),
+        pytest.param(
+            "userenv", 'JAVA_TOOL_OPTIONS="$JAVA_TOOL_OPTIONS -XX:-PerfDisableSharedMem"',
+            "GAP-MIS-003",
+            "moves the JVM's temporary files outside the deployment root: JAVA_TOOL_OPTIONS sets "
+            "-XX:-PerfDisableSharedMem last, so HotSpot writes /tmp/hsperfdata_<user>",
+            id="userenv-hsperfdata",
+        ),
+        pytest.param(
+            "batchenv", f'JAVA_TOOL_OPTIONS="$JAVA_TOOL_OPTIONS {UNIKIX_UNMATCHED_JVM_OPTIONS}"',
+            "GAP-MIS-006",
+            "leaves JAVA_TOOL_OPTIONS with an unmatched quote",
+            id="batchenv-unmatched-quote",
+        ),
+    ],
+)
+def test_unikix_refuses_a_runtime_script_that_moves_temporary_files_out(
+    unikix_temp_root: Path, script: str, line: str, gap: str, refusal: str
+) -> None:
+    environment = _fake_unikix_environment(unikix_temp_root)
+    loaded = dict(environment.vars)
+    paths = _fake_runtime_scripts(environment, **{script: line})
+    with pytest.raises(base.AdapterUnavailable) as caught:
+        environment.source_runtime_scripts(unikix_env.CommandSet.load())
+    assert (caught.value.reason, caught.value.gap_id) == (f"{paths[script]} {refusal}", gap)
+    assert environment.vars == loaded and environment.generation == 0
+
+
+# A runtime script cannot leave these, which its shell holds read-only; the
+# check of what it left refuses them still.
+@pytest.mark.parametrize(
+    ("changes", "refusal"),
+    [
+        pytest.param({"TMPDIR": "/tmp"}, "moves TMPDIR outside the deployment root: /tmp", id="tmpdir"),
+        pytest.param({"TEMP": None}, "moves TEMP outside the deployment root: (unset)", id="temp-unset"),
+        pytest.param(
+            {"_JAVA_OPTIONS": f"-Djava.io.tmpdir=/var/tmp {UNIKIX_JVM_OWNED}"},
+            "moves the JVM's temporary files outside the deployment root: "
+            "_JAVA_OPTIONS sets -Djava.io.tmpdir=/var/tmp last",
+            id="java-options",
+        ),
+        pytest.param(
+            {"_JAVA_OPTIONS": None},
+            "moves the JVM's temporary files outside the deployment root: "
+            "_JAVA_OPTIONS sets no -Djava.io.tmpdir, so java.io.tmpdir is /tmp",
+            id="java-options-unset",
+        ),
+    ],
+)
+def test_unikix_runtime_snapshot_check_refuses_held_settings_moved_out(
+    unikix_temp_root: Path, changes: dict[str, str | None], refusal: str
+) -> None:
+    environment = _fake_unikix_environment(unikix_temp_root)
+    assert environment._runtime_escape(environment.vars) == ""
+    snapshot = dict(environment.vars)
+    for name, value in changes.items():
+        if value is None:
+            del snapshot[name]
+        else:
+            snapshot[name] = value
+    assert environment._runtime_escape(snapshot) == refusal
+
+
+@pytest.mark.parametrize("change", ["tmp-link", "logs-link", "JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS"])
+def test_unikix_process_start_refuses_what_changed_since_load(unikix_temp_root: Path, change: str) -> None:
+    environment = _fake_unikix_environment(unikix_temp_root)
+    temp = environment.deployment_root / "tmp"
+    outside = _outside(unikix_temp_root)
+    if change.endswith("-link"):
+        # The temporary directory or the log folder, swapped for a link out.
+        linked = environment.deployment_root / change.removesuffix("-link")
+        linked.rmdir()
+        linked.symlink_to(outside, target_is_directory=True)
+        message = f"deployment directory {linked} is a symbolic link; remove it or choose another work root"
+    else:
+        environment.vars[change] = UNIKIX_UNMATCHED_JVM_OPTIONS
+        message = f"UniKix variable {change} has an unmatched quote"
+    commands = _one_command(unikix_temp_root, "mktemp", "mktemp")
+    with pytest.raises(HarnessError) as caught:
+        commands.run("temp_case", environment)
+    assert str(caught.value) == message
+    # Nothing started: no temporary file anywhere, nothing logged.
+    assert commands.log == [] and list(temp.iterdir()) == [] and list(outside.iterdir()) == []
+
+
+def test_unikix_command_log_is_never_appended_through_a_link(unikix_temp_root: Path) -> None:
+    environment = _fake_unikix_environment(unikix_temp_root)
+    target = _outside(unikix_temp_root) / "commands.log"
+    target.write_text("", encoding="utf-8")
+    log = environment.log_dir / "commands.log"
+    log.symlink_to(target)
+    commands = _one_command(unikix_temp_root, "true", "true")
+    with pytest.raises(HarnessError) as caught:
+        commands.run("temp_case", environment)
+    assert str(caught.value) == (
+        f"the log file {log} is a symbolic link; remove it or choose another work root"
+    )
+    # The probe ran; its entry is kept in memory alone and nothing reached the target.
+    assert [(record["kind"], record["id"]) for record in commands.log] == [("probe", "temp_case")]
+    assert target.read_text(encoding="utf-8") == "" and log.is_symlink()
+
+
+
+def test_unikix_sources_batchenv_by_running_the_bpe_env_entry(unikix_temp_root: Path) -> None:
+    environment = _fake_unikix_environment(unikix_temp_root)
+    root = environment.deployment_root
+    _fake_runtime_scripts(environment)
+    commands = _bpe_env_commands(unikix_temp_root, command=UNIKIX_BPE_ENV_OVERRIDE)
+    assert environment.source_runtime_scripts(commands) == {
+        "userenv": "sourced",
+        "batchenv": "sourced",
+    }
+    # The override ran, sourcing batchenv with its argument after userenv.
+    assert environment.vars["CARDDEMO_BPE_OVERRIDE"] == "1"
+    assert environment.vars["BATCHENV_ARGS"] == "sys1"
+    assert environment.vars["BATCHENV_SAW_USERENV"] == environment.vars["USERENV_SEEN"] == "1"
+    assert environment.mbmsub == str(root / "bpenode" / "submit")
+    assert environment.vars["TMPDIR"] == str(root / "tmp") and environment.generation == 1
+    assert "batchenv sourced" in environment.sourcing_output
+    records = [record for record in commands.log if record["id"] == "bpe_env"]
+    assert [(record["kind"], record["outcome"], record["rc"], record["command"]) for record in records] == [
+        ("probe", "completed", 0, 'test -r "$EBMHOME/batchenv"'),
+        ("run", "completed", 0, UNIKIX_BPE_ENV_OVERRIDE),
+    ]
+    # The run's stdout is the exported environment: never logged.
+    assert records[1]["stdout"] == "" and "batchenv sourced" in records[1]["stderr"]
+    logged = (environment.log_dir / "commands.log").read_text(encoding="utf-8")
+    assert "BATCHENV_ARGS" not in logged and str(root / "bpenode" / "submit") not in logged
+
+
+@pytest.mark.parametrize(
+    ("changes", "reason"),
+    [
+        pytest.param({"command": None}, "no command is known (command: null)", id="command-null"),
+        pytest.param({"probe": "false"}, "probe `false` exited 1", id="probe-failed"),
+    ],
+)
+def test_unikix_leaves_batchenv_unavailable_when_bpe_env_is(
+    unikix_temp_root: Path, changes: dict[str, object], reason: str
+) -> None:
+    environment = _fake_unikix_environment(unikix_temp_root)
+    _fake_runtime_scripts(environment)
+    commands = _bpe_env_commands(unikix_temp_root, **changes)
+    assert environment.source_runtime_scripts(commands) == {
+        "userenv": "sourced",
+        "batchenv": "unavailable",
+    }
+    assert environment.vars["USERENV_SEEN"] == "1" and "BATCHENV_ARGS" not in environment.vars
+    assert "MBMSUB" not in environment.vars and environment.mbmsub is None
+    refused = [record for record in commands.log if record["id"] == "bpe_env" and record["kind"] == "run"]
+    assert [(record["outcome"], record["reason"]) for record in refused] == [("refused", reason)]
+
+
+@pytest.mark.parametrize(
+    ("changes", "reason"),
+    [
+        pytest.param({"command": "sleep 30", "timeout_s": 1}, "bpe_env exceeded 1s", id="own-timeout"),
+        pytest.param(
+            {"command": '. "$EBMHOME/batchenv" sys1 && exit 3'}, "bpe_env exited 3", id="non-zero-exit"
+        ),
+        pytest.param({"command": "exit 0"}, "bpe_env exited 0", id="shell-ended-first"),
+    ],
+)
+def test_unikix_blocks_the_deployment_when_bpe_env_fails(
+    unikix_temp_root: Path, changes: dict[str, object], reason: str
+) -> None:
+    environment = _fake_unikix_environment(unikix_temp_root)
+    loaded = dict(environment.vars)
+    _fake_runtime_scripts(environment)
+    commands = _bpe_env_commands(unikix_temp_root, **changes)
+    with pytest.raises(base.AdapterUnavailable) as caught:
+        environment.source_runtime_scripts(commands)
+    assert (caught.value.reason, caught.value.gap_id) == (reason, "GAP-MIS-006")
+    assert environment.vars == loaded and environment.generation == 0
+
+
+def test_unikix_bpe_env_stopped_at_the_scenario_deadline_is_a_timeout(unikix_temp_root: Path) -> None:
+    environment = _fake_unikix_environment(unikix_temp_root)
+    _fake_runtime_scripts(environment)
+    commands = _bpe_env_commands(unikix_temp_root, command="sleep 30")
+    with pytest.raises(base.ScenarioTimeout, match="bpe_env was stopped at the scenario deadline"):
+        environment.source_runtime_scripts(commands, deadline_left=1.0)
+    assert environment.generation == 0
+    assert [record["outcome"] for record in commands.log if record["kind"] == "run"] == ["deadline"]
+
+
+# deploy.deploy on the fake installation, the committed zip extracted into the
+# case's work root: the region entries stand in for kixregion, whose
+# createScript writes a userenv that moves the JVM's tmpdir out, and for
+# kixinstall2, which would leave a marker. Every probe is true.
+UNIKIX_REGION_STAND_INS = {
+    "region_create": 'mkdir -p "$KIXSYS/bin"',
+    "region_create_script": (
+        "printf '%s\\n' JAVA_TOOL_OPTIONS=-Djava.io.tmpdir=/var/tmp > \"$KIXSYS/bin/userenv\""
+    ),
+    "region_install": 'touch "$KIXSYS/installed"',
+}
+# A createScript whose userenv is a symbolic link to an innocuous file in the
+# work root, outside the deployment root ($BASE_DIR).
+UNIKIX_USERENV_OUTSIDE = "userenv-outside"
+UNIKIX_USERENV_LINKED_OUT = (
+    f'outside="$BASE_DIR/../../{UNIKIX_USERENV_OUTSIDE}"; '
+    "printf '%s\\n' USERENV_SEEN=1 > \"$outside\" && ln -s \"$outside\" \"$KIXSYS/bin/userenv\""
+)
+
+
+@pytest.fixture
+def unikix_deploy_root(unikix_temp_root: Path) -> Iterator[Path]:
+    """unikix_temp_root, whose read-only zip extraction is made writable
+    afterwards, so that its removal succeeds for a user other than root."""
+    yield unikix_temp_root
+    for directory, _subdirectories, _files in os.walk(unikix_temp_root / "work" / deploy.ZIP_DIR_NAME):
+        os.chmod(directory, 0o700)
+
+
+@pytest.mark.parametrize(
+    ("create_script", "reason", "generation"),
+    [
+        pytest.param(
+            UNIKIX_REGION_STAND_INS["region_create_script"],
+            "{userenv} moves the JVM's temporary files outside the deployment root: "
+            "JAVA_TOOL_OPTIONS sets -Djava.io.tmpdir=/var/tmp last",
+            0,
+            id="moves-jvm-tmpdir-out",
+        ),
+        # Neither sourced nor checked by env.py, which completes a generation.
+        pytest.param(
+            UNIKIX_USERENV_LINKED_OUT,
+            "{userenv} resolves outside the deployment root {root}; "
+            "region_install would source it unchecked",
+            1,
+            id="resolves-outside-root",
+        ),
+    ],
+)
+def test_unikix_deploy_refuses_userenv_before_region_install_sources_it(
+    unikix_deploy_root: Path, create_script: str, reason: str, generation: int
+) -> None:
+    environment = _fake_unikix_environment(unikix_deploy_root)
+    # The work root must pass extract_zip's ownership check whatever the umask.
+    environment.work_root.chmod(0o700)
+    document = yaml.safe_load(unikix_env.COMMANDS_FILE.read_text(encoding="utf-8"))
+    stand_ins = {**UNIKIX_REGION_STAND_INS, "region_create_script": create_script}
+    for entry_id, command in stand_ins.items():
+        document["entries"][entry_id].update(command=command, probe="true")
+    path = unikix_deploy_root / "commands.yaml"
+    path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    commands = unikix_env.CommandSet.load(path)
+    with pytest.raises(base.AdapterUnavailable) as caught:
+        deploy.deploy(environment, commands, repo_root=Path(_TESTS_ROOT).parent)
+    kixsys = environment.path("KIXSYS")
+    userenv = kixsys / "bin" / "userenv"
+    assert (caught.value.reason, caught.value.gap_id) == (
+        reason.format(userenv=userenv, root=environment.deployment_root),
+        "GAP-MIS-003",
+    )
+    if create_script == UNIKIX_USERENV_LINKED_OUT:
+        outside = environment.work_root / UNIKIX_USERENV_OUTSIDE
+        assert userenv.is_symlink() and userenv.resolve() == outside.resolve()
+        assert outside.read_text(encoding="utf-8") == "USERENV_SEEN=1\n"
+    assert (environment.work_root / deploy.ZIP_DIR_NAME / deploy.APP_DIR_NAME).is_dir()
+    assert not (kixsys / "installed").exists()
+    # Nothing ran after region_create_script, region_install least of all.
+    ran = [
+        ("probe", "region_create"), ("run", "region_create"),
+        ("probe", "region_create_script"), ("run", "region_create_script"),
+    ]
+    assert [(record["kind"], record["id"]) for record in commands.log] == ran
+    logged = (environment.log_dir / "commands.log").read_text(encoding="utf-8")
+    assert [(record["kind"], record["id"]) for record in yaml.safe_load_all(logged)] == ran
+    # Nothing userenv sets was merged.
+    assert environment.generation == generation and "USERENV_SEEN" not in environment.vars
+    assert environment.vars["TMPDIR"] == str(environment.temp_dir)
 
 
 # UniKixAdapter's @TDQ:JOBS capture on fakes: jobs_capture answers with
@@ -6860,6 +7592,74 @@ def test_settling_leaves_an_already_closed_entry_as_it_is(closure_root: Path, pr
     assert all(closure.entry is entries[closure.gap_id] for closure in closures)
 
 
+# UniKixEnvironment.versions() run for real on a commands.yaml of the case's
+# own: version_bpe runs the case's command once $INSTEBM, a directory of the
+# case's own holding the case's files, exists, and every other version_*
+# entry prints "<id> 12.0.0". Each case: version_bpe's command, the files
+# INSTEBM holds, what environment.yaml then records for version_bpe, and
+# whether the installation's versions are recorded (GAP-MIS-009). The empty
+# listing is the committed version_bpe on an installation whose INSTEBM is
+# empty, a probe that exits 0 and prints nothing.
+VERSION_PROBE_LISTING = 'ls -1 "$INSTEBM"'
+VERSION_PROBE_CASES = [
+    pytest.param(VERSION_PROBE_LISTING, [], "no output: version_bpe exited 0 and printed nothing", False,
+                 id="empty-listing"),
+    pytest.param("printf ' \\n\\t\\n'", [], "no output: version_bpe exited 0 and printed only whitespace", False,
+                 id="blank-output"),
+    pytest.param(VERSION_PROBE_LISTING, ["ebm-12.0.0"], "ebm-12.0.0\n", True, id="listing"),
+    pytest.param("echo 'no such release' >&2; exit 3", [], "exit status 3\nno such release\n", False,
+                 id="failure"),
+]
+
+
+@pytest.mark.parametrize(("command", "listed", "recorded", "named"), VERSION_PROBE_CASES)
+def test_version_probes_are_recorded_as_text_the_import_accepts(
+    work_root_case: Path, command: str, listed: list[str], recorded: str, named: bool
+) -> None:
+    instebm = work_root_case / "BPE" / "INSTEBM"
+    instebm.mkdir(parents=True)
+    for name in listed:
+        (instebm / name).write_text("", encoding="utf-8")
+    deployment_root = work_root_case / "unikix" / CLOSURE_EXECUTION
+    # Every probe starts in the deployment, which refuses a tmp/ such as this.
+    _skip_where_no_deployment_fits(deployment_root / "tmp")
+    deployment_root.mkdir(parents=True)
+    env_file = work_root_case / "carddemo.env"
+    env_file.write_text(f"INSTEBM={instebm}\n", encoding="utf-8")
+    commands_file = work_root_case / "commands.yaml"
+    commands_file.write_text(dump_yaml({"schema_version": 1, "entries": {
+        entry_id: {
+            "action": f"record {entry_id}",
+            "command": command if entry_id == "version_bpe" else f"echo '{entry_id} 12.0.0'",
+            "probe": 'test -d "$INSTEBM"' if entry_id == "version_bpe" else "true",
+            "timeout_s": 30, "gap": CLOSURE_INSTALLATION, "status": "unconfirmed",
+            "source": "the version probe cases", "notes": "the version probe cases",
+        }
+        for entry_id in unikix_env.VERSION_ENTRIES
+    }}), encoding="utf-8")
+    environment = unikix_env.UniKixEnvironment(
+        env_file=env_file, env_file_sha256=sha256_file(env_file), work_root=work_root_case,
+        deployment_root=deployment_root,
+        variables={"PATH": os.environ.get("PATH", os.defpath), "INSTEBM": str(instebm)},
+        inherited_cobcpy="", sourcing_output="",
+    )
+    versions = environment.versions(unikix_env.CommandSet.load(commands_file))
+    assert versions == {
+        **{entry_id: f"{entry_id} 12.0.0\n" for entry_id in unikix_env.VERSION_ENTRIES},
+        "version_bpe": recorded,
+    }
+    # The record an import reads: the run date and the installation and
+    # deployment facts, valid, beside the versions just recorded.
+    document = {
+        "run_date": {key: None for key in report._RUN_DATE_KEYS},
+        "installation": {name: str(work_root_case / name.lower()) for name in report._INSTALLATION_FACTS},
+        "deployment": {name: str(deployment_root / name.lower()) for name in report._DEPLOYMENT_FACTS},
+        "versions": versions,
+    }
+    assert report._environment_problems(document) == []
+    assert report._versions_recorded(document) is named
+
+
 @pytest.mark.parametrize(("case", "problem"), CLOSURE_UNCONFIRMED)
 def test_settling_leaves_the_installation_open_while_a_command_citing_it_is_unconfirmed(
     closure_root: Path, monkeypatch: pytest.MonkeyPatch, case: str, problem: str | None
@@ -8473,19 +9273,34 @@ def test_conftest_uses_a_usable_work_root(
 # Work-root modes held to the UniKix deployment's rule: accepted only without
 # the group and other write bits, whatever the setgid and sticky bits.
 OWNER_ONLY_MODES = [0o700, 0o750, 0o755, 0o775, 0o757, 0o777, 0o2775, 0o1777]
+# Work-root names held to the same rule: refused when the path holds
+# whitespace or a quote, which the JVM option variables naming the
+# deployment's tmp/ cannot carry, before its owner and mode are looked at.
+OWNER_ONLY_NAMES = [
+    pytest.param("root", id="plain"),
+    pytest.param("ro ot", id="space"),
+    pytest.param("ro'ot", id="single-quote"),
+    pytest.param('ro"ot', id="double-quote"),
+]
+OWNER_ONLY_UNSAFE_PATH = (
+    "holds whitespace or a quote, which a JVM option variable cannot carry; choose another work root"
+)
 
 
+@pytest.mark.parametrize("name", OWNER_ONLY_NAMES)
 @pytest.mark.parametrize("foreign", [pytest.param(False, id="own"), pytest.param(True, id="foreign-owner")])
 @pytest.mark.parametrize("mode", OWNER_ONLY_MODES, ids=lambda mode: f"{mode:04o}")
 def test_owner_only_work_root_matches_the_unikix_deployment(
-    monkeypatch: pytest.MonkeyPatch, work_root_case: Path, mode: int, foreign: bool
+    monkeypatch: pytest.MonkeyPatch, work_root_case: Path, mode: int, foreign: bool, name: str
 ) -> None:
     """``usable_work_root(owner_only=True)`` accepts and refuses exactly the
     work roots the UniKix deployment's ``_check_work_root`` does, for the
     same reason, while the default admission, which gnucobol-batch uses,
     accepts them all and changes nothing. Another owner is simulated through
-    ``os.geteuid``, so the case holds whoever runs the suite."""
-    root = work_root_case / "root"
+    ``os.geteuid``, so the case holds whoever runs the suite. The expected
+    outcome follows the root's whole path, so a session work root holding
+    whitespace or a quote makes every case the path refusal."""
+    root = work_root_case / name
     root.mkdir()
     os.chmod(root, mode)
     actual = stat.S_IMODE(os.stat(root).st_mode)
@@ -8500,7 +9315,9 @@ def test_owner_only_work_root_matches_the_unikix_deployment(
             refusals.append(str(exc))
         else:
             refusals.append(None)
-    if foreign:
+    if _holds_jvm_unsafe_text(root):
+        reason = OWNER_ONLY_UNSAFE_PATH
+    elif foreign:
         reason = f"is owned by uid {owner}, not {owner + 1}; choose another work root"
     elif actual & (stat.S_IWGRP | stat.S_IWOTH):
         reason = (
@@ -8517,6 +9334,14 @@ def test_owner_only_work_root_matches_the_unikix_deployment(
     assert stat.S_IMODE(os.stat(root).st_mode) == actual and not any(root.iterdir()), "the admission changed the root"
 
 
+def test_owner_only_path_rule_is_the_unikix_environment_s() -> None:
+    """The harness keeps its own copy of the pattern the UniKix environment
+    refuses a temporary directory by (``env._JVM_UNSAFE_PATH_RE``), because
+    it does not import the adapters; the copy must not drift from it."""
+    ours, theirs = harness._JVM_UNSAFE_PATH_RE, unikix_env._JVM_UNSAFE_PATH_RE
+    assert (ours.pattern, ours.flags) == (theirs.pattern, theirs.flags)
+
+
 @pytest.mark.parametrize(
     ("owner_only", "mode"), [pytest.param(True, 0o700, id="owner-only"), pytest.param(False, 0o775, id="default")]
 )
@@ -8524,8 +9349,16 @@ def test_work_root_made_under_umask_002(work_root_case: Path, owner_only: bool, 
     """A missing work root made under umask 002, as an operator's shell may
     have it: the owner-only admission creates it private, so the UniKix
     deployment accepts it, while the default admission leaves the umask's
-    mode; missing parents get the umask's mode either way."""
+    mode; missing parents get the umask's mode either way. Under a session
+    work root whose path holds whitespace or a quote, the owner-only
+    admission refuses the root before creating anything."""
     root = work_root_case / "made" / "root"
+    if owner_only and _holds_jvm_unsafe_text(root):
+        with pytest.raises(HarnessError) as refused:
+            usable_work_root(root, owner_only=owner_only)
+        assert str(refused.value) == f"{root} {OWNER_ONLY_UNSAFE_PATH}"
+        assert not root.parent.exists(), "a refused owner-only work root was created"
+        return
     previous = os.umask(0o002)
     try:
         assert usable_work_root(root, owner_only=owner_only) == root
@@ -8539,11 +9372,13 @@ def test_work_root_made_under_umask_002(work_root_case: Path, owner_only: bool, 
 
 
 @pytest.mark.parametrize(
-    ("adapter", "mode", "used"),
+    ("adapter", "name", "mode"),
     [
-        pytest.param("unikix", 0o775, False, id="unikix-group-writable"),
-        pytest.param("unikix", 0o700, True, id="unikix-private"),
-        pytest.param("gnucobol-batch", 0o775, True, id="gnucobol-batch-group-writable"),
+        pytest.param("unikix", "work-root", 0o775, id="unikix-group-writable"),
+        pytest.param("unikix", "work-root", 0o700, id="unikix-private"),
+        pytest.param("unikix", "work root", 0o700, id="unikix-whitespace"),
+        pytest.param("unikix", "work'root", 0o700, id="unikix-quote"),
+        pytest.param("gnucobol-batch", "work root", 0o775, id="gnucobol-batch-group-writable-whitespace"),
     ],
 )
 def test_conftest_holds_a_unikix_work_root_to_the_deployment_rule(
@@ -8551,18 +9386,33 @@ def test_conftest_holds_a_unikix_work_root_to_the_deployment_rule(
     work_root_case: Path,
     case_temporary_directory: Path,
     adapter: str,
+    name: str,
     mode: int,
-    used: bool,
 ) -> None:
-    """Under ``unikix`` a configured work root that group or others can write
-    to, which the deployment would refuse in every scenario, is replaced by a
-    fresh private temporary root with a warning saying to run ``chmod go-w``;
-    gnucobol-batch, which has no such rule, uses it as configured."""
+    """Under ``unikix`` a configured work root whose path holds whitespace or
+    a quote, or that group or others can write to, which the deployment
+    would refuse in every scenario, is replaced by a fresh private temporary
+    root with a warning naming the rule; gnucobol-batch, which has no such
+    rule, uses it as configured. The expected outcome follows the root's
+    whole path, so under a session work root holding whitespace or a quote
+    every unikix case is the path refusal."""
     import conftest
 
-    root = work_root_case / "work root"
+    root = work_root_case / name
     root.mkdir()
     os.chmod(root, mode)
+    if adapter != "unikix":
+        reason = None
+    elif _holds_jvm_unsafe_text(root):
+        reason = f"{root} {OWNER_ONLY_UNSAFE_PATH}"
+    elif mode & (stat.S_IWGRP | stat.S_IWOTH):
+        reason = (
+            f"{root} is writable by group or others (mode {mode:04o}), so they could plant links in it; "
+            "run chmod go-w on it or choose another work root"
+        )
+    else:
+        reason = None
+    used = reason is None
     _set_work_root_variable(monkeypatch, str(root))
     config, given = _configure_session(monkeypatch, adapter)
     session_root = config.stash[conftest.WORK_ROOT_KEY]
@@ -8575,13 +9425,10 @@ def test_conftest_holds_a_unikix_work_root_to_the_deployment_rule(
             _assert_fresh_temporary_root(session_root, work_root_case)
             assert os.stat(session_root).st_mode & 0o777 == 0o700, "the replacement root is not private"
             assert [type(warning) for warning in given] == [pytest.PytestConfigWarning], given
-            text = str(given[0])
-            assert text.startswith(
-                f"{WORKDIR_VARIABLE}={str(root)!r} is not a usable work root: "
-                f"{root} is writable by group or others (mode {mode:04o})"
-            ), text
-            assert "run chmod go-w on it" in text, text
-            assert f"the fresh temporary work root {session_root} instead" in text, text
+            assert str(given[0]) == (
+                f"{WORKDIR_VARIABLE}={str(root)!r} is not a usable work root: {reason}; "
+                f"this session uses the fresh temporary work root {session_root} instead"
+            ), given
     finally:
         conftest.pytest_unconfigure(config)
     assert stat.S_IMODE(os.stat(root).st_mode) == mode, "the configured root's mode was changed"
@@ -9975,12 +10822,18 @@ def test_unikix_close_raises_what_it_could_not_stop(
     commands = _CloseCommands(calls, frozenset(unavailable), frozenset(failing))
     log_dir = unikix_adapter.deploy.deployment_root(close_work_root, adapter.execution_id) / "logs"
     log = log_dir / unikix_adapter._SESSION_CLOSE_LOG
+    # The work root's unikix folder, which UniKixEnvironment.load makes.
+    log_dir.parent.parent.mkdir(parents=True)
     if unwritable:
         # The deployment root is a file, so its log folder cannot be created.
-        log_dir.parent.parent.mkdir(parents=True)
         log_dir.parent.write_text("not a directory\n", encoding="utf-8")
     if session:
-        adapter._env, adapter._commands = SimpleNamespace(log_dir=log_dir), commands
+        # A loaded session's environment: close appends through its append_log.
+        environment = unikix_env.UniKixEnvironment(
+            env_file=close_work_root / "carddemo.env", env_file_sha256="", work_root=close_work_root,
+            deployment_root=log_dir.parent, variables={}, inherited_cobcpy="", sourcing_output="",
+        )
+        adapter._env, adapter._commands = environment, commands
     region_down = flags[1]
     adapter._region_started, adapter._region_down, adapter._bpe_started = flags
 

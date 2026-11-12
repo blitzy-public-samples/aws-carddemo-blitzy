@@ -501,7 +501,9 @@ DPKG_PACKAGES = ("build-essential", "libgmp-dev", "libncurses-dev", "libdb-dev",
 # GAP-MIS-009 closes once all five name a version and every commands.yaml
 # entry citing it is confirmed (_settle_gaps).
 UNIKIX_VERSION_KEYS = ("version_tpe", "version_bpe", "version_vcobol", "version_licence", "version_java")
-_VERSION_FAILURE_PREFIXES = ("unavailable", "not defined", "exit status")
+# How env.py words a probe result that names no version: a failure, or a
+# probe that exited 0 and printed nothing ("no output: ...").
+_VERSION_FAILURE_PREFIXES = ("unavailable", "not defined", "exit status", "no output")
 # The facts every environment.yaml records as non-empty text, wherever it
 # nests them: the installation paths adapters/unikix/env.py requires, and
 # the deployment root with the paths env.py derives from it.
@@ -6294,7 +6296,8 @@ def _validate_evidence(evidence: Evidence, scenario: Any, document: dict | None,
 def _versions_recorded(environment: Mapping[str, Any]) -> bool:
     """Whether ``environment.yaml`` names a version for each UniKix
     prerequisite (TPE, BPE, Visual COBOL, licence, Java): the last text it
-    records under each probe's key names a version, not a failure."""
+    records under each probe's key names a version, not a failure and not
+    the ``no output`` record of a probe that printed nothing."""
     found: dict[str, str] = {}
     for key, values in _recorded(environment, UNIKIX_VERSION_KEYS).items():
         texts = [value for value in values if isinstance(value, str)]
