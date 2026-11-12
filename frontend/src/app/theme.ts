@@ -23,15 +23,18 @@
  *
  * TOKEN-DEFINITION EXEMPTION (AAP §0.3.4): the hex / rgba color literals, the
  * named `layout` sizing tokens (`drawerWidth`, `fullWidth`, `fullViewportHeight`)
- * AND the 1px border width, the 2px focus-ring width / offsets and the full
- * placeholder opacity in the `components` overrides below are the token
- * DEFINITIONS in this file and are explicitly permitted here. The "zero
- * hardcoded CSS values" rule applies to the component/page files that CONSUME
- * the theme (via `sx` / `theme`) — never to this theme-definition file.
+ * AND the 1px border width, the 2px focus-ring width / offsets, the full
+ * placeholder opacity, the press-ripple stacking (`isolation`, z-index -1) and
+ * wash alpha, and the forced-colors system color keywords in the `components`
+ * overrides below are the token DEFINITIONS in this file and are explicitly
+ * permitted here. The "zero hardcoded CSS values" rule applies to the
+ * component/page files that CONSUME the theme (via `sx` / `theme`) — never to
+ * this theme-definition file.
  */
 
 import { createTheme } from '@mui/material/styles';
-import type { ThemeOptions } from '@mui/material/styles';
+import type { CSSObject, Theme, ThemeOptions } from '@mui/material/styles';
+import type { ButtonProps } from '@mui/material/Button';
 
 /**
  * Layout-token contract (QA finding M-25). The design-system rule (AAP §0.3.4)
@@ -66,6 +69,63 @@ declare module '@mui/material/styles' {
             fullViewportHeight?: string;
         };
     }
+}
+
+/**
+ * Share of the dark shade a pressed outlined or text button's ripple is drawn
+ * in. MUI shows the ripple at 0.3 opacity, so this makes it a 15% wash.
+ */
+const PRESSED_RIPPLE_ALPHA = 0.5;
+
+/** The style-override arguments MUI passes for a Button slot. */
+interface ButtonStyleArgs {
+    ownerState: ButtonProps;
+    theme: Theme;
+}
+
+/**
+ * Press feedback for a control whose label sits on a solid fill: contained
+ * buttons, the selected page and filled-Alert actions. MUI paints the ripple in
+ * the label color above the label, so a white label washes its own fill out
+ * (3.53:1 on the primary fill). Here the control isolates a stacking context
+ * and the ripple sits beneath the label in black: the fill darkens under a
+ * label that stays white.
+ */
+function PressRippleBelowLabel(theme: Theme): CSSObject {
+    return {
+        isolation: 'isolate',
+        '& .MuiTouchRipple-root': {
+            zIndex: -1,
+        },
+        // Two classes outrank the ripple's own currentColor rule, which is
+        // inserted after this one when the first ripple mounts.
+        '& .MuiTouchRipple-ripple .MuiTouchRipple-child': {
+            backgroundColor: theme.palette.common.black,
+        },
+    };
+}
+
+/**
+ * Press feedback for an outlined or text button in a palette color. MUI's
+ * ripple is a 30% wash of the label color, which drops a primary label to
+ * 3.53:1 on the canvas. While a ripple is mounted, fade-out included, the label
+ * takes the color's dark shade and the ripple is a lighter wash of that shade.
+ * `inherit` buttons follow their parent's color and keep the default ripple.
+ */
+function PressedPaletteLabel({ ownerState, theme }: ButtonStyleArgs): CSSObject {
+    const paletteColor = ownerState.color;
+    if (paletteColor === undefined || paletteColor === 'inherit') {
+        return {};
+    }
+    const pressedColor = theme.palette[paletteColor].dark;
+    return {
+        '&:has(.MuiTouchRipple-rippleVisible)': {
+            color: pressedColor,
+        },
+        '& .MuiTouchRipple-ripple .MuiTouchRipple-child': {
+            backgroundColor: theme.alpha(pressedColor, PRESSED_RIPPLE_ALPHA),
+        },
+    };
 }
 
 /**
@@ -180,10 +240,17 @@ const themeOptions: ThemeOptions = {
         },
         // The focus pulsate ripple washes a contained primary label down to
         // 3.53:1. Without it a focused button keeps its resting fill and the
-        // ring above is the focus cue; the press ripple is unchanged.
+        // ring above is the focus cue. The press ripple is redrawn so labels
+        // keep AA contrast while held: black beneath a contained label, and a
+        // dark-shade wash behind an outlined or text label that darkens too.
         MuiButton: {
             defaultProps: {
                 disableFocusRipple: true,
+            },
+            styleOverrides: {
+                contained: ({ theme }) => PressRippleBelowLabel(theme),
+                outlined: PressedPaletteLabel,
+                text: PressedPaletteLabel,
             },
         },
         MuiIconButton: {
@@ -195,19 +262,24 @@ const themeOptions: ThemeOptions = {
         // focused controls in its action area (the close button) draw it in the
         // Alert's white contrast text instead (3.11-6.88:1). The extra class
         // outranks the ButtonBase ring selector, whatever the style order.
+        // Their press ripple sits beneath the white icon, which a white wash
+        // dropped to 2.92:1 on the success fill.
         MuiAlert: {
             styleOverrides: {
-                filled: {
+                filled: ({ theme }) => ({
                     '& .MuiAlert-action .Mui-focusVisible': {
                         outlineColor: 'currentColor',
                     },
-                },
+                    '& .MuiAlert-action .MuiButtonBase-root': PressRippleBelowLabel(theme),
+                }),
             },
         },
         // Full-width rows sit in scrolling drawer and menu paper, which clips
         // an outer ring, so their ring is drawn inset (as on DataTable rows).
         // Forced-colors mode drops the selected tint, so the current nav item
-        // gets a start-edge bar there, with its padding reduced to match.
+        // and the selected menu option get a start-edge bar there, with their
+        // padding reduced to match. Hover and focus only restyle the fill, so
+        // the bar holds in those states too.
         MuiListItemButton: {
             styleOverrides: {
                 root: ({ theme }) => ({
@@ -225,11 +297,46 @@ const themeOptions: ThemeOptions = {
         },
         MuiMenuItem: {
             styleOverrides: {
-                root: {
+                root: ({ theme }) => ({
                     '&.Mui-focusVisible': {
                         outlineOffset: '-2px',
                     },
-                },
+                    '@media (forced-colors: active)': {
+                        '&.Mui-selected': {
+                            borderInlineStart: `${theme.spacing(0.5)} solid currentColor`,
+                            paddingInlineStart: theme.spacing(1.5),
+                        },
+                    },
+                }),
+            },
+        },
+        // The selected page is a solid primary fill with a white number, so its
+        // press ripple is drawn beneath the number. Forced-colors mode drops
+        // that fill, so there the selected page takes the system selection
+        // colors, hovered and focused too. Its forced-color-adjust is none
+        // because the mode paints a Canvas backplate behind the text it forces,
+        // which hides the HighlightText number on the Highlight fill. Left
+        // unforced, its focus ring and press ripple take Highlight as well: the
+        // ring stands off the fill like every forced ring, and the ripple washes
+        // the fill in its own color rather than an off-palette black.
+        MuiPaginationItem: {
+            styleOverrides: {
+                root: ({ theme }) => ({
+                    '&.Mui-selected': PressRippleBelowLabel(theme),
+                    '@media (forced-colors: active)': {
+                        '&.Mui-selected, &.Mui-selected:hover, &.Mui-selected.Mui-focusVisible': {
+                            backgroundColor: 'Highlight',
+                            color: 'HighlightText',
+                            forcedColorAdjust: 'none',
+                        },
+                        '&.Mui-selected.Mui-focusVisible': {
+                            outlineColor: 'Highlight',
+                        },
+                        '&.Mui-selected .MuiTouchRipple-ripple .MuiTouchRipple-child': {
+                            backgroundColor: 'Highlight',
+                        },
+                    },
+                }),
             },
         },
         // MUI derives table-cell borders by lightening the divider 88%, which

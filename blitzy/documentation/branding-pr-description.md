@@ -18,9 +18,11 @@ unchanged.
 - The sign-on page shows the Blitzy logo above the heading `Blitzy Sign On`.
 - The browser tab shows the Blitzy icon (`icon.svg`) and the title `Blitzy`.
 - Accessibility adjustments, still presentation only: a 2px `#5B39F3` keyboard
-  focus ring (white on filled alerts), darker error text (`error.dark`), and
-  placeholder hints in `text.secondary` `#666666`. A themed 404 page replaces
-  Next's unstyled built-in one, with the same text.
+  focus ring (white on filled alerts), darker error text (`error.dark`),
+  placeholder hints in `text.secondary` `#666666`, press ripples that keep
+  labels at AA contrast while held, and forced-colors markers on the selected
+  menu option and page. A themed 404 page replaces Next's unstyled built-in
+  one, with the same text.
 
 Base commit for every comparison in this document:
 `cb634428783e7b08a83594f8c39a9ba8f74740a6`.
@@ -49,7 +51,7 @@ Status is relative to the base commit: `A` added, `M` modified, `D` deleted.
 | M | `frontend/src/app/layout.tsx` | Loads Inter as `--font-inter`; sets the page title and description. |
 | A | `frontend/src/app/not-found.tsx` | Themed 404 page in place of Next's built-in one; same text and title. |
 | M | `frontend/src/app/signon/page.tsx` | Adds the 48px logo above the heading; heading text `Blitzy Sign On`. |
-| M | `frontend/src/app/theme.ts` | Brand palette, Inter; AppBar, focus, error-text, placeholder, table, Typography. |
+| M | `frontend/src/app/theme.ts` | Brand palette, Inter; the component overrides under Brand values applied. |
 | M | `frontend/src/components/AppShell.tsx` | `APP_TITLE` is `Blitzy`; adds the 28px logo to the left of the title. |
 | A | `frontend/src/components/BrandLogo.tsx` | Shared logo component used by the header and the sign-on page. |
 | M | `frontend/src/components/ErrorAlert.tsx` | Comment only: corrects the info Alert contrast figure to ≈6.88:1. |
@@ -125,10 +127,21 @@ gone from `frontend/src`.
 | `MuiButtonBase` root `.Mui-focusVisible` | `outline` | `2px solid` `primary.main` (`#5B39F3`) |
 | `MuiButtonBase` root `.Mui-focusVisible` | `outlineOffset` | `2px` |
 | `MuiButton`, `MuiIconButton` | `defaultProps.disableFocusRipple` | `true` |
+| `MuiButton` contained | Press ripple | Beneath the label, black (`common.black`) |
+| `MuiButton` outlined and text, palette color, ripple mounted | `color` | The color's `dark` (primary `#3F27AA`) |
+| `MuiButton` outlined and text, palette color | Ripple child `backgroundColor` | The color's `dark` at alpha 0.5 |
+| `MuiPaginationItem` root `.Mui-selected` | Press ripple | Beneath the page number, black (`common.black`) |
 | `MuiAlert` filled, `.MuiAlert-action .Mui-focusVisible` | `outlineColor` | `currentColor` (the alert's white text) |
+| `MuiAlert` filled, `.MuiAlert-action .MuiButtonBase-root` | Press ripple | Beneath the icon, black (`common.black`) |
 | `MuiListItemButton`, `MuiMenuItem` root `.Mui-focusVisible` | `outlineOffset` | `-2px` (ring drawn inside the row) |
 | `MuiListItemButton` selected, forced colors | `borderInlineStart` | `theme.spacing(0.5)` (4px) solid `currentColor` |
 | `MuiListItemButton` selected, forced colors | `paddingInlineStart` | `theme.spacing(1.5)` (12px) |
+| `MuiMenuItem` selected, forced colors | `borderInlineStart` | `theme.spacing(0.5)` (4px) solid `currentColor` |
+| `MuiMenuItem` selected, forced colors | `paddingInlineStart` | `theme.spacing(1.5)` (12px) |
+| `MuiPaginationItem` selected, forced colors | `backgroundColor`, `color` | `Highlight`, `HighlightText` |
+| `MuiPaginationItem` selected, forced colors | `forcedColorAdjust` | `none` |
+| `MuiPaginationItem` selected, forced colors, `.Mui-focusVisible` | `outlineColor` | `Highlight` |
+| `MuiPaginationItem` selected, forced colors | Ripple child `backgroundColor` | `Highlight` |
 | `MuiTableCell` root | `borderBottomColor` | `divider` (`#D9D9D9`) |
 | `MuiTypography` variant | `color="text.secondary"` | `text.secondary` (`#666666`) |
 | `MuiFormLabel` root and asterisk `.Mui-error` | `color` | `error.dark` (`#932020`) |
@@ -136,13 +149,25 @@ gone from `frontend/src`.
 | `MuiInputBase` input `::placeholder` | `color`, `opacity` | `text.secondary` (`#666666`), `1` |
 | `MuiInputBase` input under an unshrunk label, `:focus::placeholder` | `opacity` | `1` |
 
-The two "selected, forced colors" rows style `.Mui-selected` inside
-`@media (forced-colors: active)`. The `::placeholder` row also covers the
-`-webkit-`, `-moz-`, and `-ms-` placeholder pseudo-elements that MUI styles.
+The "selected, forced colors" rows style `.Mui-selected` inside
+`@media (forced-colors: active)`; the pagination `backgroundColor`, `color`,
+and `forcedColorAdjust` rows also cover the hovered and the focused selected
+page. The mode paints a Canvas backplate behind the text it forces, which hid
+the white `HighlightText` number on the `Highlight` fill, so the selected page
+opts out of forcing. Its colors are then used as authored, so its focus ring,
+otherwise `#5B39F3`, and its press ripple, otherwise black, take `Highlight`
+too, and the page renders only system colors. A "Press ripple" row means the
+control gets `isolation: isolate`, its `.MuiTouchRipple-root` gets
+`z-index: -1`, and its ripple child is black, so the ripple paints over the
+fill and under the label.
+The outlined and text rows skip `color="inherit"` buttons; "ripple mounted"
+covers the press and the ripple's fade-out. The `::placeholder` row also covers
+the `-webkit-`, `-moz-`, and `-ms-` placeholder pseudo-elements that MUI styles.
 
 `AppShell.tsx` passes no `color` prop to the AppBar, so the theme override
-applies without any change to the AppBar element. The focus, error-text, and
-placeholder overrides are explained under [Contrast adjustments](#contrast-adjustments).
+applies without any change to the AppBar element. The focus, press-ripple,
+selection, error-text, and placeholder overrides are explained under
+[Contrast adjustments](#contrast-adjustments).
 
 ### Product name, metadata, logo, and favicon
 
@@ -197,7 +222,7 @@ pseudo-element, and of every loaded CSS rule, found none of the six colors on
 
 ## Contrast adjustments
 
-Every brand value is unchanged, and so is `error.main`. Four adjustments were
+Every brand value is unchanged, and so is `error.main`. Five adjustments were
 made; the logo SVG is unaltered.
 
 1. **Error text.** `error.main` `#d32f2f` measures 4.43:1 on the `#F2F0FE`
@@ -217,8 +242,18 @@ made; the logo SVG is unaltered.
    icon buttons no longer play the focus ripple, so a focused `SIGN ON` keeps its
    resting fill and its label stays 6.32:1. In forced-colors mode the outline
    stays (Chrome's emulation forces its color to `rgba(5, 0, 73, 0.8)`, 11.30:1
-   on the white Canvas), and the selected nav item, which loses its tint there,
-   gets a 4px start-edge bar.
+   on the white Canvas). Selected items lose their fill there, which left the
+   selected page and menu option looking like every other once focus moved on
+   (1:1 against the Canvas). The selected nav item and menu option now get a
+   4px start-edge bar (black, 21:1 on the white menu surface), and the selected
+   page takes the system `Highlight` fill with `HighlightText` (in Chrome's
+   emulation `rgba(5, 0, 73, 0.8)` with white text, 11.31:1 against the Canvas),
+   hovered or focused too. Forced, that white number also got the mode's white
+   Canvas backplate (1:1), so the selected page sets
+   `forced-color-adjust: none`: its number renders white on the `#37336D` fill,
+   11.31:1, and its focus ring and press ripple use `Highlight` as well. Each
+   marker holds while focus is on another item and is distinct from the focus
+   ring.
 3. **Placeholder hints.** MUI draws input placeholders in the text color at 0.42
    opacity, which with the brand `#000000` text renders `rgb(148, 148, 148)`:
    3.03:1 on paper and 3.00:1 on the canvas, below the 4.5:1 text minimum. Every
@@ -234,6 +269,24 @@ made; the logo SVG is unaltered.
    filled alert's action area now draw the ring in the alert's white text
    color: 4.98:1, 5.13:1, 6.88:1, and 3.11:1. No current call site renders a
    warning alert. The ring keeps its 2px solid style and 2px offset.
+5. **Pressed state.** MUI's press ripple is a 0.3-opacity wash of the label
+   color painted over the label. On a solid fill a white label washes out its
+   own fill: a held `SIGN ON` measured white on `#8C74F6`, 3.53:1, with a touch
+   or a mouse press, and the held selected page on `/cards` 3.53:1. From the
+   rendered fills, a held contained error button and the filled error alert's
+   close icon drop to 3.18:1 and the success alert's close icon to 2.92:1. On
+   outlined and text buttons the wash drops a held `CLEAR` on the canvas to
+   3.53:1 and, from the rendered row fill, an outlined error `DELETE` in a
+   hovered `/users` row to 2.89:1.
+   Contained buttons, the selected page and filled-alert actions now draw a
+   black ripple beneath the label, so the fill darkens under a label that stays
+   white: held `SIGN ON` 10.12:1 (13.77:1 hovered), the held selected page
+   10.12:1, the held error alert close icon 8.51:1. Outlined and text buttons
+   in a palette color take that color's `dark` shade for the label while a
+   ripple is mounted, and draw the ripple in that shade at alpha 0.5, a 15%
+   wash: held `CLEAR` 6.91:1 (6.50:1 hovered), held `DELETE` 6.01:1 in a
+   hovered row (5.68:1 with the button hovered too). `color="inherit"` buttons
+   and the brand values are unchanged, and focus still plays no ripple.
 
 Ratios measured in the running app with the WCAG 2.x relative-luminance formula:
 
@@ -257,6 +310,19 @@ Ratios measured in the running app with the WCAG 2.x relative-luminance formula:
 | Placeholder `#666666` | Paper `#FFFFFF` | Empty, focused Credit Limit on `/accounts/update` | 5.74:1 | 4.5:1 |
 | Focus ring `#FFFFFF` | Error alert `#d32f2f` | Alert close button, empty submit on `/signon` | 4.98:1 | 3:1 |
 | Focus ring `#FFFFFF` | Info alert `rgb(1, 95, 146)` | Alert close button, Fetch on `/users/update` | 6.88:1 | 3:1 |
+| contrastText `#FFFFFF` | Held fill `#3F27A9` (was `#8C74F6`, 3.53:1) | `SIGN ON`, touch or mouse | 10.12:1 | 4.5:1 |
+| contrastText `#FFFFFF` | Held fill `#2C1B76`, hovered | `SIGN ON`, mouse | 13.77:1 | 4.5:1 |
+| contrastText `#FFFFFF` | Held fill `#3F27A9` (was `#8C74F6`, 3.53:1) | Selected page on `/cards` | 10.12:1 | 4.5:1 |
+| `primary.dark` `#3F27AA` | Held wash `#D7D2F1` on canvas (was 3.53:1) | `CLEAR` on `/cards` | 6.91:1 | 4.5:1 |
+| `primary.dark` `#3F27AA` | Held wash `#D1CBF1`, hovered, on canvas | `CLEAR` on `/cards`, mouse | 6.50:1 | 4.5:1 |
+| `error.dark` `#932020` | Held wash `#E6D5D5` in a hovered row | `DELETE` on `/users` | 6.01:1 | 4.5:1 |
+| `error.dark` `#932020` | Held wash `#E4CECE`, row and button hovered | `DELETE` on `/users`, mouse | 5.68:1 | 4.5:1 |
+| Close icon `#FFFFFF` | Held error alert close, `#932020` | Failed sign-on on `/signon` | 8.51:1 | 3:1 |
+| Selected page `Highlight` | Canvas `#FFFFFF` | `/cards`, forced colors, focus on page 2 | 11.31:1 | 3:1 |
+| `HighlightText` `#FFFFFF` | Selected page `#37336D` (was a white backplate, 1:1) | Forced colors | 11.31:1 | 4.5:1 |
+| `HighlightText` `#FFFFFF` | Held selected page `#2A2664` | `/cards`, forced colors | 13.46:1 | 4.5:1 |
+| Ring `Highlight` `rgba(5, 0, 73, 0.8)` | Canvas `#FFFFFF` | Focused selected page, forced colors | 11.31:1 | 3:1 |
+| Selected option bar `#000000` | Menu surface `#FFFFFF` | Report Type on `/reports`, forced colors | 21.00:1 | 3:1 |
 
 Computed for states and pairings that the captured pages do not render:
 
@@ -273,6 +339,11 @@ Computed for states and pairings that the captured pages do not render:
 | The former placeholder `rgb(148, 148, 148)` | Paper `#FFFFFF` | 3.03:1 |
 | Focus ring `#FFFFFF` | Success alert `#2e7d32` | 5.13:1 |
 | Focus ring `#FFFFFF` | Warning alert `#ed6c02` (no current call site) | 3.11:1 |
+| contrastText `#FFFFFF` | Held contained error button, black ripple on `#d32f2f` (was 3.18:1) | 8.43:1 |
+| Close icon `#FFFFFF` | Held success alert close, black ripple on `#2e7d32` (was 2.92:1) | 8.52:1 |
+| Close icon `#FFFFFF` | Held info alert close, black ripple on `rgb(1, 95, 146)` (was 3.56:1) | 10.58:1 |
+| `secondary.dark` `#232323` | Held outlined or text secondary button, hovered, on canvas | 9.79:1 |
+| `error.dark` `#932020` | Held outlined error button, hovered, on canvas (no current call site) | 5.55:1 |
 
 The divider `#D9D9D9` measures 1.41:1 on paper and 1.25:1 on the canvas. It is
 used only for decorative separators (dividers, the drawer edge, table rows, and
@@ -281,7 +352,8 @@ control. Outlined text fields keep the MUI default border `rgba(0, 0, 0, 0.23)`
 (rendered `rgb(196, 196, 196)`, 1.74:1 on paper); this change leaves that border
 as it was. Each focus indicator listed above meets the 3:1 minimum against the
 color next to it, with and without forced colors: the `#5B39F3` rings measure
-4.60:1 or more, and the white rings on filled alerts 3.11:1 to 6.88:1.
+4.60:1 or more, and the white rings on filled alerts 3.11:1 to 6.88:1. The
+forced-colors selection markers measure 11.31:1 and 21.00:1.
 
 ## Verification
 
@@ -312,6 +384,30 @@ color next to it, with and without forced colors: the `#5B39F3` rings measure
 - With `forced-colors: active` emulated, focused drawer items keep a 2px solid
   outline, and the selected item has a `4px solid` start border with `12px`
   start padding (`16px` on the other items).
+- With `forced-colors: active` emulated, after focusing the selected page 1 on
+  `/cards` and pressing Tab to page 2, page 1 computes a `rgba(5, 0, 73, 0.8)`
+  background with `rgb(255, 255, 255)` text and `forced-color-adjust: none`,
+  page 2 only its outline, and page 3 a transparent background; hovered or
+  focused, page 1 keeps that fill. In a full-viewport capture at device pixel
+  ratio 3, page 1's number is `#FFFFFF` on a `#37336D` fill with no backplate,
+  11.31:1 (11.17:1 on the antialiased core at ratio 1), and the fill is 11.31:1
+  against the Canvas. Shift+Tab back to page 1 computes the same
+  `2px solid rgba(5, 0, 73, 0.8)` outline as page 2's, with a Canvas gap
+  between it and the fill. Held 1.3s, page 1 computes a `rgba(5, 0, 73, 0.8)`
+  ripple child and its number measures 13.46:1. No property of the selected
+  page or its ripple computes a non-system color.
+  On `/reports`, with Monthly selected and focus moved to Yearly by ArrowDown,
+  Monthly keeps a `4px solid rgb(0, 0, 0)` start border and `12px` start
+  padding, hovered too; Yearly and Custom have none.
+- Holding `SIGN ON` 1.3s with a touch or a mouse press, and the selected page
+  on `/cards`, computes `isolation: isolate`, a ripple root at `z-index: -1`
+  and a `rgb(0, 0, 0)` ripple child. Holding `CLEAR` on `/cards` computes a
+  `rgb(63, 39, 170)` label and a `rgba(63, 39, 170, 0.5)` ripple child, and
+  `DELETE` on `/users` `rgb(147, 32, 32)` and `rgba(147, 32, 32, 0.5)`. The
+  held screenshots' pixels give the pressed ratios under Contrast adjustments,
+  with Chrome's default `hover: none` and again with hover enabled. Keyboard
+  focus on `SIGN ON` still computes the `2px solid rgb(91, 57, 243)` outline
+  with no ripple element.
 - After an empty sign-on submit, the User ID label, asterisk, and helper text
   compute `rgb(147, 32, 32)`; the field outline stays `rgb(211, 47, 47)`.
 - Keyboard focus on the close button of the filled error alert on `/signon` and
