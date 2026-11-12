@@ -10,11 +10,11 @@
  *   placed under, compiled into, or copied over anything in app/.
  *
  * Build contract
- *   The shared object must be named CEEDAYS.so and export the symbol
- *   CEEDAYS, because libcob resolves the dynamic CALL "CEEDAYS" by that
- *   file name (searched through COB_LIBRARY_PATH) and that symbol:
- *     cc -std=c11 -Wall -Wextra -Werror -shared -fPIC -o CEEDAYS.so ceedays.c
- *     cobc -m -o CEEDAYS.so ceedays.c
+ *   libcob loads CEEDAYS.so from COB_LIBRARY_PATH and calls its exported
+ *   symbol CEEDAYS for the dynamic CALL "CEEDAYS". build.py builds it with
+ *   -Wunused -Wpointer-sign to undo cobc's -Wno-unused -Wno-pointer-sign:
+ *     cobc -m -A "-std=c11 -Wall -Wextra -Wunused -Wpointer-sign -Werror" \
+ *       -o CEEDAYS.so ceedays.c
  *
  * Interface (CSUTLDTC is compiled -std=ibm, so every binary is big-endian)
  *   date_vstr, pic_vstr  Vstrings: S9(4) BINARY length, then up to 256

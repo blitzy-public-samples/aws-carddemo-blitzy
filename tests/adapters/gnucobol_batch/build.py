@@ -1449,14 +1449,17 @@ class _Compile:
 _COBOL_EXECUTABLE = ("-x", *COMMON_FLAGS)
 _COBOL_MODULE = ("-m", *COMMON_FLAGS)
 
-# The stubs and drivers, built as their headers state. -O0 keeps the shim's
-# page-zero accesses exactly as written.
+# The stubs and drivers, built as their headers state: CEE3ABD and CEEDAYS as
+# cobc -m modules, PARMDRV and DTCDRV as cobc -x executables, the shim and
+# page0_probe with cc. CEEDAYS's -A options keep its C warning gate, because
+# cobc puts -Wno-unused and -Wno-pointer-sign ahead of them. -O0 keeps the
+# shim's page-zero accesses exactly as written.
 _TOOL_COMPILES = (
     _Compile(
         "CEE3ABD", "cobc", _COBOL_MODULE, (f"{_STUBS_DIR}/CEE3ABD.cbl",), "modules/CEE3ABD.so"
     ),
     _Compile(
-        "CEEDAYS", "cc", ("-std=c11", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC"),
+        "CEEDAYS", "cobc", ("-m", "-A", "-std=c11 -Wall -Wextra -Wunused -Wpointer-sign -Werror"),
         (f"{_STUBS_DIR}/ceedays.c",), "modules/CEEDAYS.so",
     ),
     _Compile("PARMDRV", "cobc", _COBOL_EXECUTABLE, (f"{_STUBS_DIR}/PARMDRV.cbl",), "bin/PARMDRV"),
@@ -1633,8 +1636,9 @@ def _build_key(repo_root: Path, toolchain: _Toolchain, plan: _Plan) -> str:
             generated[f"profiles/{profile.name}/{path}"] = sha256_hex(text)
     material = {
         # Beside the sources, options and cobc --version: cc --version, because
-        # the C stubs are compiled with cc directly, and the caller's COB_*
-        # toolchain variables, because an override changes every compile.
+        # the shim and page0_probe are compiled with cc directly, and the
+        # caller's COB_* toolchain variables, because an override changes
+        # every compile.
         "cc_version": toolchain.cc_version,
         "cobc_version": toolchain.cobc_version,
         "compiles": [compile_.key_entry() for compile_ in plan.compiles],
