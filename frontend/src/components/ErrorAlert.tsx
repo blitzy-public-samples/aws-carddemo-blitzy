@@ -219,10 +219,10 @@ export function ErrorAlert(props: ErrorAlertProps) {
                     // QA I22: the default filled `info` Alert renders white text on
                     // `info.main` (#0288d1) ≈ 3.86:1, which fails WCAG AA (MUI's own
                     // contrast threshold is 3, not 4.5). Darkening the background to
-                    // the theme's `info.dark` token keeps the white contrastText and
-                    // raises the ratio to ≈8.9:1. The other severities already pass
-                    // and are left untouched. Token-based, no hardcoded hex (AAP
-                    // §0.3.4).
+                    // the theme's `info.dark` token (MUI-derived from `info.main`,
+                    // rgb(1, 95, 146)) keeps the white contrastText and raises the
+                    // ratio to ≈6.88:1. The other severities already pass and are
+                    // left untouched. Token-based, no hardcoded hex (AAP §0.3.4).
                     ...(severity === 'info'
                         ? { backgroundColor: 'info.dark' }
                         : {}),

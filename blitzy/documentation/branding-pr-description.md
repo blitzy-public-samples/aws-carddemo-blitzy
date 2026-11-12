@@ -47,6 +47,7 @@ Status is relative to the base commit: `A` added, `M` modified, `D` deleted.
 | M | `frontend/src/app/theme.ts` | Brand palette, Inter font family, and AppBar, table-cell, Typography overrides. |
 | M | `frontend/src/components/AppShell.tsx` | `APP_TITLE` is `Blitzy`; adds the 28px logo to the left of the title. |
 | A | `frontend/src/components/BrandLogo.tsx` | Shared logo component used by the header and the sign-on page. |
+| M | `frontend/src/components/ErrorAlert.tsx` | Comment only: corrects the info Alert contrast figure to ≈6.88:1. |
 
 The two test files change only the asserted strings. No test logic changed, and
 no test was skipped or deleted. `frontend/next.config.js` is unchanged.
@@ -131,9 +132,8 @@ applies without any change to the AppBar element.
 
 The page description, exactly as served in `<meta name="description">`:
 
-```text
-Blitzy: Build enterprise software in days with our autonomous AI platform. Automate up to 80% of development. Infinite code context. Accelerate your roadmap by 5x.
-```
+`Blitzy: Build enterprise software in days with our autonomous AI platform.
+Automate up to 80% of development. Infinite code context. Accelerate your roadmap by 5x.`
 
 `blitzy-logo.svg` and `icon.svg` are byte-identical to the Brand Inputs SVG,
 which uses the single fill `#5B39F3`.
