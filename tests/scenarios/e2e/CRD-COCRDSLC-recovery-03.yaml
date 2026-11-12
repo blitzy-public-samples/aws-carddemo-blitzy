@@ -1,0 +1,159 @@
+# The card view's CARDAIX file-error message cannot be produced, even with
+# CARDAIX unavailable. COCRDSLC composes 'File Error: READ     on CARDAIX
+# returned RESP <resp>,RESP2 <resp2>' in WS-FILE-ERROR-MESSAGE only in the WHEN
+# OTHER branch of 9150-GETCARD-BYACCT, after its READ of LIT-CARDFILENAME-ACCT-
+# PATH 'CARDAIX ' by account id [app/cbl/COCRDSLC.cbl:102-121,189-190,779-812].
+# No statement performs 9150: 9000-READ-DATA performs only
+# 9100-GETCARD-BYACCTCARD [app/cbl/COCRDSLC.cbl:726-733], which reads CARDDAT by
+# card number alone, with its move of the account id into the record key
+# commented out [app/cbl/COCRDSLC.cbl:736-775]. 9150 is dead code and holds the
+# program's only READ of CARDAIX. The inventory counts the message as reachable
+# (activation always) because its extraction takes every site that sets
+# ERROR-FILE; the frozen item is left unchanged and this scenario, its primary
+# case, pins what the screen shows instead when CARDAIX is unavailable. What
+# 9150 and its message are for is the open uncertain-purpose question of
+# GAP-UNC-018, hence the observed-only tag.
+#
+# The fault closes or disables the region file CARDAIX after the sign-on step
+# and before the card lookup of step 3, as every online unavailable fault is
+# applied. No region file control is confirmed on UniKix (GAP-MIS-011), so an
+# adapter without it raises MissingPrerequisite and the scenario stays
+# implemented-unexecuted; in CI it is blocked, since only unikix can run it.
+#
+# Steps 1-2 reach the COCRDSL search screen as MNU-COMEN01C-alternate-04 does:
+# option 4 'Credit Card View' makes COMEN01C XCTL to COCRDSLC with
+# CDEMO-FROM-PROGRAM COMEN01C and CDEMO-PGM-CONTEXT 0
+# [app/cbl/COMEN01C.cbl:117-155] [app/cpy/COMEN02Y.cpy:43-47]. Entered from the
+# menu, COCRDSLC initializes the COMMAREA, and the CDEMO-PGM-ENTER path sends
+# COCRDSL with blank ids, the prompt 'Please enter Account and Card Number'
+# (WS-INFO-MSG was cleared, so 1200-SETUP-SCREEN-VARS sets it) and a blank
+# ERRMSG; 1400-SEND-SCREEN sets CDEMO-PGM-REENTER and the task returns TRANSID
+# CCDL [app/cbl/COCRDSLC.cbl:254-279,349-356,394-406,457-497,562-576].
+#
+# Step 3 enters account 00000000050 and card 0500024453765740, record 1 of
+# app/data/ASCII/carddata.txt. The re-entry takes 2000-PROCESS-INPUTS: both ids
+# are numeric and non-zero, so INPUT-OK holds [app/cbl/COCRDSLC.cbl:357-370,
+# 582-724]. 9100 reads CARDDAT, which the fault leaves open: NORMAL, so
+# FOUND-CARDS-FOR-ACCOUNT sets WS-INFO-MSG '   Displaying requested details'
+# and WS-RETURN-MSG stays off [app/cbl/COCRDSLC.cbl:742-754]. 1200 echoes the
+# ids and moves the embossed name 'Aniya Von', the year and month of
+# CARD-EXPIRAION-DATE '2023-03-09' through CARD-EXPIRAION-DATE-X, and the active
+# status Y [app/cbl/COCRDSLC.cbl:84-92,462-496]. The unavailable CARDAIX is
+# never touched, so no file error reaches ERRMSG.
+#
+# Screen fields are compared at their full BMS length, trailing spaces
+# included: ERRMSG is 80 characters on COCRDSL (the 75-byte WS-RETURN-MSG
+# padded) and 78 on COMEN01, INFOMSG 40, CRDNAME 50, the titles 40. CURDATE and
+# CURTIME come from the region clock, so they are matchers in the MM/DD/YY and
+# HH:MM:SS forms 1100-SCREEN-INIT builds [app/cbl/COCRDSLC.cbl:437-449]. The
+# baseline is derived from the source: no TPE region runs in CI.
+id: CRD-COCRDSLC-recovery-03
+level: e2e
+type: recovery
+description: >-
+  USER0001 signs on, selects main-menu option 4 'Credit Card View' and, with
+  the region file CARDAIX made unavailable, enters account 00000000050 and card
+  0500024453765740 on the COCRDSLC search screen (CCDL). 'File Error: READ on
+  CARDAIX returned RESP <resp>,RESP2 <resp2>' does not appear: it is composed
+  only in 9150-GETCARD-BYACCT, the account lookup through CARDAIX, which no
+  statement performs, so the paragraph is dead code and GAP-UNC-018 carries
+  the question of its purpose. The program reads the card from CARDDAT by card
+  number, so COCRDSL shows the name 'Aniya Von', active status Y and expiry
+  03/2023 with the info message 'Displaying requested details' and no error.
+# Primary item first, then the program, the maps asserted, the transaction step
+# 3 runs under, the CSD files of the card lookups, and the online-only
+# copybooks COCRDSLC copies. CARDAIX is listed because this scenario pins that
+# the card view never reads through it, even when it is unavailable. Sign-on,
+# the menu routing, 'Displaying requested details' and the card detail content
+# are verified by the scenarios that own them.
+inventory_ids:
+- INV-CRD-042  # COCRDSLC 'File Error: READ on CARDAIX' (9150-GETCARD-BYACCT), composed only in dead code
+- INV-CRD-002  # COCRDSLC program
+- INV-MNU-003  # COMEN01 map, where option 4 is entered
+- INV-CRD-005  # COCRDSL map, the search screen and the card shown
+- INV-CFG-013  # CCDL transaction, under which the ids are processed
+- INV-CFG-003  # CARDDAT CSD file: the card read by card number, left available
+- INV-CFG-002  # CARDAIX CSD file: made unavailable, never read
+- INV-LAY-002  # COCOM01Y: the COMMAREA whose CDEMO-PGM-REENTER makes ENTER a re-entry
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COCRDSLC
+- INV-LAY-009  # CSMSG02Y: abend data, copied by COCRDSLC
+- INV-LAY-011  # CSSTRPFY: YYYY-STORE-PFKEY maps ENTER to CCARD-AID-ENTER
+- INV-LAY-019  # CVCRD01Y: CC-ACCT-ID, CC-CARD-NUM and the AID flags
+tags:
+- inferred-not-observed
+- observed-only
+gap_ids:
+- GAP-INF-006  # CRD end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-MIS-011  # no confirmed region file control to make CARDAIX unavailable
+- GAP-UNC-018  # online code defined but never executed: 9150-GETCARD-BYACCT and its message
+preconditions:
+  datasets:
+    # COCRDSLC reads the card by card number from CARDDAT.
+    CARDDATA: {base: CARDDATA}
+    # COSGN00C reads the sign-on user USER0001.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  # Applied after the sign-on step and before the card lookup of step 3, as
+  # every online unavailable fault is. An adapter without region file control
+  # raises MissingPrerequisite under GAP-MIS-011.
+  faults:
+  - target: CARDAIX
+    operation: read
+    condition: unavailable
+# PASSWORD is the README's documented demo password, not a secret: the scenario
+# schema accepts no other sign-on password.
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '4'
+  - aid: ENTER
+    '@map': COCRDSL
+    fields:
+      ACCTSID: '00000000050'
+      CARDSID: '0500024453765740'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN004: '04. Credit Card View                    '
+    ERRMSG: '                                                                              '
+  - '@map': COCRDSL
+    TRNNAME: CCDL
+    PGMNAME: COCRDSLC
+    INFOMSG: 'Please enter Account and Card Number    '
+    ERRMSG: '                                                                                '
+  - '@map': COCRDSL
+    TRNNAME: CCDL
+    PGMNAME: COCRDSLC
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000050'
+    CARDSID: '0500024453765740'
+    CRDNAME: 'Aniya Von                                         '
+    CRDSTCD: 'Y'
+    EXPMON: '03'
+    EXPYEAR: '2023'
+    INFOMSG: '   Displaying requested details         '
+    ERRMSG: '                                                                                '
+  # One ERRMSG value per step: blank on the menu, on the search screen, and on
+  # the card shown with CARDAIX unavailable, where the dead 9150 file error
+  # would otherwise appear.
+  messages:
+  - '                                                                              '
+  - '                                                                                '
+  - '                                                                                '

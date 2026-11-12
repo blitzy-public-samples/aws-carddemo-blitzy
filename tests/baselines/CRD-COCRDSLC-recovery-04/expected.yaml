@@ -1,0 +1,14 @@
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COCRDSL
+  ACCTSID: '           '
+  CARDSID: '                '
+  ERRMSG: '                                                                                '
+  INFOMSG: 'Please enter Account and Card Number    '
+  PGMNAME: COCRDSLC
+  TRNNAME: CCDL
+- '@map': TEXT
+  '@text': "    COCRDSLC                                                                    \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                "

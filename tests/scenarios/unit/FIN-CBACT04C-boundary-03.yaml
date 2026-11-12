@@ -1,0 +1,108 @@
+# The remainder boundary of the CBACT04C interest computation.
+# COMPUTE WS-MONTHLY-INT = (TRAN-CAT-BAL * DIS-INT-RATE) / 1200 has no ROUNDED
+# and WS-MONTHLY-INT is S9(09)V99 [app/cbl/CBACT04C.cbl:168,462-470], so the
+# digits after the cents are dropped: 333.33 * 15.00 / 1200 = 4.166625 is
+# written as 4.16, never 4.17. Whether truncation is intended is GAP-UNC-008,
+# hence observed-only.
+#
+# The data is invented. Account 00000000907 carries its disclosure group in
+# ACCT-GROUP-ID, so the lookup of A000000000 / 01 / 0001 hits DISCGRP record 1
+# (rate 00150{ = 15.00) and no DEFAULT fallback line is displayed
+# [app/cbl/CBACT04C.cbl:210-213,415-440]. It is the only account, so the
+# 1050-UPDATE-ACCOUNT rewrite is never reached and ACCTDATA is unchanged
+# [app/cbl/CBACT04C.cbl:188-222]; that behaviour is GAP-DEF-003, which
+# FIN-CBACT04C-boundary-01 tags, so it is pinned here without the tag.
+#
+# Each expected dataset holds one record, and names the fields this case
+# asserts in their decoded form: numbers as the codec decodes them (TRAN-CAT-CD
+# 0005 is '5', ACCT-ID 00000000907 is '907'), text at its full width with
+# trailing spaces. The x'00' fill after 'Int. for a/c 00000000907' in
+# TRAN-DESC and the trailing FILLER (GAP-STB-011) is left to the raw bytes of
+# the observed baseline; FIN-CBACT04C-normal-01 asserts the description.
+#
+# The middle DISPLAY line is the whole 50-byte TRAN-CAT-BAL-RECORD the main
+# loop shows [app/cbl/CBACT04C.cbl:193]: 333.33 stored as 0000003333C, then
+# the 22 spaces of its FILLER.
+id: FIN-CBACT04C-boundary-03
+level: unit
+type: boundary
+description: >-
+  CBACT04C computes the monthly interest of one category balance whose product
+  with the rate leaves a remainder after the cents: 333.33 at 15.00 percent
+  gives 4.166625, and the interest transaction written to SYSTRAN carries
+  TRAN-AMT 4.16, truncated rather than rounded. The single account is never
+  rewritten, and the run ends with return code 0.
+inventory_ids:
+- INV-FIN-003  # CBACT04C monthly interest (calculation)
+- INV-FIN-001  # CBACT04C program
+- INV-FIN-008  # CBACT04C interest transaction record (interface)
+- INV-LAY-025  # CVTRA05Y copybook, the SYSTRAN layout
+- INV-LAY-016  # CVACT01Y copybook, the ACCTDATA layout
+- INV-DTA-006  # discgrp.txt, the DISCGRP fixture source
+- INV-DTA-017  # EBCDIC disclosure group file, its cross-check counterpart
+tags:
+- observed-only
+gap_ids:
+- GAP-UNC-008  # interest truncated without ROUNDED; whether intended is unknown
+- GAP-STB-004  # PARMDRV supplies the INTCALC PARM linkage
+- GAP-STB-010  # Berkeley DB indexed files in place of the VSAM KSDS
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
+preconditions:
+  datasets:
+    ACCTDATA:
+      records:
+      - ACCT-ID: '00000000907'
+        ACCT-ACTIVE-STATUS: 'Y'
+        ACCT-CURR-BAL: '100.00'
+        ACCT-CURR-CYC-CREDIT: '0.00'
+        ACCT-CURR-CYC-DEBIT: '0.00'
+        ACCT-GROUP-ID: 'A000000000'
+    CARDXREF:
+      records:
+      - XREF-CARD-NUM: '9999000022220907'
+        XREF-CUST-ID: '000000907'
+        XREF-ACCT-ID: '00000000907'
+    TCATBALF:
+      records:
+      - TRANCAT-ACCT-ID: '00000000907'
+        TRANCAT-TYPE-CD: '01'
+        TRANCAT-CD: '0001'
+        TRAN-CAT-BAL: '333.33'
+    DISCGRP:
+      base: DISCGRP
+  parameters:
+    parm: '2022071800'
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults: []
+inputs:
+  program: CBACT04C
+expected:
+  return_code: 0
+  messages:
+  - START OF EXECUTION OF PROGRAM CBACT04C
+  - '000000009070100010000003333C                      '
+  - END OF EXECUTION OF PROGRAM CBACT04C
+  datasets:
+    SYSTRAN:
+      count: 1
+      contains:
+      - TRAN-ID: '2022071800000001'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-AMT: '4.16'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-CARD-NUM: '9999000022220907'
+        TRAN-ORIG-TS: '2022-07-06-10.00.00.000000'
+        TRAN-PROC-TS: '2022-07-06-10.00.00.000000'
+  file_state:
+    ACCTDATA:
+      count: 1
+      contains:
+      - ACCT-ID: '907'
+        ACCT-ACTIVE-STATUS: 'Y'
+        ACCT-CURR-BAL: '100.00'
+        ACCT-CURR-CYC-CREDIT: '0.00'
+        ACCT-CURR-CYC-DEBIT: '0.00'
+        ACCT-GROUP-ID: 'A000000000'

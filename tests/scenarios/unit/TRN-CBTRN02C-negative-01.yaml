@@ -1,0 +1,104 @@
+# Reject reason 100 of CBTRN02C. The repository data never produces it (every
+# dailytran.txt card is in cardxref.txt), so one synthetic DALYTRAN record
+# carries an invented card number that the repository CARDXREF does not hold.
+# 1500-A-LOOKUP-XREF gets INVALID KEY, sets reason 100 'INVALID CARD NUMBER
+# FOUND', and 1500-B-LOOKUP-ACCT is skipped, so the account is never read
+# [app/cbl/CBTRN02C.cbl:370-392]. 2500-WRITE-REJECT-REC writes the 350-byte
+# transaction followed by the 80-byte trailer to DALYREJS
+# [app/cbl/CBTRN02C.cbl:176-182,446-465]; nothing is posted, so TRANSACT (opened
+# OUTPUT) stays empty and ACCTDATA and TCATBALF keep their fixture records; the
+# run ends with the counts and RETURN-CODE 4 [app/cbl/CBTRN02C.cbl:194-232].
+id: TRN-CBTRN02C-negative-01
+level: unit
+type: negative
+description: >-
+  CBTRN02C posts one daily transaction whose card number 9999000011110001 is not
+  in the card cross-reference. The record is rejected with reason 0100 'INVALID
+  CARD NUMBER FOUND': DALYREJS receives the 430-byte reject record (the input
+  record unchanged, then the reason and its description padded to 76), no
+  transaction is written, the account and category balance files are left
+  unchanged, the counts show 1 processed and 1 rejected, and the return code is 4.
+inventory_ids:
+- INV-TRN-074  # CBTRN02C reject 100 invalid card (rule)
+- INV-TRN-008  # CBTRN02C program
+- INV-TRN-085  # CBTRN02C DALYREJS 430-byte reject record (interface)
+- INV-TRN-080  # CBTRN02C return code 4 when any record is rejected (rule)
+- INV-TRN-086  # CBTRN02C processed and rejected counts (report)
+- INV-LAY-026  # CVTRA06Y copybook, the transaction data inside the reject record
+- INV-DTA-003  # cardxref.txt, the CARDXREF fixture source
+- INV-DTA-013  # EBCDIC card cross-reference file, its cross-check counterpart
+- INV-DTA-001  # acctdata.txt, the ACCTDATA fixture source
+- INV-DTA-011  # EBCDIC account data file, its cross-check counterpart
+- INV-DTA-007  # tcatbal.txt, the TCATBALF fixture source
+- INV-DTA-018  # EBCDIC category balance file, its cross-check counterpart
+tags: []
+gap_ids:
+- GAP-STB-010  # Berkeley DB indexed files in place of the VSAM KSDS
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
+preconditions:
+  datasets:
+    # Invented data: neither the transaction id nor the card number occurs in
+    # app/data, and the merchant is fictitious.
+    DALYTRAN:
+      records:
+      - DALYTRAN-ID: '9900000000000341'
+        DALYTRAN-TYPE-CD: '01'
+        DALYTRAN-CAT-CD: '0001'
+        DALYTRAN-SOURCE: POS TERM
+        DALYTRAN-DESC: Synthetic unknown card
+        DALYTRAN-AMT: '10.00'
+        DALYTRAN-MERCHANT-ID: '999000341'
+        DALYTRAN-MERCHANT-NAME: Synthetic Test Merchant
+        DALYTRAN-MERCHANT-CITY: Testville
+        DALYTRAN-MERCHANT-ZIP: '99999'
+        DALYTRAN-CARD-NUM: '9999000011110001'
+        DALYTRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+    CARDXREF: {base: CARDXREF}
+    ACCTDATA: {base: ACCTDATA}
+    TCATBALF: {base: TCATBALF}
+  parameters:
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults: []
+inputs:
+  program: CBTRN02C
+expected:
+  return_code: 4
+  messages:
+  - START OF EXECUTION OF PROGRAM CBTRN02C
+  - 'TRANSACTIONS PROCESSED :000000001'
+  - 'TRANSACTIONS REJECTED  :000000001'
+  - END OF EXECUTION OF PROGRAM CBTRN02C
+  reject_reason_codes: ['0100']
+  datasets:
+    # The reject record as decoded through CBTRN02C/REJECT-RECORD: text fields
+    # keep their trailing spaces, and the zoned fields DALYTRAN-CAT-CD and
+    # WS-VALIDATION-FAIL-REASON decode to their values (0001 -> 1, 0100 -> 100).
+    DALYREJS:
+      records:
+      - DALYTRAN-ID: '9900000000000341'
+        DALYTRAN-TYPE-CD: '01'
+        DALYTRAN-CAT-CD: '1'
+        DALYTRAN-SOURCE: 'POS TERM  '
+        DALYTRAN-DESC: 'Synthetic unknown card                                                                              '
+        DALYTRAN-AMT: '10.00'
+        DALYTRAN-MERCHANT-ID: '999000341'
+        DALYTRAN-MERCHANT-NAME: 'Synthetic Test Merchant                           '
+        DALYTRAN-MERCHANT-CITY: 'Testville                                         '
+        DALYTRAN-MERCHANT-ZIP: '99999     '
+        DALYTRAN-CARD-NUM: '9999000011110001'
+        DALYTRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+        DALYTRAN-PROC-TS: '                          '
+        REJECT-RECORD.REJECT-TRAN-DATA.FILLER#1: '                    '
+        WS-VALIDATION-FAIL-REASON: '100'
+        WS-VALIDATION-FAIL-REASON-DESC: 'INVALID CARD NUMBER FOUND                                                   '
+    TRANSACT:
+      count: 0
+  # Unchanged state: the observed baseline holds every decoded record and the raw
+  # bytes of both files, which equal the repository fixtures; the counts below are
+  # the inline part of that assertion.
+  file_state:
+    ACCTDATA:
+      count: 50
+    TCATBALF:
+      count: 50

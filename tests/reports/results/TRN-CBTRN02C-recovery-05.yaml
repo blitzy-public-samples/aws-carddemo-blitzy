@@ -1,0 +1,21 @@
+adapter: gnucobol-batch
+baseline_version: 1.0.0
+decoded: null
+evidence_path: tests/reports/results/TRN-CBTRN02C-recovery-05.yaml
+execution_fingerprint: ec979512b2eba41818cda2709d84e8cf2c30143c8a7ddc4f4e3cf209e7903588
+execution_id: gnucobol-batch-9bc3ac07237d1c56
+gap_id: GAP-MIS-013
+reason: missing-prerequisite
+scenario_digest: a317cd9b6cc298eb52eb8b3a7286f30089a383d289a336e5792f2dfadd0d7262
+scenario_id: TRN-CBTRN02C-recovery-05
+source_identity:
+  commit: 33191534c42cb9685055e0d72b5f7a52bb516b13
+  tree: app
+  units:
+    app/cbl/CBTRN02C.cbl: 136ab808a10d01814269a4a29bd6c249b1b86952d0abded98419458db43f2aef
+    app/cpy/CVACT01Y.cpy: 81a08bad15af5664326a6f0af3650f570821c4857ffdec3a6a39f91f07dca728
+    app/cpy/CVACT03Y.cpy: ffc6079e09b28739e154bf6c1e1c36d408209faa91f6cf7008078dc596a1c370
+    app/cpy/CVTRA01Y.cpy: 50637f13692c89b17a2fc60d249dc54e9eb3569d933afca3cdcf65b491a9d5ba
+    app/cpy/CVTRA05Y.cpy: d7bde0e78ff608497087b9909c889ed39e347269f964bda767b92b547fbb5fec
+    app/cpy/CVTRA06Y.cpy: c5c69f1b86c5a10156d3c5881d7cf387e6b925aae32825360f85bf4056a554a1
+status: implemented-unexecuted

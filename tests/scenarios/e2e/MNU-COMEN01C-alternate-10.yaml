@@ -1,0 +1,58 @@
+id: MNU-COMEN01C-alternate-10
+level: e2e
+type: alternate
+description: >-
+  USER0001 signs on, reaches the main menu that COMEN01C sends under CM00, and
+  selects option 10 'Bill Payment'. PROCESS-ENTER-KEY right-justifies the
+  entered option into WS-OPTION-X and zero-fills it, giving 10, which is
+  numeric, not zero and not above CDEMO-MENU-OPT-COUNT (10); the option is of
+  user type U and its program name does not begin 'DUMMY', so COMEN01C
+  transfers control with XCTL to COBIL00C with the program context reset to
+  enter [app/cbl/COMEN01C.cbl:36-37,44-45,115-155,218-219]
+  [app/cpy/COMEN02Y.cpy:21,80-84]. Entered from the menu, COBIL00C finds no
+  transaction selected in its COMMAREA extension, so it validates nothing and
+  sends its bill-payment map COBIL00 headed with its own transaction CB00 and
+  program name COBIL00C [app/cbl/COBIL00C.cbl:37-38,64-72,107-122,289-326].
+inventory_ids:
+- INV-MNU-018
+- INV-MNU-001
+- INV-MNU-003
+- INV-BIL-002
+- INV-CFG-018
+- INV-LAY-002
+- INV-LAY-003
+- INV-LAY-005
+- INV-LAY-006
+- INV-LAY-008
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-003
+- GAP-INF-012
+preconditions:
+  datasets:
+    USRSEC:
+      base: USRSEC
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+    '@map': COSGN00
+  - aid: ENTER
+    fields:
+      OPTION: '10'
+    '@map': COMEN01
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+  - '@map': COBIL00
+    TRNNAME: CB00
+    PGMNAME: COBIL00C

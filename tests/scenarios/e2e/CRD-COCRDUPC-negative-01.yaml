@@ -1,0 +1,129 @@
+# ENTER on the credit card update screen with a card number but no account
+# number. USER0001 signs on through CC00 and COSGN00C transfers control to the
+# main menu COMEN01C [app/cbl/COSGN00C.cbl:221-240]; option 5 'Credit Card
+# Update' XCTLs to COCRDUPC with CDEMO-FROM-PROGRAM COMEN01C and
+# CDEMO-PGM-CONTEXT 0 [app/cpy/COMEN02Y.cpy:49-53] [app/cbl/COMEN01C.cbl:145-155].
+# The entry test of COCRDUPC reads CDEMO-FROM-PROGRAM before the COMMAREA is
+# moved in, but whichever way it falls, a menu entry that is not a reentry
+# reaches the fresh-entry branch, which clears the program's own COMMAREA,
+# sends COCRDUP with both filters blank, the INFOMSG prompt 'Please enter
+# Account and Card Number' and no error, marks the COMMAREA for reentry and
+# returns TRANSID CCUP, reading no file [app/cbl/COCRDUPC.cbl:384-397,502-512,
+# 546-558,1035-1046,1084-1085,1138-1163].
+#
+# Step 3 erases ACCTSID, types repository card 0500024453765740 (the first
+# record of carddata.txt) into CARDSID and presses ENTER. On reentry the
+# details are not fetched yet, so WHEN OTHER performs 1000-PROCESS-INPUTS:
+# 1100-RECEIVE-MAP turns the empty account filter into LOW-VALUES in CC-ACCT-ID
+# [app/cbl/COCRDUPC.cbl:535-543,578-603]. 1210-EDIT-ACCOUNT finds it blank,
+# sets INPUT-ERROR and FLG-ACCTFILTER-BLANK and, since WS-RETURN-MSG is still
+# off from the start of the task, sets WS-PROMPT-FOR-ACCT 'Account number not
+# provided' [app/cbl/COCRDUPC.cbl:177-178,384,721-733]. 1220-EDIT-CARD accepts
+# the 16-digit card and keeps it in CDEMO-CARD-NUM, so the account filter alone
+# is blank, 'No input received' is not set and the account message is the one
+# shown [app/cbl/COCRDUPC.cbl:641-661,762-800].
+#
+# 2000-DECIDE-ACTION reads CARDDAT only when both filters are valid, so no
+# CARDDAT read is issued although the CARDDATA fixture holds the card
+# [app/cbl/COCRDUPC.cbl:954-966]. 3200-SETUP-SCREEN-VARS moves LOW-VALUES to
+# ACCTSID on either branch of its zero test, puts the card number back in
+# CARDSID and leaves the name, status and expiry fields LOW-VALUES because the
+# details are not fetched; 3250-SETUP-INFOMSG sets the search prompt again and
+# moves the error to ERRMSG [app/cbl/COCRDUPC.cbl:1082-1133,1138-1163].
+# 3300-SETUP-SCREEN-ATTRS keeps both filters unprotected, then writes '*' in
+# ACCTSID because the account filter is blank on a reentry
+# [app/cbl/COCRDUPC.cbl:1173-1180,1247-1251].
+#
+# Screen fields are compared at their full BMS length, trailing spaces
+# included: ERRMSG is the 75-byte WS-RETURN-MSG in the 80-byte field of COCRDUP
+# (78 on COMEN01), INFOMSG is 40 bytes, ACCTSID 11, CARDSID 16, CRDNAME 50;
+# positions the program leaves as LOW-VALUES read back as spaces
+# [app/bms/COCRDUP.bms:84-157]. CURDATE and CURTIME come from the region clock,
+# so they are matchers. The UniKix copy's COCRDUPC.cl2 differs from app/ only in
+# 1230-EDIT-NAME (GAP-DOC-023), which this path does not reach, and its
+# COCRDUP.bms is identical. The baseline is derived from the source: no TPE
+# region runs in CI.
+id: CRD-COCRDUPC-negative-01
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, selects option 5 (Credit Card Update) on the main menu
+  and, on the COCRDUPC card update screen, presses ENTER with the account
+  number field empty and repository card 0500024453765740 in the card number
+  field. COCRDUPC reads no file and sends the card update screen again with '*'
+  in the account number field, the card number kept, no card details, the
+  prompt 'Please enter Account and Card Number' and 'Account number not
+  provided' in the message line.
+# Primary item first, then the program, the maps asserted, the transaction the
+# ENTER runs under and the online-only copybooks COCRDUPC copies. No CSD file is
+# read on this path. Sign-on and the menu option itself (CC00, CM00, USRSEC,
+# INV-MNU-013) are verified by their own scenarios; batch record copybooks and
+# data files are verified at the lowest level that executes them.
+inventory_ids:
+- INV-CRD-054  # COCRDUPC message 'Account number not provided' (rule)
+- INV-CRD-003  # COCRDUPC program
+- INV-MNU-003  # COMEN01 map, the main menu the sign-on lands on
+- INV-CRD-006  # COCRDUP map, sent on entry and again with the refusal
+- INV-CFG-015  # CCUP transaction, the TRANSID COCRDUPC returns with and the ENTER runs under
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA whose reenter flag routes the ENTER to the edits
+- INV-LAY-005  # COTTL01Y copybook, TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y copybook, CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y copybook, copied by COCRDUPC
+- INV-LAY-009  # CSMSG02Y copybook, the abend data COCRDUPC copies
+- INV-LAY-011  # CSSTRPFY copybook, YYYY-STORE-PFKEY mapping ENTER to CCARD-AID-ENTER
+- INV-LAY-019  # CVCRD01Y copybook, CCARD-AID and the CC-ACCT-ID and CC-CARD-NUM filters
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-006  # CRD end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user USER0001 from USRSEC; CARDDATA holds the
+    # card entered, which this path never reads.
+    USRSEC: {base: USRSEC}
+    CARDDATA: {base: CARDDATA}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - {transid: CC00, aid: ENTER, fields: {USERID: USER0001, PASSWD: PASSWORD}, '@map': COSGN00}
+  - {aid: ENTER, fields: {OPTION: '5'}, '@map': COMEN01}
+  - {aid: ENTER, fields: {ACCTSID: '', CARDSID: '0500024453765740'}, '@map': COCRDUP}
+expected:
+  screens:
+  # One entry per step, each the screen the step ends on.
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN005: '05. Credit Card Update                  '
+    ERRMSG: '                                                                              '
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    PGMNAME: COCRDUPC
+    ACCTSID: '           '
+    CARDSID: '                '
+    INFOMSG: 'Please enter Account and Card Number    '
+    ERRMSG: '                                                                                '
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    PGMNAME: COCRDUPC
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time, format: '%H:%M:%S'}
+    ACCTSID: '*          '
+    CARDSID: '0500024453765740'
+    CRDNAME: '                                                  '
+    CRDSTCD: ' '
+    EXPMON: '  '
+    EXPYEAR: '    '
+    INFOMSG: 'Please enter Account and Card Number    '
+    ERRMSG: 'Account number not provided                                                     '
+  # One ERRMSG value per step: blank on the menu and on the first card update
+  # screen, then the refusal of the blank account number.
+  messages:
+  - '                                                                              '
+  - '                                                                                '
+  - 'Account number not provided                                                     '

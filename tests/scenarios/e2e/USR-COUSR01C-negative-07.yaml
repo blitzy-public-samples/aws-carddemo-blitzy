@@ -1,0 +1,151 @@
+# Duplicate user id on Add User. ADMIN001 signs on through CC00 and COSGN00C
+# routes the type 'A' user to the admin menu COADM01 [app/cbl/COSGN00C.cbl:221-237].
+# Option '2' is 'User Add (Security)', so COADM01C transfers control with XCTL to
+# COUSR01C [app/cbl/COADM01C.cbl:115-145] [app/cpy/COADM02Y.cpy:29-32], which, not
+# yet re-entered, sends an empty COUSR01 and returns with TRANSID CU01
+# [app/cbl/COUSR01C.cbl:82-87,107-110]. The third step re-enters COUSR01C under
+# CU01: RECEIVE MAP fills COUSR1AI, every field is non-blank, so
+# PROCESS-ENTER-KEY moves the entries into the CSUSR01Y record and WRITEs it to
+# USRSEC keyed by the user id [app/cbl/COUSR01C.cbl:115-160,238-248]. USER0002
+# is already a USRSEC record (the seventh in-stream user of DUSRSECJ
+# [app/jcl/DUSRSECJ.jcl:41]), so the WRITE answers DUPREC and the DUPKEY/DUPREC
+# branch moves 'User ID already exist...' to WS-MESSAGE, puts the cursor on the
+# user id and sends COUSR01 again with ERASE [app/cbl/COUSR01C.cbl:250-266,184-196].
+# USER0002 and TESTPWD1 are the user record being added, entered on COUSR01;
+# nobody signs on with them.
+# The baseline is derived from the source: no TPE region runs in CI.
+id: USR-COUSR01C-negative-07
+level: e2e
+type: negative
+description: >-
+  ADMIN001 signs on, selects option 2 'User Add (Security)' on the admin menu and
+  enters a complete new user whose id, USER0002, already exists in USRSEC.
+  COUSR01C's WRITE is refused as a duplicate key, the Add User screen COUSR01
+  comes back with the entries kept and 'User ID already exist...', and USRSEC
+  is left as loaded.
+# The duplicate-key message is the primary item, then the program, the maps the
+# steps assert, the CU01 transaction the WRITE runs under and the CSD file it is
+# refused on, then the online-only copybooks COUSR01C copies. CSUSR01Y and the
+# USRSEC data file are left out: their lowest executing level is the DUSRSECJ
+# integration scenario.
+inventory_ids:
+- INV-USR-029  # COUSR01C message 'User ID already exist...' (rule)
+- INV-USR-002  # COUSR01C program
+- INV-MNU-004  # COADM01 map, the admin menu option 2 is entered on
+- INV-USR-006  # COUSR01 map, the Add User screen
+- INV-CFG-024  # CU01 transaction, under which the WRITE is issued
+- INV-CFG-008  # USRSEC CSD file, the WRITE target
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carried through the XCTL
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the screen date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COUSR01C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-004  # user administration (USR) end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    # COSGN00C reads ADMIN001 and COUSR01C's WRITE collides with USER0002.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: ADMIN001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '2'}
+    '@map': COADM01
+  - aid: ENTER
+    fields: {FNAME: TESTFIRST, LNAME: TESTLAST, USERID: USER0002, PASSWD: TESTPWD1, USRTYPE: U}
+    '@map': COUSR01
+expected:
+  # Screen fields keep their full BMS length with trailing spaces: the titles
+  # are 40 characters, FNAME and LNAME 20, ERRMSG 78.
+  screens:
+  - '@map': COADM01
+  - '@map': COUSR01
+  # COUSR1AO redefines COUSR1AI [app/cpy-bms/COUSR01.CPY:91], so the entries
+  # just received are sent back unchanged. PASSWD is a dark (DRK) field whose
+  # content the screen does not show, so it is not asserted.
+  - '@map': COUSR01
+    TRNNAME: CU01
+    PGMNAME: COUSR01C
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    FNAME: 'TESTFIRST           '
+    LNAME: 'TESTLAST            '
+    USERID: USER0002
+    USRTYPE: U
+    ERRMSG: 'User ID already exist...                                                      '
+  # The refused WRITE adds nothing: USRSEC still holds the 10 loaded users, with
+  # USER0002 still AJITH KUMAR, in key order.
+  file_state:
+    USRSEC:
+      records:
+      - SEC-USR-ID: ADMIN001
+        SEC-USR-FNAME: 'MARGARET            '
+        SEC-USR-LNAME: 'GOLD                '
+        SEC-USR-PWD: PASSWORD
+        SEC-USR-TYPE: A
+        SEC-USR-FILLER: '                       '
+      - SEC-USR-ID: ADMIN002
+        SEC-USR-FNAME: 'RUSSELL             '
+        SEC-USR-LNAME: 'RUSSELL             '
+        SEC-USR-PWD: PASSWORD
+        SEC-USR-TYPE: A
+        SEC-USR-FILLER: '                       '
+      - SEC-USR-ID: ADMIN003
+        SEC-USR-FNAME: 'RAYMOND             '
+        SEC-USR-LNAME: 'WHITMORE            '
+        SEC-USR-PWD: PASSWORD
+        SEC-USR-TYPE: A
+        SEC-USR-FILLER: '                       '
+      - SEC-USR-ID: ADMIN004
+        SEC-USR-FNAME: 'EMMANUEL            '
+        SEC-USR-LNAME: 'CASGRAIN            '
+        SEC-USR-PWD: PASSWORD
+        SEC-USR-TYPE: A
+        SEC-USR-FILLER: '                       '
+      - SEC-USR-ID: ADMIN005
+        SEC-USR-FNAME: 'GRANVILLE           '
+        SEC-USR-LNAME: 'LACHAPELLE          '
+        SEC-USR-PWD: PASSWORD
+        SEC-USR-TYPE: A
+        SEC-USR-FILLER: '                       '
+      - SEC-USR-ID: USER0001
+        SEC-USR-FNAME: 'LAWRENCE            '
+        SEC-USR-LNAME: 'THOMAS              '
+        SEC-USR-PWD: PASSWORD
+        SEC-USR-TYPE: U
+        SEC-USR-FILLER: '                       '
+      - SEC-USR-ID: USER0002
+        SEC-USR-FNAME: 'AJITH               '
+        SEC-USR-LNAME: 'KUMAR               '
+        SEC-USR-PWD: PASSWORD
+        SEC-USR-TYPE: U
+        SEC-USR-FILLER: '                       '
+      - SEC-USR-ID: USER0003
+        SEC-USR-FNAME: 'LAURITZ             '
+        SEC-USR-LNAME: 'ALME                '
+        SEC-USR-PWD: PASSWORD
+        SEC-USR-TYPE: U
+        SEC-USR-FILLER: '                       '
+      - SEC-USR-ID: USER0004
+        SEC-USR-FNAME: 'AVERARDO            '
+        SEC-USR-LNAME: 'MAZZI               '
+        SEC-USR-PWD: PASSWORD
+        SEC-USR-TYPE: U
+        SEC-USR-FILLER: '                       '
+      - SEC-USR-ID: USER0005
+        SEC-USR-FNAME: 'LEE                 '
+        SEC-USR-LNAME: 'TING                '
+        SEC-USR-PWD: PASSWORD
+        SEC-USR-TYPE: U
+        SEC-USR-FILLER: '                       '

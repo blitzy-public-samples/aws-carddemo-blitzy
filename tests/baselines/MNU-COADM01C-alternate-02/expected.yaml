@@ -1,0 +1,57 @@
+# Derived baseline (capture_platform: derived), authored from the COBOL and BMS
+# source because no TPE region runs in CI. The scenario is tagged
+# inferred-not-observed under GAP-INF-003 (menu e2e baselines) and GAP-INF-012
+# (online-only copybooks). Importing an eligible UniKix run replaces it.
+#
+# It pins GAP-DOC-019 as the source has it, not the tech spec's "No access -
+# Admin Only". CA00 starts COADM01C [app/csd/CARDDEMO.CSD:327-328]. Entered
+# without a COMMAREA, COADM01C moves 'COSGN00C' to CDEMO-FROM-PROGRAM and
+# XCTLs, with no COMMAREA, to CDEMO-TO-PROGRAM, which it sets to 'COSGN00C'
+# when that field holds low-values or spaces [app/cbl/COADM01C.cbl:82-84,
+# 160-167]. COCOM01Y gives the field no VALUE clause [app/cpy/COCOM01Y.cpy:24],
+# so that starting content is an inference (GAP-INF-003). COADM01C tests no
+# user type. The only admin-only message is COMEN01C's, which needs an option
+# of user type 'A' [app/cbl/COMEN01C.cbl:136-143], and all 10 COMEN02Y options
+# are 'U' [app/cpy/COMEN02Y.cpy:28-84]. The exact ERRMSG of each formatted
+# screen therefore excludes it. Closing GAP-DOC-019 needs an imported UniKix
+# run of this scenario plus the documentation owner's decision.
+#
+# One screen per step, each the reply to the step's AID. Every CardDemo screen
+# task ends with RETURN TRANSID, so the steps end the session before CA00:
+# 1. USER0001 signs on and COMEN01C sends the main menu with a blank message
+#    [app/cbl/COSGN00C.cbl:223-239] [app/cbl/COMEN01C.cbl:86-90,182-194].
+# 2. PF3 on the menu: COMEN01C XCTLs to COSGN00C without a COMMAREA, and
+#    COSGN00C sends a fresh sign-on screen [app/cbl/COMEN01C.cbl:96-98,
+#    170-177] [app/cbl/COSGN00C.cbl:80-83,145-157].
+# 3. PF3 on the sign-on screen: COSGN00C sends the 80-byte WS-MESSAGE holding
+#    CCDA-MSG-THANK-YOU as plain text and returns with no TRANSID
+#    [app/cbl/COSGN00C.cbl:85-90,162-172] [app/cpy/CSMSG01Y.cpy:18-19].
+# 4. CA00 lands on the sign-on screen, which the adapter identifies before it
+#    presses ENTER, so this screen is ENTER's reply, not the fresh screen:
+#    CC00 finds USERID blank and resends it with 'Please enter User ID ...'
+#    [app/cbl/COSGN00C.cbl:85-87,108-122]. The header comes from
+#    POPULATE-HEADER-INFO and COTTL01Y [app/cbl/COSGN00C.cbl:177-204]
+#    [app/cpy/COTTL01Y.cpy:17-22].
+#
+# Values are whole BMS fields, trailing spaces kept; a field left at LOW-VALUES
+# shows as spaces. APPLID and SYSID come from EXEC CICS ASSIGN and PASSWD is a
+# dark field, so none of them is asserted.
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COSGN00
+  ERRMSG: '                                                                              '
+  PGMNAME: COSGN00C
+  TRNNAME: CC00
+  USERID: '        '
+- '@map': TEXT
+  '@text': "Thank you for using CardDemo application...                                     \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                "
+- '@map': COSGN00
+  ERRMSG: 'Please enter User ID ...                                                      '
+  PGMNAME: COSGN00C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CC00
+  USERID: '        '

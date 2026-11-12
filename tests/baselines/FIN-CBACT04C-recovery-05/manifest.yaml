@@ -1,0 +1,23 @@
+# Derived baseline: no adapter injects the TCATBALF close failure after a
+# successful open (GAP-MIS-013), so expected.yaml was authored from
+# app/cbl/CBACT04C.cbl, not captured, and is inferred-not-observed
+# (GAP-INF-013). It names no execution_id or execution_fingerprint and holds no
+# datasets/ until an observed run replaces it (MINOR if the decoded outcome is
+# equal, MAJOR if it differs). source_identity is what a gnucobol-batch run of
+# CBACT04C executes: the program and its COPY closure. source_commit is HEAD at
+# authoring; app/ there is byte-identical to the suite's starting commit
+# 93ebec71ff7b59a68cedd7c501afe496a8eaa68d.
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: derived
+source_commit: ae99c6047a7d2fbbc2f505e51450522dd38e3b36
+source_identity:
+  commit: ae99c6047a7d2fbbc2f505e51450522dd38e3b36
+  tree: app
+  units:
+    app/cbl/CBACT04C.cbl: 76dea08b410b653ee2fa967c564e9f2e992b7c09f52b2d1fbb5a212149aefbce
+    app/cpy/CVACT01Y.cpy: 81a08bad15af5664326a6f0af3650f570821c4857ffdec3a6a39f91f07dca728
+    app/cpy/CVACT03Y.cpy: ffc6079e09b28739e154bf6c1e1c36d408209faa91f6cf7008078dc596a1c370
+    app/cpy/CVTRA01Y.cpy: 50637f13692c89b17a2fc60d249dc54e9eb3569d933afca3cdcf65b491a9d5ba
+    app/cpy/CVTRA02Y.cpy: 7828fae489c59944b4310e223028a8d3a525ccf4ead113c062bcaff04b52bf9c
+    app/cpy/CVTRA05Y.cpy: d7bde0e78ff608497087b9909c889ed39e347269f964bda767b92b547fbb5fec

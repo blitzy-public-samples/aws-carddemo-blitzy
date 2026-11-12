@@ -1,0 +1,98 @@
+# The COUSR01C 'Add User' screen refuses an entry without a password. ADMIN001
+# signs on through CC00 and COSGN00C routes the type 'A' user to COADM01C
+# [app/cbl/COSGN00C.cbl:221-237]. Option '2' of the admin menu is
+# 'User Add (Security)', so COADM01C sets CDEMO-PGM-CONTEXT to 0 and XCTLs to
+# COUSR01C [app/cbl/COADM01C.cbl:115-145] [app/cpy/COADM02Y.cpy:29-32].
+# COUSR01C, not re-entered, clears its output map, sends COUSR01 with its own
+# header (TRNNAME 'CU01', PGMNAME 'COUSR01C') and a blank message, and returns
+# with TRANSID CU01 [app/cbl/COUSR01C.cbl:36-37,73-110,184-233].
+# ENTER runs CU01 again. PROCESS-ENTER-KEY tests the fields in screen order and
+# stops at the first empty one: First Name, Last Name and User ID are filled, so
+# the PASSWD test (SPACES OR LOW-VALUES) is the one that holds. It moves
+# 'Password can NOT be empty...' to WS-MESSAGE, puts the cursor on PASSWD and
+# sends COUSR01 again [app/cbl/COUSR01C.cbl:115-151]. The empty value leaves the
+# password field as the first send left it, without data, so it is received as
+# low-values or spaces and the test holds either way.
+# WS-ERR-FLG is 'Y', so the USRSEC WRITE is never reached
+# [app/cbl/COUSR01C.cbl:153-160,238-248]: TESTU001 is not added and USRSEC keeps
+# the 10 fixture users. That WRITE of one new record is COUSR01C's only USRSEC
+# effect, so the unchanged count is the file-state assertion.
+# Expected values are derived from the source (no TPE region runs in CI):
+# - COUSR1AO redefines the received COUSR1AI [app/cpy-bms/COUSR01.CPY:17,91], so
+#   the entered first name, last name, user id and type are sent back as received,
+#   each padded with spaces to its BMS length. PASSWD is a dark (DRK) field and
+#   is not asserted.
+# - ERRMSG is the 78-byte ERRMSGO, so the 28-character message is followed by 50
+#   spaces (WS-MESSAGE X(80) moved to X(78)); comparisons never trim.
+# - The header is POPULATE-HEADER-INFO's [app/cbl/COUSR01C.cbl:214-233]: the
+#   COTTL01Y titles, CU01, COUSR01C, CURDATE as mm/dd/yy of the run date and
+#   CURTIME as the 8-character hh:mm:ss. Both come from the region clock, so they
+#   are matchers and the clock is relative.
+id: USR-COUSR01C-negative-05
+level: e2e
+type: negative
+description: >-
+  ADMIN001 signs on, selects admin menu option 2 'User Add (Security)' and, on
+  the COUSR01 Add User screen, enters first name, last name, user id TESTU001 and
+  user type U but no password. COUSR01C sends COUSR01 again with the entered
+  values and 'Password can NOT be empty...' in ERRMSG, and writes no USRSEC
+  record.
+inventory_ids:
+- INV-USR-026  # COUSR01C message 'Password can NOT be empty...' (rule)
+- INV-USR-002  # COUSR01C program
+- INV-USR-006  # COUSR01 map, the screen the add is entered on and refused on
+- INV-MNU-004  # COADM01 map, the admin menu option 2 is entered on
+- INV-CFG-024  # CU01 transaction, under which the add is processed
+- INV-CFG-008  # USRSEC CSD file, read at sign-on and left unchanged
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA passed with the XCTL and RETURN
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the header date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COUSR01C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-004  # user administration (USR) end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user ADMIN001 from USRSEC; the refused add
+    # leaves its 10 users as they are.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: ADMIN001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '2'}
+    '@map': COADM01
+  # USERID and PASSWD here are the user record being added, not a sign-on.
+  - aid: ENTER
+    fields: {FNAME: TESTFIRST, LNAME: TESTLAST, USERID: TESTU001, PASSWD: '', USRTYPE: U}
+    '@map': COUSR01
+expected:
+  screens:
+  - '@map': COADM01
+  - '@map': COUSR01
+    TRNNAME: CU01
+    PGMNAME: COUSR01C
+    ERRMSG: '                                                                              '
+  - '@map': COUSR01
+    TRNNAME: CU01
+    PGMNAME: COUSR01C
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    FNAME: 'TESTFIRST           '
+    LNAME: 'TESTLAST            '
+    USERID: TESTU001
+    USRTYPE: U
+    ERRMSG: 'Password can NOT be empty...                                                  '
+  file_state:
+    USRSEC:
+      count: 10

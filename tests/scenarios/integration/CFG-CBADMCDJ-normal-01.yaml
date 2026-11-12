@@ -1,0 +1,76 @@
+# CBADMCDJ has one step, STEP1, which runs the CICS CSD utility DFHCSDUP from the z/OS CICS load library
+# against the z/OS CSD [app/jcl/CBADMCDJ.jcl:27-30]. Its in-stream input defines the CARDDEMO group's
+# LIBRARY(COM2DOLL), mapsets, programs and transactions, then lists the group [app/jcl/CBADMCDJ.jcl:33-162];
+# several of those resources are absent from app/csd/CARDDEMO.CSD (GAP-DOC-017). It defines no FILE resource.
+# The UniKix copy's member is the same job [samples/m2/unikix/UniKix_CardDemo_runtime_v1.zip:migrated_app/jcl/CBADMCDJ].
+#
+# UniKix supplies no DFHCSDUP: the test-owned region takes its CSD resources from the copy's catlg/tpe
+# resource lists, installed at region creation (commands.yaml region_install), never from this job. So the
+# derived expectation is the job with its DFHCSDUP step absent: no step is reported, nothing abends, and the
+# region keeps the resources and files it was installed and reset with.
+#   - messages: 'baseline'. The baseline holds the complete, exactly compared list, which is empty: no
+#     'STEP STEP1 RC <nnnn>' or 'STEP STEP1 ABEND' line and no DFHCSDUP listing. An inline list would be an
+#     ordered subsequence of the lines, and an empty one would assert nothing.
+#   - return_code: 0, since no step ran and none abended.
+#   - @REGION-FILES: the 14 files of the copy's fct.lst, each open and enabled as the reset before every
+#     scenario leaves them, unchanged by a job that defines no file (adapters.base.format_region_files:
+#     '<name> open|closed enabled|disabled', sorted by name).
+#
+# The scenario stays blocked. Without a UniKix installation every unikix scenario is blocked under
+# GAP-MIS-009. With one, the adapter refuses any job with a DFHCSDUP step before it reaches the region
+# (GAP-MIS-016) until an operator confirms an equivalent, or confirms that UniKix installs CSD resources only
+# from its resource lists; @REGION-FILES further needs a confirmed region file inquiry (GAP-MIS-011), and the
+# job a confirmed BPE submission (GAP-MIS-006). The baseline is derived and is replaced only by imported
+# UniKix evidence.
+#
+# Only unikix can run it: CBADMCDJ is not in the gnucobol-batch job driver's step tables, and INV-CFG-034 is
+# a JCL-semantics item, which the job driver never evaluates.
+id: CFG-CBADMCDJ-normal-01
+level: integration
+type: normal
+description: >-
+  CBADMCDJ on the test-owned UniKix region: its only step runs the z/OS CICS CSD utility DFHCSDUP
+  [app/jcl/CBADMCDJ.jcl:27-30], which UniKix does not supply, so the step is absent. The job reports no step
+  and ends with return code 0, and the region's 14 fct.lst files stay open and enabled as the reset left
+  them, because the region's CSD resources come from the catlg/tpe resource lists installed at region
+  creation and the job defines no file.
+inventory_ids:
+- INV-CFG-030  # CBADMCDJ job (app/jcl/CBADMCDJ.jcl)
+- INV-CFG-034  # CBADMCDJ JCL CSD install by DFHCSDUP (app/jcl/CBADMCDJ.jcl:27-30)
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-010  # CFG baselines derived, never observed
+- GAP-MIS-016  # no confirmed UniKix equivalent of DFHCSDUP; the adapter blocks the job
+- GAP-MIS-011  # no confirmed region file inquiry, so @REGION-FILES is unavailable on unikix
+- GAP-MIS-006  # BPE job submission unconfirmed
+- GAP-DOC-017  # the job defines LIBRARY(COM2DOLL) and mapsets the CSD lacks [app/jcl/CBADMCDJ.jcl:33-74]
+# No precondition dataset: the running, test-owned region is the adapter's session state, reset before the
+# scenario. The outcome holds no date, and unikix cannot fix its clock (GAP-MIS-015), so the clock is relative.
+preconditions:
+  datasets: {}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  job: CBADMCDJ
+expected:
+  return_code: 0
+  messages: baseline
+  file_state:
+    '@REGION-FILES':
+      records:
+      - 'ACCTDAT open enabled'
+      - 'CARDAIX open enabled'
+      - 'CARDDAT open enabled'
+      - 'CCXREF open enabled'
+      - 'CUSTDAT open enabled'
+      - 'CXACAIX open enabled'
+      - 'DISCGRP open enabled'
+      - 'TCATBALF open enabled'
+      - 'TRANCATG open enabled'
+      - 'TRANSACT open enabled'
+      - 'TRANSAIX open enabled'
+      - 'TRANTYPE open enabled'
+      - 'TRXFL open enabled'
+      - 'USRSEC open enabled'

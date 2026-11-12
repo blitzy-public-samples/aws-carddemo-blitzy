@@ -1,0 +1,158 @@
+# COCRDSLC's HANDLE ABEND routine, reached by an abend while the card master
+# is read for card 0500024453765740.
+#
+# Step 1: USER0001 (type U in the USRSEC fixture) signs on through CC00 and
+# COSGN00C XCTLs to COMEN01C [app/cbl/COSGN00C.cbl:221-240].
+# Step 2: option '4' 'Credit Card View' makes COMEN01C XCTL to COCRDSLC with
+# CDEMO-PGM-CONTEXT 0 [app/cpy/COMEN02Y.cpy:43-47] [app/cbl/COMEN01C.cbl:115-155].
+# COCRDSLC registers ABEND-ROUTINE with HANDLE ABEND at the start of every task
+# [app/cbl/COCRDSLC.cbl:250-252], takes the CDEMO-PGM-ENTER path, sends COCRDSL
+# with both filters blank and the prompt 'Please enter Account and Card Number',
+# sets CDEMO-PGM-REENTER and returns TRANSID CCDL
+# [app/cbl/COCRDSLC.cbl:349-356,394-406,457-497,563-576].
+# Step 3: CCDL re-enters COCRDSLC. Repository account 00000000050 and its card
+# 0500024453765740 (record 1 of carddata.txt) pass both filter edits, so
+# 9000-READ-DATA runs [app/cbl/COCRDSLC.cbl:357-370,582-720,726-731]. The
+# CARDDAT read by card number in 9100-GETCARD-BYACCTCARD abends under the fault
+# instead of returning a response [app/cbl/COCRDSLC.cbl:736-750], so CARDAIX is
+# never read and its CSD file item is not listed.
+#
+# ABEND-ROUTINE [app/cbl/COCRDSLC.cbl:857-877] moves 'UNEXPECTED ABEND
+# OCCURRED.' to ABEND-MSG only when ABEND-MSG equals LOW-VALUES. ABEND-DATA is
+# its own 01 level [app/cbl/COCRDSLC.cbl:224], which the task's INITIALIZE does
+# not touch [app/cbl/COCRDSLC.cbl:254-256], and CSMSG02Y declares its fields
+# with VALUE SPACES [app/cpy/CSMSG02Y.cpy:21-29]. The only moves to ABEND-CODE
+# and ABEND-REASON are in the WHEN OTHER branch of 0000-MAIN
+# [app/cbl/COCRDSLC.cbl:373-381], which this path does not take, and nothing
+# moves to ABEND-MSG, so the test is false and the default text is not moved
+# (GAP-DEF-014). The routine moves LIT-THISPGM 'COCRDSLC' to ABEND-CULPRIT,
+# sends the 134 bytes of ABEND-DATA (ABEND-CODE X(4), ABEND-CULPRIT X(8),
+# ABEND-REASON X(50), ABEND-MSG X(72)) with SEND FROM ... NOHANDLE, cancels the
+# handler and abends the task with ABCODE 9999.
+#
+# Priority decision: the message INV-CRD-043 names is expected absent. The
+# test plan expected 'UNEXPECTED ABEND OCCURRED.' on this screen, but a derived
+# baseline pins what the source does, and the source never moves the text; the
+# question is registered as GAP-DEF-014 and the code under app/ is never fixed.
+#
+# The screen is derived, never observed (GAP-INF-006): the SEND has no map and
+# no ERASE, and the 9999 abend that follows ends the task with the region's own
+# notice. It is written as the plain-text screens are, the sent bytes from
+# row 1, column 1 and blanks elsewhere, so the 134 bytes fill row 1 and the
+# first 54 columns of row 2: four blank code bytes, COCRDSLC, and 122 blanks.
+# Nothing was observed to pin, so the derived screen stands rather than an
+# observed-only one; the unikix evidence of this scenario settles the screen
+# the region shows.
+#
+# No mechanism forces an abend in the TPE region, so the fault makes the
+# scenario implemented-unexecuted (MissingPrerequisite, GAP-MIS-014); in CI no
+# TPE region runs and it is blocked. The UniKix copies of COCRDSLC, COCRDSL.bms
+# and CSMSG02Y are the same as app/'s, so no doc-conflict entry applies.
+id: CRD-COCRDSLC-recovery-04
+level: e2e
+type: recovery
+description: >-
+  USER0001 signs on, selects main menu option 4 'Credit Card View' and enters
+  account 00000000050 and card 0500024453765740 on the COCRDSLC screen (CCDL).
+  Both filters pass, and the card master read on CARDDAT abends. COCRDSLC's
+  HANDLE ABEND routine names itself as the culprit, sends the abend data as an
+  unformatted screen and abends the task with code 9999. Because ABEND-MSG
+  starts as spaces rather than LOW-VALUES, the default 'UNEXPECTED ABEND
+  OCCURRED.' is not moved: the screen shows COCRDSLC after four blank code
+  bytes, with a blank reason and message.
+# Primary item first, then the program, the maps asserted, the transaction
+# step 3 runs under, the CSD file the card lookup reads, and the online-only
+# copybooks COCRDSLC copies. Sign-on and the menu programs are verified by the
+# SEC and MNU scenarios; the batch record copybooks and the data files are
+# verified at the lowest level that executes them.
+inventory_ids:
+- INV-CRD-043  # COCRDSLC message 'UNEXPECTED ABEND OCCURRED.' (ABEND-ROUTINE, recovery)
+- INV-CRD-002  # COCRDSLC program
+- INV-MNU-003  # COMEN01 map, where option 4 is entered
+- INV-CRD-005  # COCRDSL map, where the account and card are entered
+- INV-CFG-013  # CCDL transaction, under which the lookup abends
+- INV-CFG-003  # CARDDAT CSD file: the card master read that abends
+- INV-LAY-002  # COCOM01Y: the COMMAREA carrying the reenter context into CCDL
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COCRDSLC
+- INV-LAY-009  # CSMSG02Y: ABEND-DATA, the area the abend routine sends
+- INV-LAY-011  # CSSTRPFY: the AID mapping that selects the ENTER path
+- INV-LAY-019  # CVCRD01Y: CC-ACCT-ID, CC-CARD-NUM and the AID flags
+tags:
+- inferred-not-observed
+- suspected-defect
+gap_ids:
+- GAP-INF-006  # CRD end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-MIS-014  # no mechanism forces an abend in the TPE region
+- GAP-DEF-014  # the LOW-VALUES test never moves the default abend message
+preconditions:
+  datasets:
+    # CARDDATA holds card 0500024453765740, so the lookup reaches the read
+    # rather than a not-found branch. COSGN00C reads USER0001 from USRSEC.
+    CARDDATA: {base: CARDDATA}
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults:
+  # The first CARDDAT read of the task abends instead of returning a response.
+  - {target: CARDDAT, operation: read, condition: abend}
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '4'
+  - aid: ENTER
+    '@map': COCRDSL
+    fields:
+      ACCTSID: '00000000050'
+      CARDSID: '0500024453765740'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    ERRMSG: '                                                                              '
+  - '@map': COCRDSL
+    TRNNAME: CCDL
+    PGMNAME: COCRDSLC
+    ACCTSID: '           '
+    CARDSID: '                '
+    INFOMSG: 'Please enter Account and Card Number    '
+    ERRMSG: '                                                                                '
+  # The 24 rows of 80 characters joined by line breaks, as adapters/base.py
+  # screen_text gives them. Each source line below is one row: '\ ' keeps a
+  # row's leading blank and '\n\' ends the row.
+  - '@map': TEXT
+    '@text': "    COCRDSLC                                                                    \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                "

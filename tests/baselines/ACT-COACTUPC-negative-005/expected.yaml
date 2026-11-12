@@ -1,0 +1,98 @@
+# Derived baseline (capture_platform: derived), authored from the COBOL and BMS
+# source because no TPE region runs in CI; importing an eligible UniKix run
+# replaces it. Open under GAP-INF-005 (derived ACT e2e baselines) and
+# GAP-INF-012 (online-only copybooks).
+#
+# It pins the customer not-found screen as the source composes it, not the
+# message condition DID-NOT-FIND-CUST-IN-CUSTDAT ('Did not find associated
+# customer in master file'): that condition is only tested, and its one SET is
+# commented out [app/cbl/COACTUPC.cbl:479-528,3636,3769] (GAP-UNC-014).
+#
+# One screen per step, each the reply to the step's AID:
+# 1. USER0001 signs on and COMEN01C sends the main menu with a blank message
+#    [app/cbl/COMEN01C.cbl:75-90,182-194].
+# 2. Option 2 XCTLs to COACTUPC [app/cpy/COMEN02Y.cpy:34], whose fresh-entry
+#    path leaves ACCTSID and WS-RETURN-MSG blank and sets the search-key prompt
+#    [app/cbl/COACTUPC.cbl:964-973,2698-2701,2955-2981].
+# 3. ENTER with account 00000000001: CXACAIX gives card 9680294154603697 and
+#    customer 000000001 (app/data/ASCII/cardxref.txt record 49), ACCTDAT finds
+#    the account, and CUSTDAT returns NOTFND because the fixture omits the
+#    customer [app/cbl/COACTUPC.cbl:2568-2580,3608-3750]. 9400 STRINGs
+#    'CustId:' + '000000001' + ' not found' + ' in customer master.Resp: ' +
+#    ERROR-RESP '000000013 ' + ' REAS:' + ERROR-RESP2, 78 bytes cut at the 75th
+#    of WS-RETURN-MSG, so only '0000000' of RESP2 shows; ERRMSG adds 3 spaces
+#    [app/cbl/COACTUPC.cbl:401-406,3752-3784,2979-2981]. FOUND-CUST-IN-MASTER
+#    stays off, so 3201-SHOW-INITIAL-VALUES leaves every detail field at
+#    LOW-VALUES and the ERASE send shows each field's BMS INITIAL text (the SSN
+#    parts, FKEYS) or spaces [app/cbl/COACTUPC.cbl:2702-2783] [app/bms/COACTUP.bms].
+#
+# Values are whole BMS fields, trailing spaces kept. CURDATE and CURTIME come
+# from the run clock, so they are matchers; TITLE01 and TITLE02 come from
+# COTTL01Y [app/cpy/COTTL01Y.cpy:17-22].
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COACTUP
+  ACCTSID: '           '
+  ERRMSG: '                                                                              '
+  INFOMSG: 'Enter or update id of account to update      '
+  PGMNAME: COACTUPC
+  TRNNAME: CAUP
+- '@map': COACTUP
+  AADDGRP: '          '
+  ACCTSID: '00000000001'
+  ACRCYCR: '               '
+  ACRCYDB: '               '
+  ACRDLIM: '               '
+  ACSADL1: '                                                  '
+  ACSADL2: '                                                  '
+  ACSCITY: '                                                  '
+  ACSCTRY: '   '
+  ACSEFTC: '          '
+  ACSFNAM: '                         '
+  ACSGOVT: '                    '
+  ACSHLIM: '               '
+  ACSLNAM: '                         '
+  ACSMNAM: '                         '
+  ACSPFLG: ' '
+  ACSPH1A: '   '
+  ACSPH1B: '   '
+  ACSPH1C: '    '
+  ACSPH2A: '   '
+  ACSPH2B: '   '
+  ACSPH2C: '    '
+  ACSSTTE: '  '
+  ACSTFCO: '   '
+  ACSTNUM: '         '
+  ACSTTUS: ' '
+  ACSZIPC: '     '
+  ACTSSN1: '999'
+  ACTSSN2: '99'
+  ACTSSN3: '9999'
+  ACURBAL: '               '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  DOBDAY: '  '
+  DOBMON: '  '
+  DOBYEAR: '    '
+  ERRMSG: 'CustId:000000001 not found in customer master.Resp: 000000013  REAS:0000000   '
+  EXPDAY: '  '
+  EXPMON: '  '
+  EXPYEAR: '    '
+  FKEYS: ENTER=Process F3=Exit
+  INFOMSG: 'Enter or update id of account to update      '
+  OPNDAY: '  '
+  OPNMON: '  '
+  OPNYEAR: '    '
+  PGMNAME: COACTUPC
+  RISDAY: '  '
+  RISMON: '  '
+  RISYEAR: '    '
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CAUP

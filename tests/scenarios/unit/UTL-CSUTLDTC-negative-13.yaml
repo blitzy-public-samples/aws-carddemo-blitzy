@@ -1,0 +1,55 @@
+# The FC-YEAR-IN-ERA-ZERO branch of CSUTLDTC's token mapping
+# [app/cbl/CSUTLDTC.cbl:70,145-146]. CEEDAYS returns message 09D9 (year in era
+# is zero) only for era-based picture strings, and no caller passes one:
+# CORPT00C and COTRN02C pass YYYY-MM-DD, COACTUPC passes YYYYMMDD through
+# CSUTLDPY. The CEEDAYS stub implements no era pictures, so the token is
+# injected: ceedays_feedback '09D9' makes tests/stubs/ceedays.c skip its date
+# computation and return the severity-3 token 00 03 09 D9 59 C3 C5 C5, whatever
+# the date (GAP-STB-002). The run therefore verifies CSUTLDTC's own mapping and
+# result layout, not which dates CEEDAYS refuses, so the date-acceptance item is
+# not listed. The date and mask are the valid pair of UTL-CSUTLDTC-normal-01,
+# which shows that the injected token alone decides the outcome.
+#
+# CSUTLDTC moves severity 0003 and message number 2521 (x'09D9') into the
+# result, maps the token to 'YearInEra is 0 ' and sets RETURN-CODE to the
+# severity, which DTCDRV prints as RC=0003 [app/cbl/CSUTLDTC.cbl:98,122-146].
+# Result bytes 46-47 hold x'000A', the binary Vstring length that MOVE
+# WS-DATE-TO-TEST TO WS-DATE copies ahead of the date; DTCDRV shows them as '..'
+# in RESULT and as 000A in HEX, and they are pinned as observed. The expected
+# line is the captured DTCDRV output byte for byte. return_code is DTCDRV's own
+# exit status after its last record; neither program reads the clock, which is
+# the unit default.
+id: UTL-CSUTLDTC-negative-13
+level: unit
+type: negative
+description: >-
+  CEEDAYS is made to answer message 09D9 (year in era is zero) for the valid
+  date 2022-07-18 with the mask YYYY-MM-DD. CSUTLDTC maps the token to
+  'YearInEra is 0 ', so the result reads '0003Mesg Code: 2521 YearInEra is 0 '
+  with the tested date and the mask, and RETURN-CODE is 3.
+inventory_ids:
+- INV-UTL-002  # CSUTLDTC CEEDAYS feedback-token mapping (rule): FC-YEAR-IN-ERA-ZERO
+- INV-UTL-004  # CSUTLDTC result message layout and RETURN-CODE (interface)
+- INV-UTL-001  # CSUTLDTC program
+tags: []
+gap_ids:
+- GAP-STB-002  # CEEDAYS stub: 09D9 arises only by injection, as there are no era pictures
+- GAP-STB-004  # DTCDRV emulates the CALL interface of CSUTLDTC's callers
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
+preconditions:
+  datasets: {}
+  parameters:
+    ceedays_feedback: '09D9'
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults: []
+inputs:
+  program: CSUTLDTC
+  param_files:
+    # One call: DATE X(10), then MASK X(10); padded with spaces to 80 bytes.
+    DTCIN:
+    - '2022-07-18YYYY-MM-DD'
+expected:
+  return_code: 0
+  messages:
+  - 'DTCDRV DATE=2022-07-18 MASK=YYYY-MM-DD RC=0003 RESULT=0003Mesg Code: 2521 YearInEra is 0  TstDate: ..2022-07- Mask used:YYYY-MM-DD     HEX=303030334D65736720436F64653A20323532312059656172496E45726120697320302020547374446174653A20000A323032322D30372D204D61736B20757365643A595959592D4D4D2D444420202020'

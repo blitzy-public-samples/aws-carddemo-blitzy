@@ -1,0 +1,112 @@
+# The window edges of the CBTRN03C transaction report. After each READ the main
+# loop keeps a record when TRAN-PROC-TS (1:10) >= WS-START-DATE AND
+# TRAN-PROC-TS (1:10) <= WS-END-DATE [app/cbl/CBTRN03C.cbl:170-178], so both dates
+# of the DATEPARM record lie inside the window. TRANSACT-DALY holds two records of
+# one card processed exactly on the start date (2022-07-01, at the first instant
+# of the day) and on the end date (2022-07-31, at its last hundredth of a
+# second): both are reported as detail lines. With the window narrowed by one day
+# at each end, the first record would fall outside it and end the report empty.
+#
+# The records are invented: their TRAN-ID, description and merchant match no
+# repository transaction. TRAN-CARD-NUM is the repository card of account
+# 00000000001 [app/data/ASCII/cardxref.txt:49]; type 01 is Purchase
+# [app/data/ASCII/trantype.txt:1] and type 01 category 0001 is Regular Sales Draft
+# [app/data/ASCII/trancatg.txt:1]. TRANSACT-DALY is the card-sorted sequential
+# input CBTRN03C reads through TRANFILE, the SORT output in the TRANREPT job; it is
+# synthetic, so no dailytran.txt item is listed. DATEPARM is built from
+# preconditions.parameters.DATEPARM, because no job or data file creates it
+# (GAP-MIS-001).
+#
+# The report lines are the 133-byte records as written, trailing spaces kept.
+# The ending is pinned as observed: after the READ that sets end of file,
+# TRAN-RECORD still holds the last record, which passes the window test again, so
+# the end-of-file branch adds its 22.00 to the page total a second time before it
+# writes the page and grand totals [app/cbl/CBTRN03C.cbl:197-203], and both read
+# +55.00 for 11.00 + 22.00. The doubled amount is the question of GAP-DEF-012,
+# which RPT-CBTRN03C-normal-01 and -boundary-02 to -04 carry; here it is only the
+# ending every report has. No account total is written: there is one card, so
+# the card never changes, and none is written at end of file. The program's
+# DISPLAY trace (each reported record, then TRAN-AMT and WS-PAGE-TOTAL in the
+# runtime's numeric DISPLAY form) is not asserted: the report is the outcome.
+id: RPT-CBTRN03C-boundary-01
+level: unit
+type: boundary
+description: >-
+  CBTRN03C reports a card's two transactions processed on the first and on the
+  last day of the DATEPARM window, 2022-07-01 and 2022-07-31: the report holds
+  the four header lines with 'Date Range: 2022-07-01 to 2022-07-31', both detail
+  lines for account 00000000001, and the end-of-file page total and grand total
+  of +55.00, and the run ends with return code 0.
+inventory_ids:
+- INV-RPT-036  # CBTRN03C DATEPARM window (rule): both window dates are included
+- INV-RPT-003  # CBTRN03C program
+- INV-RPT-038  # CBTRN03C detail line (report)
+- INV-DTA-003  # cardxref.txt, the CARDXREF fixture source
+- INV-DTA-013  # EBCDIC card cross-reference file, its cross-check counterpart
+- INV-DTA-009  # trantype.txt, the TRANTYPE fixture source
+- INV-DTA-020  # EBCDIC transaction type file, its cross-check counterpart
+- INV-DTA-008  # trancatg.txt, the TRANCATG fixture source
+- INV-DTA-019  # EBCDIC transaction category file, its cross-check counterpart
+tags: []
+gap_ids:
+- GAP-MIS-001  # DATEPARM is supplied by the scenario: no job or data file creates it
+- GAP-STB-010  # Berkeley DB indexed files in place of the VSAM KSDS
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
+preconditions:
+  datasets:
+    TRANSACT-DALY:
+      records:
+      - TRAN-ID: '9900000000000511'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: 1
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic purchase
+        TRAN-AMT: '11.00'
+        TRAN-MERCHANT-ID: 900000511
+        TRAN-MERCHANT-NAME: Synthetic Test Merchant
+        TRAN-MERCHANT-CITY: Testville
+        TRAN-MERCHANT-ZIP: '00000'
+        TRAN-CARD-NUM: '9680294154603697'
+        TRAN-ORIG-TS: '2022-06-30 23:59:59.000000'
+        TRAN-PROC-TS: '2022-07-01-00.00.00.000000'
+      - TRAN-ID: '9900000000000512'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: 1
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic purchase
+        TRAN-AMT: '22.00'
+        TRAN-MERCHANT-ID: 900000512
+        TRAN-MERCHANT-NAME: Synthetic Test Merchant
+        TRAN-MERCHANT-CITY: Testville
+        TRAN-MERCHANT-ZIP: '00000'
+        TRAN-CARD-NUM: '9680294154603697'
+        TRAN-ORIG-TS: '2022-07-31 23:59:58.000000'
+        TRAN-PROC-TS: '2022-07-31-23.59.59.990000'
+    CARDXREF:
+      base: CARDXREF
+    TRANTYPE:
+      base: TRANTYPE
+    TRANCATG:
+      base: TRANCATG
+  parameters:
+    DATEPARM: '2022-07-01 2022-07-31'
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults: []
+inputs:
+  program: CBTRN03C
+expected:
+  return_code: 0
+  datasets:
+    TRANREPT:
+      count: 9
+      records:
+      - 'DALYREPT                              Daily Transaction Report                 Date Range: 2022-07-01 to 2022-07-31                  '
+      - '                                                                                                                                     '
+      - 'Transaction ID   Account ID  Transaction Type   Tran Category                      Tran Source            Amount                     '
+      - '-------------------------------------------------------------------------------------------------------------------------------------'
+      - '9900000000000511 00000000001 01-Purchase        0001-Regular Sales Draft           POS TERM                11.00                     '
+      - '9900000000000512 00000000001 01-Purchase        0001-Regular Sales Draft           POS TERM                22.00                     '
+      - 'Page Total ......................................................................................+         55.00                     '
+      - '-------------------------------------------------------------------------------------------------------------------------------------'
+      - 'Grand Total......................................................................................+         55.00                     '

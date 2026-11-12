@@ -1,0 +1,158 @@
+# The user list cannot be browsed because the region file USRSEC is out of
+# service. ADMIN001 signs on through CC00 while USRSEC is still available, and
+# COSGN00C routes the type 'A' user to the admin menu COADM01C
+# [app/cbl/COSGN00C.cbl:209-237]. The fault is then applied, and option 1 is
+# entered on COADM01: CA00 runs COADM01C again, which validates the option and
+# transfers control (XCTL) to CDEMO-ADMIN-OPT-PGMNAME(1) = 'COUSR00C' with
+# CDEMO-PGM-CONTEXT 0 [app/cbl/COADM01C.cbl:115-145] [app/cpy/COADM02Y.cpy:20-27].
+# COADM01C itself does no file I/O, so the fault first acts on COUSR00C.
+#
+# COUSR00C, entered with a COMMAREA but not yet re-entered, sets the reenter
+# flag and moves LOW-VALUES to COUSR0AO, which redefines COUSR0AI
+# [app/cbl/COUSR00C.cbl:110-119] [app/cpy-bms/COUSR00.CPY:373]. With no row
+# selected and no search id, PROCESS-ENTER-KEY browses from LOW-VALUES through
+# PROCESS-PAGE-FORWARD [app/cbl/COUSR00C.cbl:149-232,282-284]. The STARTBR on
+# USRSEC answers neither NORMAL nor NOTFND, so its WHEN OTHER branch sets the
+# error flag, moves 'Unable to lookup User...' to WS-MESSAGE and sends COUSR00
+# with ERASE [app/cbl/COUSR00C.cbl:586-614,522-544]. With the error flag on, no
+# READNEXT, ENDBR, row population or page-number move follows
+# [app/cbl/COUSR00C.cbl:286-331], and MAIN-PARA sends the same screen once more
+# before returning with TRANSID CU00 [app/cbl/COUSR00C.cbl:119,141-144].
+#
+# The final screen therefore carries the COUSR00C header (CU00, COUSR00C, the
+# COTTL01Y titles, the run date and time through CSDAT01Y) and the message;
+# every data field of the symbolic map is still LOW-VALUES, so BMS sends no data
+# for it and the field shows its blank INITIAL value or nulls, captured as
+# spaces at the field's full length [app/bms/COUSR00.bms:85-89,95-99,153-442].
+# The DISPLAY of RESP and RESP2 goes to the region log, not to the terminal, and
+# is not asserted. The expected outcome is derived from the source (GAP-INF-004).
+id: USR-COUSR00C-recovery-01
+level: e2e
+type: recovery
+description: >-
+  ADMIN001 signs on and selects option 1 'User List (Security)' on the admin
+  menu while the region file USRSEC is unavailable. COUSR00C's STARTBR on USRSEC
+  fails with a response other than NORMAL or NOTFND, so the user list screen
+  COUSR00 appears with its header, no user rows, no page number and the message
+  'Unable to lookup User...'.
+# The recovery message is the primary item, then the program, the map the
+# option is entered on and the map asserted, the transaction that processes the
+# option step and the CSD file the STARTBR fails on, then the online-only
+# copybooks COUSR00C copies. CA00 is listed rather than CU00: XCTL keeps the
+# task under CA00, and the RETURN TRANSID(CU00) schedules a transaction that no
+# step of this scenario enters, so CU00's verification does not depend on it.
+# CSUSR01Y and the USRSEC data file are left out: their lowest executing level is
+# the DUSRSECJ integration scenario.
+inventory_ids:
+- INV-USR-014  # COUSR00C message 'Unable to lookup User...' (recovery)
+- INV-USR-001  # COUSR00C program
+- INV-MNU-004  # COADM01 map, the admin menu option 1 is entered on
+- INV-USR-005  # COUSR00 map, the screen the failed browse is sent on
+- INV-CFG-011  # CA00 transaction, under which the option step runs COADM01C and COUSR00C
+- INV-CFG-008  # USRSEC CSD file, the file the STARTBR fails on
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA whose context 0 selects the first-entry path
+- INV-LAY-005  # COTTL01Y copybook, TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y copybook, CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y copybook, copied by COUSR00C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-004  # USR end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-MIS-011  # no confirmed region file control to make USRSEC unavailable
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user; the 10 fixture users would fill the list
+    # if the browse succeeded.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  # after: 1 lets the one USRSEC operation of the sign-on step (COSGN00C's READ
+  # by user id) succeed and takes the file out of service before the option
+  # step, whose first USRSEC operation is COUSR00C's STARTBR. An adapter without
+  # region file control raises MissingPrerequisite under GAP-MIS-011.
+  faults:
+  - target: USRSEC
+    operation: read
+    condition: unavailable
+    after: 1
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: ADMIN001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '1'}
+    '@map': COADM01
+expected:
+  # Text fields keep their full BMS length with trailing spaces: ERRMSG is 78
+  # characters, the titles 40; CURTIME is 8 and receives the 8-byte hh:mm:ss.
+  screens:
+  - '@map': COADM01
+    TRNNAME: CA00
+    PGMNAME: COADM01C
+    ERRMSG: '                                                                              '
+  - '@map': COUSR00
+    TRNNAME: CU00
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COUSR00C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    PAGENUM: '        '
+    USRIDIN: '        '
+    SEL0001: ' '
+    USRID01: '        '
+    FNAME01: '                    '
+    LNAME01: '                    '
+    UTYPE01: ' '
+    SEL0002: ' '
+    USRID02: '        '
+    FNAME02: '                    '
+    LNAME02: '                    '
+    UTYPE02: ' '
+    SEL0003: ' '
+    USRID03: '        '
+    FNAME03: '                    '
+    LNAME03: '                    '
+    UTYPE03: ' '
+    SEL0004: ' '
+    USRID04: '        '
+    FNAME04: '                    '
+    LNAME04: '                    '
+    UTYPE04: ' '
+    SEL0005: ' '
+    USRID05: '        '
+    FNAME05: '                    '
+    LNAME05: '                    '
+    UTYPE05: ' '
+    SEL0006: ' '
+    USRID06: '        '
+    FNAME06: '                    '
+    LNAME06: '                    '
+    UTYPE06: ' '
+    SEL0007: ' '
+    USRID07: '        '
+    FNAME07: '                    '
+    LNAME07: '                    '
+    UTYPE07: ' '
+    SEL0008: ' '
+    USRID08: '        '
+    FNAME08: '                    '
+    LNAME08: '                    '
+    UTYPE08: ' '
+    SEL0009: ' '
+    USRID09: '        '
+    FNAME09: '                    '
+    LNAME09: '                    '
+    UTYPE09: ' '
+    SEL0010: ' '
+    USRID10: '        '
+    FNAME10: '                    '
+    LNAME10: '                    '
+    UTYPE10: ' '
+    ERRMSG: 'Unable to lookup User...                                                      '
+  messages:
+  - '                                                                              '
+  - 'Unable to lookup User...                                                      '

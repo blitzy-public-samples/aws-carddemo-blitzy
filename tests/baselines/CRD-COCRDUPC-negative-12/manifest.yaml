@@ -1,0 +1,46 @@
+# Manifest of the derived baseline of CRD-COCRDUPC-negative-12: on the COCRDUPC
+# card update screen, account 00000000050 with the non-numeric card id
+# ABCDEFGHIJKLMNOP is refused with 'CARD ID FILTER,IF SUPPLIED MUST BE A 16
+# DIGIT NUMBER' before any file is read [app/cbl/COCRDUPC.cbl:721-800]. Only
+# unikix can run the scenario, so expected.yaml was authored from the source,
+# not captured (inferred-not-observed). It names no execution_id or
+# execution_fingerprint and holds no datasets/ until an eligible UniKix run is
+# imported with report.py --import-unikix (GAP-INF-006, GAP-INF-012).
+#
+# source_identity.units are every app/ source the steps execute, not COCRDUPC
+# alone: the COPY closure, as harness.inventory_tools.copy_closure resolves it
+# (symbolic maps included), of COSGN00C, which signs USER0001 on; of COMEN01C,
+# whose option 5 transfers to COCRDUPC; and of COCRDUPC, plus the BMS sources
+# of COSGN00, COMEN01 and COCRDUP. CVACT01Y and CVACT03Y are not units because
+# their COPY statements are commented out [app/cbl/COCRDUPC.cbl:350,356];
+# DFHAID and DFHBMSCA are CICS-supplied and not in the repository.
+# source_commit is HEAD at authoring; app/ is byte-identical to the suite's
+# starting commit.
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: derived
+source_commit: c7e1f87e17b3582fae6b23fe9cd6373def4567ad
+source_identity:
+  commit: c7e1f87e17b3582fae6b23fe9cd6373def4567ad
+  tree: app
+  units:
+    app/bms/COCRDUP.bms: e82235cab015fc38b4f3bf73546b095105462373280362780480d2f48a39017d
+    app/bms/COMEN01.bms: f87af09e6f60ab198d5c05817e3007361a6d29ed957322ef25b11c5420c84b4c
+    app/bms/COSGN00.bms: 6747ba57e45fed7e52af728a1f8688ed8fab90b93e1234ab0a0bcae32fa39056
+    app/cbl/COCRDUPC.cbl: c245cf383a4a3f721773a13ca231eb76bd5ae75c1830d58c7aba898a554a0de9
+    app/cbl/COMEN01C.cbl: ad5e376ac9221b21b8ce47597a5ca17fc1f39dc913793c814c6675e9b046fc09
+    app/cbl/COSGN00C.cbl: 4f901ae6b113eebae60ae1d94b30f8cb9906d031a4419770bf56980bdf97e377
+    app/cpy-bms/COCRDUP.CPY: 6b874a8dd290a4a6c3baa7e89768a91e0feabb4923ec5dd3db721687bdfa897e
+    app/cpy-bms/COMEN01.CPY: 21275363519e57f47c5c7842178344208f3ad773a551e74e5eeff285c775ad5c
+    app/cpy-bms/COSGN00.CPY: e2a2f8f6e76e1613cbd8f0baaca87d571a49a7bc219d16a732e4e4ecd7485407
+    app/cpy/COCOM01Y.cpy: 77097557ee4c365f62138328d3e280ce7aba5f81d418c6f16434f0fbb2aafa6c
+    app/cpy/COMEN02Y.cpy: 22b1be06734c9ae91a25c4b544f9a9c4c85ab3f281a3d3bcc0765fb17e585d85
+    app/cpy/COTTL01Y.cpy: 5032bfa9428354bb4a62e8c82ba1efa7dcf6b80f27544ad99a81c8a8df8ed41b
+    app/cpy/CSDAT01Y.cpy: 61dd7b01d974c13cd47f71774c613dd67996418a22fae730d09b246c0b710ad7
+    app/cpy/CSMSG01Y.cpy: ef8ce44572885d63e46a02516f992cabbbc57ea94235000fd376325750e26eda
+    app/cpy/CSMSG02Y.cpy: 0238a3a75e723272e0c287b46a52d365de8549dada1a73d15df75660ad7bd2ea
+    app/cpy/CSSTRPFY.cpy: 751bc1a625114a8660ee2172b70cdea135c259652d2305a2bfda25ff4cf34853
+    app/cpy/CSUSR01Y.cpy: 37c34094dc4124bc6255e0b06a0387442f4f0dd9d51dd6623b559d370aa0d2cb
+    app/cpy/CVACT02Y.cpy: 9f1c62ef31b9d541712f1ed28f79e011ea7338611f5e0f30f2e1cbf624181223
+    app/cpy/CVCRD01Y.cpy: 52b6dbe09f7648f3fdbd7c00f4683d434fe6b631f6c8854466a24f42c1c92445
+    app/cpy/CVCUS01Y.cpy: 944fd9a8eb10a683d0db97b9a87f2151982f649970287eb74358826056af25f8

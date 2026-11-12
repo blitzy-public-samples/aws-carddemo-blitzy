@@ -1,0 +1,25 @@
+# Derived from the source, never observed (inferred-not-observed; GAP-INF-003,
+# GAP-INF-012): ADMIN001 is user type A, so COSGN00C XCTLs to COADM01C with
+# CDEMO-PGM-CONTEXT zero [app/cbl/COSGN00C.cbl:222-237]. COADM01C sends its
+# menu fresh [app/cbl/COADM01C.cbl:86-90,172-184]; OPTN002 is the option number
+# PIC 9(02), '. ' and the 35-byte name, padded to the 40-byte field
+# [app/cbl/COADM01C.cbl:226-242] [app/cpy/COADM02Y.cpy:29-32]. Option 2 passes
+# the checks and XCTLs to COUSR01C [app/cbl/COADM01C.cbl:115-145], which sends
+# a fresh Add User screen with the COTTL01Y titles and the CSDAT01Y date and
+# time [app/cbl/COUSR01C.cbl:78-87,184-233].
+screens:
+- '@map': COADM01
+  OPTN002: '02. User Add (Security)                 '
+  PGMNAME: COADM01C
+  TRNNAME: CA00
+- '@map': COUSR01
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    format: '%H:%M:%S'
+    match: run-time
+  PGMNAME: COUSR01C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CU01

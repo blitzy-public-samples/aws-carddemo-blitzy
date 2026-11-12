@@ -1,0 +1,332 @@
+# Two terminals update account 00000000001 from the same fetch; the second save
+# is refused because the first one changed the customer record in between.
+#
+# Steps 0-3 (session 1) and 4-8 (session 2) each sign on as USER0001, choose
+# main-menu option 2 (COACTUPC, CAUP), fetch account 00000000001 and change only
+# the FICO score. COACTUPC fetches through CXACAIX (account 1 has the single
+# card 9680294154603697 of customer 000000001), ACCTDAT and CUSTDAT and keeps
+# the fetched values as ACUP-OLD-DETAILS in its COMMAREA
+# [app/cbl/COACTUPC.cbl:3608-3884]. Every field goes out with its modified-data
+# tag set (DFHBMPRF or DFHBMFSE), so the next RECEIVE MAP returns the whole
+# screen [app/cbl/COACTUPC.cbl:3441-3561]. ENTER with a changed score runs every
+# edit; all pass, so the screen shows the received values and 'Changes
+# validated.Press F5 to save' with F5=Save and F12=Cancel brightened
+# [app/cbl/COACTUPC.cbl:1429-1676,2602-2621,2870-2949,2955-2982,3566-3582].
+# The step order is the scenario: session 2 saves (step 8) between session 1's
+# fetch (step 2) and its save (step 9). Session 2's PF5 re-reads both records
+# for update, finds them equal to its fetched values, rewrites them and shows
+# 'Changes committed to database' [app/cbl/COACTUPC.cbl:3888-4104]. Session 1's
+# PF5 re-reads the customer with FICO 730 against its fetched 700, so
+# 9700-CHECK-CHANGE-IN-REC sets DATA-WAS-CHANGED-BEFORE-UPDATE and
+# 2000-DECIDE-ACTION sets ACUP-SHOW-DETAILS [app/cbl/COACTUPC.cbl:2611-2612,
+# 3944-3952,4109-4191]. Session 2's account rewrite also changes the account
+# record (ACCT-UPDATE-RECORD has no ACCT-ADDR-ZIP [app/cbl/COACTUPC.cbl:418-433]),
+# so the account comparison may already fail; the message is the same either way.
+#
+# The final screen does not show the record as it now stands:
+# 3202-SHOW-ORIGINAL-VALUES shows ACUP-OLD-DETAILS, the values session 1
+# fetched (FICO 700), neither session 2's 730 nor session 1's own 710, because
+# nothing stores the records re-read for update [app/cbl/COACTUPC.cbl:2787-2865].
+# That is pinned as a suspected defect (GAP-DEF-017); COCRDUPC refreshes its old
+# values on the same path.
+#
+# Repository customer 000000001 fails the edits (FICO 274, phone area code 373,
+# zip 12546 for NC), so CUSTDATA replaces it with an invented customer that
+# passes every edit; its FILLER is kept from the repository record. Account
+# 00000000001 is used as loaded. Screen values are whole fields at their BMS
+# length, trailing spaces kept; LOW-VALUES and dark (DRK) fields read as spaces.
+# CURDATE and CURTIME come from the region clock, so they are matchers.
+# ACCTDATA's end state is not asserted: the shifted group id and the FILLER of
+# the rewritten record come from uninitialized working storage, and the account
+# rewrite is another scenario's item.
+id: ACT-COACTUPC-alternate-02
+level: e2e
+type: alternate
+description: >-
+  Concurrent change on the account update screen. Two sessions signed on as
+  USER0001 fetch account 00000000001 and its customer 000000001 in COACTUPC;
+  session 1 validates a FICO score of 710, then session 2 validates 730 and
+  saves it with PF5 ('Changes committed to database'). Session 1's PF5 re-reads
+  the records for update, finds the customer changed since its fetch, writes
+  nothing and shows 'Record changed by some one else. Please review' with the
+  values it originally fetched (FICO 700). CUSTDAT keeps session 2's FICO 730.
+# Primary item first, then the program, the maps asserted, the transaction the
+# COACTUPC steps run under, the CSD files COACTUPC reads and rewrites, the
+# customer REWRITE whose record file_state asserts, and the online-only
+# copybooks COACTUPC copies. Sign-on and the menu option (CC00, CM00, COSGN00,
+# USRSEC) are verified by the SEC and MNU scenarios; the messages asserted on
+# intermediate screens belong to their own COACTUPC scenarios; the batch record
+# copybooks and the data files are verified at the lowest level that executes
+# them.
+inventory_ids:
+- INV-ACT-053  # COACTUPC message 'Record changed by some one else. Please review'
+- INV-ACT-002  # COACTUPC program
+- INV-MNU-003  # COMEN01 map, where option 2 is entered
+- INV-ACT-004  # COACTUP map
+- INV-CFG-009  # CAUP transaction
+- INV-CFG-006  # CXACAIX CSD file: card cross-reference by account id
+- INV-CFG-001  # ACCTDAT CSD file: account read and read for update
+- INV-CFG-005  # CUSTDAT CSD file: customer read, read for update and rewrite
+- INV-ACT-193  # COACTUPC customer REWRITE: session 2's record in file_state
+- INV-LAY-002  # COCOM01Y: the COMMAREA carrying the customer id
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-007  # CSLKPCDY: area code, state and state-zip lookups of the edits
+- INV-LAY-008  # CSMSG01Y
+- INV-LAY-009  # CSMSG02Y: abend data
+- INV-LAY-010  # CSSETATY: field attributes of the detail screen
+- INV-LAY-011  # CSSTRPFY: the AID mapping of ENTER and PF5
+- INV-LAY-013  # CSUTLDPY: the date edits
+- INV-LAY-014  # CSUTLDWY: the date edit work areas
+- INV-LAY-019  # CVCRD01Y: CC-ACCT-ID and the AID flags
+tags:
+- inferred-not-observed
+- suspected-defect
+gap_ids:
+- GAP-INF-005  # ACT end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-DEF-017  # the refused save redisplays the stale fetched values
+- GAP-DOC-022  # the UniKix COACTUPC changes the amount receive and the change comparison
+- GAP-DOC-025  # the UniKix COACTUP.bms differs from app/ at row 1, columns 1-9
+preconditions:
+  datasets:
+    ACCTDATA: {base: ACCTDATA}
+    CARDXREF: {base: CARDXREF}
+    # Invented customer 000000001, the record of the other ACT-COACTUPC
+    # scenarios, replacing the repository record; it matches no real person.
+    CUSTDATA:
+      base: CUSTDATA
+      records:
+      - CUST-ID: '000000001'
+        CUST-FIRST-NAME: Testfirst
+        CUST-MIDDLE-NAME: Testmiddle
+        CUST-LAST-NAME: Testlast
+        CUST-ADDR-LINE-1: 100 Test Street
+        CUST-ADDR-LINE-2: Suite 1
+        CUST-ADDR-LINE-3: Raleigh
+        CUST-ADDR-STATE-CD: NC
+        CUST-ADDR-COUNTRY-CD: USA
+        CUST-ADDR-ZIP: '27601'
+        CUST-PHONE-NUM-1: (919)555-0101
+        CUST-PHONE-NUM-2: (919)555-0102
+        CUST-SSN: '123456789'
+        CUST-GOVT-ISSUED-ID: TESTGOVT0001
+        CUST-DOB-YYYY-MM-DD: '1961-06-08'
+        CUST-EFT-ACCOUNT-ID: '0053581756'
+        CUST-PRI-CARD-HOLDER-IND: 'Y'
+        CUST-FICO-CREDIT-SCORE: '700'
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+    sessions: 2
+  # The concurrent change needs no fault: session 2's save is the change.
+  faults: []
+# Sign-on uses the README's demo user and password in both sessions.
+inputs:
+  steps:
+  - session: 1
+    transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - session: 1
+    aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '2'
+  - session: 1
+    aid: ENTER
+    '@map': COACTUP
+    fields:
+      ACCTSID: '00000000001'
+  - session: 1
+    aid: ENTER
+    '@map': COACTUP
+    fields:
+      ACSTFCO: '710'
+  - session: 2
+    transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - session: 2
+    aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '2'
+  - session: 2
+    aid: ENTER
+    '@map': COACTUP
+    fields:
+      ACCTSID: '00000000001'
+  - session: 2
+    aid: ENTER
+    '@map': COACTUP
+    fields:
+      ACSTFCO: '730'
+  - session: 2
+    aid: PF5
+    '@map': COACTUP
+  - session: 1
+    aid: PF5
+    '@map': COACTUP
+expected:
+  screens:
+  # 0, session 1: signed on, main menu.
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+  # 1, session 1: COACTUPC's fresh entry asks for the account.
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    PGMNAME: COACTUPC
+    ACCTSID: '           '
+    INFOMSG: 'Enter or update id of account to update      '
+    ERRMSG: '                                                                              '
+  # 2, session 1: the fetched account and customer.
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    PGMNAME: COACTUPC
+    ACCTSID: '00000000001'
+    ACSTFCO: '700'
+    ACSFNAM: 'Testfirst                '
+    INFOMSG: 'Update account details presented above.      '
+    ERRMSG: '                                                                              '
+  # 3, session 1: FICO 710 validated, waiting for PF5.
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    PGMNAME: COACTUPC
+    ACCTSID: '00000000001'
+    ACSTFCO: '710'
+    INFOMSG: 'Changes validated.Press F5 to save           '
+    ERRMSG: '                                                                              '
+    FKEY05: F5=Save
+    FKEY12: F12=Cancel
+  # 4, session 2: signed on, main menu.
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+  # 5, session 2: fresh entry.
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    PGMNAME: COACTUPC
+    ACCTSID: '           '
+    INFOMSG: 'Enter or update id of account to update      '
+    ERRMSG: '                                                                              '
+  # 6, session 2: the same fetch; session 1 has saved nothing.
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    PGMNAME: COACTUPC
+    ACCTSID: '00000000001'
+    ACSTFCO: '700'
+    ACSFNAM: 'Testfirst                '
+    INFOMSG: 'Update account details presented above.      '
+    ERRMSG: '                                                                              '
+  # 7, session 2: FICO 730 validated.
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    PGMNAME: COACTUPC
+    ACCTSID: '00000000001'
+    ACSTFCO: '730'
+    INFOMSG: 'Changes validated.Press F5 to save           '
+    ERRMSG: '                                                                              '
+    FKEY05: F5=Save
+    FKEY12: F12=Cancel
+  # 8, session 2: saved; the received values stay on the screen and the
+  # function keys go dark again.
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    PGMNAME: COACTUPC
+    ACCTSID: '00000000001'
+    ACSTFCO: '730'
+    INFOMSG: 'Changes committed to database                '
+    ERRMSG: '                                                                              '
+    FKEY05: '       '
+    FKEY12: '          '
+  # 9, session 1: the save is refused. The detail fields are session 1's
+  # fetched values (3202-SHOW-ORIGINAL-VALUES), F5=Save is no longer offered.
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COACTUPC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000001'
+    ACSTTUS: 'Y'
+    OPNYEAR: '2014'
+    OPNMON: '11'
+    OPNDAY: '20'
+    ACRDLIM: '+      2,020.00'
+    EXPYEAR: '2025'
+    EXPMON: '05'
+    EXPDAY: '20'
+    ACSHLIM: '+      1,020.00'
+    RISYEAR: '2025'
+    RISMON: '05'
+    RISDAY: '20'
+    ACURBAL: '+        194.00'
+    ACRCYCR: '+           .00'
+    AADDGRP: '          '
+    ACRCYDB: '+           .00'
+    ACSTNUM: '000000001'
+    ACTSSN1: '123'
+    ACTSSN2: '45'
+    ACTSSN3: '6789'
+    DOBYEAR: '1961'
+    DOBMON: '06'
+    DOBDAY: '08'
+    ACSTFCO: '700'
+    ACSFNAM: 'Testfirst                '
+    ACSMNAM: 'Testmiddle               '
+    ACSLNAM: 'Testlast                 '
+    ACSADL1: '100 Test Street                                   '
+    ACSSTTE: NC
+    ACSADL2: 'Suite 1                                           '
+    ACSZIPC: '27601'
+    ACSCITY: 'Raleigh                                           '
+    ACSCTRY: USA
+    ACSPH1A: '919'
+    ACSPH1B: '555'
+    ACSPH1C: '0101'
+    ACSGOVT: 'TESTGOVT0001        '
+    ACSPH2A: '919'
+    ACSPH2B: '555'
+    ACSPH2C: '0102'
+    ACSEFTC: '0053581756'
+    ACSPFLG: 'Y'
+    INFOMSG: 'Update account details presented above.      '
+    ERRMSG: 'Record changed by some one else. Please review                                '
+    FKEY05: '       '
+    FKEY12: '          '
+  file_state:
+    # Session 2's rewrite stands and session 1's 710 was never written: the
+    # customer holds every value session 2 received, with FICO 730. The record's
+    # FILLER comes from uninitialized working storage (CUST-UPDATE-RECORD's
+    # FILLER is not initialized), so it is not asserted. Values are in decoded
+    # form: CUST-ID is the number 1, text keeps its trailing spaces.
+    CUSTDATA:
+      count: 50
+      contains:
+      - CUST-ID: '1'
+        CUST-FIRST-NAME: 'Testfirst                '
+        CUST-MIDDLE-NAME: 'Testmiddle               '
+        CUST-LAST-NAME: 'Testlast                 '
+        CUST-ADDR-LINE-1: '100 Test Street                                   '
+        CUST-ADDR-LINE-2: 'Suite 1                                           '
+        CUST-ADDR-LINE-3: 'Raleigh                                           '
+        CUST-ADDR-STATE-CD: NC
+        CUST-ADDR-COUNTRY-CD: USA
+        CUST-ADDR-ZIP: '27601     '
+        CUST-PHONE-NUM-1: '(919)555-0101  '
+        CUST-PHONE-NUM-2: '(919)555-0102  '
+        CUST-SSN: '123456789'
+        CUST-GOVT-ISSUED-ID: 'TESTGOVT0001        '
+        CUST-DOB-YYYY-MM-DD: '1961-06-08'
+        CUST-EFT-ACCOUNT-ID: '0053581756'
+        CUST-PRI-CARD-HOLDER-IND: 'Y'
+        CUST-FICO-CREDIT-SCORE: '730'

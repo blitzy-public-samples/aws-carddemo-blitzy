@@ -1,0 +1,127 @@
+# Account View refuses an account filter that is all zeroes or not numeric.
+# USER0001 signs on through CC00 and COSGN00C transfers control to COMEN01C
+# [app/cbl/COSGN00C.cbl:221-240]; menu option '1' 'Account View' XCTLs to
+# COACTVWC with CDEMO-PGM-CONTEXT 0 [app/cbl/COMEN01C.cbl:117-155]. Called from
+# COMEN01C and not re-entered, COACTVWC initializes its COMMAREA, sends COACTVW
+# with an empty account id and returns TRANSID CAVW with CDEMO-PGM-REENTER set
+# [app/cbl/COACTVWC.cbl:282-286,353-360,577-591].
+#
+# Steps 3 and 4 re-enter CAVW. 2210-EDIT-ACCOUNT moves ACCTSIDI to CC-ACCT-ID
+# (X(11)) and, when it is NOT NUMERIC or EQUAL ZEROES, sets INPUT-ERROR and
+# FLG-ACCTFILTER-NOT-OK and, WS-RETURN-MSG having been cleared at the start of
+# the task, moves 'Account Filter must  be a non-zero 11 digit number' (two
+# spaces after "must") to it [app/cbl/COACTVWC.cbl:278,622-685]. INPUT-ERROR
+# sends the map again without reading CXACAIX, ACCTDAT or CUSTDAT
+# [app/cbl/COACTVWC.cbl:361-367]. Step 3 enters 11 zeroes (numeric, but zero);
+# step 4 enters 11 letters (not numeric), so both branches of the test are hit.
+# Both values fill the 11-position field, as its VALIDN=(MUSTFILL) asks
+# [app/bms/COACTVW.bms:84-90].
+#
+# Expected values are derived from the source (no TPE region runs in CI):
+# - 1200-SETUP-SCREEN-VARS echoes the refused CC-ACCT-ID into ACCTSIDO, shows no
+#   account or customer data (no record was read), sets WS-PROMPT-FOR-INPUT
+#   because WS-INFO-MSG is blank, and moves WS-RETURN-MSG to ERRMSGO
+#   [app/cbl/COACTVWC.cbl:460-535].
+# - Screen fields are compared at their full BMS width, trailing spaces kept:
+#   ERRMSG is WS-RETURN-MSG (X(75)) moved to ERRMSGO (X(78)), so the
+#   50-character message is followed by 28 spaces; INFOMSG is the 40-character
+#   prompt in the 45-position field. The empty account id of the first COACTVW
+#   screen (LOW-VALUES, never transmitted) is captured as 11 spaces.
+# - The header is 1100-SCREEN-INIT's [app/cbl/COACTVWC.cbl:431-455]: the COTTL01Y
+#   titles, CAVW, COACTVWC, and CURDATE (mm/dd/yy) and CURTIME (hh:mm:ss, 8
+#   positions) from the region clock, hence matchers.
+# - Result.messages also carries the blank ERRMSG of the first two screens, so
+#   the message is asserted in the screens rather than as a message list.
+# The UniKix copy of COACTVW.bms lacks the unnamed field at row 1, columns 1-9,
+# beside TRNNAME (GAP-DOC-025).
+id: ACT-COACTVWC-negative-05
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, chooses main-menu option 1 'Account View' and submits the
+  COACTVW account id first as 00000000000 and then as ABCDEFGHIJK. Each time
+  COACTVWC refuses the filter before any file read and shows COACTVW again with
+  the entered value, the prompt 'Enter or update id of account to display' and
+  'Account Filter must  be a non-zero 11 digit number' in ERRMSG
+  [app/cbl/COACTVWC.cbl:649-685].
+inventory_ids:
+- INV-ACT-017  # COACTVWC message 'Account Filter must  be a non-zero 11 digit number' (rule)
+- INV-ACT-001  # COACTVWC program
+- INV-MNU-003  # COMEN01 map, the main menu option 1 is entered on
+- INV-ACT-003  # COACTVW map, the account view screen the filter is entered on
+- INV-CFG-010  # CAVW transaction, under which the re-entered edits run
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carrying CDEMO-PGM-CONTEXT
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the header date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COACTVWC
+- INV-LAY-009  # CSMSG02Y copybook, copied by COACTVWC
+- INV-LAY-011  # CSSTRPFY copybook, YYYY-STORE-PFKEY mapping ENTER to CCARD-AID-ENTER
+- INV-LAY-019  # CVCRD01Y copybook, CC-ACCT-ID and the AID flags the edit uses
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-005  # account view and update (ACT) end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-DOC-025  # the UniKix COACTVW.bms differs from app/ at row 1, columns 1-9
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user. The account files are loaded so the
+    # region starts from its fixture state, although the refused filter never
+    # reads them; nothing is written, so no file_state is asserted.
+    USRSEC: {base: USRSEC}
+    ACCTDATA: {base: ACCTDATA}
+    CUSTDATA: {base: CUSTDATA}
+    CARDXREF: {base: CARDXREF}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: USER0001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '1'}
+    '@map': COMEN01
+  # Numeric but zero: the EQUAL ZEROES branch of the test.
+  - aid: ENTER
+    fields: {ACCTSID: '00000000000'}
+    '@map': COACTVW
+  # Not numeric: the NOT NUMERIC branch of the test.
+  - aid: ENTER
+    fields: {ACCTSID: ABCDEFGHIJK}
+    '@map': COACTVW
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+  - '@map': COACTVW
+    TRNNAME: CAVW
+    PGMNAME: COACTVWC
+    ACCTSID: '           '
+    INFOMSG: 'Enter or update id of account to display     '
+    ERRMSG: '                                                                              '
+  - '@map': COACTVW
+    TRNNAME: CAVW
+    PGMNAME: COACTVWC
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000000'
+    ACSTNUM: '         '
+    INFOMSG: 'Enter or update id of account to display     '
+    ERRMSG: 'Account Filter must  be a non-zero 11 digit number                            '
+  - '@map': COACTVW
+    TRNNAME: CAVW
+    PGMNAME: COACTVWC
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    ACCTSID: ABCDEFGHIJK
+    ACSTNUM: '         '
+    INFOMSG: 'Enter or update id of account to display     '
+    ERRMSG: 'Account Filter must  be a non-zero 11 digit number                            '

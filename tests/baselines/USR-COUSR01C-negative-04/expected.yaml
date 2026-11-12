@@ -1,0 +1,101 @@
+# Derived from source (capture_platform: derived), never observed: GAP-INF-004
+# (derived USR end-to-end baselines) and GAP-INF-012 (online-only copybooks).
+# ADMIN001 (type A [app/jcl/DUSRSECJ.jcl:35]) signs on and COSGN00C routes it
+# to the admin menu COADM01 [app/cbl/COSGN00C.cbl:221-237]; option 2 makes
+# COADM01C XCTL to COUSR01C with context 0 [app/cbl/COADM01C.cbl:136-145]
+# [app/cpy/COADM02Y.cpy:29-32], which sends the cleared COUSR01 map with a
+# blank ERRMSG [app/cbl/COUSR01C.cbl:71-87,184-196]. ENTER with both names
+# given and the user id blank re-sends COUSR01 with 'User ID can NOT be
+# empty...' and the received names and user type, and skips the USRSEC write,
+# so USRSEC keeps its 10 fixture users [app/cbl/COUSR01C.cbl:115-160].
+# Fields are at their full BMS width with trailing spaces kept (ERRMSG 78,
+# TITLE01/TITLE02 40, FNAME/LNAME 20, USERID 8), because screens compare
+# exactly. CURDATE and CURTIME come from the region clock, so they are
+# matchers. PASSWD is a dark field and is not asserted. SEC-USR-PWD holds the
+# public demo password of the fixture users [app/jcl/DUSRSECJ.jcl:35-44], kept
+# verbatim because the unchanged USRSEC records are the asserted outcome; it is
+# demo data, not a credential.
+file_state:
+  USRSEC:
+    records:
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'MARGARET            '
+      SEC-USR-ID: ADMIN001
+      SEC-USR-LNAME: 'GOLD                '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: A
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'RUSSELL             '
+      SEC-USR-ID: ADMIN002
+      SEC-USR-LNAME: 'RUSSELL             '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: A
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'RAYMOND             '
+      SEC-USR-ID: ADMIN003
+      SEC-USR-LNAME: 'WHITMORE            '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: A
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'EMMANUEL            '
+      SEC-USR-ID: ADMIN004
+      SEC-USR-LNAME: 'CASGRAIN            '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: A
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'GRANVILLE           '
+      SEC-USR-ID: ADMIN005
+      SEC-USR-LNAME: 'LACHAPELLE          '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: A
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'LAWRENCE            '
+      SEC-USR-ID: USER0001
+      SEC-USR-LNAME: 'THOMAS              '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: U
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'AJITH               '
+      SEC-USR-ID: USER0002
+      SEC-USR-LNAME: 'KUMAR               '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: U
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'LAURITZ             '
+      SEC-USR-ID: USER0003
+      SEC-USR-LNAME: 'ALME                '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: U
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'AVERARDO            '
+      SEC-USR-ID: USER0004
+      SEC-USR-LNAME: 'MAZZI               '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: U
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'LEE                 '
+      SEC-USR-ID: USER0005
+      SEC-USR-LNAME: 'TING                '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: U
+screens:
+- '@map': COADM01
+- '@map': COUSR01
+  ERRMSG: '                                                                              '
+  PGMNAME: COUSR01C
+  TRNNAME: CU01
+- '@map': COUSR01
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'User ID can NOT be empty...                                                   '
+  FNAME: 'TESTFIRST           '
+  LNAME: 'TESTLAST            '
+  PGMNAME: COUSR01C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CU01
+  USERID: '        '
+  USRTYPE: U

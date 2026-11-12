@@ -1,0 +1,151 @@
+id: MNU-COADM01C-negative-02
+level: e2e
+type: negative
+description: >-
+  ADMIN001 signs on through CC00 and reaches the admin menu COADM01, then
+  enters three option values the menu refuses: 0, 5 (one above
+  CDEMO-ADMIN-OPT-COUNT, 4 [app/cpy/COADM02Y.cpy:20]) and the non-numeric X.
+  For each, PROCESS-ENTER-KEY takes the option text up to its last non-blank
+  character, right-justifies it in WS-OPTION-X, turns blanks into zeros, moves
+  it to WS-OPTION PIC 9(02) and echoes WS-OPTION into OPTIONO. An option that
+  is not numeric, greater than the count or zero sets the error flag and
+  resends the menu with 'Please enter a valid option number...'; the error
+  flag then skips the XCTL to the option's program, so the menu stays on
+  screen under CA00 [app/cbl/COADM01C.cbl:115-155]. The resent menu carries
+  the header, the COTTL01Y titles, the run date and time, and the four
+  COADM02Y options as '<nn>. <name>' in 40-character fields, with options 5 to
+  12 blank [app/cbl/COADM01C.cbl:172-263].
+# Primary item first, then the program, its map, the transaction each ENTER
+# runs (COADM01C returns with TRANSID CA00), and the online copybooks COADM01C
+# copies. The sign-on step is setup: COSGN00, CC00 and USRSEC are verified by
+# the SEC scenarios.
+inventory_ids:
+- INV-MNU-022
+- INV-MNU-002
+- INV-MNU-004
+- INV-CFG-011
+- INV-LAY-001
+- INV-LAY-002
+- INV-LAY-005
+- INV-LAY-006
+- INV-LAY-008
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-003
+- GAP-INF-012
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+# Each field value is the field's whole content when the AID is pressed: the
+# field is erased before the value is typed.
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: ADMIN001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COADM01
+    fields:
+      OPTION: '0'
+  - aid: ENTER
+    '@map': COADM01
+    fields:
+      OPTION: '5'
+  - aid: ENTER
+    '@map': COADM01
+    fields:
+      OPTION: 'X'
+# Screen values are whole fields at their BMS length, trailing spaces kept:
+# comparison never trims. Fields COADM01C leaves at LOW-VALUES show as spaces.
+expected:
+  screens:
+  # The first display of the admin menu, asserted in full by
+  # SEC-COSGN00C-normal-01; here only the state the option entries start from.
+  - '@map': COADM01
+    TRNNAME: CA00
+    PGMNAME: COADM01C
+    OPTION: '  '
+    ERRMSG: '                                                                              '
+  # 0 is zero-filled to 00 and refused as zero.
+  - '@map': COADM01
+    TRNNAME: CA00
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COADM01C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    OPTN001: '01. User List (Security)                '
+    OPTN002: '02. User Add (Security)                 '
+    OPTN003: '03. User Update (Security)              '
+    OPTN004: '04. User Delete (Security)              '
+    OPTN005: '                                        '
+    OPTN006: '                                        '
+    OPTN007: '                                        '
+    OPTN008: '                                        '
+    OPTN009: '                                        '
+    OPTN010: '                                        '
+    OPTN011: '                                        '
+    OPTN012: '                                        '
+    OPTION: '00'
+    ERRMSG: 'Please enter a valid option number...                                         '
+  # 5 is zero-filled to 05 and refused as greater than the option count, 4.
+  - '@map': COADM01
+    TRNNAME: CA00
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COADM01C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    OPTN001: '01. User List (Security)                '
+    OPTN002: '02. User Add (Security)                 '
+    OPTN003: '03. User Update (Security)              '
+    OPTN004: '04. User Delete (Security)              '
+    OPTN005: '                                        '
+    OPTN006: '                                        '
+    OPTN007: '                                        '
+    OPTN008: '                                        '
+    OPTN009: '                                        '
+    OPTN010: '                                        '
+    OPTN011: '                                        '
+    OPTN012: '                                        '
+    OPTION: '05'
+    ERRMSG: 'Please enter a valid option number...                                         '
+  # X becomes 0X in WS-OPTION-X and is refused. OPTION is not asserted: the
+  # echo is WS-OPTION after a MOVE of the non-digit text 0X into PIC 9(02),
+  # whose result COBOL leaves to the compiler (Enterprise COBOL packs X'F0E7'
+  # to 07; an ASCII byte copy keeps 0X). Every such result is non-numeric or
+  # above 4, so the refusal and its message are certain while the echoed
+  # digits are not derivable from the source.
+  - '@map': COADM01
+    TRNNAME: CA00
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COADM01C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    OPTN001: '01. User List (Security)                '
+    OPTN002: '02. User Add (Security)                 '
+    OPTN003: '03. User Update (Security)              '
+    OPTN004: '04. User Delete (Security)              '
+    OPTN005: '                                        '
+    OPTN006: '                                        '
+    OPTN007: '                                        '
+    OPTN008: '                                        '
+    OPTN009: '                                        '
+    OPTN010: '                                        '
+    OPTN011: '                                        '
+    OPTN012: '                                        '
+    ERRMSG: 'Please enter a valid option number...                                         '
+  # The ERRMSG value of each step, in step order, as the screens hold it.
+  messages:
+  - '                                                                              '
+  - 'Please enter a valid option number...                                         '
+  - 'Please enter a valid option number...                                         '
+  - 'Please enter a valid option number...                                         '

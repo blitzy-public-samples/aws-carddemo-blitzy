@@ -1,0 +1,98 @@
+# Derived from source (capture_platform: derived), never observed. ADMIN001
+# signs on to the admin menu COADM01 [app/cbl/COSGN00C.cbl:221-240]; option 2
+# sends the empty add-user map COUSR01 [app/cbl/COUSR01C.cbl:73-87,184-196];
+# the ENTER with the first name blank is refused by the first WHEN of
+# PROCESS-ENTER-KEY, so WRITE-USER-SEC-FILE never runs
+# [app/cbl/COUSR01C.cbl:115-123,153-160]. COUSR1AO redefines COUSR1AI, so the
+# last name, user id and type just received are sent back, and ERRMSG is
+# WS-MESSAGE X(80) cut to ERRMSGO X(78). Screen values are whole BMS fields
+# with trailing spaces kept. USRSEC is the fixture's 10 users, unchanged,
+# decoded with CSUSR01Y/SEC-USER-DATA in key order, with no TESTU001 record.
+# SEC-USR-PWD holds the fixture's documented demo password PASSWORD: it is
+# repository data, not a credential, and is kept so each record compares whole.
+file_state:
+  USRSEC:
+  - SEC-USR-FILLER: '                       '
+    SEC-USR-FNAME: 'MARGARET            '
+    SEC-USR-ID: ADMIN001
+    SEC-USR-LNAME: 'GOLD                '
+    SEC-USR-PWD: PASSWORD
+    SEC-USR-TYPE: A
+  - SEC-USR-FILLER: '                       '
+    SEC-USR-FNAME: 'RUSSELL             '
+    SEC-USR-ID: ADMIN002
+    SEC-USR-LNAME: 'RUSSELL             '
+    SEC-USR-PWD: PASSWORD
+    SEC-USR-TYPE: A
+  - SEC-USR-FILLER: '                       '
+    SEC-USR-FNAME: 'RAYMOND             '
+    SEC-USR-ID: ADMIN003
+    SEC-USR-LNAME: 'WHITMORE            '
+    SEC-USR-PWD: PASSWORD
+    SEC-USR-TYPE: A
+  - SEC-USR-FILLER: '                       '
+    SEC-USR-FNAME: 'EMMANUEL            '
+    SEC-USR-ID: ADMIN004
+    SEC-USR-LNAME: 'CASGRAIN            '
+    SEC-USR-PWD: PASSWORD
+    SEC-USR-TYPE: A
+  - SEC-USR-FILLER: '                       '
+    SEC-USR-FNAME: 'GRANVILLE           '
+    SEC-USR-ID: ADMIN005
+    SEC-USR-LNAME: 'LACHAPELLE          '
+    SEC-USR-PWD: PASSWORD
+    SEC-USR-TYPE: A
+  - SEC-USR-FILLER: '                       '
+    SEC-USR-FNAME: 'LAWRENCE            '
+    SEC-USR-ID: USER0001
+    SEC-USR-LNAME: 'THOMAS              '
+    SEC-USR-PWD: PASSWORD
+    SEC-USR-TYPE: U
+  - SEC-USR-FILLER: '                       '
+    SEC-USR-FNAME: 'AJITH               '
+    SEC-USR-ID: USER0002
+    SEC-USR-LNAME: 'KUMAR               '
+    SEC-USR-PWD: PASSWORD
+    SEC-USR-TYPE: U
+  - SEC-USR-FILLER: '                       '
+    SEC-USR-FNAME: 'LAURITZ             '
+    SEC-USR-ID: USER0003
+    SEC-USR-LNAME: 'ALME                '
+    SEC-USR-PWD: PASSWORD
+    SEC-USR-TYPE: U
+  - SEC-USR-FILLER: '                       '
+    SEC-USR-FNAME: 'AVERARDO            '
+    SEC-USR-ID: USER0004
+    SEC-USR-LNAME: 'MAZZI               '
+    SEC-USR-PWD: PASSWORD
+    SEC-USR-TYPE: U
+  - SEC-USR-FILLER: '                       '
+    SEC-USR-FNAME: 'LEE                 '
+    SEC-USR-ID: USER0005
+    SEC-USR-LNAME: 'TING                '
+    SEC-USR-PWD: PASSWORD
+    SEC-USR-TYPE: U
+screens:
+- '@map': COADM01
+  PGMNAME: COADM01C
+  TRNNAME: CA00
+- '@map': COUSR01
+  ERRMSG: '                                                                              '
+  PGMNAME: COUSR01C
+  TRNNAME: CU01
+- '@map': COUSR01
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    format: '%H:%M:%S'
+    match: run-time
+  ERRMSG: 'First Name can NOT be empty...                                                '
+  FNAME: '                    '
+  LNAME: 'TESTLAST            '
+  PGMNAME: COUSR01C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CU01
+  USERID: TESTU001
+  USRTYPE: U

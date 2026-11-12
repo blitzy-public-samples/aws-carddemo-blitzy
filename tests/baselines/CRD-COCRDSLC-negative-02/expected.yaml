@@ -1,0 +1,45 @@
+# Derived from source (capture_platform: derived), never observed. ENTER on
+# COCRDSL with the account blank and card 0500024453765740 typed:
+# 2210-EDIT-ACCOUNT sets WS-PROMPT-FOR-ACCT 'Account number not provided', and
+# because the card passes 2220-EDIT-CARD the cross-field edit does not replace it
+# with 'No input received'. INPUT-ERROR skips 9000-READ-DATA, so no card detail
+# is shown, and 1300-SETUP-SCREEN-ATTRS writes '*' in ACCTSID on the reentry
+# [app/cbl/COCRDSLC.cbl:357-363,457-497,541-545,615-660,685-719]. Fields are at
+# full BMS width with trailing spaces kept; messages holds the ERRMSG of every
+# step.
+messages:
+- '                                                                              '
+- '                                                                                '
+- 'Account number not provided                                                     '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  OPTN004: '04. Credit Card View                    '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COCRDSL
+  ACCTSID: '           '
+  CARDSID: '                '
+  ERRMSG: '                                                                                '
+  INFOMSG: 'Please enter Account and Card Number    '
+  PGMNAME: COCRDSLC
+  TRNNAME: CCDL
+- '@map': COCRDSL
+  ACCTSID: '*          '
+  CARDSID: '0500024453765740'
+  CRDNAME: '                                                  '
+  CRDSTCD: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    format: '%H:%M:%S'
+    match: run-time
+  ERRMSG: 'Account number not provided                                                     '
+  EXPMON: '  '
+  EXPYEAR: '    '
+  INFOMSG: 'Please enter Account and Card Number    '
+  PGMNAME: COCRDSLC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CCDL

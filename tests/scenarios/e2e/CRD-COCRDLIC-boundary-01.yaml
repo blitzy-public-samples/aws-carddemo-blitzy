@@ -1,0 +1,315 @@
+# Boundary of the COCRDLIC page size: account 00000000050 holds exactly
+# WS-MAX-SCREEN-LINES (7) cards [app/cbl/COCRDLIC.cbl:177-178], so its filtered
+# list fills one page and PF8 shows no second page. CRD-COCRDLIC-boundary-02
+# holds 8 cards, one more than a page.
+#
+# Data: every repository account has one card, and 0500024453765740 (account
+# 00000000050, line 1 of app/data/ASCII/carddata.txt) is the lowest CARDDAT key.
+# Six invented cards, 9999000050000001 to 9999000050000006, give the account
+# its other six. The look-ahead READNEXT after the 7th row is not filtered by
+# account [app/cbl/COCRDLIC.cbl:1191-1231], so the page counts as the last one
+# only when the account's 7th card is the last CARDDAT record. The invented
+# keys therefore sort after every repository card.
+#
+# Expected values are derived from the source (no TPE region runs in CI):
+# - Step 2: entered from the menu, COCRDLIC starts afresh with no filter and
+#   browses CARDDAT from the lowest key (WHEN OTHER, 9000-READ-FORWARD). The
+#   first 7 records fill page 1, the 8th makes the next page exist, and no
+#   error message is set [app/cbl/COCRDLIC.cbl:336-343,572-582,1123-1260].
+#   ACCTSID and CARDSID stay blank on an entry from the menu
+#   [app/cbl/COCRDLIC.cbl:839-842].
+# - Step 3: ENTER with ACCTSID 00000000050 makes the account filter valid
+#   [app/cbl/COCRDLIC.cbl:1003-1029]. No row is selected, so I-SELECTED stays 0
+#   and the selection branches do not apply. WHEN OTHER browses again from
+#   WS-CA-FIRST-CARD-NUM (0500024453765740) and 9500-FILTER-RECORDS keeps the 7
+#   cards of the account. The look-ahead READNEXT returns ENDFILE: no next page,
+#   and 'NO MORE RECORDS TO SHOW' [app/cbl/COCRDLIC.cbl:1215-1221]. ACCTSID
+#   echoes the filter [app/cbl/COCRDLIC.cbl:844-848].
+# - Step 4: PF8 without a next page is WHEN OTHER again, so the same page is
+#   read and sent. 1400-SETUP-MESSAGE takes the PF8-without-next-page branch,
+#   which keeps the info message and only marks the last page shown, so ERRMSG
+#   still reads 'NO MORE RECORDS TO SHOW' [app/cbl/COCRDLIC.cbl:410-414,905-916].
+# - Step 5: a second PF8 finds the last page shown and gets
+#   'NO MORE PAGES TO DISPLAY'. That branch sets no info message, so INFOMSG is
+#   blank [app/cbl/COCRDLIC.cbl:669-671,905-909,926-930].
+# Step 5 exists because the first PF8 on a single page only marks it shown:
+# 'NO MORE PAGES TO DISPLAY' appears on the second PF8, never the first.
+#
+# Screen fields are compared at their full BMS length, trailing spaces
+# included. PAGENO receives the 9(1) page number in X(3), so it reads '1  '.
+# INFOMSG shows 'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD' after steps 2 to 4
+# [app/cbl/COCRDLIC.cbl:917-919,926-930]. CURDATE and CURTIME come from the
+# region clock, so they are matchers and the clock is relative.
+id: CRD-COCRDLIC-boundary-01
+level: e2e
+type: boundary
+description: >-
+  USER0001 signs on, selects main-menu option 3 (Credit Card List) and filters
+  the COCRDLIC list (transaction CCLI) by account 00000000050, which holds
+  exactly 7 cards: repository card 0500024453765740 and six invented cards that
+  sort after every other CARDDAT key. Page 1 shows all 7 cards in key order with
+  'NO MORE RECORDS TO SHOW'. PF8 keeps page 1 and its rows with the same
+  message, and a second PF8 keeps them with 'NO MORE PAGES TO DISPLAY'.
+# Primary item first, then the program, the maps asserted, the transaction the
+# list runs under, the CSD file it browses, and the online-only copybooks it
+# copies. Sign-on and the menu option are verified by the SEC and MNU
+# scenarios; the batch record copybooks and the data files are verified at the
+# lowest level that executes them.
+inventory_ids:
+- INV-CRD-025  # COCRDLIC card list content, 7 rows per page (report)
+- INV-CRD-001  # COCRDLIC program
+- INV-CRD-004  # COCRDLI map, the list screen asserted after steps 2 to 5
+- INV-MNU-003  # COMEN01 map, where option 3 is entered
+- INV-CFG-014  # CCLI transaction, the list's TRNNAME and its RETURN TRANSID
+- INV-CFG-003  # CARDDAT CSD file, browsed by card number
+- INV-LAY-002  # COCOM01Y: the COMMAREA carrying the filter and the paging state
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COCRDLIC
+- INV-LAY-011  # CSSTRPFY: the AID mapping of ENTER and PF8
+- INV-LAY-019  # CVCRD01Y: CC-ACCT-ID and the AID flags
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-006  # derived CRD end-to-end baselines, never observed on a TPE region
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+    CARDDATA:
+      base: CARDDATA
+      records:
+      - CARD-NUM: '9999000050000001'
+        CARD-ACCT-ID: '00000000050'
+        CARD-CVV-CD: '501'
+        CARD-EMBOSSED-NAME: 'Test Holder One'
+        CARD-EXPIRAION-DATE: '2026-01-31'
+        CARD-ACTIVE-STATUS: 'Y'
+      - CARD-NUM: '9999000050000002'
+        CARD-ACCT-ID: '00000000050'
+        CARD-CVV-CD: '502'
+        CARD-EMBOSSED-NAME: 'Test Holder Two'
+        CARD-EXPIRAION-DATE: '2026-01-31'
+        CARD-ACTIVE-STATUS: 'Y'
+      - CARD-NUM: '9999000050000003'
+        CARD-ACCT-ID: '00000000050'
+        CARD-CVV-CD: '503'
+        CARD-EMBOSSED-NAME: 'Test Holder Three'
+        CARD-EXPIRAION-DATE: '2026-01-31'
+        CARD-ACTIVE-STATUS: 'Y'
+      - CARD-NUM: '9999000050000004'
+        CARD-ACCT-ID: '00000000050'
+        CARD-CVV-CD: '504'
+        CARD-EMBOSSED-NAME: 'Test Holder Four'
+        CARD-EXPIRAION-DATE: '2026-01-31'
+        CARD-ACTIVE-STATUS: 'Y'
+      - CARD-NUM: '9999000050000005'
+        CARD-ACCT-ID: '00000000050'
+        CARD-CVV-CD: '505'
+        CARD-EMBOSSED-NAME: 'Test Holder Five'
+        CARD-EXPIRAION-DATE: '2026-01-31'
+        CARD-ACTIVE-STATUS: 'Y'
+      - CARD-NUM: '9999000050000006'
+        CARD-ACCT-ID: '00000000050'
+        CARD-CVV-CD: '506'
+        CARD-EMBOSSED-NAME: 'Test Holder Six'
+        CARD-EXPIRAION-DATE: '2026-01-31'
+        CARD-ACTIVE-STATUS: 'Y'
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    '@map': COSGN00
+    aid: ENTER
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - '@map': COMEN01
+    aid: ENTER
+    fields:
+      OPTION: '3'
+  - '@map': COCRDLI
+    aid: ENTER
+    fields:
+      ACCTSID: '00000000050'
+  - '@map': COCRDLI
+    aid: PF8
+    fields: {}
+  - '@map': COCRDLI
+    aid: PF8
+    fields: {}
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN003: '03. Credit Card List                    '
+    ERRMSG: '                                                                              '
+  - '@map': COCRDLI
+    TRNNAME: CCLI
+    PGMNAME: COCRDLIC
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    PAGENO: '1  '
+    ACCTSID: '           '
+    CARDSID: '                '
+    CRDSEL1: ' '
+    ACCTNO1: '00000000050'
+    CRDNUM1: '0500024453765740'
+    CRDSTS1: 'Y'
+    CRDSEL2: ' '
+    ACCTNO2: '00000000027'
+    CRDNUM2: '0683586198171516'
+    CRDSTS2: 'Y'
+    CRDSEL3: ' '
+    ACCTNO3: '00000000002'
+    CRDNUM3: '0923877193247330'
+    CRDSTS3: 'Y'
+    CRDSEL4: ' '
+    ACCTNO4: '00000000020'
+    CRDNUM4: '0927987108636232'
+    CRDSTS4: 'Y'
+    CRDSEL5: ' '
+    ACCTNO5: '00000000012'
+    CRDNUM5: '0982496213629795'
+    CRDSTS5: 'Y'
+    CRDSEL6: ' '
+    ACCTNO6: '00000000044'
+    CRDNUM6: '1014086565224350'
+    CRDSTS6: 'Y'
+    CRDSEL7: ' '
+    ACCTNO7: '00000000037'
+    CRDNUM7: '1142167692878931'
+    CRDSTS7: 'Y'
+    INFOMSG: 'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD    '
+    ERRMSG: '                                                                              '
+  - '@map': COCRDLI
+    TRNNAME: CCLI
+    PGMNAME: COCRDLIC
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    PAGENO: '1  '
+    ACCTSID: '00000000050'
+    CARDSID: '                '
+    CRDSEL1: ' '
+    ACCTNO1: '00000000050'
+    CRDNUM1: '0500024453765740'
+    CRDSTS1: 'Y'
+    CRDSEL2: ' '
+    ACCTNO2: '00000000050'
+    CRDNUM2: '9999000050000001'
+    CRDSTS2: 'Y'
+    CRDSEL3: ' '
+    ACCTNO3: '00000000050'
+    CRDNUM3: '9999000050000002'
+    CRDSTS3: 'Y'
+    CRDSEL4: ' '
+    ACCTNO4: '00000000050'
+    CRDNUM4: '9999000050000003'
+    CRDSTS4: 'Y'
+    CRDSEL5: ' '
+    ACCTNO5: '00000000050'
+    CRDNUM5: '9999000050000004'
+    CRDSTS5: 'Y'
+    CRDSEL6: ' '
+    ACCTNO6: '00000000050'
+    CRDNUM6: '9999000050000005'
+    CRDSTS6: 'Y'
+    CRDSEL7: ' '
+    ACCTNO7: '00000000050'
+    CRDNUM7: '9999000050000006'
+    CRDSTS7: 'Y'
+    INFOMSG: 'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD    '
+    ERRMSG: 'NO MORE RECORDS TO SHOW                                                       '
+  - '@map': COCRDLI
+    TRNNAME: CCLI
+    PGMNAME: COCRDLIC
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    PAGENO: '1  '
+    ACCTSID: '00000000050'
+    CARDSID: '                '
+    CRDSEL1: ' '
+    ACCTNO1: '00000000050'
+    CRDNUM1: '0500024453765740'
+    CRDSTS1: 'Y'
+    CRDSEL2: ' '
+    ACCTNO2: '00000000050'
+    CRDNUM2: '9999000050000001'
+    CRDSTS2: 'Y'
+    CRDSEL3: ' '
+    ACCTNO3: '00000000050'
+    CRDNUM3: '9999000050000002'
+    CRDSTS3: 'Y'
+    CRDSEL4: ' '
+    ACCTNO4: '00000000050'
+    CRDNUM4: '9999000050000003'
+    CRDSTS4: 'Y'
+    CRDSEL5: ' '
+    ACCTNO5: '00000000050'
+    CRDNUM5: '9999000050000004'
+    CRDSTS5: 'Y'
+    CRDSEL6: ' '
+    ACCTNO6: '00000000050'
+    CRDNUM6: '9999000050000005'
+    CRDSTS6: 'Y'
+    CRDSEL7: ' '
+    ACCTNO7: '00000000050'
+    CRDNUM7: '9999000050000006'
+    CRDSTS7: 'Y'
+    INFOMSG: 'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD    '
+    ERRMSG: 'NO MORE RECORDS TO SHOW                                                       '
+  - '@map': COCRDLI
+    TRNNAME: CCLI
+    PGMNAME: COCRDLIC
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    PAGENO: '1  '
+    ACCTSID: '00000000050'
+    CARDSID: '                '
+    CRDSEL1: ' '
+    ACCTNO1: '00000000050'
+    CRDNUM1: '0500024453765740'
+    CRDSTS1: 'Y'
+    CRDSEL2: ' '
+    ACCTNO2: '00000000050'
+    CRDNUM2: '9999000050000001'
+    CRDSTS2: 'Y'
+    CRDSEL3: ' '
+    ACCTNO3: '00000000050'
+    CRDNUM3: '9999000050000002'
+    CRDSTS3: 'Y'
+    CRDSEL4: ' '
+    ACCTNO4: '00000000050'
+    CRDNUM4: '9999000050000003'
+    CRDSTS4: 'Y'
+    CRDSEL5: ' '
+    ACCTNO5: '00000000050'
+    CRDNUM5: '9999000050000004'
+    CRDSTS5: 'Y'
+    CRDSEL6: ' '
+    ACCTNO6: '00000000050'
+    CRDNUM6: '9999000050000005'
+    CRDSTS6: 'Y'
+    CRDSEL7: ' '
+    ACCTNO7: '00000000050'
+    CRDNUM7: '9999000050000006'
+    CRDSTS7: 'Y'
+    INFOMSG: '                                             '
+    ERRMSG: 'NO MORE PAGES TO DISPLAY                                                      '
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'NO MORE RECORDS TO SHOW                                                       '
+  - 'NO MORE RECORDS TO SHOW                                                       '
+  - 'NO MORE PAGES TO DISPLAY                                                      '

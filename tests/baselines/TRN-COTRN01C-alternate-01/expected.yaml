@@ -1,0 +1,110 @@
+# Derived baseline of scenario TRN-COTRN01C-alternate-01 (capture_platform:
+# derived): USER0001 signs on, selects main menu option 7 'Transaction View',
+# lands on COTRN01 with no transaction selected and presses PF3, which returns
+# to the COMEN01C main menu. Authored from the source, never captured; open
+# until a UniKix run is imported (GAP-INF-007, GAP-INF-012).
+# One screen per step, each the screen shown after the step's AID. Values are
+# whole fields at their BMS length with trailing spaces kept
+# [app/bms/COMEN01.bms] [app/bms/COTRN01.bms]; a field the program leaves
+# LOW-VALUES shows its INITIAL, or spaces where it has none. CURDATE and
+# CURTIME come from the region clock through CSDAT01Y, so they are run-date
+# (mm/dd/yy) and run-time matchers [app/cpy/CSDAT01Y.cpy:30-41].
+screens:
+# Step 1: COSGN00C XCTLs a type-U user to COMEN01C with program context 0
+# [app/cbl/COSGN00C.cbl:221-240]. On first entry COMEN01C clears COMEN1AO and
+# sends COMEN1A with ERASE [app/cbl/COMEN01C.cbl:77-90,182-194]: its CM00 and
+# COMEN01C header with the COTTL01Y titles [app/cbl/COMEN01C.cbl:212-231]
+# [app/cpy/COTTL01Y.cpy:18-22]; the ten COMEN02Y options, each '<nn>. ' and
+# the 35-byte name in the 40-byte WS-MENU-OPT-TXT [app/cbl/COMEN01C.cbl:48,
+# 236-277] [app/cpy/COMEN02Y.cpy:21-84]; OPTN011 and OPTN012 never moved
+# (INITIAL ' '), OPTION never moved, and the blank WS-MESSAGE in ERRMSG.
+- '@map': 'COMEN01'
+  CURDATE:
+    format: '%m/%d/%y'
+    match: 'run-date'
+  CURTIME:
+    match: 'run-time'
+  ERRMSG: '                                                                              '
+  OPTION: '  '
+  OPTN001: '01. Account View                        '
+  OPTN002: '02. Account Update                      '
+  OPTN003: '03. Credit Card List                    '
+  OPTN004: '04. Credit Card View                    '
+  OPTN005: '05. Credit Card Update                  '
+  OPTN006: '06. Transaction List                    '
+  OPTN007: '07. Transaction View                    '
+  OPTN008: '08. Transaction Add                     '
+  OPTN009: '09. Transaction Reports                 '
+  OPTN010: '10. Bill Payment                        '
+  OPTN011: '                                        '
+  OPTN012: '                                        '
+  PGMNAME: 'COMEN01C'
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: 'CM00'
+# Step 2: option 7 is numeric, within the 10 options, of user type U and not a
+# DUMMY program, so COMEN01C XCTLs to COTRN01C with context 0
+# [app/cbl/COMEN01C.cbl:115-156] [app/cpy/COMEN02Y.cpy:61-65]. The group MOVE
+# of the shorter COCOM01Y COMMAREA pads CDEMO-CT01-INFO with spaces, so
+# CDEMO-CT01-TRN-SELECTED is blank: COTRN01C clears COTRN1AO, reads no
+# TRANSACT record and sends COTRN1A with ERASE, its CT01 and COTRN01C header
+# and the blank WS-MESSAGE in ERRMSG [app/cbl/COTRN01C.cbl:52-61,88-109,
+# 213-262].
+# The view fields are asserted although the scenario's inline check names only
+# the header: on this path each stays LOW-VALUES over its INITIAL ' ', so the
+# whole COTRN01 screen is known and pinned.
+- '@map': 'COTRN01'
+  CARDNUM: '                '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: 'run-date'
+  CURTIME:
+    match: 'run-time'
+  ERRMSG: '                                                                              '
+  MCITY: '                         '
+  MID: '         '
+  MNAME: '                              '
+  MZIP: '          '
+  PGMNAME: 'COTRN01C'
+  TCATCD: '    '
+  TDESC: '                                                            '
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TORIGDT: '          '
+  TPROCDT: '          '
+  TRNAMT: '            '
+  TRNID: '                '
+  TRNIDIN: '                '
+  TRNNAME: 'CT01'
+  TRNSRC: '          '
+  TTYPCD: '  '
+# Step 3: PF3 with nothing typed. COTRN01C, re-entered under CT01, takes the
+# DFHPF3 branch: CDEMO-FROM-PROGRAM holds COMEN01C from the menu's XCTL and
+# becomes CDEMO-TO-PROGRAM; RETURN-TO-PREV-SCREEN zeroes CDEMO-PGM-CONTEXT and
+# XCTLs to COMEN01C [app/cbl/COTRN01C.cbl:110-122,197-208]. COMEN01C, with a
+# context of zero, takes its first-entry path again and sends the same menu as
+# step 1, with no message [app/cbl/COMEN01C.cbl:86-90,182-194].
+- '@map': 'COMEN01'
+  CURDATE:
+    format: '%m/%d/%y'
+    match: 'run-date'
+  CURTIME:
+    match: 'run-time'
+  ERRMSG: '                                                                              '
+  OPTION: '  '
+  OPTN001: '01. Account View                        '
+  OPTN002: '02. Account Update                      '
+  OPTN003: '03. Credit Card List                    '
+  OPTN004: '04. Credit Card View                    '
+  OPTN005: '05. Credit Card Update                  '
+  OPTN006: '06. Transaction List                    '
+  OPTN007: '07. Transaction View                    '
+  OPTN008: '08. Transaction Add                     '
+  OPTN009: '09. Transaction Reports                 '
+  OPTN010: '10. Bill Payment                        '
+  OPTN011: '                                        '
+  OPTN012: '                                        '
+  PGMNAME: 'COMEN01C'
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: 'CM00'

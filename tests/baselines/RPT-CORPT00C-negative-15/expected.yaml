@@ -1,0 +1,70 @@
+# Derived baseline (capture_platform: derived) of scenario
+# RPT-CORPT00C-negative-15, authored from the source because no TPE region runs
+# in CI; only `report.py --import-unikix` replaces it, from imported UniKix
+# evidence, and it is never edited by hand to match a run.
+#
+# USER0001 signs on and takes main-menu option 9 (Transaction Reports) to
+# CORPT00C [app/cbl/COSGN00C.cbl:230-240] [app/cbl/COMEN01C.cbl:86-90,115-156]
+# [app/cpy/COMEN02Y.cpy:74-78]. On first entry CORPT00C clears CORPT0AO and
+# sends CORPT00 with a blank ERRMSG [app/cbl/CORPT00C.cbl:172-181,556-580].
+# Step 3 asks for a Custom report from 01/01/2022 to 02/30/2022:
+# - no date part is blank, so no empty check fires
+#   [app/cbl/CORPT00C.cbl:256-303];
+# - NUMVAL-C moves each part back through PIC 99 or PIC 9999, leaving '01',
+#   '01', '2022', '02', '30' and '2022' unchanged, and the month, day and
+#   year checks pass [app/cbl/CORPT00C.cbl:305-379];
+# - CSUTLDTC accepts the start date 2022-01-01 with mask YYYY-MM-DD; for the
+#   end date 2022-02-30 the inferred CEEDAYS feedback is 09CC
+#   (FC-BAD-DATE-VALUE), returned as severity 0003 and message 2508, which is
+#   neither '0000' nor the tolerated '2513', so 'End Date - Not a valid
+#   date...' is sent [app/cbl/CORPT00C.cbl:381-426]
+#   [app/cbl/CSUTLDTC.cbl:61-70,88-157];
+# - SEND-TRNRPT-SCREEN sends CORPT00 with ERASE and ends with GO TO
+#   RETURN-TO-CICS, so SUBMIT-JOB-TO-INTRDR never runs and nothing is written
+#   to the JOBS queue [app/cbl/CORPT00C.cbl:428-436,556-591].
+# Which dates CEEDAYS refuses is inferred, never observed (GAP-INF-001), and
+# whether UniKix supplies CEEDAYS is open (GAP-MIS-010); the UniKix copy's
+# CSUTLDTC passes trimmed lengths (GAP-DOC-021). Open under GAP-INF-009
+# (derived RPT end-to-end baselines) and GAP-INF-012 (online-only copybooks).
+#
+# One screen per step, each the screen shown after the step's AID; messages
+# holds each step's ERRMSG. Text is the whole BMS field with trailing spaces
+# kept; ERRMSG is the 80-byte WS-MESSAGE in the 78-byte ERRMSGO. MONTHLY and
+# YEARLY show their blank INITIAL, and CONFIRM, never typed, shows as a space
+# [app/bms/CORPT00.bms:80-210]. TITLE01 and TITLE02 are COTTL01Y's
+# [app/cpy/COTTL01Y.cpy:17-22]. CURDATE and CURTIME come from the region
+# clock, which UniKix cannot fix, hence the matchers.
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'End Date - Not a valid date...                                                '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': CORPT00
+  ERRMSG: '                                                                              '
+  PGMNAME: CORPT00C
+  TRNNAME: CR00
+- '@map': CORPT00
+  CONFIRM: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  CUSTOM: X
+  EDTDD: '30'
+  EDTMM: '02'
+  EDTYYYY: '2022'
+  ERRMSG: 'End Date - Not a valid date...                                                '
+  MONTHLY: ' '
+  PGMNAME: CORPT00C
+  SDTDD: '01'
+  SDTMM: '01'
+  SDTYYYY: '2022'
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CR00
+  YEARLY: ' '

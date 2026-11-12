@@ -1,0 +1,11 @@
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: gnucobol-batch
+execution_fingerprint: 9b627651564bbdebc7e019427c9d233422d257b9ffb30766fb63bcb11798d2ad
+execution_id: gnucobol-batch-3f090951d1034f70
+source_commit: ce9f6aff53f0ac819039927a2edff31f10f77b06
+source_identity:
+  commit: ce9f6aff53f0ac819039927a2edff31f10f77b06
+  tree: app
+  units:
+    app/jcl/CARDFILE.jcl: 0240faee5aec80d976ce0b15a85f101fa0f901b09b72d64545daa09858ddcc0c

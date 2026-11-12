@@ -1,0 +1,74 @@
+id: SEC-COSGN00C-normal-02
+level: e2e
+type: normal
+description: >-
+  USER0001, a regular user (SEC-USR-TYPE 'U' in USRSEC), signs on through
+  transaction CC00 with password PASSWORD. COSGN00C reads USRSEC by the
+  upper-cased user id, matches the password and, because CDEMO-USRTYP-ADMIN is
+  false, transfers control to COMEN01C with the COMMAREA
+  [app/cbl/COSGN00C.cbl:209-240]. COMEN01C, entered with CDEMO-PGM-CONTEXT
+  zero, sends the main menu COMEN01 from a cleared output map: its own
+  transaction and program name, the COTTL01Y titles, the run date and time,
+  and the ten options of the COMEN02Y table, each built as '<nn>. <name>' in a
+  40-character field, with options 11 and 12, the option field and the message
+  line blank [app/cbl/COMEN01C.cbl:82-90,182-277] [app/cpy/COMEN02Y.cpy:21-84].
+# Primary item first, then the program, the maps the step enters on and lands
+# on, the transaction run, the CSD file read, and the online-only copybooks
+# COSGN00C copies. COMEN01C's own items, COMEN02Y included, are covered by the
+# COMEN01C (MNU) scenarios, the programs that own and copy them.
+inventory_ids:
+- INV-SEC-011
+- INV-SEC-001
+- INV-SEC-002
+- INV-MNU-003
+- INV-CFG-016
+- INV-CFG-008
+- INV-LAY-002
+- INV-LAY-005
+- INV-LAY-006
+- INV-LAY-008
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-002
+- GAP-INF-012
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+# Screen values are whole fields at their BMS length, trailing spaces kept:
+# comparison never trims. Fields COMEN01C leaves at LOW-VALUES (OPTN011,
+# OPTN012, OPTION) and the blank message line show as spaces.
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COMEN01C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    OPTN001: '01. Account View                        '
+    OPTN002: '02. Account Update                      '
+    OPTN003: '03. Credit Card List                    '
+    OPTN004: '04. Credit Card View                    '
+    OPTN005: '05. Credit Card Update                  '
+    OPTN006: '06. Transaction List                    '
+    OPTN007: '07. Transaction View                    '
+    OPTN008: '08. Transaction Add                     '
+    OPTN009: '09. Transaction Reports                 '
+    OPTN010: '10. Bill Payment                        '
+    OPTN011: '                                        '
+    OPTN012: '                                        '
+    OPTION: '  '
+    ERRMSG: '                                                                              '

@@ -1,0 +1,132 @@
+# Derived baseline of scenario USR-COUSR03C-alternate-01 (capture_platform:
+# derived, tag inferred-not-observed): ADMIN001 signs on, takes admin option 4
+# to COUSR03C and fetches user USER0004 on the COUSR03 Delete User screen.
+# Authored from the source at commit 93ebec71ff7b59a68cedd7c501afe496a8eaa68d,
+# never captured: app/cbl/COUSR03C.cbl:90-169,213-300 with app/bms/COUSR03.bms,
+# app/cbl/COADM01C.cbl:115-145 (XCTL to COUSR03C) and app/cbl/COSGN00C.cbl:
+# 221-237 (type A routed to COADM01C). FNAME, LNAME and USRTYPE are the USRSEC
+# fixture record USER0004. Open until a UniKix run is imported: GAP-INF-004
+# (derived USR end-to-end baselines) and GAP-INF-012 (online-only copybooks).
+# `python tests/harness/report.py --import-unikix <execution_id>` replaces it:
+# MINOR when the observed decoded outcome is equal, MAJOR plus a register entry
+# when it differs.
+# One screen per step, the one shown after the step's AID; values are full BMS
+# field width with their trailing spaces, and only CURDATE/CURTIME (run clock)
+# are matchers. messages holds each step's ERRMSG, as the unikix adapter
+# copies it.
+# Derivation risks, settled by import and never by editing app/:
+# - First entry: COADM01C passes only the COCOM01Y COMMAREA, and COUSR03C's
+#   group MOVE of DFHCOMMAREA(1:EIBCALEN) pads CDEMO-CU03-USR-SELECTED with
+#   spaces, so no user is fetched and COUSR03 is sent cleared
+#   [app/cbl/COUSR03C.cbl:94-105]. A runtime that fills the extension
+#   otherwise would show a different second screen.
+# - The fetch task sends COUSR03 twice with ERASE under CTRL=(ALARM,FREEKB)
+#   [app/bms/COUSR03.bms:19]: first from READ-USER-SEC-FILE with the prompt
+#   and the names still blank, then with the record's names and type
+#   [app/cbl/COUSR03C.cbl:157-168,281-286]. The third screen pins the final
+#   send.
+# file_state: READ UPDATE only, the lock ends with the task and DELETE is
+# reached only through PF5, so USRSEC keeps its 10 fixture users in key order.
+file_state:
+  USRSEC:
+    count: 10
+    records:
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'MARGARET            '
+      SEC-USR-ID: ADMIN001
+      SEC-USR-LNAME: 'GOLD                '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: A
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'RUSSELL             '
+      SEC-USR-ID: ADMIN002
+      SEC-USR-LNAME: 'RUSSELL             '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: A
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'RAYMOND             '
+      SEC-USR-ID: ADMIN003
+      SEC-USR-LNAME: 'WHITMORE            '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: A
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'EMMANUEL            '
+      SEC-USR-ID: ADMIN004
+      SEC-USR-LNAME: 'CASGRAIN            '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: A
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'GRANVILLE           '
+      SEC-USR-ID: ADMIN005
+      SEC-USR-LNAME: 'LACHAPELLE          '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: A
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'LAWRENCE            '
+      SEC-USR-ID: USER0001
+      SEC-USR-LNAME: 'THOMAS              '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: U
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'AJITH               '
+      SEC-USR-ID: USER0002
+      SEC-USR-LNAME: 'KUMAR               '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: U
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'LAURITZ             '
+      SEC-USR-ID: USER0003
+      SEC-USR-LNAME: 'ALME                '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: U
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'AVERARDO            '
+      SEC-USR-ID: USER0004
+      SEC-USR-LNAME: 'MAZZI               '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: U
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'LEE                 '
+      SEC-USR-ID: USER0005
+      SEC-USR-LNAME: 'TING                '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: U
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'Press PF5 key to delete this user ...                                         '
+screens:
+- '@map': COADM01
+  ERRMSG: '                                                                              '
+  PGMNAME: COADM01C
+  TRNNAME: CA00
+- '@map': COUSR03
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  FNAME: '                    '
+  LNAME: '                    '
+  PGMNAME: COUSR03C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CU03
+  USRIDIN: '        '
+  USRTYPE: ' '
+- '@map': COUSR03
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Press PF5 key to delete this user ...                                         '
+  FNAME: 'AVERARDO            '
+  LNAME: 'MAZZI               '
+  PGMNAME: COUSR03C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CU03
+  USRIDIN: USER0004
+  USRTYPE: U

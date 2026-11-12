@@ -1,0 +1,95 @@
+# Derived baseline of TRN-COTRN00C-normal-01: USER0001 signs on, enters option
+# 6 (Transaction List) on the main menu and lands on page 1 of the transaction
+# list. Not observed; authored from the source at the protected commit:
+# - step 1: USER0001 is type U [app/jcl/DUSRSECJ.jcl:40], so COSGN00C transfers
+#   control to COMEN01C [app/cbl/COSGN00C.cbl:230-240], which sends COMEN01
+#   with CM00 and COMEN01C [app/cbl/COMEN01C.cbl:36-37];
+# - step 2: option 6 selects COTRN00C [app/cpy/COMEN02Y.cpy:55-59]
+#   [app/cbl/COMEN01C.cbl:115-157]. On first entry COTRN00C clears its map,
+#   browses TRANSACT from LOW-VALUES (GTEQ is the STARTBR default), skips no
+#   record because the task's AID is ENTER, fills rows 1-10 from ten READNEXTs,
+#   finds an 11th record (0000000025430891), so the page number becomes 1 and
+#   WS-MESSAGE stays blank, then sends COTRN00 with ERASE
+#   [app/cbl/COTRN00C.cbl:107-116,146-229,279-328,527-586].
+# Each row is TRAN-ID, TRAN-ORIG-TS as MM/DD/YY [app/cpy/CSDAT01Y.cpy], the first
+# 26 bytes of TRAN-DESC and TRAN-AMT edited by PIC +99999999.99
+# [app/cbl/COTRN00C.cbl:56,381-445]; the rows are the ten lowest keys of the
+# TRANSACT fixture built from app/data/ASCII/dailytran.txt, whose 300 records
+# all carry TRAN-ORIG-TS 2022-06-10 19:27:53.000000. PAGENUM is the PIC 9(08)
+# page number in the 8-byte field [app/cbl/COTRN00C.cbl:65,324]; the titles come
+# from app/cpy/COTTL01Y.cpy. SEL0001-SEL0010 stay LOW-VALUES and show their BMS
+# INITIAL ' ' [app/bms/COTRN00.bms].
+# The menu step is asserted only by its identification fields; its content
+# belongs to the MNU scenarios. Values are whole fields at their BMS length,
+# trailing spaces kept, since comparison never trims. CURDATE and CURTIME come
+# from the region clock, so they are the only matchers. Only
+# report.py --import-unikix replaces this with an observed outcome:
+# GAP-INF-007 (derived TRN end-to-end baselines) and GAP-INF-012 (online-only
+# copybooks). Keys are in harness.dump_yaml order; every value is quoted.
+screens:
+- '@map': 'COMEN01'
+  PGMNAME: 'COMEN01C'
+  TRNNAME: 'CM00'
+- '@map': 'COTRN00'
+  CURDATE:
+    format: '%m/%d/%y'
+    match: 'run-date'
+  CURTIME:
+    match: 'run-time'
+  ERRMSG: '                                                                              '
+  PAGENUM: '00000001'
+  PGMNAME: 'COTRN00C'
+  SEL0001: ' '
+  SEL0002: ' '
+  SEL0003: ' '
+  SEL0004: ' '
+  SEL0005: ' '
+  SEL0006: ' '
+  SEL0007: ' '
+  SEL0008: ' '
+  SEL0009: ' '
+  SEL0010: ' '
+  TAMT001: '+00000504.77'
+  TAMT002: '-00000919.00'
+  TAMT003: '+00000067.88'
+  TAMT004: '+00000281.77'
+  TAMT005: '+00000454.66'
+  TAMT006: '+00000849.99'
+  TAMT007: '-00000056.77'
+  TAMT008: '+00000373.66'
+  TAMT009: '-00000535.88'
+  TAMT010: '+00000416.11'
+  TDATE01: '06/10/22'
+  TDATE02: '06/10/22'
+  TDATE03: '06/10/22'
+  TDATE04: '06/10/22'
+  TDATE05: '06/10/22'
+  TDATE06: '06/10/22'
+  TDATE07: '06/10/22'
+  TDATE08: '06/10/22'
+  TDATE09: '06/10/22'
+  TDATE10: '06/10/22'
+  TDESC01: 'Purchase at Abshire-Lowe  '
+  TDESC02: 'Return item at Nitzsche, N'
+  TDESC03: 'Purchase at Ernser, Roob a'
+  TDESC04: 'Purchase at Guann LLC     '
+  TDESC05: 'Purchase at Kertzmann-Scho'
+  TDESC06: 'Purchase at Gislason-Medhu'
+  TDESC07: 'Return item at Sipes Inc  '
+  TDESC08: 'Purchase at Legros Group  '
+  TDESC09: 'Return item at Turcotte Gr'
+  TDESC10: 'Purchase at Gleason, Shana'
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNID01: '0000000000683580'
+  TRNID02: '0000000001774260'
+  TRNID03: '0000000006292564'
+  TRNID04: '0000000009101861'
+  TRNID05: '0000000010142252'
+  TRNID06: '0000000010229018'
+  TRNID07: '0000000016259484'
+  TRNID08: '0000000017874199'
+  TRNID09: '0000000019065428'
+  TRNID10: '0000000021711604'
+  TRNIDIN: '                '
+  TRNNAME: 'CT00'

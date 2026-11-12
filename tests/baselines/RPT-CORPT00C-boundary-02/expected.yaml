@@ -1,0 +1,49 @@
+# Derived baseline, inferred-not-observed (GAP-INF-009, GAP-INF-012): authored
+# from the source, never captured; only `python tests/harness/report.py
+# --import-unikix <execution_id>` promotes it. USER0001 reaches COMEN01, option 9
+# transfers to CORPT00C, whose first entry sends CORPT00 with a blank message
+# line. The Custom ENTER passes the empty-part checks, NUMVAL-C keeps the parts
+# '13', '01', '2022', '12', '31', '2022', and '13' > '12' moves 'Start Date -
+# Not a valid Month...' to WS-MESSAGE; SEND-TRNRPT-SCREEN then ends the task, so
+# no later date check, CSUTLDTC call or JOBS write runs
+# [app/cbl/CORPT00C.cbl:169-181,256-336,556-591,609-628]. CORPT0AO redefines
+# CORPT0AI, so the entered values are sent back [app/cpy-bms/CORPT00.CPY:121];
+# ERRMSG is the full 78-byte field [app/bms/CORPT00.bms:218-221], blank or the
+# 33-character message and 45 trailing spaces, as Result.messages carries it for
+# each step; TITLE01 and TITLE02 are the 40-byte COTTL01Y titles
+# [app/cpy/COTTL01Y.cpy:17-22]. CURDATE and CURTIME are the region clock, so
+# they are matchers.
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'Start Date - Not a valid Month...                                             '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': CORPT00
+  ERRMSG: '                                                                              '
+  PGMNAME: CORPT00C
+  TRNNAME: CR00
+- '@map': CORPT00
+  CONFIRM: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  CUSTOM: X
+  EDTDD: '31'
+  EDTMM: '12'
+  EDTYYYY: '2022'
+  ERRMSG: 'Start Date - Not a valid Month...                                             '
+  MONTHLY: ' '
+  PGMNAME: CORPT00C
+  SDTDD: '01'
+  SDTMM: '13'
+  SDTYYYY: '2022'
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CR00
+  YEARLY: ' '

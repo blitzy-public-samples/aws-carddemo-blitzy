@@ -1,0 +1,205 @@
+# The account card cross-reference path CXACAIX is out of service when a
+# transaction is added by account number.
+#
+# Step 1 signs on as USER0001 through CC00; the type-U user is routed to the
+# main menu COMEN01 [app/cbl/COSGN00C.cbl:230-237] [app/cbl/COMEN01C.cbl:82-90].
+# Step 2 enters option 8, 'Transaction Add' (user type U, program COTRN02C):
+# COMEN01C transfers control with CDEMO-PGM-CONTEXT 0
+# [app/cbl/COMEN01C.cbl:115-156] [app/cpy/COMEN02Y.cpy:67-72]. COTRN02C's
+# first entry sets the re-enter flag, moves LOW-VALUES to COTRN2AO and sends
+# COTRN02 with its CT02 header and no message; it reads no file
+# [app/cbl/COTRN02C.cbl:115-130,516-571].
+# Step 3 enters account 00000000001 with Card # left blank, together with the
+# valid transaction of TRN-COTRN02C-normal-01 and CONFIRM Y, and presses ENTER
+# under CT02:
+# - VALIDATE-INPUT-KEY-FIELDS takes the account branch, because ACTIDIN is
+#   supplied: the id is numeric, NUMVAL moves it through WS-ACCT-ID-N
+#   (PIC 9(11)) back into ACTIDINI unchanged, and READ-CXACAIX-FILE reads the
+#   path by XREF-ACCT-ID [app/cbl/COTRN02C.cbl:55,195-209,576-588]. Account
+#   00000000001 is in the repository cross-reference (card 9680294154603697,
+#   record 49 of app/data/ASCII/cardxref.txt), so the fault is the only reason
+#   the read fails.
+# - The response is neither NORMAL nor NOTFND, so the WHEN OTHER branch
+#   DISPLAYs RESP and RESP2, sets the error flag, moves 'Unable to lookup Acct
+#   in XREF AIX file...' to WS-MESSAGE, puts the cursor on ACTIDIN and performs
+#   SEND-TRNADD-SCREEN [app/cbl/COTRN02C.cbl:588-604].
+# - SEND-TRNADD-SCREEN ends with EXEC CICS RETURN TRANSID CT02, so the task
+#   ends there: the data fields are never validated, CONFIRM is never acted
+#   on, and TRANSACT is neither browsed nor written
+#   [app/cbl/COTRN02C.cbl:516-534,164-190,442-466].
+#
+# Expected values are derived from the source; no TPE region runs in CI.
+# - The message is a literal, so it does not depend on whether the region
+#   answers the READ with DISABLED or NOTOPEN; the RESP DISPLAY goes to the
+#   region log, not to the terminal, and is not asserted.
+# - COTRN2AO redefines COTRN2AI, so the screen sent back carries the fields
+#   as received: BMS pads each entered value with blanks to its field length,
+#   ACTIDIN holds the re-edited account id, and the empty Card # (nulls after
+#   EraseEOF) is sent as no data and captured as spaces. The header is
+#   POPULATE-HEADER-INFO's: the COTTL01Y titles, CT02, COTRN02C, and CURDATE
+#   and CURTIME from the region clock through CSDAT01Y, hence the matchers and
+#   clock_mode relative [app/cbl/COTRN02C.cbl:553-571].
+# - ERRMSG is the first 78 bytes of the 80-byte WS-MESSAGE, trailing spaces
+#   kept.
+id: TRN-COTRN02C-recovery-01
+level: e2e
+type: recovery
+description: >-
+  USER0001 signs on, chooses main menu option 8 'Transaction Add' and, on
+  COTRN02, enters account 00000000001 with no card number and a valid
+  transaction confirmed with Y while the region file CXACAIX is unavailable.
+  The READ of the account card cross-reference path fails with a response
+  other than NORMAL or NOTFND, so COTRN02C sends COTRN02 again with the entered
+  values and 'Unable to lookup Acct in XREF AIX file...', and writes nothing to
+  TRANSACT.
+# The recovery message is the primary item, then the program, the map option 8
+# is entered on and the map asserted, the transaction under which the failing
+# READ runs and the CSD file it fails on, then the online-only copybooks
+# COTRN02C copies. The sign-on items (COSGN00, CC00, USRSEC) and CM00 belong to
+# the SEC and MNU scenarios. CCXREF and TRANSACT are not reached, so their CSD
+# files are not listed; CVACT01Y, CVACT03Y, CVTRA05Y and the data files are
+# verified at the lowest level that executes them.
+inventory_ids:
+- INV-TRN-056  # COTRN02C message 'Unable to lookup Acct in XREF AIX file...' (recovery)
+- INV-TRN-003  # COTRN02C program
+- INV-MNU-003  # COMEN01 map, the main menu option 8 is entered on
+- INV-TRN-006  # COTRN02 map, the add screen of steps 2 and 3
+- INV-CFG-022  # CT02 transaction, under which the lookup of step 3 runs
+- INV-CFG-006  # CXACAIX CSD file, the alternate-index path the READ fails on
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA COMEN01C passes with the XCTL
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the screen date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COTRN02C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-007  # online transaction (TRN) end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-MIS-011  # no confirmed region file control to make CXACAIX unavailable
+preconditions:
+  datasets:
+    # COSGN00C reads USER0001 from the 10 repository users.
+    USRSEC: {base: USRSEC}
+    # The region's CCXREF file and its CXACAIX path; account 00000000001 is in
+    # it, so only the path's availability fails.
+    CARDXREF: {base: CARDXREF}
+    # TRANSACT is built from the 300 repository daily transactions, which share
+    # its 350-byte record shape: its datasets.yaml entry is `source: built` and
+    # holds no repository data, so it cannot be its own base.
+    TRANSACT: {base: DALYTRAN}
+  parameters:
+    clock_mode: relative
+  # No `after`: the unikix adapter applies an online fault after the sign-on
+  # step and before the failing one. COMEN01C's option transfer and COTRN02C's
+  # first send read no file, so the first CXACAIX operation after the fault is
+  # the READ of step 3. An adapter without a confirmed region file control
+  # raises MissingPrerequisite under GAP-MIS-011.
+  faults:
+  - target: CXACAIX
+    operation: read
+    condition: unavailable
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '8'
+  # Card # is left blank, so the account id selects the cross-reference path.
+  - aid: ENTER
+    '@map': COTRN02
+    fields:
+      ACTIDIN: '00000000001'
+      CARDNIN: ''
+      TTYPCD: '01'
+      TCATCD: '0001'
+      TRNSRC: 'POS TERM'
+      TDESC: 'Test purchase'
+      TRNAMT: '+00000012.34'
+      TORIGDT: '2022-07-01'
+      TPROCDT: '2022-07-01'
+      MID: '800000001'
+      MNAME: 'Test Merchant'
+      MCITY: 'Testville'
+      MZIP: '27601'
+      CONFIRM: 'Y'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: CT02
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COTRN02C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACTIDIN: '           '
+    CARDNIN: '                '
+    TTYPCD: '  '
+    TCATCD: '    '
+    TRNSRC: '          '
+    TDESC: '                                                            '
+    TRNAMT: '            '
+    TORIGDT: '          '
+    TPROCDT: '          '
+    MID: '         '
+    MNAME: '                              '
+    MCITY: '                         '
+    MZIP: '          '
+    CONFIRM: ' '
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: CT02
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COTRN02C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACTIDIN: '00000000001'
+    CARDNIN: '                '
+    TTYPCD: '01'
+    TCATCD: '0001'
+    TRNSRC: 'POS TERM  '
+    TDESC: 'Test purchase                                               '
+    TRNAMT: '+00000012.34'
+    TORIGDT: '2022-07-01'
+    TPROCDT: '2022-07-01'
+    MID: '800000001'
+    MNAME: 'Test Merchant                 '
+    MCITY: 'Testville                '
+    MZIP: '27601     '
+    CONFIRM: 'Y'
+    ERRMSG: 'Unable to lookup Acct in XREF AIX file...                                     '
+  # The ERRMSG value of each step: blank on the main menu and on the first
+  # COTRN02 send, then the failure message.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Unable to lookup Acct in XREF AIX file...                                     '
+  file_state:
+    # Unchanged: still the 300 fixture records, so nothing was written, and the
+    # highest of them, the record an add would browse to, is intact.
+    TRANSACT:
+      count: 300
+      contains:
+      - TRAN-ID: '0000000996722787'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: 'POS TERM  '
+        TRAN-DESC: 'Purchase at Kilback LLC                                                                             '
+        TRAN-AMT: '603.22'
+        TRAN-MERCHANT-ID: '800000000'
+        TRAN-MERCHANT-NAME: 'Kilback LLC                                       '
+        TRAN-MERCHANT-CITY: 'Cummeratamouth                                    '
+        TRAN-MERCHANT-ZIP: '53200-7529'
+        TRAN-CARD-NUM: '3260763612337560'
+        TRAN-ORIG-TS: '2022-06-10 19:27:53.000000'
+        TRAN-PROC-TS: '                          '

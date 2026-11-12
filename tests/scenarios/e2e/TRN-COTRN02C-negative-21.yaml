@@ -1,0 +1,158 @@
+# COTRN02C refuses an origination date that is not in the form YYYY-MM-DD and
+# shows 'Orig Date should be in format YYYY-MM-DD'; nothing is written.
+#
+# Step 1 signs on as USER0001 through CC00; the type-U user is routed to the
+# main menu COMEN01, headed CM00/COMEN01C [app/cbl/COSGN00C.cbl:230-237]
+# [app/cbl/COMEN01C.cbl:82-90].
+# Step 2 enters option 8, 'Transaction Add' (user type U, program COTRN02C):
+# COMEN01C transfers control with CDEMO-PGM-CONTEXT 0
+# [app/cbl/COMEN01C.cbl:115-156] [app/cpy/COMEN02Y.cpy:67-72]. With no
+# transaction selected, COTRN02C sets the re-enter flag, moves LOW-VALUES to
+# COTRN2AO and sends COTRN02 with its CT02 header and a blank ERRMSG
+# [app/cbl/COTRN02C.cbl:115-130,516-571].
+# Step 3 fills the screen by card number with a valid transaction except the
+# Orig Date, typed as 2022/07/01, and presses ENTER under CT02:
+# - Every entry field is FSET [app/bms/COTRN02.bms], so ACTIDIN arrives as
+#   spaces and VALIDATE-INPUT-KEY-FIELDS takes the card branch: the card is
+#   numeric, is moved back through WS-CARD-NUM-N unchanged, READ CCXREF by
+#   card is NORMAL, and XREF-ACCT-ID (00000000050, record 1 of
+#   app/data/ASCII/cardxref.txt) replaces ACTIDINI
+#   [app/cbl/COTRN02C.cbl:210-223,609-637].
+# - VALIDATE-INPUT-DATA-FIELDS checks in order: every field is supplied
+#   [app/cbl/COTRN02C.cbl:251-320]; Type CD 01 and Category CD 0001 are
+#   numeric [app/cbl/COTRN02C.cbl:322-337]; the amount +00000012.34 has the
+#   +99999999.99 form [app/cbl/COTRN02C.cbl:339-351]. The Orig Date check then
+#   finds '/' at position 5 where '-' is required, so 'Orig Date should be in
+#   format YYYY-MM-DD' goes to WS-MESSAGE, the cursor to TORIGDT, and
+#   SEND-TRNADD-SCREEN sends COTRN02 with ERASE and ends the task with RETURN
+#   TRANSID CT02 [app/cbl/COTRN02C.cbl:353-366,516-534].
+# - The task ends before the Proc Date check, the NUMVAL-C edit of the amount,
+#   the CSUTLDTC calls and the CONFIRM evaluation, so CSUTLDTC is not called
+#   and ADD-TRANSACTION never browses or writes TRANSACT
+#   [app/cbl/COTRN02C.cbl:166-188,368-437].
+#
+# Expected values are derived from the source; no TPE region runs in CI.
+# - COTRN2AO redefines COTRN2AI, so the screen sent back carries the received
+#   fields as they stand: the account id from the cross-reference, the card,
+#   the amount not yet re-edited and both dates as typed. RECEIVE MAP pads each
+#   received field with blanks to its BMS length.
+# - Screen values are whole fields at their BMS length with trailing spaces;
+#   CURDATE and CURTIME come from the region clock, hence the matchers and
+#   clock_mode relative.
+# - The adapter copies the ERRMSG of every step's screen into the message list.
+id: TRN-COTRN02C-negative-21
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, chooses main menu option 8 'Transaction Add' and, on
+  COTRN02, enters repository card 0500024453765740 with a valid transaction
+  whose Orig Date is typed 2022/07/01. COTRN02C finds the card in the
+  cross-reference, accepts the empty, numeric and amount checks, refuses the
+  date because position 5 is not '-', and shows COTRN02 again with 'Orig Date
+  should be in format YYYY-MM-DD'. CSUTLDTC is not called and TRANSACT keeps
+  its 300 records.
+# Primary item first, then the program, the maps asserted, the transaction
+# step 3 runs under, the CSD file COTRN02C reads before the refusal, and the
+# online-only copybooks it copies. The sign-on step's own items (COSGN00, CC00,
+# USRSEC) and the menu transaction CM00 belong to the SEC and MNU scenarios.
+# CXACAIX is not read (no account id is entered) and the TRANSACT file is not
+# touched, so neither CSD file is listed; the batch record copybooks and the
+# data files are verified at the lowest level that executes them.
+inventory_ids:
+- INV-TRN-050  # COTRN02C message 'Orig Date should be in format YYYY-MM-DD'
+- INV-TRN-003  # COTRN02C program
+- INV-MNU-003  # COMEN01 map, the menu option 8 is entered on
+- INV-TRN-006  # COTRN02 map, the add screen of steps 2 and 3
+- INV-CFG-022  # CT02 transaction, under which COTRN02C receives the add
+- INV-CFG-004  # CCXREF CSD file, read by card number before the data checks
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA COMEN01C passes with the XCTL
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the screen date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COTRN02C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-007  # derived TRN end-to-end baselines, never observed on a TPE region
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+    CARDXREF: {base: CARDXREF}
+    # TRANSACT has no repository data of its own (datasets.yaml source
+    # 'built'), so it is built from the 300 repository daily transactions,
+    # which share its 350-byte record shape.
+    TRANSACT: {base: DALYTRAN}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '8'
+  # ACTIDIN is left blank, so the card number selects the cross-reference.
+  - aid: ENTER
+    '@map': COTRN02
+    fields:
+      CARDNIN: '0500024453765740'
+      TTYPCD: '01'
+      TCATCD: '0001'
+      TRNSRC: 'POS TERM'
+      TDESC: 'Test purchase'
+      TRNAMT: '+00000012.34'
+      TORIGDT: '2022/07/01'
+      TPROCDT: '2022-07-01'
+      MID: '800000001'
+      MNAME: 'Test Merchant'
+      MCITY: 'Testville'
+      MZIP: '27601'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: CT02
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COTRN02C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: CT02
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COTRN02C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACTIDIN: '00000000050'
+    CARDNIN: '0500024453765740'
+    TTYPCD: '01'
+    TCATCD: '0001'
+    TRNSRC: 'POS TERM  '
+    TDESC: 'Test purchase                                               '
+    TRNAMT: '+00000012.34'
+    TORIGDT: '2022/07/01'
+    TPROCDT: '2022-07-01'
+    MID: '800000001'
+    MNAME: 'Test Merchant                 '
+    MCITY: 'Testville                '
+    MZIP: '27601     '
+    ERRMSG: 'Orig Date should be in format YYYY-MM-DD                                      '
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Orig Date should be in format YYYY-MM-DD                                      '
+  file_state:
+    # COTRN02C's only TRANSACT write is the add, which the refusal never
+    # reaches: the 300 fixture records stand and no record is added.
+    TRANSACT: {count: 300}

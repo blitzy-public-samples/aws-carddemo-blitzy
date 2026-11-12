@@ -1,0 +1,115 @@
+# The TCATBALF load job, run by both adapters from its three IDCAMS steps:
+# STEP05 deletes the transaction category balance cluster and resets the
+# condition code with an unconditional SET MAXCC = 0 [app/jcl/TCATBALF.jcl:22-28];
+# STEP10 defines it again, KEYS(17 0) RECORDSIZE(50 50) [app/jcl/TCATBALF.jcl:33-50];
+# STEP15 REPROs the sequential TCATBALF-PS into it [app/jcl/TCATBALF.jcl:54-62].
+#
+# TCATBALF exists before the job and holds one invented record whose key,
+# account 99999999999 type 09 category 0009, sorts after every repository key
+# and matches no repository record. A REPRO into a cluster that was not deleted
+# and redefined would keep it beside the loaded records, so its absence from
+# the result is what shows STEP05 and STEP10 replaced the old cluster.
+#
+# TCATBALF-PS is built from app/data/ASCII/tcatbal.txt: 50 records, one per
+# account 00000000001 to 00000000050, each type 01 category 0001 with the
+# overpunch-signed balance 0000000000{ (+0.00) [app/cpy/CVTRA01Y.cpy:4-10]. The
+# loaded cluster is asserted decoded through CVTRA01Y in primary-key order.
+# Numeric fields are written as the codec decodes them (Decimal text with the
+# field's scale, no leading zeros); the 22-byte FILLER and every other byte are
+# pinned by the observed baseline's datasets/TCATBALF.bin.
+#
+# Only the job item is listed: the CVTRA01Y layout and the tcatbal.txt and
+# EBCDIC TCATBALF data files are verified at the unit level, by the CBTRN02C
+# and CBACT04C scenarios that load the same fixture.
+#
+# Utility-step jobs write no DISPLAY lines, so the messages are the step lines
+# alone. The clock is relative because unikix can run the job and cannot fix
+# its clock (GAP-MIS-015); nothing the job writes depends on the date.
+id: DAT-TCATBALF-normal-01
+level: integration
+type: normal
+description: >-
+  The TCATBALF job deletes the transaction category balance KSDS that holds one
+  stale invented record, defines it again and loads the 50 repository records
+  of TCATBALF-PS into it. Each step ends with return code 0, the job's return
+  code is 0, and the KSDS holds exactly the 50 loaded records in key order,
+  accounts 1 to 50, type 01, category 0001, balance 0.00; the stale record is
+  gone.
+inventory_ids:
+- INV-DAT-019  # TCATBALF job
+tags: []
+gap_ids:
+- GAP-STB-005  # IDCAMS DELETE, DEFINE CLUSTER and REPRO emulated by utilities.py
+- GAP-STB-009  # per-scenario catalog in place of the z/OS catalog
+- GAP-STB-010  # Berkeley DB indexed file in place of the VSAM KSDS
+preconditions:
+  datasets:
+    TCATBALF-PS: {base: TCATBALF-PS}
+    # Invented stale record: no repository account, type or category matches it.
+    TCATBALF:
+      records:
+      - {TRANCAT-ACCT-ID: '99999999999', TRANCAT-TYPE-CD: '09', TRANCAT-CD: '9', TRAN-CAT-BAL: '-55.50'}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  job: TCATBALF
+expected:
+  return_code: 0
+  messages:
+  - STEP STEP05 RC 0000
+  - STEP STEP10 RC 0000
+  - STEP STEP15 RC 0000
+  datasets:
+    TCATBALF:
+      records:
+      - {TRANCAT-ACCT-ID: '1', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '2', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '3', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '4', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '5', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '6', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '7', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '8', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '9', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '10', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '11', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '12', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '13', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '14', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '15', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '16', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '17', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '18', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '19', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '20', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '21', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '22', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '23', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '24', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '25', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '26', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '27', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '28', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '29', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '30', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '31', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '32', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '33', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '34', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '35', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '36', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '37', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '38', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '39', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '40', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '41', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '42', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '43', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '44', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '45', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '46', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '47', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '48', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '49', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '50', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}

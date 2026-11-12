@@ -1,0 +1,134 @@
+# The TRANCATG job rebuilds the transaction category KSDS from its sequential
+# twin TRANCATG-PS in three IDCAMS steps [app/jcl/TRANCATG.jcl:22-61]: STEP05
+# deletes the cluster and then sets MAXCC to 0 unconditionally (lines 25-27),
+# STEP10 defines it again with KEYS(6 0) and RECORDSIZE(60 60) (lines 36-49),
+# and STEP15 REPROs the 18 records of TRANCATG-PS into it (lines 56-61).
+#
+# The cluster exists before the run and holds one invented stale record, key
+# 090009, which the repository data does not have. The DELETE removes it with
+# the cluster, so after the job the KSDS holds exactly the 18 records of
+# app/data/ASCII/trancatg.txt in primary-key order and the stale record is
+# gone: the expected record list is compared exactly in length and order.
+#
+# Each record is the 60-byte CVTRA04Y image: TRAN-TYPE-CD (columns 1-2) and
+# TRAN-CAT-CD (3-6) form the 6-byte key, which the tech spec gives as bytes
+# 1-2 (GAP-DOC-010); TRAN-CAT-TYPE-DESC (7-56) keeps its trailing spaces; the
+# FILLER (57-60) holds '0000' in every repository record and is copied as is.
+#
+# On gnucobol-batch the IDCAMS steps run through the utilities.py replacement
+# (GAP-STB-005), the DELETE and DEFINE act on the per-scenario catalog
+# (GAP-STB-009) and the KSDS is a Berkeley DB indexed file (GAP-STB-010). The
+# job writes no date or time, so the relative clock that lets unikix run it
+# leaves the outcome unchanged.
+id: DAT-TRANCATG-normal-01
+level: integration
+type: normal
+description: >-
+  The TRANCATG job deletes the existing transaction category KSDS with its
+  stale record, defines it again and loads the 18 repository category records
+  from TRANCATG-PS in key order, each of its three IDCAMS steps ending with
+  return code 0.
+inventory_ids:
+- INV-DAT-021
+tags: []
+gap_ids:
+- GAP-STB-005
+- GAP-STB-009
+- GAP-STB-010
+- GAP-DOC-010
+preconditions:
+  datasets:
+    TRANCATG-PS:
+      base: TRANCATG-PS
+    TRANCATG:
+      records:
+      - TRAN-TYPE-CD: '09'
+        TRAN-CAT-CD: '9'
+        TRAN-CAT-TYPE-DESC: 'Stale synthetic category before the reload'
+        'TRAN-CAT-RECORD.FILLER#1': '0000'
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  job: TRANCATG
+expected:
+  return_code: 0
+  messages:
+  - STEP STEP05 RC 0000
+  - STEP STEP10 RC 0000
+  - STEP STEP15 RC 0000
+  datasets:
+    TRANCATG:
+      records:
+      - TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '1'
+        TRAN-CAT-TYPE-DESC: 'Regular Sales Draft                               '
+        'TRAN-CAT-RECORD.FILLER#1': '0000'
+      - TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '2'
+        TRAN-CAT-TYPE-DESC: 'Regular Cash Advance                              '
+        'TRAN-CAT-RECORD.FILLER#1': '0000'
+      - TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '3'
+        TRAN-CAT-TYPE-DESC: 'Convenience Check Debit                           '
+        'TRAN-CAT-RECORD.FILLER#1': '0000'
+      - TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '4'
+        TRAN-CAT-TYPE-DESC: 'ATM Cash Advance                                  '
+        'TRAN-CAT-RECORD.FILLER#1': '0000'
+      - TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-CAT-TYPE-DESC: 'Interest Amount                                   '
+        'TRAN-CAT-RECORD.FILLER#1': '0000'
+      - TRAN-TYPE-CD: '02'
+        TRAN-CAT-CD: '1'
+        TRAN-CAT-TYPE-DESC: 'Cash payment                                      '
+        'TRAN-CAT-RECORD.FILLER#1': '0000'
+      - TRAN-TYPE-CD: '02'
+        TRAN-CAT-CD: '2'
+        TRAN-CAT-TYPE-DESC: 'Electronic payment                                '
+        'TRAN-CAT-RECORD.FILLER#1': '0000'
+      - TRAN-TYPE-CD: '02'
+        TRAN-CAT-CD: '3'
+        TRAN-CAT-TYPE-DESC: 'Check payment                                     '
+        'TRAN-CAT-RECORD.FILLER#1': '0000'
+      - TRAN-TYPE-CD: '03'
+        TRAN-CAT-CD: '1'
+        TRAN-CAT-TYPE-DESC: 'Credit to Account                                 '
+        'TRAN-CAT-RECORD.FILLER#1': '0000'
+      - TRAN-TYPE-CD: '03'
+        TRAN-CAT-CD: '2'
+        TRAN-CAT-TYPE-DESC: 'Credit to Purchase balance                        '
+        'TRAN-CAT-RECORD.FILLER#1': '0000'
+      - TRAN-TYPE-CD: '03'
+        TRAN-CAT-CD: '3'
+        TRAN-CAT-TYPE-DESC: 'Credit to Cash balance                            '
+        'TRAN-CAT-RECORD.FILLER#1': '0000'
+      - TRAN-TYPE-CD: '04'
+        TRAN-CAT-CD: '1'
+        TRAN-CAT-TYPE-DESC: 'Zero dollar authorization                         '
+        'TRAN-CAT-RECORD.FILLER#1': '0000'
+      - TRAN-TYPE-CD: '04'
+        TRAN-CAT-CD: '2'
+        TRAN-CAT-TYPE-DESC: 'Online purchase authorization                     '
+        'TRAN-CAT-RECORD.FILLER#1': '0000'
+      - TRAN-TYPE-CD: '04'
+        TRAN-CAT-CD: '3'
+        TRAN-CAT-TYPE-DESC: 'Travel booking authorization                      '
+        'TRAN-CAT-RECORD.FILLER#1': '0000'
+      - TRAN-TYPE-CD: '05'
+        TRAN-CAT-CD: '1'
+        TRAN-CAT-TYPE-DESC: 'Refund credit                                     '
+        'TRAN-CAT-RECORD.FILLER#1': '0000'
+      - TRAN-TYPE-CD: '06'
+        TRAN-CAT-CD: '1'
+        TRAN-CAT-TYPE-DESC: 'Fraud reversal                                    '
+        'TRAN-CAT-RECORD.FILLER#1': '0000'
+      - TRAN-TYPE-CD: '06'
+        TRAN-CAT-CD: '2'
+        TRAN-CAT-TYPE-DESC: 'Non-fraud reversal                                '
+        'TRAN-CAT-RECORD.FILLER#1': '0000'
+      - TRAN-TYPE-CD: '07'
+        TRAN-CAT-CD: '1'
+        TRAN-CAT-TYPE-DESC: 'Sales draft credit adjustment                     '
+        'TRAN-CAT-RECORD.FILLER#1': '0000'

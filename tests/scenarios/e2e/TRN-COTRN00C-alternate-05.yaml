@@ -1,0 +1,194 @@
+# USER0001 pages forward and then back through the transaction list, and the
+# backward browse of COTRN00C runs off the start of TRANSACT: the READPREV ENDFILE
+# branch moves 'You have reached the top of the page...' to WS-MESSAGE and sends
+# the list [app/cbl/COTRN00C.cbl:658-687].
+#
+# TRANSACT holds the 300 repository daily transactions, loaded in key order, so
+# page 1 lists the 10 lowest TRAN-IDs (0000000000683580 ... 0000000021711604) and
+# page 2 starts at the 11th, 0000000025430891. TRANSACT is a built dataset with no
+# repository data of its own, so its records come from base DALYTRAN, whose
+# CVTRA06Y record is byte for byte the CVTRA05Y TRAN-RECORD COTRN00C reads.
+#
+# Expected values are derived from the source (no TPE region runs in CI):
+# 1. USER0001 (type U) signs on through CC00; COSGN00C transfers control to
+#    COMEN01C, which sends COMEN01 (CM00) with a blank message
+#    [app/cbl/COSGN00C.cbl:221-239] [app/cbl/COMEN01C.cbl:75-90].
+# 2. Option 6 is COMEN02Y's 'Transaction List', program COTRN00C; COMEN01C sets
+#    the program context to 0 and transfers control [app/cbl/COMEN01C.cbl:115-156]
+#    [app/cpy/COMEN02Y.cpy:55-59]. On that first entry COTRN00C clears its map and
+#    browses forward from LOW-VALUES (STARTBR without EQUAL positions GTEQ). EIBAID
+#    is still ENTER, so no record is skipped; ten READNEXTs fill rows 1-10
+#    (CDEMO-CT00-TRNID-LAST = 0000000021711604), the eleventh finds the 11th
+#    record, so NEXT-PAGE-YES, page 1 and no message. MAIN-PARA sends the same
+#    screen once more [app/cbl/COTRN00C.cbl:107-116,206-229,279-328].
+# 3. PF8 restarts the browse at 0000000021711604, skips it with one READNEXT, fills
+#    rows 1-10 with the 11th to 20th records (CDEMO-CT00-TRNID-FIRST =
+#    0000000025430891), finds a 21st, so NEXT-PAGE-YES, page 2 and no message
+#    [app/cbl/COTRN00C.cbl:127-128,257-274,279-328].
+# 4. PF7 finds page 2 > 1 and browses backward from 0000000025430891. The first
+#    READPREV after STARTBR returns that record itself and is skipped; ten
+#    READPREVs fill rows 10 down to 1 with the 10th to 1st records; the extra
+#    READPREV runs past 0000000000683580, the lowest key of the file, and returns
+#    ENDFILE, which sets the message of line 676 and sends the screen once with
+#    the received page number. With NEXT-PAGE-YES and end of file the page number
+#    becomes 1, and the closing SEND shows it with the same message
+#    [app/cbl/COTRN00C.cbl:125-126,234-252,333-376,658-687].
+# Every SEND on this path carries ERASE, so each step ends on the screen of its
+# last SEND [app/cbl/COTRN00C.cbl:527-549]. Text values are full field width with
+# their trailing spaces: ERRMSG is the 78-byte ERRMSGO, PAGENUM the 8-byte image
+# of CDEMO-CT00-PAGE-NUM PIC 9(08), TDATE the MM/DD/YY of TRAN-ORIG-TS, TDESC the
+# first 26 bytes of TRAN-DESC, TAMT the PIC +99999999.99 edit of TRAN-AMT
+# [app/cbl/COTRN00C.cbl:56-57,381-445]. The clock-derived CURDATE and CURTIME are
+# matchers, so the clock is relative.
+id: TRN-COTRN00C-alternate-05
+level: e2e
+type: alternate
+description: >-
+  USER0001 opens the transaction list (CT00) from the main menu with the 300
+  repository transactions in TRANSACT, pages forward with PF8 to the second page
+  and back with PF7. The backward browse fills page 1 again and its extra
+  READPREV reaches the start of the file, so COTRN00C shows page 1 with
+  'You have reached the top of the page...'.
+inventory_ids:
+- INV-TRN-018  # COTRN00C message 'You have reached the top of the page...' (rule)
+- INV-TRN-001  # COTRN00C program
+- INV-TRN-004  # COTRN00 map, the transaction list
+- INV-MNU-003  # COMEN01 map, the main menu the list is chosen from
+- INV-CFG-020  # CT00 transaction, the list's pseudo-conversation
+- INV-CFG-007  # TRANSACT CSD file, browsed forward and backward
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carrying the paging state
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the screen date and time and the row dates
+- INV-LAY-008  # CSMSG01Y copybook, copied by COTRN00C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-007  # derived TRN end-to-end baselines, never observed on a TPE region
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+    # TRANSACT is built (no repository source), so it is loaded from DALYTRAN.
+    TRANSACT: {base: DALYTRAN}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+    aid: ENTER
+  - '@map': COMEN01
+    fields:
+      OPTION: '6'
+    aid: ENTER
+  - '@map': COTRN00
+    fields: {}
+    aid: PF8
+  - '@map': COTRN00
+    fields: {}
+    aid: PF7
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: 'CM00'
+    PGMNAME: 'COMEN01C'
+    ERRMSG: '                                                                              '
+  - '@map': COTRN00
+    TRNNAME: 'CT00'
+    PGMNAME: 'COTRN00C'
+    PAGENUM: '00000001'
+    TRNID01: '0000000000683580'
+    TRNID02: '0000000001774260'
+    TRNID03: '0000000006292564'
+    TRNID04: '0000000009101861'
+    TRNID05: '0000000010142252'
+    TRNID06: '0000000010229018'
+    TRNID07: '0000000016259484'
+    TRNID08: '0000000017874199'
+    TRNID09: '0000000019065428'
+    TRNID10: '0000000021711604'
+    ERRMSG: '                                                                              '
+  - '@map': COTRN00
+    TRNNAME: 'CT00'
+    PGMNAME: 'COTRN00C'
+    PAGENUM: '00000002'
+    TRNID01: '0000000025430891'
+    TRNID02: '0000000028097268'
+    TRNID03: '0000000030755266'
+    TRNID04: '0000000032979555'
+    TRNID05: '0000000033688127'
+    TRNID06: '0000000040455859'
+    TRNID07: '0000000043636099'
+    TRNID08: '0000000051205286'
+    TRNID09: '0000000054288996'
+    TRNID10: '0000000054727064'
+    ERRMSG: '                                                                              '
+  - '@map': COTRN00
+    TRNNAME: 'CT00'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COTRN00C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    PAGENUM: '00000001'
+    TRNIDIN: '                '
+    SEL0001: ' '
+    TRNID01: '0000000000683580'
+    TDATE01: '06/10/22'
+    TDESC01: 'Purchase at Abshire-Lowe  '
+    TAMT001: '+00000504.77'
+    SEL0002: ' '
+    TRNID02: '0000000001774260'
+    TDATE02: '06/10/22'
+    TDESC02: 'Return item at Nitzsche, N'
+    TAMT002: '-00000919.00'
+    SEL0003: ' '
+    TRNID03: '0000000006292564'
+    TDATE03: '06/10/22'
+    TDESC03: 'Purchase at Ernser, Roob a'
+    TAMT003: '+00000067.88'
+    SEL0004: ' '
+    TRNID04: '0000000009101861'
+    TDATE04: '06/10/22'
+    TDESC04: 'Purchase at Guann LLC     '
+    TAMT004: '+00000281.77'
+    SEL0005: ' '
+    TRNID05: '0000000010142252'
+    TDATE05: '06/10/22'
+    TDESC05: 'Purchase at Kertzmann-Scho'
+    TAMT005: '+00000454.66'
+    SEL0006: ' '
+    TRNID06: '0000000010229018'
+    TDATE06: '06/10/22'
+    TDESC06: 'Purchase at Gislason-Medhu'
+    TAMT006: '+00000849.99'
+    SEL0007: ' '
+    TRNID07: '0000000016259484'
+    TDATE07: '06/10/22'
+    TDESC07: 'Return item at Sipes Inc  '
+    TAMT007: '-00000056.77'
+    SEL0008: ' '
+    TRNID08: '0000000017874199'
+    TDATE08: '06/10/22'
+    TDESC08: 'Purchase at Legros Group  '
+    TAMT008: '+00000373.66'
+    SEL0009: ' '
+    TRNID09: '0000000019065428'
+    TDATE09: '06/10/22'
+    TDESC09: 'Return item at Turcotte Gr'
+    TAMT009: '-00000535.88'
+    SEL0010: ' '
+    TRNID10: '0000000021711604'
+    TDATE10: '06/10/22'
+    TDESC10: 'Purchase at Gleason, Shana'
+    TAMT010: '+00000416.11'
+    ERRMSG: 'You have reached the top of the page...                                       '
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - '                                                                              '
+  - 'You have reached the top of the page...                                       '

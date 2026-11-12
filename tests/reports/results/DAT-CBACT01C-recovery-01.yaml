@@ -1,0 +1,24 @@
+adapter: gnucobol-batch
+baseline_version: 1.0.0
+decoded:
+  messages:
+  - START OF EXECUTION OF PROGRAM CBACT01C
+  - ERROR OPENING ACCTFILE
+  - 'FILE STATUS IS: NNNN0035'
+  - ABENDING PROGRAM
+  - CARDDEMO-ABEND CEE3ABD
+  return_code: null
+evidence_path: tests/reports/results/DAT-CBACT01C-recovery-01.yaml
+execution_fingerprint: 5d3cc495266b5ff23af6969ac412244ea83c02a5998486f18631b20e1896183e
+execution_id: gnucobol-batch-71ab08155a7b99d0
+gap_id: null
+reason: null
+scenario_digest: 98a77137863c3b33448c83d2836f7808cc8dbc01c3d10988c3f45b636e263042
+scenario_id: DAT-CBACT01C-recovery-01
+source_identity:
+  commit: e5efe25babd80bcd8653ae033cd2ea3ae0df2aa7
+  tree: app
+  units:
+    app/cbl/CBACT01C.cbl: 426cf9bd190b777104bb964e9d5a2929197ed7621f8b334f229ef12e60e63966
+    app/cpy/CVACT01Y.cpy: 81a08bad15af5664326a6f0af3650f570821c4857ffdec3a6a39f91f07dca728
+status: passed

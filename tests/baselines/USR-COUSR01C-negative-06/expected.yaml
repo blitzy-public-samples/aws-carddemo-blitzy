@@ -1,0 +1,53 @@
+# Derived baseline of scenario USR-COUSR01C-negative-06: ADMIN001 reaches the
+# add-user screen through admin option 2 and submits it with the user type
+# blank. Authored from the source, never captured: app/cbl/COADM01C.cbl:73-180
+# (first-entry send of COADM01, XCTL to COUSR01C) and app/cbl/COUSR01C.cbl:
+# 73-233 (first-entry send of COUSR01, then the user-type check that refuses the
+# add and skips WRITE-USER-SEC-FILE). Open until a UniKix run is imported:
+# GAP-INF-004 (derived USR end-to-end baselines) and GAP-INF-012 (online-only
+# copybooks).
+# One screen per step, shown after its AID. Values are full BMS field width with
+# trailing spaces kept; PASSWD is a dark field and is not asserted. messages
+# holds each step's 78-character ERRMSG, as the TPE driver copies it.
+file_state:
+  USRSEC:
+    count: 10
+    records:
+    - SEC-USR-ID: ADMIN001
+    - SEC-USR-ID: ADMIN002
+    - SEC-USR-ID: ADMIN003
+    - SEC-USR-ID: ADMIN004
+    - SEC-USR-ID: ADMIN005
+    - SEC-USR-ID: USER0001
+    - SEC-USR-ID: USER0002
+    - SEC-USR-ID: USER0003
+    - SEC-USR-ID: USER0004
+    - SEC-USR-ID: USER0005
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'User Type can NOT be empty...                                                 '
+screens:
+- '@map': COADM01
+  ERRMSG: '                                                                              '
+  PGMNAME: COADM01C
+  TRNNAME: CA00
+- '@map': COUSR01
+  ERRMSG: '                                                                              '
+  PGMNAME: COUSR01C
+  TRNNAME: CU01
+- '@map': COUSR01
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'User Type can NOT be empty...                                                 '
+  FNAME: 'TESTFIRST           '
+  LNAME: 'TESTLAST            '
+  PGMNAME: COUSR01C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CU01
+  USERID: TESTU001
+  USRTYPE: ' '

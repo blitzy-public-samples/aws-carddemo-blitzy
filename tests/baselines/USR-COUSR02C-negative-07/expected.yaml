@@ -1,0 +1,38 @@
+# Derived baseline of scenario USR-COUSR02C-negative-07 (capture_platform:
+# derived): ADMIN001 signs on, takes admin option 3 to COUSR02C and asks for
+# the invented user TESTU009, which no USRSEC fixture record holds. Authored
+# from the source, never captured: app/cbl/COADM01C.cbl:115-145 (the XCTL to
+# COUSR02C), app/cbl/COUSR02C.cbl:84-105 (the first-entry send of a cleared
+# COUSR02) and app/cbl/COUSR02C.cbl:143-172,320-345 (the received names,
+# password and type moved to spaces, the READ UPDATE of USRSEC answering
+# NOTFND, 'User ID NOT found...' sent once with ERASE, and the error flag
+# skipping the move of record fields). Open until a UniKix run is imported:
+# GAP-INF-004 (derived USR end-to-end baselines) and GAP-INF-012 (online-only
+# copybooks).
+# One screen per step, the one shown after the step's AID, holding exactly the
+# fields the scenario names; values are full BMS field width with their
+# trailing spaces. USRIDIN comes back as typed, because COUSR2AO redefines
+# COUSR2AI. PASSWD is asserted because the scenario names it: the program has
+# blanked it, and the field is dark (ATTRB=(DRK,FSET,UNPROT),
+# app/bms/COUSR02.bms:130-134), which the screen capture shows as blanks, so
+# no password can appear. CURDATE and CURTIME come from the run clock, which
+# UniKix cannot fix, hence the matchers.
+screens:
+- '@map': COADM01
+- '@map': COUSR02
+- '@map': COUSR02
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'User ID NOT found...                                                          '
+  FNAME: '                    '
+  LNAME: '                    '
+  PASSWD: '        '
+  PGMNAME: COUSR02C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CU02
+  USRIDIN: TESTU009
+  USRTYPE: ' '

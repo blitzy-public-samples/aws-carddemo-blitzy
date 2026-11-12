@@ -1,0 +1,52 @@
+# Derived baseline of scenario USR-COUSR03C-negative-03: ADMIN001 signs on,
+# takes admin option 4 and fetches TESTU009, a user id USRSEC does not hold, on
+# the COUSR03 Delete User screen. Authored from the source, never captured:
+# app/cbl/COSGN00C.cbl:225-237 (type A routed to COADM01C),
+# app/cbl/COADM01C.cbl:136-145 with app/cpy/COADM02Y.cpy:39-42 (option 4, XCTL
+# to COUSR03C) and app/cbl/COUSR03C.cbl:84-169,243-292 with app/bms/COUSR03.bms.
+# Open until a UniKix run is imported: GAP-INF-004 (derived USR end-to-end
+# baselines) and GAP-INF-012 (online-only copybooks).
+# One screen per step, each the one shown after the step's AID:
+# 1. the admin menu COADM01, asserted by its header only;
+# 2. COUSR03 on first entry: the padded COMMAREA selects no user, COUSR3AO is
+#    LOW-VALUES and the capture shows nulls as spaces;
+# 3. the fetch: READ ... UPDATE answers NOTFND, so 'User ID NOT found...' is
+#    sent with the entered id kept (COUSR3AO redefines COUSR3AI) and the SPACES
+#    PROCESS-ENTER-KEY moved to the name and type fields; the error flag skips
+#    moving record fields into the map, and nothing is written to USRSEC.
+# Values are whole BMS fields with their trailing spaces. CURDATE and CURTIME
+# come from the run clock, which UniKix cannot fix, hence the matchers.
+screens:
+- '@map': COADM01
+  PGMNAME: COADM01C
+  TRNNAME: CA00
+- '@map': COUSR03
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  FNAME: '                    '
+  LNAME: '                    '
+  PGMNAME: COUSR03C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CU03
+  USRIDIN: '        '
+  USRTYPE: ' '
+- '@map': COUSR03
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'User ID NOT found...                                                          '
+  FNAME: '                    '
+  LNAME: '                    '
+  PGMNAME: COUSR03C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CU03
+  USRIDIN: TESTU009
+  USRTYPE: ' '

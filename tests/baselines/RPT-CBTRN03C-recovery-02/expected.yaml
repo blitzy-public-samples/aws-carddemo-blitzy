@@ -1,0 +1,16 @@
+datasets:
+  TRANREPT:
+  - 'DALYREPT                              Daily Transaction Report                 Date Range: 2022-07-01 to 2022-07-31                  '
+  - '                                                                                                                                     '
+  - 'Transaction ID   Account ID  Transaction Type   Tran Category                      Tran Source            Amount                     '
+  - '-------------------------------------------------------------------------------------------------------------------------------------'
+  - '9900000000000611 00000000001 01-Purchase        0001-Regular Sales Draft           POS TERM                10.00                     '
+messages:
+- START OF EXECUTION OF PROGRAM CBTRN03C
+- Reporting from 2022-07-01 to 2022-07-31
+- '9900000000000611010001POS TERM  Synthetic purchase                                                                                  0000000100{999000611Synthetic Merchant 611                            Synthetic City                                    99999     96802941546036972022-07-05 09:15:00.0000002022-07-05-10.00.00.000000                    '
+- ERROR READING TRANSACTION FILE
+- 'FILE STATUS IS: NNNN0030'
+- ABENDING PROGRAM
+- CARDDEMO-ABEND CEE3ABD
+return_code: null

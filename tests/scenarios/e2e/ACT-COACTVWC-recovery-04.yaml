@@ -1,0 +1,172 @@
+# The account view cannot read the customer because the region file CUSTDAT is
+# out of service. USER0001 signs on through CC00 and COSGN00C routes the type-U
+# user to the main menu COMEN01C [app/cbl/COSGN00C.cbl:221-240]. Option '1'
+# makes COMEN01C transfer control (XCTL) to COACTVWC with CDEMO-PGM-CONTEXT 0
+# [app/cbl/COMEN01C.cbl:117-155] [app/cpy/COMEN02Y.cpy:24-28]; on that first
+# entry COACTVWC sends COACTVW with its account-id prompt, reads no file and
+# returns with TRANSID CAVW and the reenter flag set
+# [app/cbl/COACTVWC.cbl:282-293,353-360,577-591].
+#
+# The third step enters account 00000000001 under CAVW. 2200-EDIT-MAP-INPUTS
+# accepts the non-zero 11-digit id [app/cbl/COACTVWC.cbl:622-685], and
+# 9000-READ-ACCT reads the cross reference through the path CXACAIX by account
+# id, which finds card 9680294154603697 of customer 000000001 (record 49 of
+# cardxref.txt), then the account record from ACCTDAT, which sets
+# FOUND-ACCT-IN-MASTER [app/cbl/COACTVWC.cbl:687-821]. The READ of CUSTDAT by
+# customer id answers neither NORMAL nor NOTFND, so its WHEN OTHER branch sets
+# the error flags, moves 'READ', LIT-CUSTFILENAME, RESP and RESP2 into
+# WS-FILE-ERROR-MESSAGE and moves that 80-byte message into the 75-byte
+# WS-RETURN-MSG [app/cbl/COACTVWC.cbl:86-107,117,188,825-870]. COACTVWC then
+# sends the screen once and returns [app/cbl/COACTVWC.cbl:361-373,394-407].
+#
+# 1200-SETUP-SCREEN-VARS fills the account fields, because the account was
+# found, and leaves every customer field LOW-VALUES, because the customer was
+# not [app/cbl/COACTVWC.cbl:460-535]. The balances and limits are moved into
+# the edited outputs +ZZZ,ZZZ,ZZZ.99 [app/cpy-bms/COACTVW.CPY:302-344], and the
+# disclosure group shows blank because ACCT-GROUP-ID is blank in every record of
+# acctdata.txt (the data fact GAP-DEF-005 registers). 9000-READ-ACCT cleared the
+# info message, so the prompt 'Enter or update id of account to display' is set
+# again for INFOMSG [app/cbl/COACTVWC.cbl:689,526-534]. A LOW-VALUES field is
+# sent without data and is captured as blanks at its full BMS length.
+#
+# RESP and RESP2 are the tail of the message. The unikix adapter makes a file
+# unavailable with region_file_disable (CEMT SET FIL DIS), and a READ of a
+# disabled file answers DISABLED: RESP 84, RESP2 50. The MOVE of each
+# S9(9) COMP response into its X(10) part gives its 9 digits and one space, so
+# the 75 characters kept end with '000000050 ' and the 5-space filler is cut
+# off; ERRMSG pads the 75 to 78. The expected outcome is derived from the source
+# under IBM CICS semantics and never observed (GAP-INF-005).
+id: ACT-COACTVWC-recovery-04
+level: e2e
+type: recovery
+description: >-
+  USER0001 signs on, selects main menu option 1 'Account View' and asks for
+  account 00000000001 while the region file CUSTDAT is unavailable. The cross
+  reference and account reads succeed and the customer read fails, so COACTVW
+  shows the account fields, blank customer fields and the composed message
+  'File Error: READ     on CUSTDAT   returned RESP 000000084 ,RESP2 000000050'.
+# The composed CUSTDAT file-error message is the primary item, then the
+# program, the maps entered on and asserted, the transaction that runs the
+# failing read, the three CSD files the read sequence touches, and the
+# online-only copybooks COACTVWC copies. The record copybooks (CVACT01Y,
+# CVACT03Y, CVCUS01Y) and the data files are left out: their lowest executing
+# level is unit or integration. CC00 and CM00 are left out too: their own
+# scenarios verify them, and this one depends on neither.
+inventory_ids:
+- INV-ACT-023  # COACTVWC message 'File Error: READ on CUSTDAT' (9400-GETCUSTDATA-BYCUST, recovery)
+- INV-ACT-001  # COACTVWC program
+- INV-MNU-003  # COMEN01 map, the main menu option 1 is entered on
+- INV-ACT-003  # COACTVW map, the account view the failure is shown on
+- INV-CFG-010  # CAVW transaction, under which the account id is processed
+- INV-CFG-006  # CXACAIX CSD file, the cross-reference path read first
+- INV-CFG-001  # ACCTDAT CSD file, the account read that succeeds
+- INV-CFG-005  # CUSTDAT CSD file, the read that fails
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carrying the context and account id
+- INV-LAY-005  # COTTL01Y copybook, TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y copybook, CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y copybook, copied by COACTVWC
+- INV-LAY-009  # CSMSG02Y copybook, the abend data area copied by COACTVWC
+- INV-LAY-011  # CSSTRPFY copybook, the AID mapping that reads ENTER
+- INV-LAY-019  # CVCRD01Y copybook, CC-ACCT-ID and the AID flags
+tags:
+- inferred-not-observed
+# GAP-DOC-025 is cited beyond the three gaps every COACTVWC recovery scenario
+# names: this scenario asserts the COACTVW map, whose UniKix copy drops the
+# unnamed field at row 1, columns 1-9, so a UniKix record never verifies the
+# app/ map through it.
+gap_ids:
+- GAP-INF-005  # ACT end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-MIS-011  # no confirmed region file control to make CUSTDAT unavailable
+- GAP-DOC-025  # the UniKix COACTVW.bms differs from app/ at row 1, columns 1-9
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user from USRSEC. CARDXREF and ACCTDATA hold
+    # the records the successful reads return; CUSTDATA holds customer
+    # 000000001, so the failed read is the file being out of service, not NOTFND.
+    USRSEC: {base: USRSEC}
+    CARDXREF: {base: CARDXREF}
+    ACCTDATA: {base: ACCTDATA}
+    CUSTDATA: {base: CUSTDATA}
+  parameters:
+    clock_mode: relative
+  # No `after`: the unikix adapter applies an online fault after the sign-on
+  # step, and no CUSTDAT operation occurs before step 3, so the first one the
+  # fault meets is the READ of 9400-GETCUSTDATA-BYCUST. An adapter without a
+  # confirmed region file control raises MissingPrerequisite under GAP-MIS-011.
+  faults:
+  - target: CUSTDAT
+    operation: read
+    condition: unavailable
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: USER0001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '1'}
+    '@map': COMEN01
+  - aid: ENTER
+    fields: {ACCTSID: '00000000001'}
+    '@map': COACTVW
+expected:
+  # Text fields keep their full BMS length with trailing spaces: ERRMSG is 78
+  # characters, INFOMSG 45, the titles 40. CURDATE and CURTIME come from the
+  # region clock, so they are matchers.
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    ERRMSG: '                                                                              '
+  - '@map': COACTVW
+    TRNNAME: CAVW
+    PGMNAME: COACTVWC
+    INFOMSG: 'Enter or update id of account to display     '
+    ERRMSG: '                                                                              '
+  - '@map': COACTVW
+    TRNNAME: CAVW
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COACTVWC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000001'
+    # Account 00000000001 as ACCTDAT holds it (record 1 of acctdata.txt).
+    ACSTTUS: 'Y'
+    ADTOPEN: '2014-11-20'
+    ACRDLIM: '+      2,020.00'
+    AEXPDT: '2025-05-20'
+    ACSHLIM: '+      1,020.00'
+    AREISDT: '2025-05-20'
+    ACURBAL: '+        194.00'
+    ACRCYCR: '+           .00'
+    AADDGRP: '          '
+    ACRCYDB: '+           .00'
+    # The customer fields stay empty: the customer read failed.
+    ACSTNUM: '         '
+    ACSTSSN: '            '
+    ACSTDOB: '          '
+    ACSTFCO: '   '
+    ACSFNAM: '                         '
+    ACSMNAM: '                         '
+    ACSLNAM: '                         '
+    ACSADL1: '                                                  '
+    ACSSTTE: '  '
+    ACSADL2: '                                                  '
+    ACSZIPC: '     '
+    ACSCITY: '                                                  '
+    ACSCTRY: '   '
+    ACSPHN1: '             '
+    ACSGOVT: '                    '
+    ACSPHN2: '             '
+    ACSEFTC: '          '
+    ACSPFLG: ' '
+    INFOMSG: 'Enter or update id of account to display     '
+    ERRMSG: 'File Error: READ     on CUSTDAT   returned RESP 000000084 ,RESP2 000000050    '
+  # The ERRMSG value of each step: blank on the menu and on the first account
+  # view, then the composed file-error message.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'File Error: READ     on CUSTDAT   returned RESP 000000084 ,RESP2 000000050    '

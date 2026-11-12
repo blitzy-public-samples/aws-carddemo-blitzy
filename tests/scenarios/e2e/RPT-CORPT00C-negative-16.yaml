@@ -1,0 +1,123 @@
+# ENTER on the Transaction Reports screen with no report type selected.
+# Steps 1-2 reach the empty CORPT00 screen as MNU-COMEN01C-alternate-09 does:
+# USER0001 signs on through CC00, COSGN00C routes the type-U user to COMEN01C,
+# and option 9 transfers control to CORPT00C with CDEMO-PGM-CONTEXT zero, so
+# CORPT00C takes its first-entry path: it sets CDEMO-PGM-REENTER, moves
+# LOW-VALUES to CORPT0AO, puts the cursor on MONTHLY and sends CORPT00 with
+# its header and the blank WS-MESSAGE in ERRMSG, so every field shows its BMS
+# INITIAL [app/cbl/COMEN01C.cbl:115-156] [app/cbl/CORPT00C.cbl:163-181,556-580].
+# Step 3 presses ENTER without typing anything, under CR00, the TRANSID
+# CORPT00C returned with. The re-entry receives the map into CORPT0AI and
+# performs PROCESS-ENTER-KEY [app/cbl/CORPT00C.cbl:183-186,596-604]. MONTHLY,
+# YEARLY and CUSTOM are FSET, so they come back as the single space of their
+# INITIAL [app/bms/CORPT00.bms:80-113]; none of the three WHENs testing
+# NOT = SPACES AND LOW-VALUES holds [app/cbl/CORPT00C.cbl:213,239,256], and
+# WHEN OTHER moves 'Select a report type to print report...' to WS-MESSAGE,
+# sets WS-ERR-FLG, puts the cursor on MONTHLY and performs SEND-TRNRPT-SCREEN
+# [app/cbl/CORPT00C.cbl:437-442]. That paragraph rebuilds the header from
+# COTTL01Y and CSDAT01Y, moves the message to ERRMSG, sends CORPT00 with ERASE
+# and goes to RETURN-TO-CICS, which ends the task
+# [app/cbl/CORPT00C.cbl:556-591,609-628]. The success message after the
+# EVALUATE, the date validation through CSUTLDTC and SUBMIT-JOB-TO-INTRDR with
+# its WRITEQ TD to JOBS are never reached, so no report job is submitted
+# [app/cbl/CORPT00C.cbl:445-450,462-517].
+# The absence of a submission is pinned by the screen staying on CORPT00 with
+# the selection still empty and this message, not through @TDQ:JOBS: the JOBS
+# capture belongs to RPT-CORPT00C-normal-01..03, and asserting it here would
+# hold this validation case behind GAP-MIS-017 as well.
+# The UniKix copy's CORPT00C, CORPT00.bms and COMEN01C equal app/ apart from
+# whitespace, so no copy-difference gap applies. The baseline is derived from
+# the source: no TPE region runs in CI.
+id: RPT-CORPT00C-negative-16
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, selects main-menu option 9 (Transaction Reports) and
+  presses ENTER on the CORPT00 screen (CR00) without marking Monthly, Yearly
+  or Custom. CORPT00C refuses the request with 'Select a report type to print
+  report...', redisplays the screen with the selection and dates still empty,
+  and submits no report job.
+# Primary item first, then the program, the maps asserted, the transaction
+# step 3 runs under, and the online-only copybooks CORPT00C copies. Sign-on
+# and the menu (CC00, CM00, COSGN00, USRSEC, option 9) are verified by the SEC
+# and MNU scenarios.
+inventory_ids:
+- INV-RPT-025  # CORPT00C message 'Select a report type to print report...' (rule)
+- INV-RPT-001  # CORPT00C program
+- INV-MNU-003  # COMEN01 map, where option 9 is entered
+- INV-RPT-002  # CORPT00 map, the empty screen and the refused request
+- INV-CFG-019  # CR00 transaction, under which the ENTER is processed
+- INV-LAY-002  # COCOM01Y: the COMMAREA that makes step 3 a re-entry
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by CORPT00C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-009  # RPT end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user USER0001; CORPT00C reads no file.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '9'
+  # Nothing is typed: every field is returned as sent.
+  - aid: ENTER
+    '@map': CORPT00
+    fields: {}
+# Screen values are whole fields at their BMS length, trailing spaces kept:
+# comparison never trims. CORPT0AO redefines CORPT0AI and nothing on this path
+# touches the input fields between RECEIVE and SEND, so the selectors and date
+# fields come back with the blanks of their INITIAL, and CONFIRM, which has
+# none, shows as a space. ERRMSG is the 78-byte field filled from the 80-byte
+# WS-MESSAGE [app/bms/CORPT00.bms:218-221] [app/cbl/CORPT00C.cbl:39].
+# CURDATE and CURTIME come from the region clock, in the MM/DD/YY and HH:MM:SS
+# forms POPULATE-HEADER-INFO builds [app/cbl/CORPT00C.cbl:609-628].
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    ERRMSG: '                                                                              '
+  - '@map': CORPT00
+    TRNNAME: CR00
+    PGMNAME: CORPT00C
+    ERRMSG: '                                                                              '
+  - '@map': CORPT00
+    TRNNAME: CR00
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: CORPT00C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    MONTHLY: ' '
+    YEARLY: ' '
+    CUSTOM: ' '
+    SDTMM: '  '
+    SDTDD: '  '
+    SDTYYYY: '    '
+    EDTMM: '  '
+    EDTDD: '  '
+    EDTYYYY: '    '
+    CONFIRM: ' '
+    ERRMSG: 'Select a report type to print report...                                       '
+  # One ERRMSG value per step: blank on the main menu and on the first
+  # CORPT00 screen, the report-type message after ENTER.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Select a report type to print report...                                       '

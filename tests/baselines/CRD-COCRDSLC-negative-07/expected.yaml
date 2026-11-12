@@ -1,0 +1,30 @@
+screens:
+- '@map': COMEN01
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COCRDSL
+  ACCTSID: '           '
+  CARDSID: '                '
+  ERRMSG: '                                                                                '
+  INFOMSG: 'Please enter Account and Card Number    '
+  PGMNAME: COCRDSLC
+  TRNNAME: CCDL
+- '@map': COCRDSL
+  ACCTSID: '           '
+  CARDSID: '0500024453765740'
+  CRDNAME: '                                                  '
+  CRDSTCD: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    format: '%H:%M:%S'
+    match: run-time
+  ERRMSG: 'ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER                            '
+  EXPMON: '  '
+  EXPYEAR: '    '
+  INFOMSG: 'Please enter Account and Card Number    '
+  PGMNAME: COCRDSLC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CCDL

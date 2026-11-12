@@ -1,0 +1,144 @@
+# CORPT00C cannot hand the report job to the extrapartition TDQ JOBS while the
+# queue is out of service, and shows 'Unable to Write TDQ (JOBS)...'.
+#
+# Step 1 signs on as USER0001 through CC00; COSGN00C routes the type-U user to
+# the COMEN01 main menu (the sign-on itself is SEC-COSGN00C-normal-02's item).
+# Step 2 enters option 9, 'Transaction Reports': COMEN01C moves 0 to
+# CDEMO-PGM-CONTEXT and transfers control to CORPT00C [app/cbl/COMEN01C.cbl:115-156]
+# [app/cpy/COMEN02Y.cpy:74-78]. On that first entry CORPT00C sets
+# CDEMO-PGM-REENTER, moves LOW-VALUES to CORPT0AO and sends CORPT00 under CR00
+# with the blank WS-MESSAGE in ERRMSG [app/cbl/CORPT00C.cbl:163-181,556-628].
+# Step 3 marks MONTHLY with X, confirms with Y and presses ENTER under CR00:
+# - PROCESS-ENTER-KEY takes the Monthly branch: WS-REPORT-NAME 'Monthly', the
+#   run month's first and last day into the job's parameter records, then
+#   SUBMIT-JOB-TO-INTRDR [app/cbl/CORPT00C.cbl:208-238].
+# - CONFIRMI is 'Y', so no confirmation message is set and the loop moves
+#   JOB-LINES(1), the //TRNRPT00 JOB card, to JCL-RECORD and performs
+#   WIRTE-JOBSUB-TDQ [app/cbl/CORPT00C.cbl:462-510].
+# - With JOBS disabled the WRITEQ TD QUEUE('JOBS') response is not NORMAL, so
+#   WHEN OTHER DISPLAYs RESP and RESP2, sets the error flag, moves 'Unable to
+#   Write TDQ (JOBS)...' to WS-MESSAGE, puts the cursor on MONTHLY and performs
+#   SEND-TRNRPT-SCREEN [app/cbl/CORPT00C.cbl:515-535].
+# - SEND-TRNRPT-SCREEN refreshes the header, moves WS-MESSAGE to ERRMSGO and
+#   sends CORPT00 with ERASE (SEND-ERASE-YES is set at task start), then ends
+#   the task with GO TO RETURN-TO-CICS [app/cbl/CORPT00C.cbl:167,556-591].
+#   No further record is written, and INITIALIZE-ALL-FIELDS and the 'submitted
+#   for printing' message after the loop are never reached
+#   [app/cbl/CORPT00C.cbl:445-456].
+#
+# Priority decision: the queue's contents are not asserted as @TDQ:JOBS. That
+# observation needs the unconfirmed JOBS capture (GAP-MIS-017) and would keep
+# this message item blocked wherever the TPE runs but the capture does not; the
+# queue write itself is verified by RPT-CORPT00C-normal-01..03.
+#
+# Expected values are derived from the source; no TPE region runs in CI. The
+# UniKix copy's CORPT00C, CORPT00.bms and COMEN01C equal app/ apart from
+# whitespace, so no copy-difference gap applies.
+# - CORPT0AO redefines CORPT0AI [app/cpy-bms/CORPT00.CPY:121], so the received
+#   MONTHLY 'X' and CONFIRM 'Y' are sent back. The other selectors and the date
+#   fields are FSET with blank INITIALs, so they come back and are sent as
+#   spaces [app/bms/CORPT00.bms:80-210].
+# - ERRMSG is the first 78 bytes of the 80-byte WS-MESSAGE: the 29-character
+#   message followed by spaces, trailing spaces kept [app/cbl/CORPT00C.cbl:39]
+#   [app/bms/CORPT00.bms:218-221].
+# - CURDATE and CURTIME come from the region clock in the mm/dd/yy and hh:mm:ss
+#   forms of CSDAT01Y [app/cbl/CORPT00C.cbl:609-628], hence the matchers and
+#   clock_mode relative. The DISPLAY of RESP and RESP2 goes to the region log,
+#   not to the terminal, and is not asserted.
+id: RPT-CORPT00C-recovery-01
+level: e2e
+type: recovery
+description: >-
+  Signed on as USER0001, the user opens Transaction Reports (main menu option
+  9), marks the Monthly report with X and confirms with Y while the transient
+  data queue JOBS is unavailable. The first WRITEQ TD of the report job fails,
+  so CORPT00C submits nothing and shows CORPT00 again with MONTHLY X, CONFIRM Y
+  and 'Unable to Write TDQ (JOBS)...' in ERRMSG.
+# Primary item first, then the program, the maps asserted, the transaction step
+# 3 runs under, and the online-only copybooks CORPT00C copies. The TDQUEUE JOBS
+# definition and the TDQ write are verified by RPT-CORPT00C-normal-01..03; the
+# sign-on items (CC00, COSGN00, USRSEC) and the option-9 navigation by the SEC
+# and MNU scenarios; the monthly date range by its own CORPT00C scenario;
+# CVTRA05Y, which CORPT00C also copies, at the lowest level that executes it.
+inventory_ids:
+- INV-RPT-029  # CORPT00C message 'Unable to Write TDQ (JOBS)...' (recovery)
+- INV-RPT-001  # CORPT00C program
+- INV-MNU-003  # COMEN01 map, the main menu option 9 is entered on
+- INV-RPT-002  # CORPT00 map, the report screen of steps 2 and 3
+- INV-CFG-019  # CR00 transaction, under which the failing WRITEQ TD runs
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA that makes the ENTER a reentry
+- INV-LAY-005  # COTTL01Y copybook, TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y copybook, CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y copybook, copied by CORPT00C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-009  # RPT end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-MIS-011  # no confirmed TDQ control to take JOBS out of service
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user USER0001; this path reads no file.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  # No `after`: the unikix adapter applies an online fault after the sign-on
+  # step, through the tdq_disable entry of commands.yaml. Neither COMEN01C nor
+  # CORPT00C's first send writes to JOBS, so the first JOBS operation after the
+  # fault is the WRITEQ TD of step 3. An adapter without a confirmed TDQ
+  # control raises MissingPrerequisite under GAP-MIS-011.
+  faults:
+  - target: JOBS
+    operation: write
+    condition: unavailable
+inputs:
+  # PASSWORD is the demo password the README documents for USER0001, the only
+  # sign-on scenarios.py accepts; it is test data for a local region, not a
+  # secret.
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: USER0001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '9'}
+    '@map': COMEN01
+  - aid: ENTER
+    fields: {MONTHLY: 'X', CONFIRM: 'Y'}
+    '@map': CORPT00
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    ERRMSG: '                                                                              '
+  - '@map': CORPT00
+    TRNNAME: CR00
+    PGMNAME: CORPT00C
+    MONTHLY: ' '
+    CONFIRM: ' '
+    ERRMSG: '                                                                              '
+  - '@map': CORPT00
+    TRNNAME: CR00
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: CORPT00C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    MONTHLY: 'X'
+    YEARLY: ' '
+    CUSTOM: ' '
+    SDTMM: '  '
+    SDTDD: '  '
+    SDTYYYY: '    '
+    EDTMM: '  '
+    EDTDD: '  '
+    EDTYYYY: '    '
+    CONFIRM: 'Y'
+    ERRMSG: 'Unable to Write TDQ (JOBS)...                                                 '
+  # One ERRMSG value per step: blank on the main menu and on the first
+  # Transaction Reports screen, the TDQ failure after the confirmed request.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Unable to Write TDQ (JOBS)...                                                 '

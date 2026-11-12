@@ -1,0 +1,150 @@
+# The card list refuses a non-numeric account filter. USER0001 (type U in the
+# USRSEC fixture) signs on through CC00 and reaches the main menu, whose option
+# 3 'Credit Card List' makes COMEN01C XCTL to COCRDLIC with CDEMO-PGM-ENTER
+# [app/cbl/COMEN01C.cbl:115-157] [app/cpy/COMEN02Y.cpy:37-41]. Entered from
+# the menu, COCRDLIC initialises its own COMMAREA area, takes WHEN OTHER and
+# browses CARDDAT forward from a key of spaces: the first seven cards in
+# card-number order fill WS-SCREEN-DATA, and the look-ahead READNEXT finds an
+# eighth card, so CA-NEXT-PAGE-EXISTS sets INFOMSG 'TYPE S FOR DETAIL, U TO
+# UPDATE ANY RECORD' [app/cbl/COCRDLIC.cbl:336-342,572-582,895-931,1123-1260].
+# The task returns TRANSID CCLI with WS-THIS-PROGCOMMAREA, which holds
+# WS-SCREEN-DATA (level 05 under that 01), appended to the COMMAREA
+# [app/cbl/COCRDLIC.cbl:229-260,604-619].
+#
+# ENTER with ACCTSID 'ABCDEFGHIJK' re-enters CCLI from COCRDLIC itself, so the
+# COMMAREA restores the seven rows and RECEIVE MAP moves ACCTSIDI to CC-ACCT-ID
+# [app/cbl/COCRDLIC.cbl:326-331,357-362,962-979]. 2210-EDIT-ACCOUNT finds the
+# filter supplied but NOT NUMERIC: it sets INPUT-ERROR, FLG-ACCTFILTER-NOT-OK
+# and FLG-PROTECT-SELECT-ROWS-YES, moves the message to WS-ERROR-MSG and zero
+# to CDEMO-ACCT-ID [app/cbl/COCRDLIC.cbl:1003-1032]. The blank card filter sets
+# CDEMO-CARD-NUM to zero, and 2250-EDIT-ARRAY exits at once on INPUT-ERROR
+# [app/cbl/COCRDLIC.cbl:1036-1048,1073-1078].
+#
+# WHEN INPUT-ERROR skips 9000-READ-FORWARD because the account filter is not
+# OK, so no record is read on this pass: 1200-SCREEN-ARRAY-INIT shows the seven
+# rows carried in the COMMAREA, each select field holding the space it was
+# received with, and 1250-SETUP-ARRAY-ATTRIBS protects every select field
+# [app/cbl/COCRDLIC.cbl:419-438,678-836]. 1300-SETUP-SCREEN-ATTRS echoes the
+# refused filter in ACCTSID (red, cursor) and leaves CARDSID at LOW-VALUES
+# [app/cbl/COCRDLIC.cbl:837-891]. 1400-SETUP-MESSAGE takes the
+# FLG-ACCTFILTER-NOT-OK branch, so ERRMSG carries the message and INFOMSG stays
+# as 1100-SCREEN-INIT cleared it [app/cbl/COCRDLIC.cbl:642-676,895-931].
+#
+# Screen fields are compared at their full BMS length, trailing spaces
+# included: ERRMSG is 78 characters (the 75-byte WS-ERROR-MSG padded), INFOMSG
+# 45, ACCTSID 11, CARDSID 16. PAGENO is the PIC 9(1) WS-CA-SCREEN-NUM moved to
+# the 3-byte field. CURDATE and CURTIME come from the region clock, so they are
+# matchers. The UniKix copies of COCRDLIC and COCRDLI equal app/ after
+# whitespace normalisation, so no GAP-DOC entry applies. The baseline is
+# derived from the source: no TPE region runs in CI.
+id: CRD-COCRDLIC-negative-04
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, selects option 3 'Credit Card List' on the main menu and,
+  on the COCRDLIC card list (CCLI) showing the first seven cards, enters the
+  non-numeric account filter ABCDEFGHIJK. 2210-EDIT-ACCOUNT refuses it with
+  'ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER'; the browse is skipped,
+  so the screen shows the seven rows carried in the COMMAREA with their select
+  fields protected, ACCTSID echoes the refused value and INFOMSG is blank.
+inventory_ids:
+- INV-CRD-014  # COCRDLIC message 'ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER' (rule)
+- INV-CRD-001  # COCRDLIC program
+- INV-MNU-003  # COMEN01 map, the menu option 3 is entered on
+- INV-CRD-004  # COCRDLI map, sent on entry and again with the refusal
+- INV-CFG-014  # CCLI transaction, under which the account filter is processed
+- INV-CFG-003  # CARDDAT CSD file, browsed for the first page
+- INV-LAY-002  # COCOM01Y: the COMMAREA whose CDEMO-FROM-PROGRAM makes ENTER a re-entry
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COCRDLIC
+- INV-LAY-011  # CSSTRPFY: YYYY-STORE-PFKEY maps ENTER to CCARD-AID-ENTER
+- INV-LAY-019  # CVCRD01Y: CC-ACCT-ID, CC-ACCT-ID-N and CCARD-ERROR-MSG
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-006  # CRD end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    CARDDATA: {base: CARDDATA}
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '3'
+  - aid: ENTER
+    '@map': COCRDLI
+    fields:
+      ACCTSID: ABCDEFGHIJK
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN003: '03. Credit Card List                    '
+    ERRMSG: '                                                                              '
+  - '@map': COCRDLI
+    TRNNAME: CCLI
+    PGMNAME: COCRDLIC
+    PAGENO: '1  '
+    ACCTSID: '           '
+    INFOMSG: 'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD    '
+    ERRMSG: '                                                                              '
+  - '@map': COCRDLI
+    TRNNAME: CCLI
+    PGMNAME: COCRDLIC
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    PAGENO: '1  '
+    ACCTSID: ABCDEFGHIJK
+    CARDSID: '                '
+    CRDSEL1: ' '
+    ACCTNO1: '00000000050'
+    CRDNUM1: '0500024453765740'
+    CRDSTS1: 'Y'
+    CRDSEL2: ' '
+    ACCTNO2: '00000000027'
+    CRDNUM2: '0683586198171516'
+    CRDSTS2: 'Y'
+    CRDSEL3: ' '
+    ACCTNO3: '00000000002'
+    CRDNUM3: '0923877193247330'
+    CRDSTS3: 'Y'
+    CRDSEL4: ' '
+    ACCTNO4: '00000000020'
+    CRDNUM4: '0927987108636232'
+    CRDSTS4: 'Y'
+    CRDSEL5: ' '
+    ACCTNO5: '00000000012'
+    CRDNUM5: '0982496213629795'
+    CRDSTS5: 'Y'
+    CRDSEL6: ' '
+    ACCTNO6: '00000000044'
+    CRDNUM6: '1014086565224350'
+    CRDSTS6: 'Y'
+    CRDSEL7: ' '
+    ACCTNO7: '00000000037'
+    CRDNUM7: '1142167692878931'
+    CRDSTS7: 'Y'
+    INFOMSG: '                                             '
+    ERRMSG: 'ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER                          '
+  # One ERRMSG value per step: blank on the menu and on the first card list,
+  # then the refusal of the non-numeric account filter.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER                          '

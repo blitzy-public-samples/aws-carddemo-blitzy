@@ -1,0 +1,57 @@
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'File Error: READ     on CXACAIX   returned RESP 000000084 ,RESP2 000000050    '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  OPTN001: '01. Account View                        '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COACTVW
+  ACCTSID: '           '
+  ERRMSG: '                                                                              '
+  INFOMSG: 'Enter or update id of account to display     '
+  PGMNAME: COACTVWC
+  TRNNAME: CAVW
+- '@map': COACTVW
+  AADDGRP: '          '
+  ACCTSID: '00000000001'
+  ACRCYCR: '               '
+  ACRCYDB: '               '
+  ACRDLIM: '               '
+  ACSADL1: '                                                  '
+  ACSADL2: '                                                  '
+  ACSCITY: '                                                  '
+  ACSCTRY: '   '
+  ACSEFTC: '          '
+  ACSFNAM: '                         '
+  ACSGOVT: '                    '
+  ACSHLIM: '               '
+  ACSLNAM: '                         '
+  ACSMNAM: '                         '
+  ACSPFLG: ' '
+  ACSPHN1: '             '
+  ACSPHN2: '             '
+  ACSSTTE: '  '
+  ACSTDOB: '          '
+  ACSTFCO: '   '
+  ACSTNUM: '         '
+  ACSTSSN: '            '
+  ACSTTUS: ' '
+  ACSZIPC: '     '
+  ACURBAL: '               '
+  ADTOPEN: '          '
+  AEXPDT: '          '
+  AREISDT: '          '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'File Error: READ     on CXACAIX   returned RESP 000000084 ,RESP2 000000050    '
+  INFOMSG: 'Enter or update id of account to display     '
+  PGMNAME: COACTVWC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CAVW

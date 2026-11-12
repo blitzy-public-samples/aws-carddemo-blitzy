@@ -1,0 +1,80 @@
+id: MNU-COADM01C-alternate-05
+level: e2e
+type: alternate
+description: >-
+  ADMIN001, an admin user, signs on through transaction CC00 and reaches the
+  COADM01C admin menu, then enters option 4. COADM01C right-justifies the
+  option, finds 4 numeric, non-zero and within CDEMO-ADMIN-OPT-COUNT, and,
+  because the COADM02Y entry's program name COUSR03C does not begin 'DUMMY',
+  transfers control to COUSR03C with the COMMAREA, CDEMO-FROM-TRANID CA00,
+  CDEMO-FROM-PROGRAM COADM01C and CDEMO-PGM-CONTEXT zero
+  [app/cbl/COADM01C.cbl:115-146] [app/cpy/COADM02Y.cpy:39-42]. COUSR03C,
+  entered with CDEMO-PGM-CONTEXT zero, receives a COMMAREA shorter than its
+  own, so CDEMO-CU03-USR-SELECTED is spaces and no user is looked up; it sends
+  the Delete User map COUSR03 from a cleared output map with its own
+  transaction and program name, the COTTL01Y titles, the run date and time,
+  and the user id, first name, last name, user type and message line blank
+  [app/cbl/COUSR03C.cbl:86-105,213-262].
+# Primary item first, then the program, the maps the scenario asserts (the
+# admin menu it enters option 4 on and the COUSR03 screen it lands on), the
+# transaction the option is entered under, and the online-only copybooks
+# COADM01C copies. Sign-on (COSGN00, CC00) and COUSR03C's own items are covered
+# by the SEC and USR scenarios that own them.
+inventory_ids:
+- INV-MNU-027
+- INV-MNU-002
+- INV-MNU-004
+- INV-USR-008
+- INV-CFG-011
+- INV-LAY-001
+- INV-LAY-002
+- INV-LAY-005
+- INV-LAY-006
+- INV-LAY-008
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-003
+- GAP-INF-012
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+# PASSWORD is the README's documented demo password, not a secret: the scenario
+# schema accepts no other sign-on password.
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: ADMIN001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COADM01
+    fields:
+      OPTION: '4'
+# Screen values are whole fields at their BMS length, trailing spaces kept:
+# comparison never trims. Fields the program leaves at LOW-VALUES (USRIDIN,
+# FNAME, LNAME, USRTYPE) and the blank message lines show as spaces.
+expected:
+  screens:
+  - '@map': COADM01
+    TRNNAME: CA00
+    PGMNAME: COADM01C
+    OPTN004: '04. User Delete (Security)              '
+    ERRMSG: '                                                                              '
+  - '@map': COUSR03
+    TRNNAME: CU03
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COUSR03C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    USRIDIN: '        '
+    FNAME: '                    '
+    LNAME: '                    '
+    USRTYPE: ' '
+    ERRMSG: '                                                                              '

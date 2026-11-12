@@ -1,0 +1,159 @@
+# A card number the card master does not hold, entered on the card update
+# screen. USER0001 (type U in the USRSEC fixture) signs on through CC00 and
+# COSGN00C routes it to the main menu COMEN01C [app/cbl/COSGN00C.cbl:221-240].
+# Option '5' is 'Credit Card Update', program COCRDUPC
+# [app/cpy/COMEN02Y.cpy:49-53], so COMEN01C moves its own name to
+# CDEMO-FROM-PROGRAM, zeroes CDEMO-PGM-CONTEXT and XCTLs to it
+# [app/cbl/COMEN01C.cbl:115-155].
+#
+# Step 2: COCRDUPC tests CDEMO-FROM-PROGRAM before it has copied DFHCOMMAREA,
+# so on the program's fresh working storage that test fails and the COMMAREA
+# from COMEN01C is moved in [app/cbl/COCRDUPC.cbl:388-401]. ENTER is a valid
+# key, and CDEMO-FROM-PROGRAM is COMEN01C without CDEMO-PGM-REENTER, so the
+# fresh-entry branch initializes the program's own COMMAREA and sends COCRDUP
+# [app/cbl/COCRDUPC.cbl:406-424,502-511]. With CDEMO-PGM-ENTER,
+# 3200-SETUP-SCREEN-VARS leaves every data field at the LOW-VALUES
+# 3100-SCREEN-INIT moved to the output map, shown blank; 3250-SETUP-INFOMSG sets
+# PROMPT-FOR-SEARCH-KEYS 'Please enter Account and Card Number' and moves the
+# cleared WS-RETURN-MSG to ERRMSG [app/cbl/COCRDUPC.cbl:384,1052-1085,1138-1163].
+# 3300-SETUP-SCREEN-ATTRS makes ACCTSID and CARDSID enterable (DFHBMFSE),
+# although the BMS defines ACCTSID protected [app/cbl/COCRDUPC.cbl:1172-1180]
+# [app/bms/COCRDUP.bms:84-88]. The task sets CDEMO-PGM-REENTER and
+# CCUP-DETAILS-NOT-FETCHED and returns TRANSID CCUP
+# [app/cbl/COCRDUPC.cbl:509-511,546-558].
+#
+# Step 3 enters repository account 00000000050 (record 1 of carddata.txt and
+# cardxref.txt, whose card is 0500024453765740) and card 9999999999999999
+# under CCUP. The re-entry is neither PF3, a COCRDLIC call, a fresh entry nor
+# a finished update, so WHEN OTHER receives the map and edits it
+# [app/cbl/COCRDUPC.cbl:429-542]. 1100-RECEIVE-MAP moves both ids to
+# CC-ACCT-ID and CC-CARD-NUM [app/cbl/COCRDUPC.cbl:578-605]. With the details
+# not fetched, 1200-EDIT-MAP-INPUTS edits only the search keys: 1210 and 1220
+# find both supplied, non-zero and numeric, store them in CDEMO-ACCT-ID and
+# CDEMO-CARD-NUM, set both filters ISVALID and leave INPUT-OK
+# [app/cbl/COCRDUPC.cbl:641-661,721-800]. 2000-DECIDE-ACTION therefore performs
+# 9000-READ-DATA, and 9100-GETCARD-BYACCTCARD reads CARDDAT by the card number
+# alone; the account part of the key is commented out
+# [app/cbl/COCRDUPC.cbl:954-966,1343-1390]. The card master holds no card
+# 9999999999999999, so the READ answers NOTFND: the record's absence is the
+# notfnd condition, and no fault entry is needed. That branch sets INPUT-ERROR
+# and both filter flags NOT-OK and, with no message set yet, the primary item
+# DID-NOT-FIND-ACCTCARD-COMBO 'Did not find cards for this search condition'
+# [app/cbl/COCRDUPC.cbl:203-204,1392-1401]. FOUND-CARDS-FOR-ACCOUNT stays off,
+# so CCUP-SHOW-DETAILS is not set and the details remain not fetched.
+#
+# 3200-SETUP-SCREEN-VARS, on re-entry, echoes the entered ids from CC-ACCT-ID
+# and CC-CARD-NUM, both non-zero, and, with the details not fetched, moves
+# LOW-VALUES to CRDNAME, CRDSTCD, EXPDAY, EXPMON and EXPYEAR, which are captured
+# as spaces [app/cbl/COCRDUPC.cbl:1082-1106]. 3250-SETUP-INFOMSG shows the
+# PROMPT-FOR-SEARCH-KEYS prompt again and moves the 75-byte WS-RETURN-MSG to
+# the 80-byte ERRMSGO [app/cbl/COCRDUPC.cbl:173,1138-1163]
+# [app/cpy-bms/COCRDUP.CPY:212]. Both filters are NOT-OK rather than BLANK, so
+# 3300-SETUP-SCREEN-ATTRS colours ACCTSID and CARDSID red but writes no '*'
+# over them [app/cbl/COCRDUPC.cbl:1243-1261].
+#
+# Screen fields are compared at their full BMS length with trailing spaces.
+# ERRMSG is defined at POS=(23,1) with LENGTH=80, so its last data position is
+# row 24 column 1, the attribute byte of FKEYS [app/bms/COCRDUP.bms:154-163];
+# that position shows as a space, as the padding of the message already is.
+# CURDATE and CURTIME come from the region clock, so they are matchers. The
+# UniKix copy of COCRDUPC differs from app/ only in the card name edit
+# (GAP-DOC-023), which this path never performs, and its COCRDUP.bms is the
+# same, so no doc-conflict entry applies. The expected outcome is derived from
+# the source (GAP-INF-006). No step writes a file, so file_state is not
+# asserted.
+id: CRD-COCRDUPC-negative-10
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, chooses main menu option 5 'Credit Card Update' and asks
+  COCRDUPC (CCUP) for card 9999999999999999 of account 00000000050. The card
+  master holds no such card, so the READ of CARDDAT answers NOTFND and COCRDUP
+  shows 'Did not find cards for this search condition', keeps the entered
+  account and card numbers, leaves the card name, status and expiry blank, and
+  prompts again with 'Please enter Account and Card Number'.
+# The message condition is the primary item. After it come the program, the maps
+# asserted (COMEN01 on step 1, COCRDUP on steps 2 and 3), the transaction that
+# runs the lookup, the CSD file it reads, and the online-only copybooks COCRDUPC
+# copies. The prompt message and the menu option have scenarios of their own.
+# The batch copybooks (CVACT02Y, CVCUS01Y, CSUSR01Y) and the data files are left
+# out, because their lowest executing level is unit or integration.
+inventory_ids:
+- INV-CRD-066  # COCRDUPC message 'Did not find cards for this search condition' (recovery)
+- INV-CRD-003  # COCRDUPC program
+- INV-MNU-003  # COMEN01 map, the main menu option 5 is entered on
+- INV-CRD-006  # COCRDUP map, the card update screen of steps 2 and 3
+- INV-CFG-015  # CCUP transaction, under which the card lookup runs
+- INV-CFG-003  # CARDDAT CSD file, the card read by card number that answers NOTFND
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carried from COMEN01C and across CCUP
+- INV-LAY-005  # COTTL01Y copybook, TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y copybook, CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y copybook, copied by COCRDUPC
+- INV-LAY-009  # CSMSG02Y copybook, the abend data of COCRDUPC's HANDLE ABEND
+- INV-LAY-011  # CSSTRPFY copybook, the AID mapping that makes ENTER the search key
+- INV-LAY-019  # CVCRD01Y copybook, CC-ACCT-ID and CC-CARD-NUM holding the entered and echoed ids
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-006  # CRD end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    # The card master is the repository data, which holds no card
+    # 9999999999999999, so its READ answers NOTFND. Account 00000000050 is a
+    # repository account (card 0500024453765740); COCRDUPC does not use it in
+    # the key. USRSEC holds the sign-on user.
+    CARDDATA: {base: CARDDATA}
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: USER0001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '5'}
+    '@map': COMEN01
+  - aid: ENTER
+    fields: {ACCTSID: '00000000050', CARDSID: '9999999999999999'}
+    '@map': COCRDUP
+expected:
+  screens:
+  # One entry per step, each the screen the step ends on.
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN005: '05. Credit Card Update                  '
+    ERRMSG: '                                                                              '
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    PGMNAME: COCRDUPC
+    ACCTSID: '           '
+    CARDSID: '                '
+    INFOMSG: 'Please enter Account and Card Number    '
+    ERRMSG: '                                                                                '
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    PGMNAME: COCRDUPC
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000050'
+    CARDSID: '9999999999999999'
+    CRDNAME: '                                                  '
+    CRDSTCD: ' '
+    EXPMON: '  '
+    EXPYEAR: '    '
+    EXPDAY: '  '
+    INFOMSG: 'Please enter Account and Card Number    '
+    ERRMSG: 'Did not find cards for this search condition                                    '
+  # The ERRMSG of each step's screen, in step order: blank on the menu and on
+  # the first card update screen, then the not-found message.
+  messages:
+  - '                                                                              '
+  - '                                                                                '
+  - 'Did not find cards for this search condition                                    '

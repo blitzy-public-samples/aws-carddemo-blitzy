@@ -1,0 +1,115 @@
+# Add-user screen submitted with every field filled except the user type.
+# ADMIN001 signs on through CC00 and COSGN00C routes the type 'A' user to the
+# admin menu COADM01 [app/cbl/COSGN00C.cbl:221-237]. Option '2' is numeric,
+# within CDEMO-ADMIN-OPT-COUNT (4) and names COUSR01C, so COADM01C transfers
+# control to it with CDEMO-PGM-CONTEXT 0 [app/cbl/COADM01C.cbl:115-145]
+# [app/cpy/COADM02Y.cpy:29-32]. On that first entry COUSR01C clears its output
+# map and sends COUSR01 with a blank message, then returns with TRANSID CU01
+# [app/cbl/COUSR01C.cbl:82-88,107-110,184-196].
+#
+# ENTER under CU01 receives map COUSR1A into COUSR1AI. First name, last name,
+# user id and password are not blank, so the EVALUATE reaches the user type,
+# finds USRTYPEI equal to SPACES or LOW-VALUES, sets the error flag, moves
+# 'User Type can NOT be empty...' to WS-MESSAGE, puts the cursor on USRTYPE and
+# sends the screen again. The error flag skips WRITE-USER-SEC-FILE, so USRSEC
+# gets no record [app/cbl/COUSR01C.cbl:115-160]. COUSR1AO redefines COUSR1AI
+# [app/cpy-bms/COUSR01.CPY:91], so the values just entered are sent back in
+# their fields.
+#
+# USERID and PASSWD on COUSR01 hold the user record being added, not a
+# credential: TESTU001 is invented data and never signs on. PASSWD is a dark
+# (DRK) field, so its echo is not asserted. Screen values are written at their
+# full BMS field width with trailing spaces kept, because captured fields are
+# compared exactly; ERRMSG is WS-MESSAGE (X(80)) cut to ERRMSGO (X(78)), and
+# the adapter copies each step's 78-character ERRMSG into the message list.
+# CURDATE and CURTIME come from the region clock, so they are matchers and the
+# clock is relative. The baseline is derived from the source: no TPE region
+# runs in CI.
+id: USR-COUSR01C-negative-06
+level: e2e
+type: negative
+description: >-
+  ADMIN001 signs on, selects admin option 2 'User Add (Security)' and submits
+  the COUSR01 add-user screen with first name TESTFIRST, last name TESTLAST,
+  user id TESTU001 and password TESTPWD1 but no user type. COUSR01C refuses the
+  add with 'User Type can NOT be empty...' in ERRMSG, shows the entered values
+  again under transaction CU01, and writes nothing to USRSEC, which keeps its
+  10 fixture users.
+inventory_ids:
+- INV-USR-027  # COUSR01C message 'User Type can NOT be empty...' (rule)
+- INV-USR-002  # COUSR01C program
+- INV-MNU-004  # COADM01 map, the admin menu option 2 is entered on
+- INV-USR-006  # COUSR01 map, the add-user screen sent and received
+- INV-CFG-024  # CU01 transaction, under which the add-user screen is processed
+- INV-CFG-008  # USRSEC CSD file, read at sign-on and left without the new user
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA returned with TRANSID CU01
+- INV-LAY-005  # COTTL01Y copybook, the TITLE01 and TITLE02 texts
+- INV-LAY-006  # CSDAT01Y copybook, the CURDATE and CURTIME formats
+- INV-LAY-008  # CSMSG01Y copybook, copied by COUSR01C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-004  # USR end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user; the expected file state is these 10 users.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: ADMIN001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '2'}
+    '@map': COADM01
+  # The empty value leaves the user type blank, so COUSR01C receives none.
+  - aid: ENTER
+    fields: {FNAME: TESTFIRST, LNAME: TESTLAST, USERID: TESTU001, PASSWD: TESTPWD1, USRTYPE: ''}
+    '@map': COUSR01
+expected:
+  screens:
+  - '@map': COADM01
+    TRNNAME: CA00
+    PGMNAME: COADM01C
+    ERRMSG: '                                                                              '
+  - '@map': COUSR01
+    TRNNAME: CU01
+    PGMNAME: COUSR01C
+    ERRMSG: '                                                                              '
+  - '@map': COUSR01
+    TRNNAME: CU01
+    PGMNAME: COUSR01C
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    FNAME: 'TESTFIRST           '
+    LNAME: 'TESTLAST            '
+    USERID: TESTU001
+    USRTYPE: ' '
+    ERRMSG: 'User Type can NOT be empty...                                                 '
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'User Type can NOT be empty...                                                 '
+  file_state:
+    # The refused add writes nothing: USRSEC holds exactly the 10 fixture users
+    # in key order, and TESTU001 is not among them.
+    USRSEC:
+      count: 10
+      records:
+      - {SEC-USR-ID: ADMIN001}
+      - {SEC-USR-ID: ADMIN002}
+      - {SEC-USR-ID: ADMIN003}
+      - {SEC-USR-ID: ADMIN004}
+      - {SEC-USR-ID: ADMIN005}
+      - {SEC-USR-ID: USER0001}
+      - {SEC-USR-ID: USER0002}
+      - {SEC-USR-ID: USER0003}
+      - {SEC-USR-ID: USER0004}
+      - {SEC-USR-ID: USER0005}

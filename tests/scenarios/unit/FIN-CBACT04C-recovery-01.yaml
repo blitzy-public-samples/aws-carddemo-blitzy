@@ -1,0 +1,65 @@
+# The DISCGRP open-failure abend of CBACT04C, pinned with its mislabelled
+# message. TCATBALF and XREFFILE open INPUT from the repository data, so control
+# reaches 0200-DISCGRP-OPEN; the disclosure group KSDS is left out, OPEN INPUT
+# returns status 35, and the paragraph displays the rejects-file text of another
+# program before the file status and the abend
+# [app/cbl/CBACT04C.cbl:180-186,234-286,628-648].
+id: FIN-CBACT04C-recovery-01
+level: unit
+type: recovery
+description: >-
+  CBACT04C run through PARMDRV with PARM '2022071800' and no disclosure group
+  file. The category balance and cross-reference opens succeed; OPEN INPUT
+  DISCGRP fails with status 35, so 0200-DISCGRP-OPEN displays 'ERROR OPENING
+  DALY REJECTS FILE' (a file CBACT04C does not have, GAP-DEF-004), the status as
+  NNNN0035 and 'ABENDING PROGRAM', and calls CEE3ABD. The account file and the
+  interest transaction file are never opened, so no balance is read or updated
+  and no interest record is written.
+inventory_ids:
+- INV-FIN-010  # CBACT04C abend on open failure (recovery)
+- INV-FIN-001  # CBACT04C program
+- INV-DTA-007  # tcatbal.txt, the TCATBALF fixture source, opened before DISCGRP
+- INV-DTA-018  # its EBCDIC cross-check counterpart
+- INV-DTA-003  # cardxref.txt, the CARDXREF fixture source, opened before DISCGRP
+- INV-DTA-013  # its EBCDIC cross-check counterpart
+# The ACCTDATA data files are not listed: the abend comes before 0300-ACCTFILE-OPEN,
+# so their verification does not depend on this case.
+tags:
+- suspected-defect
+gap_ids:
+- GAP-DEF-004  # the DISCGRP open error names the daily rejects file
+- GAP-STB-001  # CEE3ABD stub: no abend code, dump or LE condition handling
+- GAP-DEF-001  # CALL 'CEE3ABD' without parameters
+- GAP-STB-004  # PARMDRV supplies the z/OS PARM linkage
+- GAP-STB-010  # Berkeley DB indexed files in place of the VSAM KSDS
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
+preconditions:
+  # DISCGRP is deliberately not provided: on gnucobol-batch the open fault below
+  # is produced by leaving the dataset out. ACCTDATA is loaded so that DISCGRP is
+  # the only file missing; SYSTRAN is the output the program would create.
+  datasets:
+    TCATBALF: {base: TCATBALF}
+    CARDXREF: {base: CARDXREF}
+    ACCTDATA: {base: ACCTDATA}
+  parameters:
+    parm: '2022071800'
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults:
+  - target: DISCGRP
+    operation: open
+    condition: unavailable
+inputs:
+  program: CBACT04C
+# No SYSTRAN assertion: 0400-TRANFILE-OPEN is never reached, so the output is
+# never created, and the scenario schema has no form that asserts an absent
+# dataset (count 0 would compare against a dataset the run never produced).
+# The abend lines are the pinned outcome.
+expected:
+  return_code: null
+  messages:
+  - START OF EXECUTION OF PROGRAM CBACT04C
+  - ERROR OPENING DALY REJECTS FILE
+  - 'FILE STATUS IS: NNNN0035'
+  - ABENDING PROGRAM
+  - CARDDEMO-ABEND CEE3ABD

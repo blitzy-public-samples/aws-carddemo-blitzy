@@ -1,0 +1,12 @@
+# Derived from source (capture_platform: derived), never observed: CU00 entered
+# on a cleared screen reaches COUSR00C with EIBCALEN = 0, which transfers
+# control to COSGN00C with a COMMAREA and sends no map of its own
+# [app/cbl/COUSR00C.cbl:111-113,506-517]. COSGN00C takes the ENTER path and
+# sends map COSGN00 headed by its own transaction and program name
+# [app/cbl/COSGN00C.cbl:80-102,108-157,177-184]. Only the map and that header
+# are pinned: ERRMSG depends on how the region maps the unformatted input, and
+# CURDATE, CURTIME, APPLID and SYSID on the region (GAP-INF-004, GAP-INF-012).
+screens:
+- '@map': COSGN00
+  PGMNAME: COSGN00C
+  TRNNAME: CC00

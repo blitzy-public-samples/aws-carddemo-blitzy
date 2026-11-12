@@ -1,0 +1,71 @@
+# The UniKix copy's region resource list defines 14 files
+# [samples/m2/unikix/UniKix_CardDemo_runtime_v1.zip:migrated_app/catlg/tpe/fct.lst:1-14]: the CSD's 8 FILE
+# definitions [app/csd/CARDDEMO.CSD:1-99] and 6 that no CSD definition has, DISCGRP, TCATBALF, TRANCATG,
+# TRANSAIX, TRANTYPE and TRXFL (fct.lst:7-9,11-13; GAP-DOC-030). Those 6 are inventoried from fct.lst
+# itself, so a UniKix record whose source identity holds the zip's fct.lst hash verifies them although
+# they have no app/ counterpart.
+#
+# The scenario is named after the fct.lst resource list because it runs no single program or job. Its
+# inputs.steps is the empty list, the form harness.scenarios gives a region-state observation, so only
+# unikix can run it; it signs nobody on and captures no screen. Before every scenario the adapter resets
+# the test-owned region: it closes the region files, reloads every cluster of resources.yaml (empty here,
+# since no precondition dataset is named), then reopens and enables every file. The outcome is the region
+# file inquiry that follows, @REGION-FILES (adapters.base.format_region_files): one line per file,
+# '<name> open|closed enabled|disabled', sorted by name, which is also the fct.lst order.
+#
+# The expectation is derived, never observed: each fct.lst file is open and enabled once the region runs.
+# The CSD's OPENTIME(FIRSTREF) [app/csd/CARDDEMO.CSD:4] does not decide it, because the UniKix region
+# installs its files from the catlg/tpe lists and the reset opens each one explicitly. No confirmed UniKix
+# command inquires the region files (GAP-MIS-011), so the observation rule blocks the scenario until an
+# operator confirms one.
+id: CFG-FCT-normal-01
+level: e2e
+type: normal
+description: >-
+  With the test-owned UniKix region started and reset, the region file inquiry lists the 14 files of the
+  copy's fct.lst [samples/m2/unikix/UniKix_CardDemo_runtime_v1.zip:migrated_app/catlg/tpe/fct.lst:1-14],
+  each open and enabled: the CSD's 8 and the 6 UniKix-only files DISCGRP, TCATBALF, TRANCATG, TRANSAIX,
+  TRANTYPE and TRXFL (fct.lst:7-9,11-13), which no CSD FILE definition has (GAP-DOC-030). No transaction
+  is entered: inputs.steps is the empty list of a region-state observation.
+# The 6 derived fct.lst items, DISCGRP first. The CSD's 8 FILE items (INV-CFG-001..008) also appear in the
+# observation but are verified through the online scenarios that read or update them, so they are not
+# listed here.
+inventory_ids:
+- INV-CFG-035  # DISCGRP fct.lst file (fct.lst:7)
+- INV-CFG-036  # TCATBALF fct.lst file (fct.lst:8)
+- INV-CFG-037  # TRANCATG fct.lst file (fct.lst:9)
+- INV-CFG-038  # TRANSAIX fct.lst file (fct.lst:11)
+- INV-CFG-039  # TRANTYPE fct.lst file (fct.lst:12)
+- INV-CFG-040  # TRXFL fct.lst file (fct.lst:13)
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-010  # CFG baselines derived, never observed
+- GAP-DOC-030  # fct.lst defines 6 region files the CSD does not
+- GAP-MIS-011  # no confirmed region file inquiry, so @REGION-FILES is unavailable on unikix
+# The outcome holds no date, and unikix cannot fix its clock (GAP-MIS-015), so the clock is relative.
+preconditions:
+  datasets: {}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps: []
+expected:
+  file_state:
+    '@REGION-FILES':
+      records:
+      - 'ACCTDAT open enabled'
+      - 'CARDAIX open enabled'
+      - 'CARDDAT open enabled'
+      - 'CCXREF open enabled'
+      - 'CUSTDAT open enabled'
+      - 'CXACAIX open enabled'
+      - 'DISCGRP open enabled'
+      - 'TCATBALF open enabled'
+      - 'TRANCATG open enabled'
+      - 'TRANSACT open enabled'
+      - 'TRANSAIX open enabled'
+      - 'TRANTYPE open enabled'
+      - 'TRXFL open enabled'
+      - 'USRSEC open enabled'

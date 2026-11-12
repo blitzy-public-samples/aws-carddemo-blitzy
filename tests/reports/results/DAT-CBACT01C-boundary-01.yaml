@@ -1,0 +1,21 @@
+adapter: gnucobol-batch
+baseline_version: 1.0.0
+decoded:
+  messages:
+  - START OF EXECUTION OF PROGRAM CBACT01C
+  - END OF EXECUTION OF PROGRAM CBACT01C
+  return_code: 0
+evidence_path: tests/reports/results/DAT-CBACT01C-boundary-01.yaml
+execution_fingerprint: 1ba1031089afe0b4314351ffdc30e75da8588623ccf8559262bee7ae5e99d082
+execution_id: gnucobol-batch-f23e0f9f0da35948
+gap_id: null
+reason: null
+scenario_digest: c0c85dc2e64a3faba885649dbb14104f38e6f7c28dc8eb5370bf6b6586d69066
+scenario_id: DAT-CBACT01C-boundary-01
+source_identity:
+  commit: e5efe25babd80bcd8653ae033cd2ea3ae0df2aa7
+  tree: app
+  units:
+    app/cbl/CBACT01C.cbl: 426cf9bd190b777104bb964e9d5a2929197ed7621f8b334f229ef12e60e63966
+    app/cpy/CVACT01Y.cpy: 81a08bad15af5664326a6f0af3650f570821c4857ffdec3a6a39f91f07dca728
+status: passed

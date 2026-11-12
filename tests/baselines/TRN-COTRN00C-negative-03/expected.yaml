@@ -1,0 +1,86 @@
+# Derived from source (capture_platform: derived), never observed; tagged
+# inferred-not-observed under GAP-INF-007 and GAP-INF-012.
+# Step 2: first entry from the main menu lists page 1 of TRANSACT with a blank
+# search field and no message [app/cbl/COTRN00C.cbl:111-116,206-229,279-328].
+# Step 3: TRNIDIN 'ABC' is not numeric, so the map is re-sent with
+# 'Tran ID must be Numeric ...'; the header is rebuilt, every other field echoes
+# what the terminal returned (all FSET), and ERR-FLG keeps TRNIDIN and skips the
+# second send [app/cbl/COTRN00C.cbl:206-229,281-328,527-586].
+# This holds only while STARTBR finds a record: an empty or unavailable TRANSACT
+# would overwrite the message with 'You are at the top of the page...' or
+# 'Unable to lookup transaction...' [app/cbl/COTRN00C.cbl:591-619].
+# Text fields are at full BMS width with trailing spaces kept; CURDATE and
+# CURTIME come from the region clock, so they are matchers.
+screens:
+- '@map': COMEN01
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COTRN00
+  ERRMSG: '                                                                              '
+  PAGENUM: '00000001'
+  PGMNAME: COTRN00C
+  TRNIDIN: '                '
+  TRNNAME: CT00
+- '@map': COTRN00
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Tran ID must be Numeric ...                                                   '
+  PAGENUM: '00000001'
+  PGMNAME: COTRN00C
+  SEL0001: ' '
+  SEL0002: ' '
+  SEL0003: ' '
+  SEL0004: ' '
+  SEL0005: ' '
+  SEL0006: ' '
+  SEL0007: ' '
+  SEL0008: ' '
+  SEL0009: ' '
+  SEL0010: ' '
+  TAMT001: '+00000504.77'
+  TAMT002: '-00000919.00'
+  TAMT003: '+00000067.88'
+  TAMT004: '+00000281.77'
+  TAMT005: '+00000454.66'
+  TAMT006: '+00000849.99'
+  TAMT007: '-00000056.77'
+  TAMT008: '+00000373.66'
+  TAMT009: '-00000535.88'
+  TAMT010: '+00000416.11'
+  TDATE01: 06/10/22
+  TDATE02: 06/10/22
+  TDATE03: 06/10/22
+  TDATE04: 06/10/22
+  TDATE05: 06/10/22
+  TDATE06: 06/10/22
+  TDATE07: 06/10/22
+  TDATE08: 06/10/22
+  TDATE09: 06/10/22
+  TDATE10: 06/10/22
+  TDESC01: 'Purchase at Abshire-Lowe  '
+  TDESC02: Return item at Nitzsche, N
+  TDESC03: Purchase at Ernser, Roob a
+  TDESC04: 'Purchase at Guann LLC     '
+  TDESC05: Purchase at Kertzmann-Scho
+  TDESC06: Purchase at Gislason-Medhu
+  TDESC07: 'Return item at Sipes Inc  '
+  TDESC08: 'Purchase at Legros Group  '
+  TDESC09: Return item at Turcotte Gr
+  TDESC10: Purchase at Gleason, Shana
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNID01: 0000000000683580
+  TRNID02: '0000000001774260'
+  TRNID03: 0000000006292564
+  TRNID04: 0000000009101861
+  TRNID05: '0000000010142252'
+  TRNID06: 0000000010229018
+  TRNID07: 0000000016259484
+  TRNID08: 0000000017874199
+  TRNID09: 0000000019065428
+  TRNID10: '0000000021711604'
+  TRNIDIN: 'ABC             '
+  TRNNAME: CT00

@@ -1,0 +1,173 @@
+# COCRDUPC's defensive WHEN OTHER of 2000-DECIDE-ACTION, which abends the task
+# with 'UNEXPECTED DATA SCENARIO' when the card-update state in its own
+# COMMAREA matches no case [app/cbl/COCRDUPC.cbl:948-1028].
+#
+# Step 1: USER0001 (type U in the USRSEC fixture) signs on through CC00 and
+# COSGN00C XCTLs to COMEN01C [app/cbl/COSGN00C.cbl:221-240].
+# Step 2: option '5' 'Credit Card Update' makes COMEN01C XCTL to COCRDUPC with
+# itself as the calling program and CDEMO-PGM-CONTEXT 0
+# [app/cpy/COMEN02Y.cpy:49-53] [app/cbl/COMEN01C.cbl:145-156]. COCRDUPC takes
+# its fresh-entry case: it initializes WS-THIS-PROGCOMMAREA, sends COCRDUP with
+# the search-key prompt, sets CDEMO-PGM-REENTER and returns with TRANSID CCUP
+# and its COMMAREA [app/cbl/COCRDUPC.cbl:388-401,502-511,546-558,1138-1164].
+# Step 3: ENTER with account 00000000050 and card 0500024453765740 runs CCUP.
+# COCRDUPC restores CCUP-CHANGE-ACTION from the COMMAREA
+# [app/cbl/COCRDUPC.cbl:395-400] and takes WHEN OTHER of 0000-MAIN:
+# 1000-PROCESS-INPUTS, then 2000-DECIDE-ACTION [app/cbl/COCRDUPC.cbl:535-539].
+# For this branch CCUP-CHANGE-ACTION holds a value outside its 88-levels and
+# 1200-EDIT-MAP-INPUTS finds the card data unchanged, so it leaves the state
+# as it is [app/cbl/COCRDUPC.cbl:641-693]; ENTER is not PF12, so no case of
+# 2000-DECIDE-ACTION matches and its WHEN OTHER moves LIT-THISPGM 'COCRDUPC' to
+# ABEND-CULPRIT, '0001' to ABEND-CODE, SPACES to ABEND-REASON and
+# 'UNEXPECTED DATA SCENARIO' to ABEND-MSG, then performs ABEND-ROUTINE
+# [app/cbl/COCRDUPC.cbl:1019-1026]. ABEND-ROUTINE keeps the message (it is not
+# LOW-VALUES), moves COCRDUPC to ABEND-CULPRIT again, sends the 134 bytes of
+# ABEND-DATA (CSMSG02Y: ABEND-CODE X(4), ABEND-CULPRIT X(8), ABEND-REASON X(50),
+# ABEND-MSG X(72)) with SEND FROM ... NOHANDLE ERASE, cancels the abend handler
+# and abends the task with ABCODE 9999 [app/cbl/COCRDUPC.cbl:1531-1553]
+# [app/cpy/CSMSG02Y.cpy:21-29]. No map is sent and no file is read on this
+# path: WHEN OTHER stands in place of the CCUP-DETAILS-NOT-FETCHED case whose
+# 9000-READ-DATA would read CARDDAT [app/cbl/COCRDUPC.cbl:954-966,1376-1413],
+# so the CARDDAT CSD file item is not listed. The card fixture is loaded so the
+# region holds its usual data.
+#
+# Reachability: the program sets CCUP-CHANGE-ACTION only to its 88-level
+# values, by SET or by INITIALIZE to spaces [app/cbl/COCRDUPC.cbl:276-290,394,
+# 494,506-510,519-527,696,713,964,976,994-1000,1012]. 2000-DECIDE-ACTION has no
+# case for 'L' and 'F' (CCUP-CHANGES-FAILED), but those are set only after the
+# PF5 write, and on the next entry 0000-MAIN takes them before
+# 2000-DECIDE-ACTION runs [app/cbl/COCRDUPC.cbl:436-439,517-528].
+# 1200-EDIT-MAP-INPUTS sets only 'E' or 'N' [app/cbl/COCRDUPC.cbl:696,713]. So
+# only a COMMAREA holding some other value reaches the branch, and no AID or
+# field entry produces one.
+# Priority decision: the fault vocabulary names datasets, region files and the
+# TDQ, never the COMMAREA, so the scenario declares the abend class on the card
+# master, the class this branch belongs to. No adapter can force an abend in
+# the TPE region, so the scenario raises MissingPrerequisite under GAP-MIS-014
+# and stays implemented-unexecuted. The declaration marks that need; it is not
+# a mechanism that reaches this branch: a real abend of the CARDDAT read would
+# end in the HANDLE ABEND path instead (INV-CRD-076), so whoever adds an abend
+# mechanism must give this scenario its own way of setting the change-action
+# state.
+#
+# The screen is derived, never observed (GAP-INF-006), and written as the
+# plain-text screens are: after ERASE the 134 sent bytes stand from row 1,
+# column 1, so row 1 holds the code 0001, the culprit COCRDUPC, the 50 blank
+# reason bytes and the first 18 characters of the message, row 2 the rest of
+# the message and its trailing blanks, and the other rows are blank. The SEND
+# names ERASE [app/cbl/COCRDUPC.cbl:1543]; it names no CTLCHAR, and the 9999
+# abend that follows ends the task with the region's own notice; the unikix
+# evidence of this scenario settles the screen the region shows. The UniKix
+# copy of 2000-DECIDE-ACTION, ABEND-ROUTINE, CSMSG02Y, COCRDUP.bms and
+# COMEN01C is the same as app/'s; its COCRDUPC differs only in 1230-EDIT-NAME
+# (GAP-DOC-023), which this path does not run.
+id: CRD-COCRDUPC-recovery-04
+level: e2e
+type: recovery
+description: >-
+  USER0001 signs on, selects main menu option 5 'Credit Card Update' and enters
+  account 00000000050 and card 0500024453765740 on the COCRDUPC screen (CCUP)
+  while the card-update state carried in COCRDUPC's COMMAREA matches none of
+  its cases, which only a corrupted COMMAREA produces. The WHEN OTHER of
+  2000-DECIDE-ACTION names COCRDUPC as the culprit with abend code 0001 and the
+  message 'UNEXPECTED DATA SCENARIO', and the abend routine erases the screen,
+  sends that abend data as unformatted text and abends the task with code 9999.
+# Primary item first, then the program, the maps the steps enter on, the
+# transaction step 3 runs under, and the online-only copybooks COCRDUPC copies.
+# Sign-on and the menu programs are verified by the SEC and MNU scenarios; the
+# batch record copybooks and the data files are verified at the lowest level
+# that executes them. The CARDDAT CSD file (INV-CFG-003) is deliberately not
+# listed: this path reads no file, and an item is listed only by the scenarios
+# its verification depends on.
+inventory_ids:
+- INV-CRD-074  # COCRDUPC message 'UNEXPECTED DATA SCENARIO' (2000-DECIDE-ACTION WHEN OTHER, recovery)
+- INV-CRD-003  # COCRDUPC program
+- INV-MNU-003  # COMEN01 map, where option 5 is entered
+- INV-CRD-006  # COCRDUP map, where the account and card are entered
+- INV-CFG-015  # CCUP transaction, under which the task abends
+- INV-LAY-002  # COCOM01Y: the COMMAREA carrying the context into CCUP
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02 of the COCRDUP send
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME of the COCRDUP send
+- INV-LAY-008  # CSMSG01Y, copied by COCRDUPC
+- INV-LAY-009  # CSMSG02Y: ABEND-DATA, the area the abend routine sends
+- INV-LAY-011  # CSSTRPFY: the AID mapping that selects the ENTER path
+- INV-LAY-019  # CVCRD01Y: CC-ACCT-ID, CC-CARD-NUM and the AID flags
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-006  # CRD end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-MIS-014  # no mechanism forces an abend in the TPE region
+preconditions:
+  datasets:
+    CARDDATA: {base: CARDDATA}
+    # COSGN00C reads the sign-on user USER0001 from USRSEC.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults:
+  # The abend class of the WHEN OTHER branch (see the priority decision above).
+  - {target: CARDDAT, operation: read, condition: abend}
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '5'
+  - aid: ENTER
+    '@map': COCRDUP
+    fields:
+      ACCTSID: '00000000050'
+      CARDSID: '0500024453765740'
+# Screen values are whole fields at their BMS length, trailing spaces kept:
+# comparison never trims. ACCTSID and CARDSID, left at LOW-VALUES by the
+# fresh-entry send [app/cbl/COCRDUPC.cbl:1053,1084-1085], and the blank message
+# line show as spaces.
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN005: '05. Credit Card Update                  '
+    ERRMSG: '                                                                              '
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    PGMNAME: COCRDUPC
+    ACCTSID: '           '
+    CARDSID: '                '
+    INFOMSG: 'Please enter Account and Card Number    '
+    ERRMSG: '                                                                                '
+  # The 24 rows of 80 characters joined by line breaks, as adapters/base.py
+  # screen_text gives them. Each source line below is one row: '\ ' keeps a
+  # row's leading blank and '\n\' ends the row.
+  - '@map': TEXT
+    '@text': "0001COCRDUPC                                                  UNEXPECTED DATA SC\n\
+      ENARIO                                                                          \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                "

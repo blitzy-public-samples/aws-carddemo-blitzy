@@ -1,0 +1,57 @@
+# Derived baseline (capture_platform: derived) of TRN-COTRN00C-alternate-07:
+# USER0001 opens the transaction list from the main menu and selects row 1
+# with S, and COTRN00C XCTLs to COTRN01C, which shows that transaction.
+# Authored from the source, never captured; open until an eligible UniKix run
+# is imported (GAP-INF-007, GAP-INF-012).
+# One screen per step, each the screen shown after the step's AID. Values are
+# whole BMS fields with their trailing spaces. CURDATE and CURTIME come from
+# the region clock (CSDAT01Y MM/DD/YY, HH:MM:SS), so they are matchers.
+screens:
+# Step 1: USER0001 is of type U, so COSGN00C XCTLs to COMEN01C, which sends
+# COMEN1A under its own transaction and program names
+# [app/cbl/COSGN00C.cbl:228-238] [app/cbl/COMEN01C.cbl:36-37].
+- '@map': 'COMEN01'
+  PGMNAME: 'COMEN01C'
+  TRNNAME: 'CM00'
+# Step 2: option 6 XCTLs to COTRN00C with context 0; on that first entry no
+# row is selected, so TRANSACT is browsed from LOW-VALUES and row 1 holds the
+# lowest key, the first DALYTRAN record [app/cbl/COMEN01C.cbl:143-156]
+# [app/cpy/COMEN02Y.cpy:55-59] [app/cbl/COTRN00C.cbl:107-116,179-229,279-326,
+# 381-396]. Only the identification fields and row 1's id are asserted: the
+# list content and its paging are other scenarios' items.
+- '@map': 'COTRN00'
+  PGMNAME: 'COTRN00C'
+  TRNID01: '0000000000683580'
+  TRNNAME: 'CT00'
+# Step 3: S in SEL0001 with the FSET TRNID01 makes COTRN00C XCTL to COTRN01C
+# with context 0 [app/bms/COTRN00.bms:153-166] [app/cbl/COTRN00C.cbl:148-195].
+# COTRN01C moves the selected id to TRNIDIN, reads TRANSACT by that key and
+# moves the record to the detail fields; WS-MESSAGE stays spaces
+# [app/cbl/COTRN01C.cbl:94-109,144-192,213-262] [app/cpy/COTTL01Y.cpy:18-22].
+# The record is [app/data/ASCII/dailytran.txt:1] laid out by CVTRA05Y: TRAN-DESC
+# is cut to the 60-byte TDESC and TRAN-ORIG-TS to the 10-byte TORIGDT, the
+# blank TRAN-PROC-TS gives a blank TPROCDT, TRAN-AMT 0000005047G (+504.77) is
+# edited through WS-TRAN-AMT PIC +99999999.99, and the numeric TRAN-CAT-CD and
+# TRAN-MERCHANT-ID keep their leading zeros.
+- '@map': 'COTRN01'
+  CARDNUM: '4859452612877065'
+  CURDATE: {match: 'run-date', format: '%m/%d/%y'}
+  CURTIME: {match: 'run-time'}
+  ERRMSG: '                                                                              '
+  MCITY: 'North Enoshaven          '
+  MID: '800000000'
+  MNAME: 'Abshire-Lowe                  '
+  MZIP: '72112     '
+  PGMNAME: 'COTRN01C'
+  TCATCD: '0001'
+  TDESC: 'Purchase at Abshire-Lowe                                    '
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TORIGDT: '2022-06-10'
+  TPROCDT: '          '
+  TRNAMT: '+00000504.77'
+  TRNID: '0000000000683580'
+  TRNIDIN: '0000000000683580'
+  TRNNAME: 'CT01'
+  TRNSRC: 'POS TERM  '
+  TTYPCD: '01'

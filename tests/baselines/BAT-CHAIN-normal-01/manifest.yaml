@@ -1,0 +1,34 @@
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: gnucobol-batch
+execution_fingerprint: 03da6e66bf9df3c8c933f1ec54887aba9352a310f0315d1b6364c77b074ca500
+execution_id: gnucobol-batch-c6fedfc4d5084b51
+source_commit: ae9cb473e65a42d2da3b5c323ecb29cae395d7b6
+source_identity:
+  commit: ae9cb473e65a42d2da3b5c323ecb29cae395d7b6
+  tree: app
+  units:
+    app/cbl/CBACT04C.cbl: 76dea08b410b653ee2fa967c564e9f2e992b7c09f52b2d1fbb5a212149aefbce
+    app/cbl/CBSTM03A.CBL: 54210164f798c7b38609400d846d4b03f46da2c67cdf69e968951cfc3e8caf3e
+    app/cbl/CBSTM03B.CBL: c183707f0dae0b5e9387373fc3624f0462ad95ccbbb6c8a34167591e206bcbf8
+    app/cbl/CBTRN02C.cbl: 136ab808a10d01814269a4a29bd6c249b1b86952d0abded98419458db43f2aef
+    app/cbl/CBTRN03C.cbl: c9c5428073cbe19c1cd19fc066ed99972560c209a80b4aea3bae3cc5e20a3536
+    app/cpy/COSTM01.CPY: 660aa12a59dc411cf9e9b5ab2deb7b097802f73e4269518b7cea74d8f8e9df5c
+    app/cpy/CUSTREC.cpy: f87a0a041fbd8f38dc9c23a9519b917af9c7008527e9cb924f91c2fb4e0a2ecc
+    app/cpy/CVACT01Y.cpy: 81a08bad15af5664326a6f0af3650f570821c4857ffdec3a6a39f91f07dca728
+    app/cpy/CVACT03Y.cpy: ffc6079e09b28739e154bf6c1e1c36d408209faa91f6cf7008078dc596a1c370
+    app/cpy/CVTRA01Y.cpy: 50637f13692c89b17a2fc60d249dc54e9eb3569d933afca3cdcf65b491a9d5ba
+    app/cpy/CVTRA02Y.cpy: 7828fae489c59944b4310e223028a8d3a525ccf4ead113c062bcaff04b52bf9c
+    app/cpy/CVTRA03Y.cpy: fb15dbc4a6924cbddce0704932f9e61c067ac10004cd00839dff0ed7c7bb0667
+    app/cpy/CVTRA04Y.cpy: 89803bc13a06347e1f3d8a599a5383b87235b203dce9f18a486bc233186479f8
+    app/cpy/CVTRA05Y.cpy: d7bde0e78ff608497087b9909c889ed39e347269f964bda767b92b547fbb5fec
+    app/cpy/CVTRA06Y.cpy: c5c69f1b86c5a10156d3c5881d7cf387e6b925aae32825360f85bf4056a554a1
+    app/cpy/CVTRA07Y.cpy: 72ba597b1a40e1e6cf908e15da9e6a818a0ab899ef1d27d15edeb074963102fa
+    app/ctl/REPROCT.ctl: 5c6b8f26aa53c23131265e715b53130a1a7afd88b5bd3319aeca91f3d1a55bf5
+    app/jcl/COMBTRAN.jcl: ab60da6cfdc8c4ec66c8b950540553bf35e91dc1e61a1dd4ada5bb888011c85c
+    app/jcl/CREASTMT.JCL: 87a18700fac7bccfffbefa5d80fed0b171fdc36caeebb575c8a3cf66e4fc3caa
+    app/jcl/INTCALC.jcl: 61afa664a807558e58213641d9f3317ab3b354a350c4c1536a630897d194d275
+    app/jcl/POSTTRAN.jcl: ecff62c691e6ce101de08690e72ec065bc98bd845744ddf914899097d37c9191
+    app/jcl/TRANBKP.jcl: 457cd00d14a1d9ac9983d92212541df3456e8428862b97cf10bab7249b9e6183
+    app/jcl/TRANREPT.jcl: 7d8fc0777e6b9fb1c62aee6b4b10a67d127057c84b92203c7152f230b3db9571
+    app/proc/REPROC.prc: 4562039d1c7b90f05cc946dd1cd1cb93571bb279740c5c9777acfa3ea23fbc9f

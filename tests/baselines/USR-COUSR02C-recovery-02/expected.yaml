@@ -1,0 +1,148 @@
+# Derived baseline of scenario USR-COUSR02C-recovery-02: ADMIN001 signs on,
+# takes admin option 3, fetches the invented user TESTU002 on COUSR02, types
+# the last name over as TESTCHANGED and presses PF5 while the REWRITE of
+# USRSEC fails with an I/O error. Authored from the source, never captured:
+# - app/cbl/COSGN00C.cbl:221-237 (type A routed to COADM01C) and
+#   app/cbl/COADM01C.cbl:75-110,115-145 (first-entry send with a blank
+#   ERRMSG; option 3 'User Update (Security)' XCTLs to COUSR02C);
+# - app/cbl/COUSR02C.cbl:84-105 (first entry: COUSR2AO is LOW-VALUES, no user
+#   selected, blank message), 143-172 and 320-339 (the fetch: READ UPDATE,
+#   'Press PF5 key to save your updates ...', the record's names and type);
+# - app/cbl/COUSR02C.cbl:122-123,177-245 (PF5: every field supplied, the
+#   save-path READ UPDATE succeeds, LNAME differs, REWRITE) and 358-390 (the
+#   REWRITE answers neither NORMAL nor NOTFND: RESP and RESP2 go to the region
+#   log, not the screen, 'Unable to Update User...' to WS-MESSAGE, cursor on
+#   FNAME, SEND ... ERASE of COUSR02 again); 266-315 (header from
+#   app/cpy/COTTL01Y.cpy and app/cpy/CSDAT01Y.cpy).
+# One screen per step, each the last send of the step's task. COUSR2AO
+# redefines COUSR2AI, so the final screen echoes the values just received,
+# the unsaved last name included. messages holds each step's ERRMSG. Text is
+# full BMS field width with trailing spaces: ERRMSG is the first 78 bytes of
+# the 80-byte WS-MESSAGE. PASSWD is a dark field and is not asserted, as in
+# the scenario. CURDATE and CURTIME come from the run clock, which UniKix
+# cannot fix, hence the matchers.
+# USRSEC is unchanged by the failed REWRITE: every record in primary-key order,
+# TESTU002 after ADMIN005 with its old last name TESTLAST, and the ten fixture
+# users of app/data/EBCDIC/AWS.M2.CARDDEMO.USRSEC.PS decoded as cp037 with
+# app/cpy/CSUSR01Y.cpy:17-23. TESTU002 is invented data and never signs on.
+# SEC-USR-PWD holds the fixture's documented demo password and the invented
+# TESTPWD2: record data pinned as loaded, not a credential of this suite.
+# Open under GAP-INF-004 (derived USR end-to-end baselines) and GAP-INF-012
+# (online-only copybooks); only `report.py --import-unikix` promotes it.
+file_state:
+  USRSEC:
+    records:
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'MARGARET            '
+      SEC-USR-ID: ADMIN001
+      SEC-USR-LNAME: 'GOLD                '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: A
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'RUSSELL             '
+      SEC-USR-ID: ADMIN002
+      SEC-USR-LNAME: 'RUSSELL             '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: A
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'RAYMOND             '
+      SEC-USR-ID: ADMIN003
+      SEC-USR-LNAME: 'WHITMORE            '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: A
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'EMMANUEL            '
+      SEC-USR-ID: ADMIN004
+      SEC-USR-LNAME: 'CASGRAIN            '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: A
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'GRANVILLE           '
+      SEC-USR-ID: ADMIN005
+      SEC-USR-LNAME: 'LACHAPELLE          '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: A
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'TESTFIRST           '
+      SEC-USR-ID: TESTU002
+      SEC-USR-LNAME: 'TESTLAST            '
+      SEC-USR-PWD: TESTPWD2
+      SEC-USR-TYPE: U
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'LAWRENCE            '
+      SEC-USR-ID: USER0001
+      SEC-USR-LNAME: 'THOMAS              '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: U
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'AJITH               '
+      SEC-USR-ID: USER0002
+      SEC-USR-LNAME: 'KUMAR               '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: U
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'LAURITZ             '
+      SEC-USR-ID: USER0003
+      SEC-USR-LNAME: 'ALME                '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: U
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'AVERARDO            '
+      SEC-USR-ID: USER0004
+      SEC-USR-LNAME: 'MAZZI               '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: U
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'LEE                 '
+      SEC-USR-ID: USER0005
+      SEC-USR-LNAME: 'TING                '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: U
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'Press PF5 key to save your updates ...                                        '
+- 'Unable to Update User...                                                      '
+screens:
+- '@map': COADM01
+  ERRMSG: '                                                                              '
+  PGMNAME: COADM01C
+  TRNNAME: CA00
+- '@map': COUSR02
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  FNAME: '                    '
+  LNAME: '                    '
+  PGMNAME: COUSR02C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CU02
+  USRIDIN: '        '
+  USRTYPE: ' '
+- '@map': COUSR02
+  ERRMSG: 'Press PF5 key to save your updates ...                                        '
+  FNAME: 'TESTFIRST           '
+  LNAME: 'TESTLAST            '
+  PGMNAME: COUSR02C
+  TRNNAME: CU02
+  USRIDIN: TESTU002
+  USRTYPE: U
+- '@map': COUSR02
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Unable to Update User...                                                      '
+  FNAME: 'TESTFIRST           '
+  LNAME: 'TESTCHANGED         '
+  PGMNAME: COUSR02C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CU02
+  USRIDIN: TESTU002
+  USRTYPE: U

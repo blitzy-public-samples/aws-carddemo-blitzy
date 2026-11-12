@@ -1,0 +1,14 @@
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: derived
+source_commit: b301367779f1872f84377d9948b1c4bd2634bfc8
+source_identity:
+  commit: b301367779f1872f84377d9948b1c4bd2634bfc8
+  tree: app
+  units:
+    app/cbl/CBTRN02C.cbl: 136ab808a10d01814269a4a29bd6c249b1b86952d0abded98419458db43f2aef
+    app/cpy/CVACT01Y.cpy: 81a08bad15af5664326a6f0af3650f570821c4857ffdec3a6a39f91f07dca728
+    app/cpy/CVACT03Y.cpy: ffc6079e09b28739e154bf6c1e1c36d408209faa91f6cf7008078dc596a1c370
+    app/cpy/CVTRA01Y.cpy: 50637f13692c89b17a2fc60d249dc54e9eb3569d933afca3cdcf65b491a9d5ba
+    app/cpy/CVTRA05Y.cpy: d7bde0e78ff608497087b9909c889ed39e347269f964bda767b92b547fbb5fec
+    app/cpy/CVTRA06Y.cpy: c5c69f1b86c5a10156d3c5881d7cf387e6b925aae32825360f85bf4056a554a1

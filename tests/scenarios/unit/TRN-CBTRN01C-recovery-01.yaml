@@ -1,0 +1,67 @@
+# The open-failure abend of CBTRN01C on the last of its six files. DALYTRAN,
+# CUSTFILE, XREFFILE, CARDFILE and ACCTFILE open in that order from the
+# repository data, so control reaches 0500-TRANFILE-OPEN; TRANSACT is left out,
+# OPEN INPUT returns status 35 and the program abends through CEE3ABD before
+# any DALYTRAN record is read [app/cbl/CBTRN01C.cbl:156-162,343-359,469-489].
+# The five datasets are loaded rather than omitted because each one's open must
+# succeed for the TRANFILE open to run.
+id: TRN-CBTRN01C-recovery-01
+level: unit
+type: recovery
+description: >-
+  CBTRN01C with every input file present except the transaction KSDS: the
+  TRANFILE open fails with status 35, the program displays 'ERROR OPENING
+  TRANSACTION FILE', the file status and 'ABENDING PROGRAM', and abends through
+  CEE3ABD without processing a record.
+inventory_ids:
+- INV-TRN-072  # CBTRN01C abend on open failure (recovery)
+- INV-TRN-007  # CBTRN01C program
+- INV-DTA-005  # dailytran.txt, the DALYTRAN fixture source
+- INV-DTA-015  # its EBCDIC cross-check counterpart
+- INV-DTA-003  # cardxref.txt, the CARDXREF fixture source
+- INV-DTA-013  # its EBCDIC cross-check counterpart
+- INV-DTA-001  # acctdata.txt, the ACCTDATA fixture source
+- INV-DTA-011  # its EBCDIC cross-check counterpart
+- INV-DTA-004  # custdata.txt, the CUSTDATA fixture source
+- INV-DTA-014  # its EBCDIC cross-check counterpart
+- INV-DTA-002  # carddata.txt, the CARDDATA fixture source
+- INV-DTA-012  # its EBCDIC cross-check counterpart
+# Untagged by design: GAP-DEF-001 (the parameterless CALL 'CEE3ABD' that ends
+# every CB* abend path) is cited as the gap this abend passes through;
+# suspected-defect marks the cases that pin a program's own defect.
+tags: []
+gap_ids:
+- GAP-UNC-003
+- GAP-STB-001
+- GAP-DEF-001
+- GAP-STB-010
+- GAP-STB-011
+preconditions:
+  datasets:
+    DALYTRAN:
+      base: DALYTRAN
+    CARDXREF:
+      base: CARDXREF
+    ACCTDATA:
+      base: ACCTDATA
+    CUSTDATA:
+      base: CUSTDATA
+    CARDDATA:
+      base: CARDDATA
+  parameters:
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults:
+  - target: TRANSACT
+    operation: open
+    condition: unavailable
+inputs:
+  program: CBTRN01C
+expected:
+  return_code: null
+  messages:
+  - START OF EXECUTION OF PROGRAM CBTRN01C
+  - ERROR OPENING TRANSACTION FILE
+  - 'FILE STATUS IS: NNNN0035'
+  - ABENDING PROGRAM
+  - CARDDEMO-ABEND CEE3ABD

@@ -1,0 +1,26 @@
+# Derived baseline of scenario USR-COUSR00C-alternate-06: PF3 on the COUSR00C
+# user list returns to the admin menu. Authored from the source, never
+# captured; open until a UniKix run is imported: GAP-INF-004 (derived USR
+# end-to-end baselines) and GAP-INF-012 (online-only copybooks).
+# One screen per step, each the screen shown after the step's AID:
+# 1. ADMIN001 signs on; COSGN00C XCTLs to COADM01C with a zero program context
+#    [app/cbl/COSGN00C.cbl:221-233], which sends COADM01 under its own CA00 and
+#    COADM01C [app/cbl/COADM01C.cbl:36-37,87-90,172-177,208-209].
+# 2. Option 1 XCTLs to COUSR00C with a zero context [app/cbl/COADM01C.cbl:139-145],
+#    which sends COUSR00 under CU00 and COUSR00C [app/cbl/COUSR00C.cbl:36-37,115-119,568-569].
+# 3. PF3 moves COADM01C to CDEMO-TO-PROGRAM and XCTLs with a zero context
+#    [app/cbl/COUSR00C.cbl:125-127,506-517], so COADM01C takes its first-entry
+#    path again and ERRMSG carries WS-MESSAGE, still spaces [app/cbl/COADM01C.cbl:77-90,177].
+# Only the fields the scenario asserts are held, at full BMS width
+# (TRNNAME 4, PGMNAME 8, ERRMSG 78) with trailing spaces kept.
+screens:
+- '@map': COADM01
+  PGMNAME: COADM01C
+  TRNNAME: CA00
+- '@map': COUSR00
+  PGMNAME: COUSR00C
+  TRNNAME: CU00
+- '@map': COADM01
+  ERRMSG: '                                                                              '
+  PGMNAME: COADM01C
+  TRNNAME: CA00

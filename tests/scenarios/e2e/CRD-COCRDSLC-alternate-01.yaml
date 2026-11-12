@@ -1,0 +1,103 @@
+# COCRDSLC's search prompt on first entry from the main menu. USER0001 (type U
+# in the USRSEC fixture) signs on through CC00 and COSGN00C XCTLs to COMEN01C
+# [app/cbl/COSGN00C.cbl:221-240]. Option '4' of the main menu is 'Credit Card
+# View', so COMEN01C sets CDEMO-FROM-PROGRAM to COMEN01C and CDEMO-PGM-CONTEXT
+# to 0 and XCTLs to COCRDSLC with the COMMAREA [app/cbl/COMEN01C.cbl:145-155]
+# [app/cpy/COMEN02Y.cpy:43-47].
+# COCRDSLC initializes CC-WORK-AREA, which leaves CC-ACCT-ID and CC-CARD-NUM
+# spaces, and WS-MISC-STORAGE, which leaves WS-INFO-MSG spaces
+# [app/cbl/COCRDSLC.cbl:254-264]. Its COMMAREA test reads CDEMO-FROM-PROGRAM
+# before the passed COMMAREA is copied in [app/cbl/COCRDSLC.cbl:268-279], but
+# both of its branches leave the context at 0 and the calling program other
+# than COCRDLIC, so the ENTER key takes the WHEN CDEMO-PGM-ENTER path to
+# 1000-SEND-MAP [app/cbl/COCRDSLC.cbl:291-299,349-356]. 1100-SCREEN-INIT clears
+# CCRDSLAO and fills the header [app/cbl/COCRDSLC.cbl:427-451];
+# 1200-SETUP-SCREEN-VARS, with a COMMAREA present, moves to ACCTSID and CARDSID
+# either LOW-VALUES or the blank CC-ACCT-ID and CC-CARD-NUM, moves no card field
+# because FOUND-CARDS-FOR-ACCOUNT is not set, then sets WS-PROMPT-FOR-INPUT
+# because no info message is pending and moves the blank WS-RETURN-MSG to
+# ERRMSG and WS-INFO-MSG to INFOMSG [app/cbl/COCRDSLC.cbl:457-497]. The map is
+# sent with ERASE and the task returns with TRANSID CCDL
+# [app/cbl/COCRDSLC.cbl:394-406,563-577].
+# No file is read on this path, so no CSD file item is listed. CARDDATA is
+# loaded all the same, so the blank card fields show that no lookup was made
+# rather than that the region held no card.
+# Screen fields compare at their full BMS length, trailing spaces kept: the
+# 36-character prompt fills INFOMSG (40) with 4 trailing spaces, FKEYS shows
+# its INITIAL text followed by spaces, and every field the program leaves at
+# LOW-VALUES or blank shows as spaces. ERRMSG (POS=(23,1), LENGTH=80) ends on
+# row 24, column 1, which holds the attribute byte of FKEYS and shows as a space
+# [app/bms/COCRDSL.bms:144-152]. CURDATE and CURTIME come from the region
+# clock, so they are matchers and the clock is relative. The baseline is
+# derived from the source: no TPE region runs in CI.
+id: CRD-COCRDSLC-alternate-01
+level: e2e
+type: alternate
+description: >-
+  USER0001 signs on, selects main menu option 4 'Credit Card View', and lands
+  on the COCRDSLC card view screen COCRDSL (transaction CCDL) with the prompt
+  'Please enter Account and Card Number' in INFOMSG, empty account and card
+  numbers, every card field blank and no error message.
+inventory_ids:
+- INV-CRD-027  # COCRDSLC message 'Please enter Account and Card Number' (WS-PROMPT-FOR-INPUT)
+- INV-CRD-002  # COCRDSLC program
+- INV-CRD-005  # COCRDSL map, the screen the prompt is shown on
+- INV-MNU-003  # COMEN01 map, the screen option 4 is entered on
+# The transaction COCRDSLC names in TRNNAME and returns with (RETURN TRANSID).
+- INV-CFG-013  # CCDL transaction
+- INV-LAY-002  # COCOM01Y: the COMMAREA COMEN01C passes on the XCTL
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COCRDSLC
+- INV-LAY-009  # CSMSG02Y, the abend data COCRDSLC copies
+- INV-LAY-011  # CSSTRPFY: maps EIBAID ENTER to CCARD-AID-ENTER
+- INV-LAY-019  # CVCRD01Y: CC-WORK-AREA, the AID flags, CC-ACCT-ID and CC-CARD-NUM
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-006  # CRD end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-INF-003  # the COMEN01 screen expectation is a derived MNU baseline
+- GAP-INF-010  # the CCDL transaction expectation is a derived CFG baseline
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user USER0001 from USRSEC.
+    USRSEC: {base: USRSEC}
+    # Loaded but never read on this path.
+    CARDDATA: {base: CARDDATA}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '4'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+  - '@map': COCRDSL
+    TRNNAME: CCDL
+    PGMNAME: COCRDSLC
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    ACCTSID: '           '
+    CARDSID: '                '
+    CRDNAME: '                                                  '
+    CRDSTCD: ' '
+    EXPMON: '  '
+    EXPYEAR: '    '
+    INFOMSG: 'Please enter Account and Card Number    '
+    ERRMSG: '                                                                                '
+    FKEYS: 'ENTER=Search Cards  F3=Exit                                                '

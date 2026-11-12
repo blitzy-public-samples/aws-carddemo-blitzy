@@ -1,0 +1,136 @@
+# The card update screen refuses a card id filter that is not a 16-digit number.
+# USER0001 (type U in the USRSEC fixture) signs on through CC00 and COSGN00C
+# routes it to the main menu COMEN01C [app/cbl/COSGN00C.cbl:221-240]. Option 5
+# 'Credit Card Update' makes COMEN01C XCTL to COCRDUPC with CDEMO-FROM-PROGRAM
+# COMEN01C and CDEMO-PGM-CONTEXT 0 [app/cpy/COMEN02Y.cpy:49-53]
+# [app/cbl/COMEN01C.cbl:117-155]. Called from the menu and not re-entered,
+# COCRDUPC takes the fresh-entry path: it sends COCRDUP with both filters
+# LOW-VALUES (3200-SETUP-SCREEN-VARS moves nothing while CDEMO-PGM-ENTER is
+# set), the INFOMSG prompt 'Please enter Account and Card Number' and no error,
+# then sets CDEMO-PGM-REENTER and CCUP-DETAILS-NOT-FETCHED and returns TRANSID
+# CCUP [app/cbl/COCRDUPC.cbl:388-401,502-511,546-558,1082-1085,1138-1163].
+# 3300-SETUP-SCREEN-ATTRS makes ACCTSID and CARDSID unprotected (DFHBMFSE) and
+# protects the card detail fields, so the filters can be typed
+# [app/cbl/COCRDUPC.cbl:1172-1180].
+#
+# Step 3 enters repository account 00000000050 (cardxref.txt and carddata.txt
+# record 1) with the letters ABCDEFGHIJKLMNOP as the card id. On re-entry the
+# EVALUATE falls to WHEN OTHER; 1100-RECEIVE-MAP moves both FSET fields to
+# CC-ACCT-ID and CC-CARD-NUM, and 1200-EDIT-MAP-INPUTS, with the details not
+# yet fetched, edits only the search keys [app/cbl/COCRDUPC.cbl:535-542,
+# 578-605,641-661]. 1210-EDIT-ACCOUNT finds the account supplied, non-zero and
+# numeric, stores it in CDEMO-ACCT-ID and leaves WS-RETURN-MSG off
+# [app/cbl/COCRDUPC.cbl:721-756]. 1220-EDIT-CARD finds the card id neither
+# blank nor zero (no letter has a zero digit in ASCII or EBCDIC), then NOT
+# NUMERIC: it sets INPUT-ERROR and FLG-CARDFILTER-NOT-OK, moves 'CARD ID
+# FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER' to WS-RETURN-MSG because no
+# earlier edit set a message, and zeroes CDEMO-CARD-NUM
+# [app/cbl/COCRDUPC.cbl:762-800]. Neither filter is blank, so 'No input
+# received' is not set [app/cbl/COCRDUPC.cbl:656-659].
+#
+# 2000-DECIDE-ACTION reads CARDDAT only when both filters are valid, so no read
+# is issued although the CARDDATA fixture holds the card master, and COCRDUP is
+# sent again [app/cbl/COCRDUPC.cbl:954-966]. Unlike COCRDSLC, which echoes the
+# card from the zeroed CDEMO-CARD-NUM, COCRDUPC echoes the search keys from
+# CC-ACCT-ID and CC-CARD-NUM whenever their numeric views are not zero, and
+# 1220-EDIT-CARD left CC-CARD-NUM as typed: the same non-zero comparison that
+# let the edit reach the NOT NUMERIC test shows the rejected card id back in
+# CARDSID [app/cbl/COCRDUPC.cbl:1086-1097]. With CCUP-DETAILS-NOT-FETCHED the
+# name, status and expiry fields get LOW-VALUES and INFOMSG shows the prompt
+# again [app/cbl/COCRDUPC.cbl:1099-1106,1143-1144]. The refused filter is
+# coloured red but gets no '*', which marks only a blank filter
+# [app/cbl/COCRDUPC.cbl:1253-1261].
+#
+# Screen fields are compared at their full BMS length, trailing spaces
+# included: ERRMSG is the 75-byte WS-RETURN-MSG padded to the 80-byte field
+# (78 bytes on COMEN01), INFOMSG the 40-byte WS-INFO-MSG, and positions the
+# program leaves LOW-VALUES read back as spaces [app/bms/COCRDUP.bms:84-157].
+# EXPDAY is a dark field and is not asserted. CURDATE and CURTIME come from the
+# region clock, so they are matchers. The expected outcome is derived from the
+# source: no TPE region runs in CI (GAP-INF-006). No step writes a file, so
+# file_state is not asserted.
+id: CRD-COCRDUPC-negative-12
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, selects option 5 'Credit Card Update' on the main menu
+  and, on the COCRDUPC card update screen (CCUP), enters account 00000000050
+  with the non-numeric card id ABCDEFGHIJKLMNOP. COCRDUPC reads no file and
+  sends the update screen again with 'CARD ID FILTER,IF SUPPLIED MUST BE A 16
+  DIGIT NUMBER' in the message line, the account and the rejected card id shown
+  back, the prompt 'Please enter Account and Card Number' and no card details.
+# The message is the primary item. After it come the program, the maps asserted
+# (COMEN01 on step 1, COCRDUP on steps 2 and 3), the transaction that runs the
+# edit, and the online-only copybooks COCRDUPC copies. No CSD file is read.
+# Sign-on and the menu option (CC00, CM00, USRSEC and the option-5 navigation
+# item) are verified by their own scenarios. The batch copybooks (CVACT02Y,
+# CVCUS01Y, CSUSR01Y) and the data files are left out, because their lowest
+# executing level is unit or integration.
+inventory_ids:
+- INV-CRD-073  # COCRDUPC message 'CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER' (rule)
+- INV-CRD-003  # COCRDUPC program
+- INV-MNU-003  # COMEN01 map, the main menu option 5 is entered on
+- INV-CRD-006  # COCRDUP map, sent on entry and again with the refusal
+- INV-CFG-015  # CCUP transaction, the TRANSID COCRDUPC returns with and the ENTER runs under
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA whose reenter flag routes the ENTER to the edits
+- INV-LAY-005  # COTTL01Y copybook, TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y copybook, CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y copybook, copied by COCRDUPC
+- INV-LAY-009  # CSMSG02Y copybook, the abend data of COCRDUPC's HANDLE ABEND
+- INV-LAY-011  # CSSTRPFY copybook, YYYY-STORE-PFKEY mapping ENTER to CCARD-AID-ENTER
+- INV-LAY-019  # CVCRD01Y copybook, CCARD-AID and the CC-ACCT-ID and CC-CARD-NUM filters
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-006  # CRD end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    # USRSEC holds the sign-on user. CARDDATA holds the repository cards,
+    # including card 0500024453765740 of account 00000000050, so the refusal
+    # cannot come from absent data; the edit stops before any read.
+    USRSEC: {base: USRSEC}
+    CARDDATA: {base: CARDDATA}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - {transid: CC00, aid: ENTER, fields: {USERID: USER0001, PASSWD: PASSWORD}, '@map': COSGN00}
+  - {aid: ENTER, fields: {OPTION: '5'}, '@map': COMEN01}
+  - {aid: ENTER, fields: {ACCTSID: '00000000050', CARDSID: 'ABCDEFGHIJKLMNOP'}, '@map': COCRDUP}
+expected:
+  screens:
+  # One entry per step, each the screen the step ends on.
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN005: '05. Credit Card Update                  '
+    ERRMSG: '                                                                              '
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    PGMNAME: COCRDUPC
+    ACCTSID: '           '
+    CARDSID: '                '
+    INFOMSG: 'Please enter Account and Card Number    '
+    ERRMSG: '                                                                                '
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    PGMNAME: COCRDUPC
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000050'
+    CARDSID: 'ABCDEFGHIJKLMNOP'
+    CRDNAME: '                                                  '
+    CRDSTCD: ' '
+    EXPMON: '  '
+    EXPYEAR: '    '
+    INFOMSG: 'Please enter Account and Card Number    '
+    ERRMSG: 'CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER                            '
+  # The ERRMSG of each step's screen, in step order.
+  messages:
+  - '                                                                              '
+  - '                                                                                '
+  - 'CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER                            '

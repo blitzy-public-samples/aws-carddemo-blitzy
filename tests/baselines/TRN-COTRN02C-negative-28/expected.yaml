@@ -1,0 +1,70 @@
+file_state:
+  TRANSACT:
+    records:
+    - TRAN-AMT: '15.00'
+      TRAN-CARD-NUM: '0500024453765740'
+      TRAN-CAT-CD: '1'
+      TRAN-DESC: 'Synthetic purchase 0                                                                                '
+      TRAN-ID: '0000000000000000'
+      TRAN-MERCHANT-CITY: 'Testville                                         '
+      TRAN-MERCHANT-ID: '900000000'
+      TRAN-MERCHANT-NAME: 'Synthetic Merchant                                '
+      TRAN-MERCHANT-ZIP: '27601     '
+      TRAN-ORIG-TS: '2022-06-01 10:00:00.000000'
+      TRAN-PROC-TS: 2022-06-01-10.00.00.000000
+      TRAN-RECORD.FILLER#1: '                    '
+      TRAN-SOURCE: 'POS TERM  '
+      TRAN-TYPE-CD: '01'
+    - TRAN-AMT: '25.00'
+      TRAN-CARD-NUM: '0500024453765740'
+      TRAN-CAT-CD: '1'
+      TRAN-DESC: 'Synthetic purchase high key                                                                         '
+      TRAN-ID: '9999999999999999'
+      TRAN-MERCHANT-CITY: 'Testville                                         '
+      TRAN-MERCHANT-ID: '900000099'
+      TRAN-MERCHANT-NAME: 'Synthetic Merchant                                '
+      TRAN-MERCHANT-ZIP: '27601     '
+      TRAN-ORIG-TS: '2022-06-30 10:00:00.000000'
+      TRAN-PROC-TS: 2022-06-30-10.00.00.000000
+      TRAN-RECORD.FILLER#1: '                    '
+      TRAN-SOURCE: 'POS TERM  '
+      TRAN-TYPE-CD: '01'
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'Tran ID already exist...                                                      '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  OPTN008: '08. Transaction Add                     '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COTRN02
+  ERRMSG: '                                                                              '
+  PGMNAME: COTRN02C
+  TRNNAME: CT02
+- '@map': COTRN02
+  ACTIDIN: '00000000050'
+  CARDNIN: '0500024453765740'
+  CONFIRM: Y
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Tran ID already exist...                                                      '
+  MCITY: 'Testville                '
+  MID: '800000001'
+  MNAME: 'Test Merchant                 '
+  MZIP: '27601     '
+  PGMNAME: COTRN02C
+  TCATCD: '0001'
+  TDESC: 'Test purchase                                               '
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TORIGDT: '2022-07-01'
+  TPROCDT: '2022-07-01'
+  TRNAMT: '+00000012.34'
+  TRNNAME: CT02
+  TRNSRC: 'POS TERM  '
+  TTYPCD: '01'

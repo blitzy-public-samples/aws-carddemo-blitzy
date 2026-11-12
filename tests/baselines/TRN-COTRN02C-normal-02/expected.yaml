@@ -1,0 +1,128 @@
+# Derived baseline of scenario TRN-COTRN02C-normal-02; not observed.
+# USER0001 signs on (CC00), takes main menu option 8 'Transaction Add' and, on
+# COTRN02 (transaction CT02), adds a transaction by account number 00000000001
+# with the card number left empty, confirming with Y.
+# Authored from the source, never captured:
+# - app/cbl/COMEN01C.cbl:75-90,115-156 and app/cpy/COMEN02Y.cpy:67-72 (the menu is
+#   sent with a blank ERRMSG; option 8 transfers to COTRN02C);
+# - app/cbl/COTRN02C.cbl:115-130,516-571 (first entry: LOW-VALUES map, CT02
+#   header from app/cpy/COTTL01Y.cpy and app/cpy/CSDAT01Y.cpy, blank ERRMSG);
+# - app/cbl/COTRN02C.cbl:193-230,576-604 (account path: ACTIDIN is numeric,
+#   CXACAIX is read by XREF-ACCT-ID and XREF-CARD-NUM replaces CARDNINI);
+#   account 00000000001 has the one card 9680294154603697 in the CARDXREF
+#   fixture, app/data/ASCII/cardxref.txt:49;
+# - app/cbl/COTRN02C.cbl:442-466,642-749 (the browse from HIGH-VALUES reads
+#   the highest key 0000000996722787 of the TRANSACT fixture built from
+#   app/data/ASCII/dailytran.txt; INITIALIZE TRAN-RECORD receives the screen
+#   fields and CARDNINI under TRAN-ID 0000000996722788; the WRITE succeeds and
+#   STRING builds the green success message, 66 characters padded to 78);
+# - app/cbl/COTRN02C.cbl:762-779 (INITIALIZE-ALL-FIELDS blanks every entry
+#   field), with app/bms/COTRN02.bms for the field lengths and
+#   app/cpy/CVTRA05Y.cpy for the TRANSACT record.
+# Open under GAP-INF-007 (derived TRN end-to-end baselines) and GAP-INF-012
+# (online-only copybooks). Only `report.py --import-unikix` promotes it, from
+# imported UniKix evidence; it is never edited by hand to match a run.
+# One screen per step, each the screen shown after the step's AID; messages
+# holds each step's ERRMSG. Text is full BMS field width with trailing spaces.
+# The card 9680294154603697 is asserted only in file_state: the scenario
+# submits every field in one step with CONFIRM Y, so no screen shows the card
+# the CXACAIX read filled in, and the success screen has CARDNIN blank.
+# TRAN-ORIG-TS and TRAN-PROC-TS carry the dates typed on the screen, padded to
+# 26. The scenario types both as the run date, so the written record's two
+# timestamps are run-timestamp matchers: the run date followed by 16 spaces.
+# They, CURDATE and CURTIME are the only run-date-derived values; the fixture
+# record 0000000996722787 keeps its exact timestamps. TRAN-RECORD's FILLER is
+# not asserted, as in the scenario: INITIALIZE skips it, so it holds whatever
+# the READPREV left.
+file_state:
+  TRANSACT:
+    contains:
+    - TRAN-AMT: '603.22'
+      TRAN-CARD-NUM: '3260763612337560'
+      TRAN-CAT-CD: '1'
+      TRAN-DESC: 'Purchase at Kilback LLC                                                                             '
+      TRAN-ID: '0000000996722787'
+      TRAN-MERCHANT-CITY: 'Cummeratamouth                                    '
+      TRAN-MERCHANT-ID: '800000000'
+      TRAN-MERCHANT-NAME: 'Kilback LLC                                       '
+      TRAN-MERCHANT-ZIP: '53200-7529'
+      TRAN-ORIG-TS: '2022-06-10 19:27:53.000000'
+      TRAN-PROC-TS: '                          '
+      TRAN-SOURCE: 'POS TERM  '
+      TRAN-TYPE-CD: '01'
+    - TRAN-AMT: '-5.00'
+      TRAN-CARD-NUM: '9680294154603697'
+      TRAN-CAT-CD: '2'
+      TRAN-DESC: 'Test write via account                                                                              '
+      TRAN-ID: '0000000996722788'
+      TRAN-MERCHANT-CITY: 'Test City                                         '
+      TRAN-MERCHANT-ID: '800000001'
+      TRAN-MERCHANT-NAME: 'Test Merchant                                     '
+      TRAN-MERCHANT-ZIP: '10001     '
+      TRAN-ORIG-TS:
+        format: '%Y-%m-%d                '
+        match: run-timestamp
+      TRAN-PROC-TS:
+        format: '%Y-%m-%d                '
+        match: run-timestamp
+      TRAN-SOURCE: 'OPERATOR  '
+      TRAN-TYPE-CD: '02'
+    count: 301
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'Transaction added successfully.  Your Tran ID is 0000000996722788.            '
+screens:
+- '@map': COMEN01
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COTRN02
+  ACTIDIN: '           '
+  CARDNIN: '                '
+  CONFIRM: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  MCITY: '                         '
+  MID: '         '
+  MNAME: '                              '
+  MZIP: '          '
+  PGMNAME: COTRN02C
+  TCATCD: '    '
+  TDESC: '                                                            '
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TORIGDT: '          '
+  TPROCDT: '          '
+  TRNAMT: '            '
+  TRNNAME: CT02
+  TRNSRC: '          '
+  TTYPCD: '  '
+- '@map': COTRN02
+  ACTIDIN: '           '
+  CARDNIN: '                '
+  CONFIRM: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Transaction added successfully.  Your Tran ID is 0000000996722788.            '
+  MCITY: '                         '
+  MID: '         '
+  MNAME: '                              '
+  MZIP: '          '
+  PGMNAME: COTRN02C
+  TCATCD: '    '
+  TDESC: '                                                            '
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TORIGDT: '          '
+  TPROCDT: '          '
+  TRNAMT: '            '
+  TRNNAME: CT02
+  TRNSRC: '          '
+  TTYPCD: '  '

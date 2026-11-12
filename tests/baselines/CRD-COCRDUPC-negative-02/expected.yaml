@@ -1,0 +1,46 @@
+# Derived from the source, never observed (capture_platform: derived);
+# inferred-not-observed under GAP-INF-006 and GAP-INF-012. Menu option 5 enters
+# COCRDUPC fresh: search screen, INFOMSG prompt, no error
+# [app/cbl/COCRDUPC.cbl:384-401,502-511,1084-1085,1138-1163]. ENTER with the
+# account given and the card blank: 1210-EDIT-ACCOUNT accepts the account,
+# 1220-EDIT-CARD sets 'Card number not provided', no CARDDAT read, the account
+# shown again and '*' written to CARDSID on reentry
+# [app/cbl/COCRDUPC.cbl:179-180,535-543,589-605,641-661,721-780,954-966,
+# 1087-1106,1257-1261]. Screen fields carry their full layouts.yaml length;
+# one ERRMSG per step in messages (COMEN01 78, COCRDUP 80).
+messages:
+- '                                                                              '
+- '                                                                                '
+- 'Card number not provided                                                        '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  OPTN005: '05. Credit Card Update                  '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COCRDUP
+  ACCTSID: '           '
+  CARDSID: '                '
+  ERRMSG: '                                                                                '
+  INFOMSG: 'Please enter Account and Card Number    '
+  PGMNAME: COCRDUPC
+  TRNNAME: CCUP
+- '@map': COCRDUP
+  ACCTSID: '00000000050'
+  CARDSID: '*               '
+  CRDNAME: '                                                  '
+  CRDSTCD: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    format: '%H:%M:%S'
+    match: run-time
+  ERRMSG: 'Card number not provided                                                        '
+  EXPMON: '  '
+  EXPYEAR: '    '
+  INFOMSG: 'Please enter Account and Card Number    '
+  PGMNAME: COCRDUPC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CCUP

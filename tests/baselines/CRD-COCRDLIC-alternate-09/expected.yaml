@@ -1,0 +1,69 @@
+# Derived baseline (capture_platform: derived) of CRD-COCRDLIC-alternate-09,
+# authored from the source because no TPE region runs in CI; an imported,
+# eligible UniKix run replaces it. The UniKix copy's COCRDLIC, COCRDLI map and
+# CSSTRPFY match app/, so no GAP-DOC-020..032 difference applies.
+#
+# CCLI entered directly, with no COMMAREA and no sign-on: COCRDLIC initializes
+# CARDDEMO-COMMAREA and its page state (CDEMO-PGM-ENTER, CA-FIRST-PAGE), lists
+# the cards and returns with TRANSID CCLI; it never checks sign-on
+# [app/cbl/COCRDLIC.cbl:313-325,572-583,604-620]. Pinned as the source has it,
+# never corrected (GAP-UNC-010).
+#
+# The one screen is the reply to the step's ENTER on that list, because the
+# driver captures each step after its AID. ENTER re-enters COCRDLIC with its own
+# COMMAREA; the filters and selections arrive blank, so WHEN OTHER browses
+# CARDDAT forward again and resends page 1 with the first seven cards in key
+# order. An eighth card exists, so no end-of-list message is set and
+# 1400-SETUP-MESSAGE puts the S/U prompt in INFOMSG; both filters are zero and
+# are sent as LOW-VALUES, read as spaces [app/cbl/COCRDLIC.cbl:115-116,
+# 357-362,642-676,837-893,895-932,1123-1261] [app/cpy/COTTL01Y.cpy:18-22].
+#
+# Values are whole BMS fields with trailing spaces kept. PAGENO is the one-digit
+# WS-CA-SCREEN-NUM moved to a 3-character field, so it is left-justified.
+# CURDATE and CURTIME come from the region clock (CSDAT01Y MM/DD/YY, HH:MM:SS),
+# so they are matchers. The dark CRDSTP2-CRDSTP7 stoppers carry no outcome and
+# are not asserted.
+screens:
+- '@map': COCRDLI
+  ACCTNO1: '00000000050'
+  ACCTNO2: '00000000027'
+  ACCTNO3: '00000000002'
+  ACCTNO4: '00000000020'
+  ACCTNO5: '00000000012'
+  ACCTNO6: '00000000044'
+  ACCTNO7: '00000000037'
+  ACCTSID: '           '
+  CARDSID: '                '
+  CRDNUM1: '0500024453765740'
+  CRDNUM2: 0683586198171516
+  CRDNUM3: 0923877193247330
+  CRDNUM4: 0927987108636232
+  CRDNUM5: 0982496213629795
+  CRDNUM6: '1014086565224350'
+  CRDNUM7: '1142167692878931'
+  CRDSEL1: ' '
+  CRDSEL2: ' '
+  CRDSEL3: ' '
+  CRDSEL4: ' '
+  CRDSEL5: ' '
+  CRDSEL6: ' '
+  CRDSEL7: ' '
+  CRDSTS1: Y
+  CRDSTS2: Y
+  CRDSTS3: Y
+  CRDSTS4: Y
+  CRDSTS5: Y
+  CRDSTS6: Y
+  CRDSTS7: Y
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  INFOMSG: 'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD    '
+  PAGENO: '1  '
+  PGMNAME: COCRDLIC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CCLI

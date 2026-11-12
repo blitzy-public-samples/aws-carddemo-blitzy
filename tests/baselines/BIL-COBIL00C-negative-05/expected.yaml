@@ -1,0 +1,33 @@
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'Account ID NOT found...                                                       '
+screens:
+- '@map': COMEN01
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COBIL00
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  PGMNAME: COBIL00C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CB00
+- '@map': COBIL00
+  ACTIDIN: '99999999999'
+  CONFIRM: ' '
+  CURBAL: '              '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Account ID NOT found...                                                       '
+  PGMNAME: COBIL00C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CB00

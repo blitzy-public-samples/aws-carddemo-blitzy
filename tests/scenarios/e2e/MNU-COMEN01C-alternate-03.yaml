@@ -1,0 +1,62 @@
+id: MNU-COMEN01C-alternate-03
+level: e2e
+type: alternate
+description: >-
+  USER0001 (user type U) signs on through CC00 and COSGN00C transfers control to
+  the main menu COMEN01C, which sends map COMEN01 with TRNNAME CM00 and PGMNAME
+  COMEN01C [app/cbl/COMEN01C.cbl:36-37,211-219]. Entering option 3 on the menu
+  (CM00) is right-justified into WS-OPTION as 03, passes the option checks, and
+  selects the COMEN02Y entry 'Credit Card List', program COCRDLIC, user type U
+  [app/cbl/COMEN01C.cbl:115-157] [app/cpy/COMEN02Y.cpy:37-41]. COMEN01C sets the
+  program context to zero and transfers control (XCTL) to COCRDLIC with the
+  COMMAREA. Entered from the menu, COCRDLIC starts afresh, reads forward on
+  CARDDAT and sends map COCRDLI headed TRNNAME CCLI and PGMNAME COCRDLIC
+  [app/cbl/COCRDLIC.cbl:179-182,334-342,572-582,649-650]. Only the identification fields
+  are asserted: the card list content is the COCRDLIC scenarios' item.
+inventory_ids:
+- INV-MNU-011
+- INV-MNU-001
+- INV-MNU-003
+- INV-CRD-004
+- INV-CFG-018
+- INV-CFG-008
+- INV-CFG-003
+- INV-LAY-002
+- INV-LAY-003
+- INV-LAY-005
+- INV-LAY-006
+- INV-LAY-008
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-003
+- GAP-INF-012
+preconditions:
+  datasets:
+    USRSEC:
+      base: USRSEC
+    CARDDATA:
+      base: CARDDATA
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+    '@map': COSGN00
+  - aid: ENTER
+    fields:
+      OPTION: '3'
+    '@map': COMEN01
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+  - '@map': COCRDLI
+    TRNNAME: CCLI
+    PGMNAME: COCRDLIC

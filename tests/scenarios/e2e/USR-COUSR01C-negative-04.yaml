@@ -1,0 +1,104 @@
+# Add User refused because the user id is blank. ADMIN001 signs on through CC00
+# and COSGN00C routes the type 'A' user to the admin menu COADM01C
+# [app/cbl/COSGN00C.cbl:221-237]. Option '2' selects the COADM02Y entry 'User
+# Add (Security)', program COUSR01C; COADM01C sets CDEMO-PGM-CONTEXT to 0 and
+# transfers control with XCTL [app/cbl/COADM01C.cbl:115-145]
+# [app/cpy/COADM02Y.cpy:28-32]. Entered with a COMMAREA but not yet re-entered,
+# COUSR01C clears COUSR1AO and sends the empty COUSR01 map with its own header
+# and a blank message, then returns with TRANSID CU01
+# [app/cbl/COUSR01C.cbl:71-87,107-110,184-235].
+#
+# On ENTER, COUSR01C receives COUSR1A and PROCESS-ENTER-KEY tests the fields in
+# map order: the first and last names are present, so the user id test is the
+# first to hold. It sets the error flag, moves 'User ID can NOT be empty...' to
+# WS-MESSAGE, puts the cursor on USERID and sends the map again
+# [app/cbl/COUSR01C.cbl:89-91,115-135]. The error flag skips
+# WRITE-USER-SEC-FILE, so USRSEC is not written [app/cbl/COUSR01C.cbl:153-160].
+# COUSR1AO redefines COUSR1AI [app/cpy-bms/COUSR01.CPY:91], so the names and
+# the user type just received are sent back unchanged.
+#
+# Screen values are written at the full BMS field width that
+# tests/inventory/layouts.yaml gives, trailing spaces kept, because captured
+# fields are compared exactly. ERRMSG is WS-MESSAGE (X(80)) cut to ERRMSGO
+# (X(78)). PASSWD is a dark (DRK) field, so its echoed value is not asserted.
+# The USERID and PASSWD entered on COUSR01 are the user record being added, not
+# a sign-on. The baseline is derived from the source: no TPE region runs in CI.
+id: USR-COUSR01C-negative-04
+level: e2e
+type: negative
+description: >-
+  ADMIN001 signs on, selects option 2 'User Add (Security)' on the admin menu
+  and submits the Add User screen COUSR01 with ENTER, first name TESTFIRST, last
+  name TESTLAST, password TESTPWD1 and user type U, but the user id blank.
+  COUSR01C refuses the add before any USRSEC write and shows COUSR01 again,
+  with the entered names and user type, and 'User ID can NOT be empty...' in
+  ERRMSG. USRSEC still holds exactly its 10 fixture users.
+inventory_ids:
+- INV-USR-025  # COUSR01C message 'User ID can NOT be empty...' (rule)
+- INV-USR-002  # COUSR01C program
+- INV-MNU-004  # COADM01 map, the admin menu the option is entered on
+- INV-USR-006  # COUSR01 map, the Add User screen
+- INV-CFG-024  # CU01 transaction, under which the add is processed
+- INV-CFG-008  # USRSEC CSD file, read at sign-on and left unwritten
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carrying the program context
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the screen date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COUSR01C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-004  # user administration (USR) end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user; the refused add must leave it as loaded.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: ADMIN001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '2'}
+    '@map': COADM01
+  # The empty value leaves the user id field blank, so COUSR01C receives no user id.
+  - aid: ENTER
+    fields: {FNAME: TESTFIRST, LNAME: TESTLAST, USERID: '', PASSWD: TESTPWD1, USRTYPE: U}
+    '@map': COUSR01
+expected:
+  screens:
+  - '@map': COADM01
+  - '@map': COUSR01
+    TRNNAME: CU01
+    PGMNAME: COUSR01C
+    ERRMSG: '                                                                              '
+  - '@map': COUSR01
+    TRNNAME: CU01
+    PGMNAME: COUSR01C
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    FNAME: 'TESTFIRST           '
+    LNAME: 'TESTLAST            '
+    USERID: '        '
+    USRTYPE: U
+    ERRMSG: 'User ID can NOT be empty...                                                   '
+  file_state:
+    # The 10 fixture users in key order, decoded through CSUSR01Y: no record was added.
+    USRSEC:
+      records:
+      - {SEC-USR-ID: ADMIN001, SEC-USR-FNAME: 'MARGARET            ', SEC-USR-LNAME: 'GOLD                ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: ADMIN002, SEC-USR-FNAME: 'RUSSELL             ', SEC-USR-LNAME: 'RUSSELL             ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: ADMIN003, SEC-USR-FNAME: 'RAYMOND             ', SEC-USR-LNAME: 'WHITMORE            ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: ADMIN004, SEC-USR-FNAME: 'EMMANUEL            ', SEC-USR-LNAME: 'CASGRAIN            ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: ADMIN005, SEC-USR-FNAME: 'GRANVILLE           ', SEC-USR-LNAME: 'LACHAPELLE          ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: USER0001, SEC-USR-FNAME: 'LAWRENCE            ', SEC-USR-LNAME: 'THOMAS              ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: USER0002, SEC-USR-FNAME: 'AJITH               ', SEC-USR-LNAME: 'KUMAR               ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: USER0003, SEC-USR-FNAME: 'LAURITZ             ', SEC-USR-LNAME: 'ALME                ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: USER0004, SEC-USR-FNAME: 'AVERARDO            ', SEC-USR-LNAME: 'MAZZI               ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: USER0005, SEC-USR-FNAME: 'LEE                 ', SEC-USR-LNAME: 'TING                ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}

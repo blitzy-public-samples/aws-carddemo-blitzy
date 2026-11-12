@@ -1,0 +1,114 @@
+# Derived baseline of scenario CRD-COCRDLIC-normal-01, authored from the
+# COCRDLIC source, the COCRDLI map and the CARDDATA fixture, never captured.
+# An imported UniKix run replaces it.
+# One screen per step, the one shown after the step's AID:
+# 1. COMEN01 after sign-on, identified only; the menu's content belongs to
+#    the COMEN01C scenarios.
+# 2. Card list page 1 after option 3. Entered from the menu, COCRDLIC starts
+#    afresh, browses CARDDAT GTEQ from a blank key with no filter and fills
+#    its 7 rows in card-number order. The look-ahead READNEXT finds the 8th
+#    card, so a next page exists, ERRMSG stays blank and INFOMSG shows the
+#    record-actions prompt. The filters stay at LOW-VALUES.
+# 3. ENTER with card filter 4011500891777367 and no account filter. Only that
+#    card passes 9500-FILTER-RECORDS; the browse then reaches the end of the
+#    file, so ERRMSG holds 'NO MORE RECORDS TO SHOW', CARDSID echoes the
+#    filter, rows 2-7 stay at LOW-VALUES and the page number stays 1.
+# Assumption (step 3): with no row selected, VIEW-REQUESTED-ON and
+# UPDATE-REQUESTED-ON are tested with subscript 0. The byte read there, the
+# sign byte x'0C' of the packed WS-EDIT-SELECT-COUNTER, is taken as neither
+# 'S' nor 'U', and the region as raising no subscript-range abend. Step 2
+# rests on the same assumption: on the first display after the menu
+# I-SELECTED is still at its VALUE 0. The assumption is the suspected defect
+# GAP-DEF-024.
+# Values are whole BMS fields with their trailing spaces, and LOW-VALUES
+# show as spaces. CURDATE and CURTIME are run-clock matchers.
+screens:
+- '@map': 'COMEN01'
+  PGMNAME: 'COMEN01C'
+  TRNNAME: 'CM00'
+- '@map': 'COCRDLI'
+  ACCTNO1: '00000000050'
+  ACCTNO2: '00000000027'
+  ACCTNO3: '00000000002'
+  ACCTNO4: '00000000020'
+  ACCTNO5: '00000000012'
+  ACCTNO6: '00000000044'
+  ACCTNO7: '00000000037'
+  ACCTSID: '           '
+  CARDSID: '                '
+  CRDNUM1: '0500024453765740'
+  CRDNUM2: '0683586198171516'
+  CRDNUM3: '0923877193247330'
+  CRDNUM4: '0927987108636232'
+  CRDNUM5: '0982496213629795'
+  CRDNUM6: '1014086565224350'
+  CRDNUM7: '1142167692878931'
+  CRDSEL1: ' '
+  CRDSEL2: ' '
+  CRDSEL3: ' '
+  CRDSEL4: ' '
+  CRDSEL5: ' '
+  CRDSEL6: ' '
+  CRDSEL7: ' '
+  CRDSTS1: 'Y'
+  CRDSTS2: 'Y'
+  CRDSTS3: 'Y'
+  CRDSTS4: 'Y'
+  CRDSTS5: 'Y'
+  CRDSTS6: 'Y'
+  CRDSTS7: 'Y'
+  CURDATE:
+    format: '%m/%d/%y'
+    match: 'run-date'
+  CURTIME:
+    match: 'run-time'
+  ERRMSG: '                                                                              '
+  INFOMSG: 'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD    '
+  PAGENO: '1  '
+  PGMNAME: 'COCRDLIC'
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: 'CCLI'
+- '@map': 'COCRDLI'
+  ACCTNO1: '00000000013'
+  ACCTNO2: '           '
+  ACCTNO3: '           '
+  ACCTNO4: '           '
+  ACCTNO5: '           '
+  ACCTNO6: '           '
+  ACCTNO7: '           '
+  ACCTSID: '           '
+  CARDSID: '4011500891777367'
+  CRDNUM1: '4011500891777367'
+  CRDNUM2: '                '
+  CRDNUM3: '                '
+  CRDNUM4: '                '
+  CRDNUM5: '                '
+  CRDNUM6: '                '
+  CRDNUM7: '                '
+  CRDSEL1: ' '
+  CRDSEL2: ' '
+  CRDSEL3: ' '
+  CRDSEL4: ' '
+  CRDSEL5: ' '
+  CRDSEL6: ' '
+  CRDSEL7: ' '
+  CRDSTS1: 'Y'
+  CRDSTS2: ' '
+  CRDSTS3: ' '
+  CRDSTS4: ' '
+  CRDSTS5: ' '
+  CRDSTS6: ' '
+  CRDSTS7: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: 'run-date'
+  CURTIME:
+    match: 'run-time'
+  ERRMSG: 'NO MORE RECORDS TO SHOW                                                       '
+  INFOMSG: 'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD    '
+  PAGENO: '1  '
+  PGMNAME: 'COCRDLIC'
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: 'CCLI'

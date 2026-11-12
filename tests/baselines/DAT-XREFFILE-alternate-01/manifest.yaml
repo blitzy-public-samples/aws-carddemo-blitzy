@@ -1,0 +1,10 @@
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: derived
+source_commit: ae9cb473e65a42d2da3b5c323ecb29cae395d7b6
+source_identity:
+  commit: ae9cb473e65a42d2da3b5c323ecb29cae395d7b6
+  tree: app
+  units:
+    app/cpy/CVACT03Y.cpy: ffc6079e09b28739e154bf6c1e1c36d408209faa91f6cf7008078dc596a1c370
+    app/jcl/XREFFILE.jcl: ae0edd90056cccacd26412fad2cf3d95656c2a2810b66d8c316cbaac9e81248f

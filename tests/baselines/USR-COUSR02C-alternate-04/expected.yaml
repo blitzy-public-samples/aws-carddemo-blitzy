@@ -1,0 +1,27 @@
+# Derived from source, never captured; inferred-not-observed (GAP-INF-004,
+# GAP-INF-012) and replaced only by `report.py --import-unikix` of a UniKix
+# run. CU02 entered without a COMMAREA: COUSR02C never sends COUSR02 and XCTLs
+# to COSGN00C with a COMMAREA [app/cbl/COUSR02C.cbl:90-92,250-261], so
+# COSGN00C takes the ENTER as an empty sign-on attempt and re-sends COSGN00
+# with 'Please enter User ID ...'; the step's ENTER on that screen, with
+# nothing typed, gives the same screen [app/cbl/COSGN00C.cbl:80-88,108-122,
+# 145-157,175-205]. Keys are exactly those the scenario's expected names, at
+# full BMS width with trailing spaces kept. USERID is asserted because the
+# scenario names it: no user id is typed on this path, so its blank value is
+# derived, not input-dependent. CURDATE and CURTIME are clock matchers.
+messages:
+- 'Please enter User ID ...                                                      '
+screens:
+- '@map': COSGN00
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    format: '%H:%M:%S '
+    match: run-time
+  ERRMSG: 'Please enter User ID ...                                                      '
+  PGMNAME: COSGN00C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CC00
+  USERID: '        '

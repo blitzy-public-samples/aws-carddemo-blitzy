@@ -1,0 +1,149 @@
+# Custom report whose start day is 31, the highest day the start-day check
+# accepts.
+#
+# Steps 1-2 reach the empty CORPT00 screen: USER0001 signs on through CC00,
+# COSGN00C routes the type-U user to COMEN01C, and option 9 'Transaction
+# Reports' transfers control to CORPT00C with CDEMO-PGM-CONTEXT zero
+# [app/cbl/COMEN01C.cbl:115-156] [app/cpy/COMEN02Y.cpy:74-78]. On that first
+# entry CORPT00C sets CDEMO-PGM-REENTER, sends CORPT0AO at LOW-VALUES with the
+# blank WS-MESSAGE in ERRMSG and returns with TRANSID(CR00)
+# [app/cbl/CORPT00C.cbl:172-181,199-202,556-591].
+#
+# Step 3 marks CUSTOM, enters 01/31/2022 to 12/31/2022 and leaves CONFIRM
+# blank. Under CR00 CORPT00C receives the map and performs PROCESS-ENTER-KEY
+# [app/cbl/CORPT00C.cbl:183-186,208-256]:
+# - MONTHLY and YEARLY are blank, so the CUSTOM branch runs. No date part is
+#   empty, and NUMVAL-C gives every part back as its own zero-padded digits
+#   [app/cbl/CORPT00C.cbl:258-327].
+# - The boundary: SDTDDI is '31', which is numeric and not greater than '31',
+#   so 'Start Date - Not a valid Day...' is not set [app/cbl/CORPT00C.cbl:338-345].
+#   The month, year and end-date checks pass as well [app/cbl/CORPT00C.cbl:329-379].
+# - CSUTLDTC accepts 2022-01-31 and 2022-12-31 with the mask YYYY-MM-DD
+#   (severity 0000), so neither 'Not a valid date' message is set
+#   [app/cbl/CORPT00C.cbl:381-426]; that acceptance is the CSUTLDTC
+#   date-acceptance item, so it is listed.
+# - WS-REPORT-NAME becomes 'Custom' and, with no error flag set,
+#   SUBMIT-JOB-TO-INTRDR runs. CONFIRMI is blank, so STRING builds 'Please
+#   confirm to print the ' + 'Custom' (up to its first space) + ' report...',
+#   sets WS-ERR-FLG, puts the cursor on CONFIRM and performs
+#   SEND-TRNRPT-SCREEN, whose GO TO RETURN-TO-CICS ends the task before the
+#   JOBS write loop [app/cbl/CORPT00C.cbl:429-436,462-510,556-591].
+#
+# Priority decision: that nothing is submitted is pinned by ERRMSG holding the
+# confirmation request rather than 'Custom report submitted for printing ...',
+# not by an empty @TDQ:JOBS. That observation needs the JOBS capture
+# (GAP-MIS-017), which would hold this day-check item blocked on a capture its
+# path never reaches; the queue write is verified by RPT-CORPT00C-normal-01..03.
+#
+# Expected values are derived from the source; no TPE region runs in CI.
+# - CORPT0AO redefines CORPT0AI [app/cpy-bms/CORPT00.CPY:121], so the received
+#   values go back as entered: CUSTOM 'X' and the six date parts. MONTHLY and
+#   YEARLY return their blank INITIAL, and CONFIRM, which has no INITIAL, holds
+#   nulls that the screen shows as a space [app/bms/CORPT00.bms:80-210].
+# - ERRMSG is the 78-byte ERRMSGO: the 44-character message followed by spaces
+#   from the 80-byte WS-MESSAGE [app/cbl/CORPT00C.cbl:39,560]
+#   [app/bms/CORPT00.bms:218-221]; comparisons never trim.
+# - CURDATE and CURTIME come from the region clock in the mm/dd/yy and
+#   hh:mm:ss forms POPULATE-HEADER-INFO builds [app/cbl/CORPT00C.cbl:609-628],
+#   hence the matchers and clock_mode relative.
+id: RPT-CORPT00C-boundary-04
+level: e2e
+type: boundary
+description: >-
+  USER0001 signs on, selects main-menu option 9 (Transaction Reports) and, on
+  CORPT00 (CR00), asks for a custom report from 01/31/2022 to 12/31/2022 with
+  CONFIRM left blank. Day 31 is the upper bound the start-day check accepts, so
+  no day or date message appears: CORPT00C sends CORPT00 again with the entered
+  values and 'Please confirm to print the Custom report...', and submits
+  nothing.
+# Primary item first, then the program, the maps asserted, the transaction step
+# 3 runs under, the online-only copybooks CORPT00C copies, and the CSUTLDTC
+# date acceptance both dates pass through. Sign-on (CC00, COSGN00, USRSEC) and
+# the menu option belong to the SEC and MNU scenarios, and the confirmation
+# message to its own CORPT00C scenarios.
+inventory_ids:
+- INV-RPT-018  # CORPT00C message 'Start Date - Not a valid Day...' (rule): day 31 accepted
+- INV-RPT-001  # CORPT00C program
+- INV-MNU-003  # COMEN01 map, where option 9 is entered
+- INV-RPT-002  # CORPT00 map, the empty screen and the screen sent back
+- INV-CFG-019  # CR00 transaction, under which the custom request is processed
+- INV-LAY-002  # COCOM01Y: the COMMAREA that makes step 3 a re-entry
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by CORPT00C
+- INV-UTL-003  # CSUTLDTC date acceptance for mask YYYY-MM-DD, both custom dates
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-009  # RPT end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-INF-001  # which dates CEEDAYS accepts is known only through the stub
+- GAP-MIS-010  # whether UniKix supplies CEEDAYS
+# The UniKix copy of CSUTLDTC trims the Vstring lengths it passes to CEEDAYS;
+# it lists INV-UTL-003, so a unikix record of this scenario never verifies the
+# app/ date acceptance.
+- GAP-DOC-021
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user USER0001; CORPT00C reads no file.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '9'
+  # CONFIRM is left as sent, so it is received empty.
+  - aid: ENTER
+    '@map': CORPT00
+    fields:
+      CUSTOM: 'X'
+      SDTMM: '01'
+      SDTDD: '31'
+      SDTYYYY: '2022'
+      EDTMM: '12'
+      EDTDD: '31'
+      EDTYYYY: '2022'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    ERRMSG: '                                                                              '
+  - '@map': CORPT00
+    TRNNAME: CR00
+    PGMNAME: CORPT00C
+    ERRMSG: '                                                                              '
+  - '@map': CORPT00
+    TRNNAME: CR00
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: CORPT00C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    MONTHLY: ' '
+    YEARLY: ' '
+    CUSTOM: 'X'
+    SDTMM: '01'
+    SDTDD: '31'
+    SDTYYYY: '2022'
+    EDTMM: '12'
+    EDTDD: '31'
+    EDTYYYY: '2022'
+    CONFIRM: ' '
+    ERRMSG: 'Please confirm to print the Custom report...                                  '
+  # One ERRMSG value per step: blank on the main menu and on the first
+  # Transaction Reports screen, the confirmation request after the ENTER.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Please confirm to print the Custom report...                                  '

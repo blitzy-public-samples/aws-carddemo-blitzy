@@ -1,0 +1,77 @@
+# Derived baseline (inferred-not-observed, GAP-INF-007, GAP-INF-012), authored
+# from app/cbl/COTRN00C.cbl:146-229,279-326,381-445,527-619,692-696.
+# Screen 3 is the NOTFND send of the 9999999999999999 search, not the second
+# send of PROCESS-PAGE-FORWARD: the ENDBR that follows has no browse to end and
+# no RESP, so CICS raises INVREQ and the task abends first (GAP-DEF-013).
+# TRNIDIN, PAGENUM and the rows therefore come back as the FSET input returned
+# them: page 1, the ten lowest DALYTRAN ids loaded as TRANSACT.
+screens:
+- '@map': COMEN01
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COTRN00
+  PGMNAME: COTRN00C
+  TRNNAME: CT00
+- '@map': COTRN00
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'You are at the top of the page...                                             '
+  PAGENUM: '00000001'
+  PGMNAME: COTRN00C
+  SEL0001: ' '
+  SEL0002: ' '
+  SEL0003: ' '
+  SEL0004: ' '
+  SEL0005: ' '
+  SEL0006: ' '
+  SEL0007: ' '
+  SEL0008: ' '
+  SEL0009: ' '
+  SEL0010: ' '
+  TAMT001: '+00000504.77'
+  TAMT002: '-00000919.00'
+  TAMT003: '+00000067.88'
+  TAMT004: '+00000281.77'
+  TAMT005: '+00000454.66'
+  TAMT006: '+00000849.99'
+  TAMT007: '-00000056.77'
+  TAMT008: '+00000373.66'
+  TAMT009: '-00000535.88'
+  TAMT010: '+00000416.11'
+  TDATE01: 06/10/22
+  TDATE02: 06/10/22
+  TDATE03: 06/10/22
+  TDATE04: 06/10/22
+  TDATE05: 06/10/22
+  TDATE06: 06/10/22
+  TDATE07: 06/10/22
+  TDATE08: 06/10/22
+  TDATE09: 06/10/22
+  TDATE10: 06/10/22
+  TDESC01: 'Purchase at Abshire-Lowe  '
+  TDESC02: Return item at Nitzsche, N
+  TDESC03: Purchase at Ernser, Roob a
+  TDESC04: 'Purchase at Guann LLC     '
+  TDESC05: Purchase at Kertzmann-Scho
+  TDESC06: Purchase at Gislason-Medhu
+  TDESC07: 'Return item at Sipes Inc  '
+  TDESC08: 'Purchase at Legros Group  '
+  TDESC09: Return item at Turcotte Gr
+  TDESC10: Purchase at Gleason, Shana
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNID01: 0000000000683580
+  TRNID02: '0000000001774260'
+  TRNID03: 0000000006292564
+  TRNID04: 0000000009101861
+  TRNID05: '0000000010142252'
+  TRNID06: 0000000010229018
+  TRNID07: 0000000016259484
+  TRNID08: 0000000017874199
+  TRNID09: 0000000019065428
+  TRNID10: '0000000021711604'
+  TRNIDIN: '9999999999999999'
+  TRNNAME: CT00

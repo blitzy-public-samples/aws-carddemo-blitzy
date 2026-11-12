@@ -1,0 +1,33 @@
+# Manifest of the derived baseline of MNU-COMEN01C-alternate-12. Only unikix
+# can run the scenario, so expected.yaml was authored from the no-COMMAREA
+# entry path of app/cbl/COMEN01C.cbl:75-90,170-177 (derived_from: source), not
+# captured (GAP-INF-003, GAP-INF-012). It names no execution_id or
+# execution_fingerprint and holds no datasets/ until an eligible UniKix run is
+# imported (report.py --import-unikix).
+#
+# source_identity.units are the app/ sources the expected screen is derived
+# from: the COPY closure of COMEN01C, which XCTLs without sending its menu, and
+# of COSGN00C, which sends the asserted map (each as harness.results computes it
+# for a program), plus the BMS source of COSGN00. app/bms/COMEN01.bms is absent
+# because this path never sends the menu map; DFHAID and DFHBMSCA are
+# CICS-supplied and not in the repository.
+baseline_version: 1.0.0
+capture_date: '2026-11-10'
+capture_platform: derived
+derived_from: source
+source_commit: 4f2b836d1d24e280b78fb588c22b1942c806a09a
+source_identity:
+  commit: 4f2b836d1d24e280b78fb588c22b1942c806a09a
+  tree: app
+  units:
+    app/bms/COSGN00.bms: 6747ba57e45fed7e52af728a1f8688ed8fab90b93e1234ab0a0bcae32fa39056
+    app/cbl/COMEN01C.cbl: ad5e376ac9221b21b8ce47597a5ca17fc1f39dc913793c814c6675e9b046fc09
+    app/cbl/COSGN00C.cbl: 4f901ae6b113eebae60ae1d94b30f8cb9906d031a4419770bf56980bdf97e377
+    app/cpy-bms/COMEN01.CPY: 21275363519e57f47c5c7842178344208f3ad773a551e74e5eeff285c775ad5c
+    app/cpy-bms/COSGN00.CPY: e2a2f8f6e76e1613cbd8f0baaca87d571a49a7bc219d16a732e4e4ecd7485407
+    app/cpy/COCOM01Y.cpy: 77097557ee4c365f62138328d3e280ce7aba5f81d418c6f16434f0fbb2aafa6c
+    app/cpy/COMEN02Y.cpy: 22b1be06734c9ae91a25c4b544f9a9c4c85ab3f281a3d3bcc0765fb17e585d85
+    app/cpy/COTTL01Y.cpy: 5032bfa9428354bb4a62e8c82ba1efa7dcf6b80f27544ad99a81c8a8df8ed41b
+    app/cpy/CSDAT01Y.cpy: 61dd7b01d974c13cd47f71774c613dd67996418a22fae730d09b246c0b710ad7
+    app/cpy/CSMSG01Y.cpy: ef8ce44572885d63e46a02516f992cabbbc57ea94235000fd376325750e26eda
+    app/cpy/CSUSR01Y.cpy: 37c34094dc4124bc6255e0b06a0387442f4f0dd9d51dd6623b559d370aa0d2cb

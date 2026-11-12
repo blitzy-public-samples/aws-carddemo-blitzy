@@ -1,0 +1,56 @@
+# Derived baseline (capture_platform: derived) of CRD-COCRDSLC-alternate-03,
+# authored from the source because only unikix can run the scenario and no
+# TPE region runs in CI: inferred-not-observed under GAP-INF-006 and
+# GAP-INF-012, and replaced only by an eligible UniKix run imported with
+# `python tests/harness/report.py --import-unikix <execution_id>`.
+#
+# CCDL entered directly, with no COMMAREA and no sign-on: COCRDSLC sees
+# EIBCALEN = 0, initializes CARDDEMO-COMMAREA and its own COMMAREA
+# (CDEMO-PGM-CONTEXT 0, CDEMO-PGM-ENTER, CDEMO-FROM-PROGRAM blank), maps the
+# AID through YYYY-STORE-PFKEY, sends its own map COCRDSL, sets
+# CDEMO-PGM-REENTER and returns with TRANSID CCDL; it checks no user id or
+# type and never transfers to COSGN00C [app/cbl/COCRDSLC.cbl:254-301,
+# 349-356,394-406,563-577] [app/cpy/COCOM01Y.cpy:29-31]. Whether that is
+# intended is GAP-UNC-010, so it is pinned as the source has it
+# (observed-only), never corrected.
+#
+# The one screen is the reply to the step's ENTER, not the fresh direct-entry
+# screen: the adapter identifies that screen as the step's input map, then
+# presses the AID and captures what follows. ENTER re-enters COCRDSLC with its
+# COMMAREA (CDEMO-FROM-PROGRAM is not COMEN01C, so it is kept, and
+# CDEMO-PGM-REENTER selects 2000-PROCESS-INPUTS). Both search ids arrive
+# empty: 2210-EDIT-ACCOUNT and 2220-EDIT-CARD flag the filters blank and the
+# cross-field edit sets 'No input received' [app/cbl/COCRDSLC.cbl:268-279,
+# 357-363,608-720]. No card is read. The resent map carries the prompt
+# 'Please enter Account and Card Number' (no info message is set), the
+# 75-byte WS-RETURN-MSG in the 80-byte ERRMSG, and '*' in ACCTSID and CARDSID
+# because each filter is blank on a re-entry; the card detail fields stay at
+# LOW-VALUES [app/cbl/COCRDSLC.cbl:126-143,427-551]. FKEYS shows its BMS
+# INITIAL [app/bms/COCRDSL.bms:148-152]; the titles come from COTTL01Y
+# [app/cpy/COTTL01Y.cpy:18-22].
+#
+# Keys are exactly those the scenario's expected names. Values are whole BMS
+# fields, trailing spaces kept; LOW-VALUES show as spaces. ERRMSG's last
+# position is FKEYS's attribute byte (row 24, column 1), read as a space.
+# CURDATE and CURTIME, built from the clock as mm/dd/yy and hh:mm:ss
+# [app/cpy/CSDAT01Y.cpy:30-41], are the only matcher fields.
+screens:
+- '@map': COCRDSL
+  ACCTSID: '*          '
+  CARDSID: '*               '
+  CRDNAME: '                                                  '
+  CRDSTCD: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'No input received                                                               '
+  EXPMON: '  '
+  EXPYEAR: '    '
+  FKEYS: 'ENTER=Search Cards  F3=Exit                                                '
+  INFOMSG: 'Please enter Account and Card Number    '
+  PGMNAME: COCRDSLC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CCDL

@@ -1,0 +1,152 @@
+# COCRDSLC answers an unexpected program context with plain text. Once the
+# PF3 test fails, its main EVALUATE tests CDEMO-PGM-CONTEXT (COCOM01Y,
+# PIC 9(01): 0 is CDEMO-PGM-ENTER, 1 CDEMO-PGM-REENTER). Any other value takes
+# WHEN OTHER: it fills the abend data of CSMSG02Y (ABEND-CULPRIT COCRDSLC,
+# ABEND-CODE '0001', ABEND-REASON blank) without abending, moves
+# 'UNEXPECTED DATA SCENARIO' to the 75-byte WS-RETURN-MSG and performs
+# SEND-PLAIN-TEXT. That sends the 75 bytes with SEND TEXT ... ERASE FREEKB and
+# ends the task with a RETURN that names no TRANSID, so no map is shown and the
+# pseudo-conversation ends [app/cbl/COCRDSLC.cbl:134,304-381,838-849]
+# [app/cpy/COCOM01Y.cpy:29-31] [app/cpy/CSMSG02Y.cpy:21-29].
+#
+# No terminal input reaches the branch. Every AID other than ENTER and PF3 is
+# handled as ENTER (CSSTRPFY maps the AID into CVCRD01Y's CCARD-AID flags)
+# [app/cbl/COCRDSLC.cbl:284-299,855]; the main menu transfers control with the
+# context reset to 0 [app/cbl/COMEN01C.cbl:147-155], an entry without a
+# COMMAREA initializes it [app/cbl/COCRDSLC.cbl:268-272], and every send of
+# COCRDSL sets it to 1 [app/cbl/COCRDSLC.cbl:563-578]. The steps are the route
+# to the ENTER the branch would answer: USER0001 signs on, main-menu option 4
+# lands on COCRDSL (CCDL) with context 1, and account 00000000050 with card
+# 0500024453765740 is entered. Run as they stand, that ENTER shows the card
+# (CRD-COCRDSLC-normal-01), so the scenario needs a COMMAREA whose context is
+# neither 0 nor 1 when it arrives, and no adapter can place one. The fault
+# vocabulary has no COMMAREA condition, so the precondition is declared in the
+# abend class, since the branch fills the abend data as an abend would, on the
+# card file the ENTER would otherwise read. No mechanism forces an abend-class
+# condition in the TPE region, so the unikix adapter raises MissingPrerequisite
+# under GAP-MIS-014 and the scenario stays implemented-unexecuted, never passed
+# or failed on a run that did not take the branch.
+#
+# The branch reads no file, so the CARDDAT CSD file item is not listed; the
+# card fixtures are loaded so the region holds the card the ENTER names, and
+# USRSEC for the sign-on read. Only CURDATE and CURTIME depend on the clock;
+# they are matchers, so the clock is relative (unikix cannot fix it,
+# GAP-MIS-015). The baseline is derived from the source: no TPE region runs in
+# CI.
+id: CRD-COCRDSLC-recovery-01
+level: e2e
+type: recovery
+description: >-
+  USER0001 signs on, selects main-menu option 4 'Credit Card View' and enters
+  account 00000000050 and card 0500024453765740 on COCRDSL while the COMMAREA
+  carries a corrupted program context, neither enter (0) nor re-enter (1).
+  COCRDSLC takes the WHEN OTHER branch of its main EVALUATE, erases the screen
+  and sends the 75-byte WS-RETURN-MSG holding 'UNEXPECTED DATA SCENARIO' as
+  plain text, then ends the pseudo-conversation. The terminal shows an
+  unformatted screen whose first row is that text padded with spaces and whose
+  other rows are blank. No adapter can supply such a COMMAREA, so the scenario
+  is implemented-unexecuted under GAP-MIS-014.
+inventory_ids:
+- INV-CRD-038  # COCRDSLC message 'UNEXPECTED DATA SCENARIO' (recovery)
+- INV-CRD-002  # COCRDSLC program
+- INV-MNU-003  # COMEN01 map, the main menu option 4 is entered on
+- INV-CRD-005  # COCRDSL map, the screen the account and card are entered on
+- INV-CFG-013  # CCDL transaction, under which the ENTER is processed
+- INV-LAY-002  # COCOM01Y: CDEMO-PGM-CONTEXT, the value the EVALUATE tests
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02 on COCRDSL
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME on COCRDSL
+- INV-LAY-008  # CSMSG01Y, copied by COCRDSLC
+- INV-LAY-009  # CSMSG02Y: the abend data the branch fills
+- INV-LAY-011  # CSSTRPFY: the AID mapping before the EVALUATE
+- INV-LAY-019  # CVCRD01Y: CC-WORK-AREA and its CCARD-AID flags
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-006  # CRD end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-MIS-014  # no mechanism forces an abend-class condition in the TPE region
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user.
+    USRSEC: {base: USRSEC}
+    # The card file the ENTER on card 0500024453765740 would read through
+    # CARDDAT had the context been 1.
+    CARDDATA: {base: CARDDATA}
+  parameters:
+    clock_mode: relative
+  # The stand-in for the unexpected-context COMMAREA described above. A future
+  # mechanism must supply that COMMAREA itself: an abend on the CARDDAT read
+  # alone ends in ABEND-ROUTINE, which sends ABEND-DATA, not this branch.
+  faults:
+  - target: CARDDAT
+    operation: read
+    condition: abend
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: USER0001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '4'}
+    '@map': COMEN01
+  - aid: ENTER
+    fields: {ACCTSID: '00000000050', CARDSID: '0500024453765740'}
+    '@map': COCRDSL
+expected:
+  # Screen fields keep their full BMS length with trailing spaces: the COMEN01
+  # ERRMSG is 78 characters and the COCRDSL ERRMSG 80, the titles, OPTN004 and
+  # INFOMSG 40.
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN004: '04. Credit Card View                    '
+    ERRMSG: '                                                                              '
+  # COCRDSLC's first entry from the menu: 1100-SCREEN-INIT sets the titles,
+  # transaction, program, date and time; 1200-SETUP-SCREEN-VARS finds no info
+  # message, so it sets the input prompt, and moves the blank WS-RETURN-MSG
+  # into ERRMSG [app/cbl/COCRDSLC.cbl:254-256,339-356,427-499].
+  - '@map': COCRDSL
+    TRNNAME: CCDL
+    PGMNAME: COCRDSLC
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    INFOMSG: 'Please enter Account and Card Number    '
+    ERRMSG: '                                                                                '
+  # Derived from SEND TEXT: the 75 sent bytes from row 1, column 1, after ERASE,
+  # and blanks elsewhere, as the 24 rows of 80 characters joined by line breaks
+  # that adapters/base.py screen_text gives. Each source line below is one row:
+  # '\ ' keeps a row's leading blank and '\n\' ends the row.
+  - '@map': TEXT
+    '@text': "UNEXPECTED DATA SCENARIO                                                        \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                \n\
+      \                                                                                "
+  # The ERRMSG value of each step whose map has one: blank on the main menu and
+  # on COCRDSL; the unformatted screen has no ERRMSG field.
+  messages:
+  - '                                                                              '
+  - '                                                                                '

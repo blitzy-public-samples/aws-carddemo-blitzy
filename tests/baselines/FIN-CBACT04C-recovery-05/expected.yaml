@@ -1,0 +1,52 @@
+datasets:
+  SYSTRAN:
+    records:
+    - TRAN-AMT: '15.00'
+      TRAN-CARD-NUM: '9999000022220901'
+      TRAN-CAT-CD: '5'
+      TRAN-DESC: "Int. for a/c 00000000901\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+      TRAN-ID: '2022071800000001'
+      TRAN-MERCHANT-CITY: '                                                  '
+      TRAN-MERCHANT-ID: '0'
+      TRAN-MERCHANT-NAME: '                                                  '
+      TRAN-MERCHANT-ZIP: '          '
+      TRAN-ORIG-TS: 2022-07-06-10.00.00.000000
+      TRAN-PROC-TS: 2022-07-06-10.00.00.000000
+      TRAN-SOURCE: 'System    '
+      TRAN-TYPE-CD: '01'
+    - TRAN-AMT: '10.00'
+      TRAN-CARD-NUM: '9999000022220901'
+      TRAN-CAT-CD: '5'
+      TRAN-DESC: "Int. for a/c 00000000901\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+      TRAN-ID: '2022071800000002'
+      TRAN-MERCHANT-CITY: '                                                  '
+      TRAN-MERCHANT-ID: '0'
+      TRAN-MERCHANT-NAME: '                                                  '
+      TRAN-MERCHANT-ZIP: '          '
+      TRAN-ORIG-TS: 2022-07-06-10.00.00.000000
+      TRAN-PROC-TS: 2022-07-06-10.00.00.000000
+      TRAN-SOURCE: 'System    '
+      TRAN-TYPE-CD: '01'
+    - TRAN-AMT: '30.00'
+      TRAN-CARD-NUM: '9999000022220902'
+      TRAN-CAT-CD: '5'
+      TRAN-DESC: "Int. for a/c 00000000902\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+      TRAN-ID: '2022071800000003'
+      TRAN-MERCHANT-CITY: '                                                  '
+      TRAN-MERCHANT-ID: '0'
+      TRAN-MERCHANT-NAME: '                                                  '
+      TRAN-MERCHANT-ZIP: '          '
+      TRAN-ORIG-TS: 2022-07-06-10.00.00.000000
+      TRAN-PROC-TS: 2022-07-06-10.00.00.000000
+      TRAN-SOURCE: 'System    '
+      TRAN-TYPE-CD: '01'
+messages:
+- START OF EXECUTION OF PROGRAM CBACT04C
+- '000000009010100010000012000{                      '
+- '000000009010100020000004800{                      '
+- '000000009020100010000024000{                      '
+- ERROR CLOSING TRANSACTION BALANCE FILE
+- 'FILE STATUS IS: NNNN0030'
+- ABENDING PROGRAM
+- CARDDEMO-ABEND CEE3ABD
+return_code: null

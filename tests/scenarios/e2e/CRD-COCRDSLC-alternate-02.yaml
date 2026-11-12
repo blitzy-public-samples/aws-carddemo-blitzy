@@ -1,0 +1,128 @@
+# PF3 on the COCRDSL credit card view screen returns to the COMEN01C main menu.
+#
+# Step 1: USER0001 (type U in the USRSEC fixture) signs on through CC00 and
+# COSGN00C XCTLs to COMEN01C, which sends the main menu and returns TRANSID
+# CM00 [app/cbl/COSGN00C.cbl:221-240] [app/cbl/COMEN01C.cbl:82-90,107-110].
+# Step 2: option '4' of the COMEN02Y table is 'Credit Card View', so COMEN01C
+# moves CM00 and COMEN01C to CDEMO-FROM-TRANID and CDEMO-FROM-PROGRAM, zeroes
+# CDEMO-PGM-CONTEXT and XCTLs to COCRDSLC [app/cbl/COMEN01C.cbl:115-156]
+# [app/cpy/COMEN02Y.cpy:43-47]. EIBAID is still ENTER, so COCRDSLC takes its
+# CDEMO-PGM-ENTER path: 1000-SEND-MAP sends COCRDSL with its own CCDL and
+# COCRDSLC header, the prompt 'Please enter Account and Card Number' (WS-INFO-MSG
+# is initialized blank) and a blank message line, sets CDEMO-PGM-REENTER and
+# returns TRANSID CCDL with the COMMAREA [app/cbl/COCRDSLC.cbl:254-264,349-356,
+# 394-406,427-497,563-577]. No file is read.
+# Step 3: PF3 with nothing typed. CCDL starts COCRDSLC with its COMMAREA, and
+# YYYY-STORE-PFKEY maps DFHPF3 to CCARD-AID-PFK03, always a valid key here
+# [app/cpy/CSSTRPFY.cpy:34-35] [app/cbl/COCRDSLC.cbl:284-299]. The PF3 branch
+# sets CDEMO-USRTYP-USER and CDEMO-PGM-ENTER, records CCDL/COCRDSLC as the caller
+# and COCRDSL/CCRDSLA as the last mapset and map, and XCTLs to CDEMO-TO-PROGRAM
+# without receiving the map [app/cbl/COCRDSLC.cbl:305-334].
+# The target is COMEN01C whichever way the COMMAREA was handled. COCRDSLC tests
+# CDEMO-FROM-PROGRAM in its own working storage before it copies DFHCOMMAREA
+# [app/cbl/COCRDSLC.cbl:268-279], so on each task it either restores the menu's
+# COMMAREA, whose FROM fields CM00 and COMEN01C become the targets, or
+# initializes it, and the blank FROM fields fall back to LIT-MENUTRANID CM00 and
+# LIT-MENUPGM COMEN01C [app/cbl/COCRDSLC.cbl:179-182,309-321]. The expectation is
+# therefore the same on either path.
+# COMEN01C, entered with a COMMAREA in CDEMO-PGM-ENTER state, sends the main
+# menu afresh with its own CM00 and COMEN01C header, the ten COMEN02Y options
+# built as '<nn>. <name>' in 40-character fields and a blank ERRMSG
+# [app/cbl/COMEN01C.cbl:77-90,182-277].
+# 'PF03 pressed.Exiting' (WS-EXIT-MESSAGE) is never set by COCRDSLC, so it is
+# not asserted [app/cbl/COCRDSLC.cbl:136-137].
+#
+# Expected values are derived from the source (no TPE region runs in CI):
+# - Text values are whole fields at their BMS length with trailing spaces kept:
+#   COCRDSL ERRMSG 80 and INFOMSG 40, COMEN01 ERRMSG 78, the titles and options
+#   40 [app/bms/COCRDSL.bms] [app/bms/COMEN01.bms]; the titles are COTTL01Y's
+#   [app/cpy/COTTL01Y.cpy:17-22].
+# - CURDATE (mm/dd/yy) and CURTIME (hh:mm:ss) come from the region clock
+#   through CSDAT01Y, hence the matchers and clock_mode relative.
+# - ACCTSID and CARDSID are not asserted on the COCRDSL screen: they come from
+#   CDEMO-ACCT-ID and CDEMO-CARD-NUM, which no program on this path sets, so
+#   their content depends on the region's working-storage initialization
+#   [app/cbl/COCRDSLC.cbl:459-472].
+id: CRD-COCRDSLC-alternate-02
+level: e2e
+type: alternate
+description: >-
+  USER0001 signs on, chooses main menu option 4 'Credit Card View' and lands on
+  the COCRDSLC credit card view screen (CCDL) with its prompt 'Please enter
+  Account and Card Number', then presses PF3 without entering an account or a
+  card. COCRDSLC transfers control back to COMEN01C, which shows the main menu
+  (CM00) with its ten options and no message.
+# The sign-on step and the option step only establish the session: CC00, CM00,
+# COSGN00C and COMEN01C are verified by the SEC-COSGN00C and MNU-COMEN01C
+# scenarios, so they are not listed here. The PF3 branch issues no file command,
+# so no CSD file is listed.
+inventory_ids:
+- INV-CRD-044  # COCRDSLC PF3 return (navigation rule)
+- INV-CRD-002  # COCRDSLC program
+- INV-CRD-005  # COCRDSL map, the screen PF3 is pressed on
+- INV-MNU-003  # COMEN01 map, the screen the XCTL lands on
+- INV-CFG-013  # CCDL transaction, under which PF3 is processed
+- INV-LAY-002  # COCOM01Y: the COMMAREA whose FROM fields select the PF3 target
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COCRDSLC
+- INV-LAY-009  # CSMSG02Y, the abend variables COCRDSLC copies
+- INV-LAY-011  # CSSTRPFY: YYYY-STORE-PFKEY maps DFHPF3 to CCARD-AID-PFK03
+- INV-LAY-019  # CVCRD01Y: CCARD-AID-PFK03 and the work area COCRDSLC initializes
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-006  # card list, view and update (CRD) end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user USER0001 from USRSEC.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: USER0001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '4'}
+    '@map': COMEN01
+  - aid: PF3
+    fields: {}
+    '@map': COCRDSL
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    ERRMSG: '                                                                              '
+  - '@map': COCRDSL
+    TRNNAME: CCDL
+    PGMNAME: COCRDSLC
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    INFOMSG: 'Please enter Account and Card Number    '
+    ERRMSG: '                                                                                '
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    OPTN001: '01. Account View                        '
+    OPTN002: '02. Account Update                      '
+    OPTN003: '03. Credit Card List                    '
+    OPTN004: '04. Credit Card View                    '
+    OPTN005: '05. Credit Card Update                  '
+    OPTN006: '06. Transaction List                    '
+    OPTN007: '07. Transaction View                    '
+    OPTN008: '08. Transaction Add                     '
+    OPTN009: '09. Transaction Reports                 '
+    OPTN010: '10. Bill Payment                        '
+    ERRMSG: '                                                                              '

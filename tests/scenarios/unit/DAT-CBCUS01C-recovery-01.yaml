@@ -1,0 +1,35 @@
+id: DAT-CBCUS01C-recovery-01
+level: unit
+type: recovery
+description: >-
+  CBCUS01C with its customer file absent: OPEN INPUT of CUSTFILE fails with
+  status 35, so 0000-CUSTFILE-OPEN displays the error line and the file status,
+  and Z-ABEND-PROGRAM calls CEE3ABD with no parameters, ending the run before
+  any record is read [app/cbl/CBCUS01C.cbl:118-134,154-158,161-174].
+inventory_ids:
+- INV-DAT-038
+- INV-DAT-004
+tags: []
+gap_ids:
+- GAP-STB-001
+- GAP-DEF-001
+- GAP-STB-010
+- GAP-STB-011
+preconditions:
+  datasets: {}
+  parameters:
+    clock_mode: fixed
+  faults:
+  - target: CUSTDATA
+    operation: open
+    condition: unavailable
+inputs:
+  program: CBCUS01C
+expected:
+  return_code: null
+  messages:
+  - START OF EXECUTION OF PROGRAM CBCUS01C
+  - ERROR OPENING CUSTFILE
+  - 'FILE STATUS IS: NNNN0035'
+  - ABENDING PROGRAM
+  - CARDDEMO-ABEND CEE3ABD

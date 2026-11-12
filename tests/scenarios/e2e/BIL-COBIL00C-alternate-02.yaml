@@ -1,0 +1,248 @@
+# PF4 on the COBIL00 Bill Payment screen clears it in place without paying, and
+# PF3 then returns to the COMEN01C main menu.
+#
+# Step 1: USER0001 (type U in the USRSEC fixture) signs on through CC00 and
+# COSGN00C XCTLs to COMEN01C, which sends the main menu and returns TRANSID
+# CM00 [app/cbl/COSGN00C.cbl:221-240] [app/cbl/COMEN01C.cbl:82-90,107-110].
+# Step 2: option '10' of the COMEN02Y table is 'Bill Payment', user type U,
+# program COBIL00C, so COMEN01C moves CM00 and COMEN01C to CDEMO-FROM-TRANID and
+# CDEMO-FROM-PROGRAM, zeroes CDEMO-PGM-CONTEXT and XCTLs to COBIL00C
+# [app/cbl/COMEN01C.cbl:115-153] [app/cpy/COMEN02Y.cpy:80-84]. COBIL00C copies
+# the shorter COCOM01Y COMMAREA into its own with a group move, so the
+# CDEMO-CB00-INFO extension is padded with spaces and CDEMO-CB00-TRN-SELECTED
+# is blank: on this first entry it sets CDEMO-PGM-REENTER, moves LOW-VALUES to
+# COBIL0AO, performs no PROCESS-ENTER-KEY (so no file is read) and sends
+# COBIL00 with its own CB00 and COBIL00C header and a blank ERRMSG, then
+# returns with TRANSID CB00 and the COMMAREA
+# [app/cbl/COBIL00C.cbl:37-39,64-72,104-122,146-149,289-300,319-336].
+# Step 3 enters account 00000000001 and leaves CONFIRM empty ('' erases the
+# field and types nothing; it has FSET and no INITIAL, so it is received as
+# SPACES or LOW-VALUES) [app/bms/COBIL00.bms:115-119]. CB00 starts COBIL00C
+# with the re-entered COMMAREA, so it receives the map and performs
+# PROCESS-ENTER-KEY [app/cbl/COBIL00C.cbl:124-127,154-244]:
+# - ACTIDIN is supplied, so it becomes ACCT-ID, and the blank CONFIRM takes the
+#   WHEN SPACES / WHEN LOW-VALUES branch: READ ACCTDAT with UPDATE returns
+#   NORMAL [app/cbl/COBIL00C.cbl:157-184,343-358].
+# - ACCT-CURR-BAL 194.00 (record 1 of the ACCTDATA fixture) is edited through
+#   WS-CURR-BAL, PIC +9999999999.99, into CURBAL as +0000000194.00
+#   [app/cbl/COBIL00C.cbl:56,193-194].
+# - The balance is above zero and CONF-PAY-YES is not set, so 'Confirm to make
+#   a bill payment...' goes to WS-MESSAGE and SEND-BILLPAY-SCREEN sends COBIL00
+#   FROM the map area RECEIVE filled, with ERASE [app/cbl/COBIL00C.cbl:197-244].
+# RETURN TRANSID CB00 ends the task, which releases the READ UPDATE hold; no
+# cross-reference read, TRANSACT browse, WRITE or REWRITE runs on this path.
+# Step 4 types Y into CONFIRM, a confirmation left pending, and presses PF4
+# instead of ENTER: the 'F4=Clear' key the map advertises
+# [app/bms/COBIL00.bms:131-135]. CB00 starts COBIL00C again, which receives the
+# map and takes the DFHPF4 branch, CLEAR-CURRENT-SCREEN, so PROCESS-ENTER-KEY
+# never evaluates the Y and no payment runs
+# [app/cbl/COBIL00C.cbl:124-125,136-137].
+# INITIALIZE-ALL-FIELDS moves -1 to ACTIDINL (the cursor) and SPACES to
+# ACTIDINI, CURBALI, CONFIRMI and WS-MESSAGE; COBIL0AO redefines COBIL0AI, so
+# SEND-BILLPAY-SCREEN sends COBIL00 with ERASE, its own CB00 and COBIL00C
+# header, ACTIDIN, CURBAL and CONFIRM as spaces and WS-MESSAGE as a blank
+# ERRMSG, then the task returns with TRANSID CB00 and the COMMAREA
+# [app/cbl/COBIL00C.cbl:146-149,289-301,552-566] [app/cpy-bms/COBIL00.CPY:79].
+# PF4 issues no file command.
+# Step 5: PF3 with nothing typed. CB00 starts COBIL00C with the re-entered
+# COMMAREA, so it receives the map and takes the DFHPF3 branch:
+# CDEMO-FROM-PROGRAM still holds COMEN01C, set by the menu's XCTL and left
+# alone by steps 3 and 4, and becomes CDEMO-TO-PROGRAM (a blank FROM-PROGRAM
+# would fall back to the same literal 'COMEN01C'). RETURN-TO-PREV-SCREEN
+# records CB00/COBIL00C as the caller, zeroes CDEMO-PGM-CONTEXT and XCTLs to
+# COMEN01C with the COMMAREA [app/cbl/COBIL00C.cbl:123-135,273-284,306-314].
+# COMEN01C, entered with a COMMAREA whose context is zero, takes its first-entry
+# path without looking at the PF3 AID: it clears its output map and sends the
+# main menu afresh with its own CM00 and COMEN01C header, the ten COMEN02Y
+# options built as '<nn>. <name>' in 40-character fields and WS-MESSAGE still
+# spaces in ERRMSG [app/cbl/COMEN01C.cbl:77-90,182-277] [app/cpy/COMEN02Y.cpy:21-84].
+#
+# Expected values are derived from the source (no TPE region runs in CI):
+# - Text values are whole fields at their BMS length with trailing spaces kept:
+#   ERRMSG 78 on both COBIL00 and COMEN01, the titles and options 40, ACTIDIN
+#   11, CURBAL 14 and CONFIRM 1 [app/bms/COBIL00.bms] [app/bms/COMEN01.bms];
+#   the titles are COTTL01Y's [app/cpy/COTTL01Y.cpy:17-22].
+# - CURDATE (mm/dd/yy) and CURTIME (hh:mm:ss, an 8-character field on both
+#   maps) come from the region clock through CSDAT01Y, hence the matchers and
+#   clock_mode relative.
+# - The adapter copies the ERRMSG of every step's screen into the message list,
+#   so the five ERRMSG values are the expected messages: blank on the menu, on
+#   the empty Bill Payment screen, after PF4 and on the menu PF3 returns to,
+#   and the confirmation request after step 3.
+# - The empty entry fields of screen 2 (ACTIDIN, CURBAL, CONFIRM) are not
+#   asserted: the first-entry content belongs to the other COBIL00C scenarios,
+#   and this one pins the PF4 clear and the PF3 return. Screen 4 asserts them,
+#   because the PF4 clear is what blanks them after step 3 filled them.
+id: BIL-COBIL00C-alternate-02
+level: e2e
+type: alternate
+description: >-
+  USER0001 signs on, chooses main menu option 10 'Bill Payment' and lands on
+  the COBIL00C Bill Payment screen (CB00), enters repository account
+  00000000001 with CONFIRM left blank and is asked 'Confirm to make a bill
+  payment...' with the balance +0000000194.00. It then types Y into CONFIRM
+  but presses PF4 (F4=Clear) instead of ENTER: COBIL00 stays, with the account,
+  balance, confirmation and message cleared, and no payment is made. PF3 then
+  transfers control back to the calling program COMEN01C, which shows the main
+  menu (CM00) with its ten options and no message. The account is read for
+  update but neither it nor TRANSACT changes.
+# Primary item first, then the program, the maps asserted, the transaction
+# steps 3 to 5 are processed under, and the online-only copybooks COBIL00C
+# copies. The sign-on step and the option step only establish the session:
+# CC00, CM00, COSGN00, COSGN00C, COMEN01C, the option-10 navigation and USRSEC
+# are verified by the SEC-COSGN00C and MNU-COMEN01C scenarios, so they are not
+# listed here. The inventory has no PF4 item of its own: the PF4 clear is
+# asserted through the program and map items listed. Step 3 reads ACCTDAT for
+# update and shows 'Confirm to make a bill payment...', but the ACCTDAT CSD
+# file (INV-CFG-001) and that message (INV-BIL-007) are verified by
+# BIL-COBIL00C-alternate-01, which drives the same input, and an item is
+# listed only by the scenarios its verification depends on, so neither is
+# listed here. PF4 and PF3 issue no file command.
+inventory_ids:
+- INV-BIL-017  # COBIL00C PF3 return (navigation rule)
+- INV-BIL-001  # COBIL00C program, whose DFHPF4 branch clears the screen
+- INV-BIL-002  # COBIL00 map, entered in steps 3 to 5 and cleared by PF4
+- INV-MNU-003  # COMEN01 map, the screen the XCTL lands on
+- INV-CFG-012  # CB00 transaction, under which steps 3 to 5 are processed
+- INV-LAY-002  # COCOM01Y: the COMMAREA whose CDEMO-FROM-PROGRAM selects the PF3 target
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COBIL00C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-008  # bill payment (BIL) end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-DOC-011  # repository account in place of the tech-spec 00000234567
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user USER0001 from USRSEC.
+    USRSEC: {base: USRSEC}
+    # Step 3 reads account 00000000001 for update; no step rewrites it.
+    ACCTDATA: {base: ACCTDATA}
+    # The region's CCXREF file and CXACAIX path, which only a confirmed payment
+    # reads. Loaded so that a PF4 wrongly taken as a confirmed payment would
+    # find the account's card and pay, which file_state shows, instead of
+    # stopping at a missing cross-reference.
+    CARDXREF: {base: CARDXREF}
+    # TRANSACT has no repository data of its own (datasets.yaml source
+    # 'built', which a base cannot name), so it is built from the 300
+    # repository daily transactions, which share its 350-byte record shape,
+    # giving the file_state assertion a known starting content.
+    TRANSACT: {base: DALYTRAN}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: USER0001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '10'}
+    '@map': COMEN01
+  - aid: ENTER
+    fields: {ACTIDIN: '00000000001', CONFIRM: ''}
+    '@map': COBIL00
+  - aid: PF4
+    fields: {CONFIRM: 'Y'}
+    '@map': COBIL00
+  - aid: PF3
+    fields: {}
+    '@map': COBIL00
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    ERRMSG: '                                                                              '
+  - '@map': COBIL00
+    TRNNAME: CB00
+    PGMNAME: COBIL00C
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    ERRMSG: '                                                                              '
+  - '@map': COBIL00
+    TRNNAME: CB00
+    PGMNAME: COBIL00C
+    ACTIDIN: '00000000001'
+    CURBAL: '+0000000194.00'
+    CONFIRM: ' '
+    ERRMSG: 'Confirm to make a bill payment...                                             '
+  # After PF4: still COBIL00 under CB00, entry fields and message blank.
+  - '@map': COBIL00
+    TRNNAME: CB00
+    PGMNAME: COBIL00C
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    ACTIDIN: '           '
+    CURBAL: '              '
+    CONFIRM: ' '
+    ERRMSG: '                                                                              '
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    OPTN001: '01. Account View                        '
+    OPTN002: '02. Account Update                      '
+    OPTN003: '03. Credit Card List                    '
+    OPTN004: '04. Credit Card View                    '
+    OPTN005: '05. Credit Card Update                  '
+    OPTN006: '06. Transaction List                    '
+    OPTN007: '07. Transaction View                    '
+    OPTN008: '08. Transaction Add                     '
+    OPTN009: '09. Transaction Reports                 '
+    OPTN010: '10. Bill Payment                        '
+    ERRMSG: '                                                                              '
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Confirm to make a bill payment...                                             '
+  - '                                                                              '
+  - '                                                                              '
+  file_state:
+    # Step 3 reads account 1 for update, but neither that READ UPDATE, nor PF4
+    # with its typed Y, nor PF3 rewrites it: all 50 accounts stand, and account
+    # 1 keeps the balance a payment would have cleared.
+    ACCTDATA:
+      count: 50
+      contains:
+      - ACCT-ID: '1'
+        ACCT-ACTIVE-STATUS: 'Y'
+        ACCT-CURR-BAL: '194.00'
+        ACCT-CREDIT-LIMIT: '2020.00'
+        ACCT-CASH-CREDIT-LIMIT: '1020.00'
+        ACCT-OPEN-DATE: '2014-11-20'
+        ACCT-EXPIRAION-DATE: '2025-05-20'
+        ACCT-REISSUE-DATE: '2025-05-20'
+        ACCT-CURR-CYC-CREDIT: '0.00'
+        ACCT-CURR-CYC-DEBIT: '0.00'
+        ACCT-ADDR-ZIP: 'A000000000'
+        ACCT-GROUP-ID: '          '
+    # Neither step 3, nor PF4 with its typed Y, nor PF3 writes a payment
+    # transaction: TRANSACT still holds the 300 fixture records, and the
+    # highest of them, the key a payment would follow, is unchanged.
+    TRANSACT:
+      count: 300
+      contains:
+      - TRAN-ID: '0000000996722787'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: 'POS TERM  '
+        TRAN-DESC: 'Purchase at Kilback LLC                                                                             '
+        TRAN-AMT: '603.22'
+        TRAN-MERCHANT-ID: '800000000'
+        TRAN-MERCHANT-NAME: 'Kilback LLC                                       '
+        TRAN-MERCHANT-CITY: 'Cummeratamouth                                    '
+        TRAN-MERCHANT-ZIP: '53200-7529'
+        TRAN-CARD-NUM: '3260763612337560'
+        TRAN-ORIG-TS: '2022-06-10 19:27:53.000000'
+        TRAN-PROC-TS: '                          '

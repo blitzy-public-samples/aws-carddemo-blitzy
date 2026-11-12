@@ -1,0 +1,1199 @@
+# The daily batch cycle on the repository data, run as one chain against one
+# catalog: POSTTRAN, INTCALC, TRANBKP, COMBTRAN, CREASTMT, TRANREPT. It is the
+# second scenario of the job-chain proof (python tests/harness/report.py
+# --check-proof), after BAT-POSTINT-normal-01, and gnucobol-batch's observed
+# baseline is the authoritative one.
+#
+# TRANBKP runs between INTCALC and COMBTRAN, where the README runs it
+# [README.md:177-181]: COMBTRAN reads the current TRANSACT-BKUP generation,
+# which only TRANBKP has written at that point [app/jcl/COMBTRAN.jcl:23-26],
+# while the request's chain leaves it out (GAP-DOC-015).
+#
+# The preconditions are the repository files, each a bare base, with
+# TRANSACT-INIT, its one 350-byte record (342 x'00' bytes, then 00000100,
+# GAP-DOC-018), as TRANSACT. The clock is the default,
+# 2022-07-06 10:00:00.00, and clock_mode is fixed: the TRANREPT
+# INCLUDE window, 2022-01-01 to 2022-07-06 [app/jcl/TRANREPT.jcl:43-48],
+# filters the processing timestamps POSTTRAN and INTCALC have just written, so
+# the report depends on the absolute date. unikix has no confirmed clock
+# command, so there the chain is blocked under GAP-MIS-015. No job or data
+# file creates the DATEPARM dataset that CBTRN03C reads, so the scenario
+# supplies the same window as its DATEPARM parameter (GAP-MIS-001).
+#
+# What each job does here, observed on gnucobol-batch:
+# - POSTTRAN (CBTRN02C) reads the 300 daily transactions, 6 for each of the 50
+#   cards, rejects 38 as 0102 'OVERLIMIT TRANSACTION' and posts 262, RC 4.
+#   OPEN OUTPUT recreates TRANSACT, so TRANSACT-INIT's record does not survive
+#   (GAP-STB-010) [app/cbl/CBTRN02C.cbl:256]. Each account's posted purchases
+#   are added to its existing 01/0001 category balance and its returns create
+#   a 03/0001 balance, 50 new TCATBALF records. The over-limit test uses cycle
+#   totals that accumulate through the run (GAP-UNC-011). Every account's
+#   balance and cycle credit and debit are asserted as POSTTRAN leaves them,
+#   before INTCALC zeroes the cycle totals of accounts 1 to 49.
+# - INTCALC (CBACT04C, PARM 2022071800 through PARMDRV, GAP-STB-004) reads
+#   the 100 category balances. No account's ACCT-GROUP-ID is set, so each
+#   lookup shows 'DISCLOSURE GROUP RECORD MISSING' and 'TRY WITH DEFAULT
+#   GROUP CODE' and takes the DEFAULT rate (GAP-DEF-005): 15.00 for 01/0001,
+#   0.00 for 03/0001, which writes no interest record. That gives 50 interest
+#   transactions, 2022071800000001 to 2022071800000050, type 01, category
+#   0005, source 'System', each TRAN-CAT-BAL * 15.00 / 1200 truncated.
+#   Accounts 1 to 49 get their interest added to ACCT-CURR-BAL and their cycle
+#   totals zeroed. Account 50 is never rewritten (GAP-DEF-003): it keeps
+#   POSTTRAN's cycle totals, and its 18.77 interest reaches SYSTRAN but not its
+#   balance [app/cbl/CBACT04C.cbl:188-222,350-356].
+# - TRANBKP copies the 262 records to a new TRANSACT-BKUP generation through
+#   REPROC and REPROCT, then deletes and redefines TRANSACT empty; both are
+#   asserted as TRANBKP leaves them, the backup record by record, before
+#   COMBTRAN reloads TRANSACT and TRANREPT writes the next generation. Its
+#   COND=(4,LT) is a JCL-semantics item the job driver records and never
+#   evaluates.
+# - COMBTRAN sorts that backup and the interest records by TRAN-ID into
+#   TRANSACT-COMBINED, 312 records, and loads them into TRANSACT; the UniKix
+#   copy gives the combined file other attributes (GAP-DOC-029).
+# - CREASTMT restructures TRANSACT into TRXFL, keyed by card and transaction
+#   id, the 328 bytes of its OUTREC padded with spaces to 350 (GAP-STB-006,
+#   GAP-DOC-026), then runs CBSTM03A, which displays the job and step the
+#   page-zero shim supplies (GAP-STB-003, GAP-DOC-020) and writes one text and
+#   one HTML statement per card: 19 text lines plus one per transaction, 1,262
+#   records, and 64 HTML lines plus 11 per transaction, 6,632 records. Each
+#   statement lists the card's posted transactions and its interest record,
+#   whose description ends in the x'00' fill that GnuCOBOL's defaultbyte 0
+#   gives CBACT04C's never-initialized description (GAP-STB-011).
+# - TRANREPT backs the 312 records up to a second TRANSACT-BKUP generation,
+#   which is the current one at the end, sorts them by card into TRANSACT-DALY,
+#   all 312 inside the window, and CBTRN03C writes the 519-line report:
+#   18 pages, 49 account totals and one grand total. The last card gets no
+#   account total, and its last amount, 20.43, is added to the page total a
+#   second time, so the grand total of 79,254.29 exceeds the 312 amounts'
+#   sum of 79,233.86 by it; account-total lines count toward the 20-line page,
+#   so some page breaks are skipped (GAP-DEF-012). The REPROC and SORT steps,
+#   both named STEP05R in the JCL, report as STEP05R.PRC001 and STEP05R
+#   (GAP-DEF-009).
+# The IDCAMS, SORT and IEFBR14 steps run through the job driver's
+# replacements, and the GDG generations through its catalog emulation
+# (GAP-STB-005, GAP-STB-006, GAP-STB-007, GAP-STB-009).
+#
+# CREASTMT's CBSTM03A step needs page zero mapped. Where the page-zero probe
+# fails, gnucobol-batch raises AdapterUnavailable under GAP-MIS-002, the whole
+# scenario is blocked and the proof is reported unmet with that reason; the
+# chain is never split to avoid it.
+#
+# inventory_ids lists only the daily-cycle item: the job, program, layout and
+# data-file items this chain passes through are verified by their own unit and
+# integration scenarios, and listing them here would let a failed page-zero
+# probe block them.
+#
+# The expectations below state the business outcomes. Most are observed at the
+# end of the chain; the stage observations @AFTER:<JOB>:<LOGICAL> under
+# file_state hold a dataset as one job left it, for the states a later job
+# overwrites: ACCTDATA after POSTTRAN, TRANSACT-BKUP and TRANSACT after
+# TRANBKP. The observed baseline pins the rest: the complete message list
+# (CBTRN02C's 50 TCATBAL creation lines, CBACT04C's display of each category
+# balance, CBSTM03A's DD list, CBTRN03C's display of each record and of its
+# end-of-file amounts), every record of every dataset and the complete
+# catalog. Text keeps its trailing spaces and compares exactly; "\0" is the
+# x'00' byte.
+id: BAT-CHAIN-normal-01
+level: integration
+type: normal
+description: >-
+  The daily batch cycle POSTTRAN, INTCALC, TRANBKP, COMBTRAN, CREASTMT and
+  TRANREPT on the repository data against one catalog: 300 daily transactions,
+  38 rejected over limit and 262 posted; 50 interest transactions; the posted
+  and interest records combined into a TRANSACT of 312; a text and an HTML
+  statement for each of the 50 cards; and a transaction report listing all
+  312. Every account's posted balance and cycle totals are asserted as
+  POSTTRAN leaves them; at the end accounts 1 to 49 carry their postings and
+  interest with zero cycle totals, account 50 its postings only, and the
+  highest return code is POSTTRAN's 4.
+inventory_ids:
+- INV-BAT-001  # BAT daily batch cycle POSTTRAN to TRANREPT (job)
+tags:
+- suspected-defect
+- observed-only
+gap_ids:
+- GAP-DOC-015  # the request's chain leaves TRANBKP out; the README runs it after INTCALC
+- GAP-MIS-001  # no job or data file creates the DATEPARM dataset CBTRN03C reads
+- GAP-MIS-002  # page zero must be mappable for CBSTM03A, or the chain is blocked
+- GAP-MIS-015  # unikix cannot fix the clock this fixed-clock chain needs
+- GAP-DEF-003  # INTCALC never rewrites the last account
+- GAP-DEF-005  # every account's group id sits in ACCT-ADDR-ZIP; ACCT-GROUP-ID is blank
+- GAP-DEF-009  # TRANREPT names both its REPROC and SORT steps STEP05R
+- GAP-DEF-012  # CBTRN03C report control: last amount added twice, no last account total
+- GAP-UNC-011  # the over-limit test accumulates the cycle totals through the run
+- GAP-STB-003  # the page-zero PSA/TCB/TIOT shim of CBSTM03A
+- GAP-STB-004  # PARMDRV in place of INTCALC's EXEC PARM linkage
+- GAP-STB-005  # IDCAMS replacement: REPRO with REPROCT, DELETE, DEFINE, IF MAXCC
+- GAP-STB-006  # SORT replacement (COMBTRAN, CREASTMT OUTREC padding, TRANREPT INCLUDE)
+- GAP-STB-007  # IEFBR14 and DISP replacement (CREASTMT STEP030)
+- GAP-STB-009  # catalog and GDG generation emulation
+- GAP-STB-010  # Berkeley DB indexed files; OPEN OUTPUT recreates TRANSACT
+- GAP-STB-011  # GnuCOBOL compile and runtime options; the x'00' description fill
+- GAP-DOC-020  # the UniKix CBSTM03A shows no job, step or DD list
+- GAP-DOC-026  # the UniKix CREASTMT sort pads TRXFL differently
+- GAP-DOC-027  # the UniKix TRANREPT job sorts and supplies DATEPARM differently
+- GAP-DOC-029  # the UniKix COMBTRAN gives TRANSACT-COMBINED other attributes
+preconditions:
+  datasets:
+    DALYTRAN: {base: DALYTRAN}
+    CARDXREF: {base: CARDXREF}
+    ACCTDATA: {base: ACCTDATA}
+    TCATBALF: {base: TCATBALF}
+    DISCGRP: {base: DISCGRP}
+    CUSTDATA: {base: CUSTDATA}
+    TRANTYPE: {base: TRANTYPE}
+    TRANCATG: {base: TRANCATG}
+    TRANSACT: {base: TRANSACT-INIT}
+  parameters:
+    clock_mode: fixed
+    DATEPARM: '2022-01-01 2022-07-06'
+  faults: []
+inputs:
+  job: [POSTTRAN, INTCALC, TRANBKP, COMBTRAN, CREASTMT, TRANREPT]
+expected:
+  # The highest step return code of the chain: POSTTRAN's 4, every other step 0.
+  return_code: 4
+  # An ordered subsequence of the step lines (STEP <name> RC <nnnn>, each
+  # job's steps in JCL order) and of the program DISPLAY lines that state the
+  # outcome: CBTRN02C's counts, CBACT04C's 100 missing-group fallbacks, one
+  # per category balance, CBSTM03A's job and step, CBTRN03C's report window.
+  # Job runs write no line of their own on either adapter, so each job's
+  # return code is the highest of its step lines. CBSTM03A's DD-name list and
+  # the lines whose numbers GnuCOBOL's DISPLAY formats are left to the
+  # observed baseline, so these lines name no ddname and hold no
+  # platform-formatted value.
+  messages:
+  - 'STEP STEP15 RC 0004'
+  - 'START OF EXECUTION OF PROGRAM CBTRN02C'
+  - 'TRANSACTIONS PROCESSED :000000300'
+  - 'TRANSACTIONS REJECTED  :000000038'
+  - 'END OF EXECUTION OF PROGRAM CBTRN02C'
+  - 'STEP STEP15 RC 0000'
+  - 'START OF EXECUTION OF PROGRAM CBACT04C'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'END OF EXECUTION OF PROGRAM CBACT04C'
+  - 'STEP STEP05R.PRC001 RC 0000'
+  - 'STEP STEP05 RC 0000'
+  - 'STEP STEP10 RC 0000'
+  - 'STEP STEP05R RC 0000'
+  - 'STEP STEP10 RC 0000'
+  - 'STEP DELDEF01 RC 0000'
+  - 'STEP STEP010 RC 0000'
+  - 'STEP STEP020 RC 0000'
+  - 'STEP STEP030 RC 0000'
+  - 'STEP STEP040 RC 0000'
+  - 'Running JCL : CREASTMT Step STEP040 '
+  - 'STEP STEP05R.PRC001 RC 0000'
+  - 'STEP STEP05R RC 0000'
+  - 'STEP STEP10R RC 0000'
+  - 'START OF EXECUTION OF PROGRAM CBTRN03C'
+  - 'Reporting from 2022-01-01 to 2022-07-06'
+  - 'END OF EXECUTION OF PROGRAM CBTRN03C'
+  # One 0102 for each DALYREJS record, in written order.
+  reject_reason_codes:
+    ['0102', '0102', '0102', '0102', '0102', '0102', '0102', '0102',
+     '0102', '0102', '0102', '0102', '0102', '0102', '0102', '0102',
+     '0102', '0102', '0102', '0102', '0102', '0102', '0102', '0102',
+     '0102', '0102', '0102', '0102', '0102', '0102', '0102', '0102',
+     '0102', '0102', '0102', '0102', '0102', '0102']
+  datasets:
+    # The 38 rejected daily transactions in DALYTRAN order, each followed by
+    # its reason and description (430 bytes).
+    DALYREJS:
+      records:
+      - {DALYTRAN-ID: '0000000040455859', DALYTRAN-CARD-NUM: '1142167692878931', DALYTRAN-AMT: '715.44', WS-VALIDATION-FAIL-REASON: '102', WS-VALIDATION-FAIL-REASON-DESC: &overlimit 'OVERLIMIT TRANSACTION                                                       '}
+      - {DALYTRAN-ID: '0000000108402349', DALYTRAN-CARD-NUM: '9349107475869214', DALYTRAN-AMT: '633.00', WS-VALIDATION-FAIL-REASON: '102', WS-VALIDATION-FAIL-REASON-DESC: *overlimit}
+      - {DALYTRAN-ID: '0000000111054243', DALYTRAN-CARD-NUM: '6723000463207764', DALYTRAN-AMT: '948.44', WS-VALIDATION-FAIL-REASON: '102', WS-VALIDATION-FAIL-REASON-DESC: *overlimit}
+      - {DALYTRAN-ID: '0000000148803688', DALYTRAN-CARD-NUM: '6509230362553816', DALYTRAN-AMT: '203.44', WS-VALIDATION-FAIL-REASON: '102', WS-VALIDATION-FAIL-REASON-DESC: *overlimit}
+      - {DALYTRAN-ID: '0000000183226769', DALYTRAN-CARD-NUM: '8040580410348680', DALYTRAN-AMT: '907.55', WS-VALIDATION-FAIL-REASON: '102', WS-VALIDATION-FAIL-REASON-DESC: *overlimit}
+      - {DALYTRAN-ID: '0000000220001505', DALYTRAN-CARD-NUM: '6509230362553816', DALYTRAN-AMT: '929.77', WS-VALIDATION-FAIL-REASON: '102', WS-VALIDATION-FAIL-REASON-DESC: *overlimit}
+      - {DALYTRAN-ID: '0000000252891459', DALYTRAN-CARD-NUM: '6723000463207764', DALYTRAN-AMT: '944.99', WS-VALIDATION-FAIL-REASON: '102', WS-VALIDATION-FAIL-REASON-DESC: *overlimit}
+      - {DALYTRAN-ID: '0000000277916619', DALYTRAN-CARD-NUM: '7094142751055551', DALYTRAN-AMT: '996.88', WS-VALIDATION-FAIL-REASON: '102', WS-VALIDATION-FAIL-REASON-DESC: *overlimit}
+      - {DALYTRAN-ID: '0000000329446511', DALYTRAN-CARD-NUM: '8040580410348680', DALYTRAN-AMT: '667.55', WS-VALIDATION-FAIL-REASON: '102', WS-VALIDATION-FAIL-REASON-DESC: *overlimit}
+      - {DALYTRAN-ID: '0000000424689871', DALYTRAN-CARD-NUM: '5787351228879339', DALYTRAN-AMT: '648.11', WS-VALIDATION-FAIL-REASON: '102', WS-VALIDATION-FAIL-REASON-DESC: *overlimit}
+      - {DALYTRAN-ID: '0000000502617711', DALYTRAN-CARD-NUM: '4859452612877065', DALYTRAN-AMT: '955.11', WS-VALIDATION-FAIL-REASON: '102', WS-VALIDATION-FAIL-REASON-DESC: *overlimit}
+      - {DALYTRAN-ID: '0000000508429766', DALYTRAN-CARD-NUM: '7094142751055551', DALYTRAN-AMT: '534.11', WS-VALIDATION-FAIL-REASON: '102', WS-VALIDATION-FAIL-REASON-DESC: *overlimit}
+      - {DALYTRAN-ID: '0000000519771423', DALYTRAN-CARD-NUM: '6723000463207764', DALYTRAN-AMT: '670.00', WS-VALIDATION-FAIL-REASON: '102', WS-VALIDATION-FAIL-REASON-DESC: *overlimit}
+      - {DALYTRAN-ID: '0000000523110055', DALYTRAN-CARD-NUM: '7379335634661142', DALYTRAN-AMT: '736.88', WS-VALIDATION-FAIL-REASON: '102', WS-VALIDATION-FAIL-REASON-DESC: *overlimit}
+      - {DALYTRAN-ID: '0000000554096178', DALYTRAN-CARD-NUM: '6503535181795992', DALYTRAN-AMT: '722.33', WS-VALIDATION-FAIL-REASON: '102', WS-VALIDATION-FAIL-REASON-DESC: *overlimit}
+      - {DALYTRAN-ID: '0000000564257675', DALYTRAN-CARD-NUM: '6503535181795992', DALYTRAN-AMT: '623.11', WS-VALIDATION-FAIL-REASON: '102', WS-VALIDATION-FAIL-REASON-DESC: *overlimit}
+      - {DALYTRAN-ID: '0000000570013846', DALYTRAN-CARD-NUM: '9349107475869214', DALYTRAN-AMT: '352.33', WS-VALIDATION-FAIL-REASON: '102', WS-VALIDATION-FAIL-REASON-DESC: *overlimit}
+      - {DALYTRAN-ID: '0000000575834812', DALYTRAN-CARD-NUM: '7379335634661142', DALYTRAN-AMT: '689.88', WS-VALIDATION-FAIL-REASON: '102', WS-VALIDATION-FAIL-REASON-DESC: *overlimit}
+      - {DALYTRAN-ID: '0000000601496057', DALYTRAN-CARD-NUM: '6509230362553816', DALYTRAN-AMT: '900.22', WS-VALIDATION-FAIL-REASON: '102', WS-VALIDATION-FAIL-REASON-DESC: *overlimit}
+      - {DALYTRAN-ID: '0000000667157384', DALYTRAN-CARD-NUM: '5671184478505844', DALYTRAN-AMT: '952.77', WS-VALIDATION-FAIL-REASON: '102', WS-VALIDATION-FAIL-REASON-DESC: *overlimit}
+      - {DALYTRAN-ID: '0000000735823935', DALYTRAN-CARD-NUM: '5407099850479866', DALYTRAN-AMT: '910.11', WS-VALIDATION-FAIL-REASON: '102', WS-VALIDATION-FAIL-REASON-DESC: *overlimit}
+      - {DALYTRAN-ID: '0000000741999667', DALYTRAN-CARD-NUM: '9349107475869214', DALYTRAN-AMT: '643.44', WS-VALIDATION-FAIL-REASON: '102', WS-VALIDATION-FAIL-REASON-DESC: *overlimit}
+      - {DALYTRAN-ID: '0000000742447110', DALYTRAN-CARD-NUM: '8517866958206008', DALYTRAN-AMT: '746.77', WS-VALIDATION-FAIL-REASON: '102', WS-VALIDATION-FAIL-REASON-DESC: *overlimit}
+      - {DALYTRAN-ID: '0000000749066680', DALYTRAN-CARD-NUM: '6509230362553816', DALYTRAN-AMT: '805.77', WS-VALIDATION-FAIL-REASON: '102', WS-VALIDATION-FAIL-REASON-DESC: *overlimit}
+      - {DALYTRAN-ID: '0000000755736377', DALYTRAN-CARD-NUM: '9680294154603697', DALYTRAN-AMT: '906.44', WS-VALIDATION-FAIL-REASON: '102', WS-VALIDATION-FAIL-REASON-DESC: *overlimit}
+      - {DALYTRAN-ID: '0000000767081090', DALYTRAN-CARD-NUM: '1142167692878931', DALYTRAN-AMT: '671.11', WS-VALIDATION-FAIL-REASON: '102', WS-VALIDATION-FAIL-REASON-DESC: *overlimit}
+      - {DALYTRAN-ID: '0000000767308626', DALYTRAN-CARD-NUM: '1142167692878931', DALYTRAN-AMT: '856.44', WS-VALIDATION-FAIL-REASON: '102', WS-VALIDATION-FAIL-REASON-DESC: *overlimit}
+      - {DALYTRAN-ID: '0000000776200014', DALYTRAN-CARD-NUM: '9680294154603697', DALYTRAN-AMT: '985.22', WS-VALIDATION-FAIL-REASON: '102', WS-VALIDATION-FAIL-REASON-DESC: *overlimit}
+      - {DALYTRAN-ID: '0000000781205695', DALYTRAN-CARD-NUM: '5787351228879339', DALYTRAN-AMT: '489.66', WS-VALIDATION-FAIL-REASON: '102', WS-VALIDATION-FAIL-REASON-DESC: *overlimit}
+      - {DALYTRAN-ID: '0000000823157599', DALYTRAN-CARD-NUM: '9349107475869214', DALYTRAN-AMT: '111.11', WS-VALIDATION-FAIL-REASON: '102', WS-VALIDATION-FAIL-REASON-DESC: *overlimit}
+      - {DALYTRAN-ID: '0000000873232405', DALYTRAN-CARD-NUM: '4534784102713951', DALYTRAN-AMT: '720.99', WS-VALIDATION-FAIL-REASON: '102', WS-VALIDATION-FAIL-REASON-DESC: *overlimit}
+      - {DALYTRAN-ID: '0000000885437581', DALYTRAN-CARD-NUM: '7026637615032277', DALYTRAN-AMT: '818.00', WS-VALIDATION-FAIL-REASON: '102', WS-VALIDATION-FAIL-REASON-DESC: *overlimit}
+      - {DALYTRAN-ID: '0000000887771179', DALYTRAN-CARD-NUM: '7026637615032277', DALYTRAN-AMT: '242.22', WS-VALIDATION-FAIL-REASON: '102', WS-VALIDATION-FAIL-REASON-DESC: *overlimit}
+      - {DALYTRAN-ID: '0000000889986293', DALYTRAN-CARD-NUM: '1561409106491600', DALYTRAN-AMT: '973.11', WS-VALIDATION-FAIL-REASON: '102', WS-VALIDATION-FAIL-REASON-DESC: *overlimit}
+      - {DALYTRAN-ID: '0000000910081354', DALYTRAN-CARD-NUM: '7026637615032277', DALYTRAN-AMT: '130.11', WS-VALIDATION-FAIL-REASON: '102', WS-VALIDATION-FAIL-REASON-DESC: *overlimit}
+      - {DALYTRAN-ID: '0000000929059536', DALYTRAN-CARD-NUM: '8517866958206008', DALYTRAN-AMT: '920.11', WS-VALIDATION-FAIL-REASON: '102', WS-VALIDATION-FAIL-REASON-DESC: *overlimit}
+      - {DALYTRAN-ID: '0000000961186055', DALYTRAN-CARD-NUM: '1142167692878931', DALYTRAN-AMT: '548.33', WS-VALIDATION-FAIL-REASON: '102', WS-VALIDATION-FAIL-REASON-DESC: *overlimit}
+      - {DALYTRAN-ID: '0000000992103545', DALYTRAN-CARD-NUM: '1142167692878931', DALYTRAN-AMT: '635.99', WS-VALIDATION-FAIL-REASON: '102', WS-VALIDATION-FAIL-REASON-DESC: *overlimit}
+    # The interest transactions in TCATBALF key order, one per account's
+    # 01/0001 balance: TRAN-ID is the PARM date and a 6-digit counter, and
+    # the card comes from the cross-reference by account.
+    SYSTRAN:
+      records:
+      - {TRAN-ID: '2022071800000001', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '9680294154603697', TRAN-AMT: '14.56'}
+      - {TRAN-ID: '2022071800000002', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '0923877193247330', TRAN-AMT: '29.24'}
+      - {TRAN-ID: '2022071800000003', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '3999169246375885', TRAN-AMT: '32.38'}
+      - {TRAN-ID: '2022071800000004', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '2988091353094312', TRAN-AMT: '24.32'}
+      - {TRAN-ID: '2022071800000005', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '6009619150674526', TRAN-AMT: '15.83'}
+      - {TRAN-ID: '2022071800000006', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '2871968252812490', TRAN-AMT: '34.38'}
+      - {TRAN-ID: '2022071800000007', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '4859452612877065', TRAN-AMT: '16.08'}
+      - {TRAN-ID: '2022071800000008', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '8931369351894783', TRAN-AMT: '29.60'}
+      - {TRAN-ID: '2022071800000009', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '9501733721429893', TRAN-AMT: '36.34'}
+      - {TRAN-ID: '2022071800000010', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '3260763612337560', TRAN-AMT: '19.11'}
+      - {TRAN-ID: '2022071800000011', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '7427684863423209', TRAN-AMT: '25.90'}
+      - {TRAN-ID: '2022071800000012', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '0982496213629795', TRAN-AMT: '29.46'}
+      - {TRAN-ID: '2022071800000013', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '4011500891777367', TRAN-AMT: '35.94'}
+      - {TRAN-ID: '2022071800000014', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '8517866958206008', TRAN-AMT: '27.14'}
+      - {TRAN-ID: '2022071800000015', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '6349250331648509', TRAN-AMT: '51.02'}
+      - {TRAN-ID: '2022071800000016', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '6727055190616014', TRAN-AMT: '16.83'}
+      - {TRAN-ID: '2022071800000017', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '9349107475869214', TRAN-AMT: '4.29'}
+      - {TRAN-ID: '2022071800000018', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '5671184478505844', TRAN-AMT: '33.27'}
+      - {TRAN-ID: '2022071800000019', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '3940246016141489', TRAN-AMT: '32.98'}
+      - {TRAN-ID: '2022071800000020', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '0927987108636232', TRAN-AMT: '30.66'}
+      - {TRAN-ID: '2022071800000021', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '5407099850479866', TRAN-AMT: '11.10'}
+      - {TRAN-ID: '2022071800000022', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '2940139362300449', TRAN-AMT: '41.61'}
+      - {TRAN-ID: '2022071800000023', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '8112545834239735', TRAN-AMT: '23.51'}
+      - {TRAN-ID: '2022071800000024', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '2760836797107565', TRAN-AMT: '27.04'}
+      - {TRAN-ID: '2022071800000025', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '9056297931664011', TRAN-AMT: '19.87'}
+      - {TRAN-ID: '2022071800000026', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '8040580410348680', TRAN-AMT: '18.99'}
+      - {TRAN-ID: '2022071800000027', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '0683586198171516', TRAN-AMT: '44.80'}
+      - {TRAN-ID: '2022071800000028', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '6723000463207764', TRAN-AMT: '10.11'}
+      - {TRAN-ID: '2022071800000029', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '7251508149188883', TRAN-AMT: '39.63'}
+      - {TRAN-ID: '2022071800000030', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '6509230362553816', TRAN-AMT: '0.36'}
+      - {TRAN-ID: '2022071800000031', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '7026637615032277', TRAN-AMT: '8.30'}
+      - {TRAN-ID: '2022071800000032', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '7094142751055551', TRAN-AMT: '14.66'}
+      - {TRAN-ID: '2022071800000033', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '6832676047698087', TRAN-AMT: '42.37'}
+      - {TRAN-ID: '2022071800000034', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '4385271476627819', TRAN-AMT: '32.17'}
+      - {TRAN-ID: '2022071800000035', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '1561409106491600', TRAN-AMT: '16.74'}
+      - {TRAN-ID: '2022071800000036', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '4534784102713951', TRAN-AMT: '28.87'}
+      - {TRAN-ID: '2022071800000037', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '1142167692878931', TRAN-AMT: '0.00'}
+      - {TRAN-ID: '2022071800000038', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '7443870988897530', TRAN-AMT: '37.34'}
+      - {TRAN-ID: '2022071800000039', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '2745303720002090', TRAN-AMT: '25.63'}
+      - {TRAN-ID: '2022071800000040', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '9805583408996588', TRAN-AMT: '20.43'}
+      - {TRAN-ID: '2022071800000041', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '3766281984155154', TRAN-AMT: '29.99'}
+      - {TRAN-ID: '2022071800000042', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '5975117516616077', TRAN-AMT: '27.05'}
+      - {TRAN-ID: '2022071800000043', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '7058267261837752', TRAN-AMT: '36.72'}
+      - {TRAN-ID: '2022071800000044', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '1014086565224350', TRAN-AMT: '25.15'}
+      - {TRAN-ID: '2022071800000045', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '7379335634661142', TRAN-AMT: '30.09'}
+      - {TRAN-ID: '2022071800000046', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '5656830544981216', TRAN-AMT: '44.71'}
+      - {TRAN-ID: '2022071800000047', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '5787351228879339', TRAN-AMT: '19.97'}
+      - {TRAN-ID: '2022071800000048', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '6503535181795992', TRAN-AMT: '18.90'}
+      - {TRAN-ID: '2022071800000049', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '8262593602473076', TRAN-AMT: '24.95'}
+      - {TRAN-ID: '2022071800000050', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '0500024453765740', TRAN-AMT: '18.77'}
+    # The combined transactions, loaded back after TRANBKP emptied the file:
+    # the 262 posted records, then the 50 interest records, in TRAN-ID order,
+    # each stamped with the run clock.
+    TRANSACT:
+      count: 312
+      contains:
+      - {TRAN-ID: '0000000000683580', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '1', TRAN-SOURCE: 'POS TERM  ', TRAN-CARD-NUM: '4859452612877065', TRAN-AMT: '504.77', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000996722787', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '1', TRAN-SOURCE: 'POS TERM  ', TRAN-CARD-NUM: '3260763612337560', TRAN-AMT: '603.22', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '2022071800000001', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '9680294154603697', TRAN-AMT: '14.56', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '2022071800000050', TRAN-TYPE-CD: '01', TRAN-CAT-CD: '5', TRAN-SOURCE: 'System    ', TRAN-CARD-NUM: '0500024453765740', TRAN-AMT: '18.77', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+    # COMBTRAN's sort output, the same 312 records in TRAN-ID order.
+    TRANSACT-COMBINED:
+      count: 312
+      contains:
+      - {TRAN-ID: '0000000000683580', TRAN-CARD-NUM: '4859452612877065', TRAN-AMT: '504.77'}
+      - {TRAN-ID: '0000000996722787', TRAN-CARD-NUM: '3260763612337560', TRAN-AMT: '603.22'}
+      - {TRAN-ID: '2022071800000001', TRAN-CARD-NUM: '9680294154603697', TRAN-AMT: '14.56'}
+      - {TRAN-ID: '2022071800000050', TRAN-CARD-NUM: '0500024453765740', TRAN-AMT: '18.77'}
+    # The current generation at the end, TRANREPT's backup of the combined 312
+    # records; TRANBKP's 262-record generation is asserted as TRANBKP left it,
+    # under file_state '@AFTER:TRANBKP:TRANSACT-BKUP'.
+    TRANSACT-BKUP:
+      count: 312
+      contains:
+      - {TRAN-ID: '0000000000683580', TRAN-CARD-NUM: '4859452612877065', TRAN-AMT: '504.77'}
+      - {TRAN-ID: '0000000996722787', TRAN-CARD-NUM: '3260763612337560', TRAN-AMT: '603.22'}
+      - {TRAN-ID: '2022071800000001', TRAN-CARD-NUM: '9680294154603697', TRAN-AMT: '14.56'}
+      - {TRAN-ID: '2022071800000050', TRAN-CARD-NUM: '0500024453765740', TRAN-AMT: '18.77'}
+    # TRANSACT restructured by CREASTMT, in card and transaction id order:
+    # the first card's six posted records and its interest record, and the
+    # last record. TRNX-PROC-TS holds the first 24 bytes of the processing
+    # timestamp, and the 20-byte FILLER the space padding.
+    TRXFL:
+      count: 312
+      contains:
+      - {TRNX-CARD-NUM: '0500024453765740', TRNX-ID: '0000000058866561', TRNX-AMT: '183.88', TRNX-PROC-TS: '2022-07-06-10.00.00.0000  ', TRNX-RECORD.TRNX-REST.FILLER#1: '                    '}
+      - {TRNX-CARD-NUM: '0500024453765740', TRNX-ID: '0000000329724245', TRNX-AMT: '14.00', TRNX-PROC-TS: '2022-07-06-10.00.00.0000  ', TRNX-RECORD.TRNX-REST.FILLER#1: '                    '}
+      - {TRNX-CARD-NUM: '0500024453765740', TRNX-ID: '0000000475746885', TRNX-AMT: '967.44', TRNX-PROC-TS: '2022-07-06-10.00.00.0000  ', TRNX-RECORD.TRNX-REST.FILLER#1: '                    '}
+      - {TRNX-CARD-NUM: '0500024453765740', TRNX-ID: '0000000577826814', TRNX-AMT: '-47.88', TRNX-PROC-TS: '2022-07-06-10.00.00.0000  ', TRNX-RECORD.TRNX-REST.FILLER#1: '                    '}
+      - {TRNX-CARD-NUM: '0500024453765740', TRNX-ID: '0000000685488982', TRNX-AMT: '94.77', TRNX-PROC-TS: '2022-07-06-10.00.00.0000  ', TRNX-RECORD.TRNX-REST.FILLER#1: '                    '}
+      - {TRNX-CARD-NUM: '0500024453765740', TRNX-ID: '0000000838587312', TRNX-AMT: '241.66', TRNX-PROC-TS: '2022-07-06-10.00.00.0000  ', TRNX-RECORD.TRNX-REST.FILLER#1: '                    '}
+      - {TRNX-CARD-NUM: '0500024453765740', TRNX-ID: '2022071800000050', TRNX-AMT: '18.77', TRNX-PROC-TS: '2022-07-06-10.00.00.0000  ', TRNX-RECORD.TRNX-REST.FILLER#1: '                    '}
+      - {TRNX-CARD-NUM: '9805583408996588', TRNX-ID: '2022071800000040', TRNX-AMT: '20.43', TRNX-PROC-TS: '2022-07-06-10.00.00.0000  ', TRNX-RECORD.TRNX-REST.FILLER#1: '                    '}
+    # The first statement whole, for card 0500024453765740 and account
+    # 00000000050, whose balance has no interest (GAP-DEF-003) although its
+    # interest record is listed; then the total line of each other statement,
+    # in card order, each the sum of the card's posted and interest amounts.
+    STMTFILE:
+      count: 1262
+      contains:
+      - '*******************************START OF STATEMENT*******************************'
+      - 'Aniya Alba Von                                                                  '
+      - '1588 Nienow Cape                                                                '
+      - 'Suite 187                                                                       '
+      - 'New OR USA 04257                                                                '
+      - '--------------------------------------------------------------------------------'
+      - '                                 Basic Details                                  '
+      - '--------------------------------------------------------------------------------'
+      - 'Account ID         :00000000050                                                 '
+      - 'Current Balance    :000001945.87                                                '
+      - 'FICO Score         :623                                                         '
+      - '--------------------------------------------------------------------------------'
+      - '                              TRANSACTION SUMMARY                               '
+      - '--------------------------------------------------------------------------------'
+      - 'Tran ID         Tran Details                                         Tran Amount'
+      - '--------------------------------------------------------------------------------'
+      - '0000000058866561 Purchase at Blick-Rippin                         $      183.88 '
+      - '0000000329724245 Purchase at Reichel Group                        $       14.00 '
+      - '0000000475746885 Purchase at Adams-Watsica                        $      967.44 '
+      - '0000000577826814 Return item at DuBuque, Wuckert and Mraz         $       47.88-'
+      - '0000000685488982 Purchase at Williamson Group                     $       94.77 '
+      - '0000000838587312 Purchase at Abbott-Gerlach                       $      241.66 '
+      - "2022071800000050 Int. for a/c 00000000050\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0$       18.77 "
+      - '--------------------------------------------------------------------------------'
+      - 'Total EXP:                                                        $     1472.64 '
+      - '********************************END OF STATEMENT********************************'
+      # statement 2: account 00000000027
+      - 'Total EXP:                                                        $     3256.45 '
+      # statement 3: account 00000000002
+      - 'Total EXP:                                                        $     1606.21 '
+      # statement 4: account 00000000020
+      - 'Total EXP:                                                        $     1564.76 '
+      # statement 5: account 00000000012
+      - 'Total EXP:                                                        $     1624.11 '
+      # statement 6: account 00000000044
+      - 'Total EXP:                                                        $     1822.02 '
+      # statement 7: account 00000000037
+      - 'Total EXP:                                                        $      132.88-'
+      # statement 8: account 00000000035
+      - 'Total EXP:                                                        $      855.95 '
+      # statement 9: account 00000000039
+      - 'Total EXP:                                                        $     2005.51 '
+      # statement 10: account 00000000024
+      - 'Total EXP:                                                        $     1549.14 '
+      # statement 11: account 00000000006
+      - 'Total EXP:                                                        $     2388.57 '
+      # statement 12: account 00000000022
+      - 'Total EXP:                                                        $     2424.81 '
+      # statement 13: account 00000000004
+      - 'Total EXP:                                                        $     1646.98 '
+      # statement 14: account 00000000010
+      - 'Total EXP:                                                        $     1010.87 '
+      # statement 15: account 00000000041
+      - 'Total EXP:                                                        $     1672.86 '
+      # statement 16: account 00000000019
+      - 'Total EXP:                                                        $     2600.51 '
+      # statement 17: account 00000000003
+      - 'Total EXP:                                                        $     1743.03 '
+      # statement 18: account 00000000013
+      - 'Total EXP:                                                        $     2855.04 '
+      # statement 19: account 00000000034
+      - 'Total EXP:                                                        $     2148.49 '
+      # statement 20: account 00000000036
+      - 'Total EXP:                                                        $     1899.30 '
+      # statement 21: account 00000000007
+      - 'Total EXP:                                                        $      723.29 '
+      # statement 22: account 00000000021
+      - 'Total EXP:                                                        $      857.98 '
+      # statement 23: account 00000000046
+      - 'Total EXP:                                                        $     3187.12 '
+      # statement 24: account 00000000018
+      - 'Total EXP:                                                        $     2581.92 '
+      # statement 25: account 00000000047
+      - 'Total EXP:                                                        $     1032.63 '
+      # statement 26: account 00000000042
+      - 'Total EXP:                                                        $     1690.36 '
+      # statement 27: account 00000000005
+      - 'Total EXP:                                                        $      853.69 '
+      # statement 28: account 00000000015
+      - 'Total EXP:                                                        $     3774.56 '
+      # statement 29: account 00000000048
+      - 'Total EXP:                                                        $      995.79 '
+      # statement 30: account 00000000030
+      - 'Total EXP:                                                        $      900.53-'
+      # statement 31: account 00000000028
+      - 'Total EXP:                                                        $      743.89 '
+      # statement 32: account 00000000016
+      - 'Total EXP:                                                        $     1092.71 '
+      # statement 33: account 00000000033
+      - 'Total EXP:                                                        $     2986.80 '
+      # statement 34: account 00000000031
+      - 'Total EXP:                                                        $      310.40 '
+      # statement 35: account 00000000043
+      - 'Total EXP:                                                        $     2731.91 '
+      # statement 36: account 00000000032
+      - 'Total EXP:                                                        $      445.22 '
+      # statement 37: account 00000000029
+      - 'Total EXP:                                                        $     2358.27 '
+      # statement 38: account 00000000045
+      - 'Total EXP:                                                        $     2092.86 '
+      # statement 39: account 00000000011
+      - 'Total EXP:                                                        $     1353.89 '
+      # statement 40: account 00000000038
+      - 'Total EXP:                                                        $     2486.87 '
+      # statement 41: account 00000000026
+      - 'Total EXP:                                                        $     1166.86 '
+      # statement 42: account 00000000023
+      - 'Total EXP:                                                        $     1069.49 '
+      # statement 43: account 00000000049
+      - 'Total EXP:                                                        $     1058.26 '
+      # statement 44: account 00000000014
+      - 'Total EXP:                                                        $     1488.13 '
+      # statement 45: account 00000000008
+      - 'Total EXP:                                                        $     1562.68 '
+      # statement 46: account 00000000025
+      - 'Total EXP:                                                        $      702.63 '
+      # statement 47: account 00000000017
+      - 'Total EXP:                                                        $      650.27-'
+      # statement 48: account 00000000009
+      - 'Total EXP:                                                        $     2683.89 '
+      # statement 49: account 00000000001
+      - 'Total EXP:                                                        $     1108.66 '
+      # statement 50: account 00000000040
+      - 'Total EXP:                                                        $     1629.53 '
+    # The first HTML document's heading, balance, interest row and end, then
+    # the account heading of each other document, in card order.
+    HTMLFILE:
+      count: 6632
+      contains:
+      - '<!DOCTYPE html>                                                                                     '
+      - '<h3>Statement for Account Number: 00000000050         </h3>                                         '
+      - '<p>Account ID         : 00000000050         </p>                                                    '
+      - '<p>Current Balance    : 000001945.87 </p>                                                           '
+      - '<p>2022071800000050</p>                                                                             '
+      - "<p>Int. for a/c 00000000050\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0</p>                                            "
+      - '<p>       18.77 </p>                                                                                '
+      - '</html>                                                                                             '
+      - '<h3>Statement for Account Number: 00000000027         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000002         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000020         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000012         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000044         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000037         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000035         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000039         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000024         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000006         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000022         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000004         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000010         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000041         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000019         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000003         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000013         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000034         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000036         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000007         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000021         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000046         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000018         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000047         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000042         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000005         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000015         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000048         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000030         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000028         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000016         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000033         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000031         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000043         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000032         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000029         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000045         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000011         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000038         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000026         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000023         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000049         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000014         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000008         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000025         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000017         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000009         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000001         </h3>                                         '
+      - '<h3>Statement for Account Number: 00000000040         </h3>                                         '
+    # TRANREPT's sort output in card order, ties kept in TRAN-ID order: the
+    # first card's seven records and the last record.
+    TRANSACT-DALY:
+      count: 312
+      contains:
+      - {TRAN-CARD-NUM: '0500024453765740', TRAN-ID: '0000000058866561', TRAN-AMT: '183.88', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-CARD-NUM: '0500024453765740', TRAN-ID: '0000000329724245', TRAN-AMT: '14.00', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-CARD-NUM: '0500024453765740', TRAN-ID: '0000000475746885', TRAN-AMT: '967.44', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-CARD-NUM: '0500024453765740', TRAN-ID: '0000000577826814', TRAN-AMT: '-47.88', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-CARD-NUM: '0500024453765740', TRAN-ID: '0000000685488982', TRAN-AMT: '94.77', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-CARD-NUM: '0500024453765740', TRAN-ID: '0000000838587312', TRAN-AMT: '241.66', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-CARD-NUM: '0500024453765740', TRAN-ID: '2022071800000050', TRAN-AMT: '18.77', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-CARD-NUM: '9805583408996588', TRAN-ID: '2022071800000040', TRAN-AMT: '20.43', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+    # The report: its header and first account block; the first page break,
+    # after the fourth account total; the last card's records, which end with
+    # the page total and the grand total and no account total.
+    TRANREPT:
+      count: 519
+      contains:
+      - 'DALYREPT                              Daily Transaction Report                 Date Range: 2022-01-01 to 2022-07-06                  '
+      - '                                                                                                                                     '
+      - 'Transaction ID   Account ID  Transaction Type   Tran Category                      Tran Source            Amount                     '
+      - '-------------------------------------------------------------------------------------------------------------------------------------'
+      - '0000000058866561 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM               183.88                     '
+      - '0000000329724245 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                14.00                     '
+      - '0000000475746885 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM               967.44                     '
+      - '0000000577826814 00000000050 03-Credit          0001-Credit to Account             OPERATOR      -         47.88                     '
+      - '0000000685488982 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                94.77                     '
+      - '0000000838587312 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM               241.66                     '
+      - '2022071800000050 00000000050 01-Purchase        0005-Interest Amount               System                  18.77                     '
+      - 'Account Total....................................................................................+      1,472.64                     '
+      - '-------------------------------------------------------------------------------------------------------------------------------------'
+      - 'Account Total....................................................................................+      1,564.76                     '
+      - '-------------------------------------------------------------------------------------------------------------------------------------'
+      - 'Page Total ......................................................................................+      7,900.06                     '
+      - '-------------------------------------------------------------------------------------------------------------------------------------'
+      - 'DALYREPT                              Daily Transaction Report                 Date Range: 2022-01-01 to 2022-07-06                  '
+      - '                                                                                                                                     '
+      - 'Transaction ID   Account ID  Transaction Type   Tran Category                      Tran Source            Amount                     '
+      - '-------------------------------------------------------------------------------------------------------------------------------------'
+      - '0000000263926805 00000000012 01-Purchase        0001-Regular Sales Draft           POS TERM               210.33                     '
+      - '0000000100915314 00000000040 01-Purchase        0001-Regular Sales Draft           POS TERM               356.22                     '
+      - '0000000573732499 00000000040 01-Purchase        0001-Regular Sales Draft           POS TERM               237.44                     '
+      - '0000000686167627 00000000040 01-Purchase        0001-Regular Sales Draft           POS TERM                81.44                     '
+      - '0000000731515153 00000000040 03-Credit          0001-Credit to Account             OPERATOR      -         25.99                     '
+      - '0000000884070277 00000000040 01-Purchase        0001-Regular Sales Draft           POS TERM               194.33                     '
+      - '0000000982241353 00000000040 01-Purchase        0001-Regular Sales Draft           POS TERM               765.66                     '
+      - '2022071800000040 00000000040 01-Purchase        0005-Interest Amount               System                  20.43                     '
+      - 'Page Total ......................................................................................+      1,664.52                     '
+      - '-------------------------------------------------------------------------------------------------------------------------------------'
+      - 'Grand Total......................................................................................+     79,254.29                     '
+  file_state:
+    # The stage observations, each a dataset as one job of the chain left it.
+    # Every account in key order at the end of POSTTRAN, before INTCALC runs:
+    # the repository balance and cycle totals with each posted transaction
+    # added to ACCT-CURR-BAL and to ACCT-CURR-CYC-CREDIT (amount >= 0) or
+    # ACCT-CURR-CYC-DEBIT [app/cbl/CBTRN02C.cbl:545-554]. INTCALC rewrites
+    # accounts 1 to 49 and zeroes these cycle totals, so only this observation
+    # holds them; account 50 ends as it stands here (GAP-DEF-003).
+    '@AFTER:POSTTRAN:ACCTDATA':
+      records:
+      - {ACCT-ID: '1', ACCT-CURR-BAL: '1288.10', ACCT-CURR-CYC-CREDIT: '1164.87', ACCT-CURR-CYC-DEBIT: '-70.77'}
+      - {ACCT-ID: '2', ACCT-CURR-BAL: '1734.97', ACCT-CURR-CYC-CREDIT: '2339.97', ACCT-CURR-CYC-DEBIT: '-763.00'}
+      - {ACCT-ID: '3', ACCT-CURR-BAL: '1857.65', ACCT-CURR-CYC-CREDIT: '2590.87', ACCT-CURR-CYC-DEBIT: '-880.22'}
+      - {ACCT-ID: '4', ACCT-CURR-BAL: '1662.66', ACCT-CURR-CYC-CREDIT: '1945.65', ACCT-CURR-CYC-DEBIT: '-322.99'}
+      - {ACCT-ID: '5', ACCT-CURR-BAL: '1182.86', ACCT-CURR-CYC-CREDIT: '1266.85', ACCT-CURR-CYC-DEBIT: '-428.99'}
+      - {ACCT-ID: '6', ACCT-CURR-BAL: '2572.19', ACCT-CURR-CYC-CREDIT: '2750.41', ACCT-CURR-CYC-DEBIT: '-396.22'}
+      - {ACCT-ID: '7', ACCT-CURR-BAL: '900.21', ACCT-CURR-CYC-CREDIT: '1287.09', ACCT-CURR-CYC-DEBIT: '-579.88'}
+      - {ACCT-ID: '8', ACCT-CURR-BAL: '2138.08', ACCT-CURR-CYC-CREDIT: '2368.19', ACCT-CURR-CYC-DEBIT: '-835.11'}
+      - {ACCT-ID: '9', ACCT-CURR-BAL: '3207.55', ACCT-CURR-CYC-CREDIT: '2907.66', ACCT-CURR-CYC-DEBIT: '-260.11'}
+      - {ACCT-ID: '10', ACCT-CURR-BAL: '1150.76', ACCT-CURR-CYC-CREDIT: '1529.20', ACCT-CURR-CYC-DEBIT: '-537.44'}
+      - {ACCT-ID: '11', ACCT-CURR-BAL: '1539.99', ACCT-CURR-CYC-CREDIT: '2072.76', ACCT-CURR-CYC-DEBIT: '-744.77'}
+      - {ACCT-ID: '12', ACCT-CURR-BAL: '1770.65', ACCT-CURR-CYC-CREDIT: '2357.09', ACCT-CURR-CYC-DEBIT: '-762.44'}
+      - {ACCT-ID: '13', ACCT-CURR-BAL: '2860.10', ACCT-CURR-CYC-CREDIT: '2875.87', ACCT-CURR-CYC-DEBIT: '-56.77'}
+      - {ACCT-ID: '14', ACCT-CURR-BAL: '1475.99', ACCT-CURR-CYC-CREDIT: '2171.65', ACCT-CURR-CYC-DEBIT: '-710.66'}
+      - {ACCT-ID: '15', ACCT-CURR-BAL: '4212.54', ACCT-CURR-CYC-CREDIT: '4081.98', ACCT-CURR-CYC-DEBIT: '-358.44'}
+      - {ACCT-ID: '16', ACCT-CURR-BAL: '1808.88', ACCT-CURR-CYC-CREDIT: '1346.87', ACCT-CURR-CYC-DEBIT: '-270.99'}
+      - {ACCT-ID: '17', ACCT-CURR-BAL: '-621.56', ACCT-CURR-CYC-CREDIT: '343.77', ACCT-CURR-CYC-DEBIT: '-998.33'}
+      - {ACCT-ID: '18', ACCT-CURR-BAL: '2692.65', ACCT-CURR-CYC-CREDIT: '2661.76', ACCT-CURR-CYC-DEBIT: '-113.11'}
+      - {ACCT-ID: '19', ACCT-CURR-BAL: '3047.53', ACCT-CURR-CYC-CREDIT: '2639.19', ACCT-CURR-CYC-DEBIT: '-71.66'}
+      - {ACCT-ID: '20', ACCT-CURR-BAL: '1903.10', ACCT-CURR-CYC-CREDIT: '2453.10', ACCT-CURR-CYC-DEBIT: '-919.00'}
+      - {ACCT-ID: '21', ACCT-CURR-BAL: '958.88', ACCT-CURR-CYC-CREDIT: '888.65', ACCT-CURR-CYC-DEBIT: '-41.77'}
+      - {ACCT-ID: '22', ACCT-CURR-BAL: '2438.20', ACCT-CURR-CYC-CREDIT: '3328.86', ACCT-CURR-CYC-DEBIT: '-945.66'}
+      - {ACCT-ID: '23', ACCT-CURR-BAL: '1149.98', ACCT-CURR-CYC-CREDIT: '1881.42', ACCT-CURR-CYC-DEBIT: '-835.44'}
+      - {ACCT-ID: '24', ACCT-CURR-BAL: '1922.10', ACCT-CURR-CYC-CREDIT: '2163.87', ACCT-CURR-CYC-DEBIT: '-641.77'}
+      - {ACCT-ID: '25', ACCT-CURR-BAL: '743.76', ACCT-CURR-CYC-CREDIT: '1589.76', ACCT-CURR-CYC-DEBIT: '-907.00'}
+      - {ACCT-ID: '26', ACCT-CURR-BAL: '1193.87', ACCT-CURR-CYC-CREDIT: '1519.87', ACCT-CURR-CYC-DEBIT: '-372.00'}
+      - {ACCT-ID: '27', ACCT-CURR-BAL: '3495.65', ACCT-CURR-CYC-CREDIT: '3584.64', ACCT-CURR-CYC-DEBIT: '-372.99'}
+      - {ACCT-ID: '28', ACCT-CURR-BAL: '801.78', ACCT-CURR-CYC-CREDIT: '809.00', ACCT-CURR-CYC-DEBIT: '-75.22'}
+      - {ACCT-ID: '29', ACCT-CURR-BAL: '2657.64', ACCT-CURR-CYC-CREDIT: '3170.97', ACCT-CURR-CYC-DEBIT: '-852.33'}
+      - {ACCT-ID: '30', ACCT-CURR-BAL: '-898.89', ACCT-CURR-CYC-CREDIT: '29.44', ACCT-CURR-CYC-DEBIT: '-930.33'}
+      - {ACCT-ID: '31', ACCT-CURR-BAL: '333.10', ACCT-CURR-CYC-CREDIT: '664.32', ACCT-CURR-CYC-DEBIT: '-362.22'}
+      - {ACCT-ID: '32', ACCT-CURR-BAL: '460.56', ACCT-CURR-CYC-CREDIT: '1173.55', ACCT-CURR-CYC-DEBIT: '-742.99'}
+      - {ACCT-ID: '33', ACCT-CURR-BAL: '3354.43', ACCT-CURR-CYC-CREDIT: '3389.98', ACCT-CURR-CYC-DEBIT: '-445.55'}
+      - {ACCT-ID: '34', ACCT-CURR-BAL: '2369.32', ACCT-CURR-CYC-CREDIT: '2573.87', ACCT-CURR-CYC-DEBIT: '-457.55'}
+      - {ACCT-ID: '35', ACCT-CURR-BAL: '1005.21', ACCT-CURR-CYC-CREDIT: '1339.20', ACCT-CURR-CYC-DEBIT: '-499.99'}
+      - {ACCT-ID: '36', ACCT-CURR-BAL: '1980.43', ACCT-CURR-CYC-CREDIT: '2309.76', ACCT-CURR-CYC-DEBIT: '-439.33'}
+      - {ACCT-ID: '37', ACCT-CURR-BAL: '-125.88', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '-132.88'}
+      - {ACCT-ID: '38', ACCT-CURR-BAL: '3061.53', ACCT-CURR-CYC-CREDIT: '2987.75', ACCT-CURR-CYC-DEBIT: '-538.22'}
+      - {ACCT-ID: '39', ACCT-CURR-BAL: '2822.88', ACCT-CURR-CYC-CREDIT: '2050.87', ACCT-CURR-CYC-DEBIT: '-70.99'}
+      - {ACCT-ID: '40', ACCT-CURR-BAL: '1652.10', ACCT-CURR-CYC-CREDIT: '1635.09', ACCT-CURR-CYC-DEBIT: '-25.99'}
+      - {ACCT-ID: '41', ACCT-CURR-BAL: '2017.87', ACCT-CURR-CYC-CREDIT: '2399.53', ACCT-CURR-CYC-DEBIT: '-756.66'}
+      - {ACCT-ID: '42', ACCT-CURR-BAL: '1965.31', ACCT-CURR-CYC-CREDIT: '2164.75', ACCT-CURR-CYC-DEBIT: '-501.44'}
+      - {ACCT-ID: '43', ACCT-CURR-BAL: '3305.19', ACCT-CURR-CYC-CREDIT: '2938.19', ACCT-CURR-CYC-DEBIT: '-243.00'}
+      - {ACCT-ID: '44', ACCT-CURR-BAL: '2059.87', ACCT-CURR-CYC-CREDIT: '2012.20', ACCT-CURR-CYC-DEBIT: '-215.33'}
+      - {ACCT-ID: '45', ACCT-CURR-BAL: '2248.77', ACCT-CURR-CYC-CREDIT: '2407.54', ACCT-CURR-CYC-DEBIT: '-344.77'}
+      - {ACCT-ID: '46', ACCT-CURR-BAL: '3538.41', ACCT-CURR-CYC-CREDIT: '3577.41', ACCT-CURR-CYC-DEBIT: '-435.00'}
+      - {ACCT-ID: '47', ACCT-CURR-BAL: '1044.66', ACCT-CURR-CYC-CREDIT: '1598.10', ACCT-CURR-CYC-DEBIT: '-585.44'}
+      - {ACCT-ID: '48', ACCT-CURR-BAL: '1202.89', ACCT-CURR-CYC-CREDIT: '1512.77', ACCT-CURR-CYC-DEBIT: '-535.88'}
+      - {ACCT-ID: '49', ACCT-CURR-BAL: '1133.31', ACCT-CURR-CYC-CREDIT: '1996.08', ACCT-CURR-CYC-DEBIT: '-962.77'}
+      - {ACCT-ID: '50', ACCT-CURR-BAL: '1945.87', ACCT-CURR-CYC-CREDIT: '1501.75', ACCT-CURR-CYC-DEBIT: '-47.88'}
+    # The TRANSACT-BKUP generation TRANBKP writes, at the end of TRANBKP: its
+    # REPRO copies the 262 posted records from the TRANSACT cluster in TRAN-ID
+    # order [app/jcl/TRANBKP.jcl:23-33], before COMBTRAN reads it and TRANREPT
+    # writes the generation that is current at the end.
+    '@AFTER:TRANBKP:TRANSACT-BKUP':
+      records:
+      - {TRAN-ID: '0000000000683580', TRAN-CARD-NUM: '4859452612877065', TRAN-AMT: '504.77', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000001774260', TRAN-CARD-NUM: '0927987108636232', TRAN-AMT: '-919.00', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000006292564', TRAN-CARD-NUM: '6009619150674526', TRAN-AMT: '67.88', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000009101861', TRAN-CARD-NUM: '8040580410348680', TRAN-AMT: '281.77', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000010142252', TRAN-CARD-NUM: '5656830544981216', TRAN-AMT: '454.66', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000010229018', TRAN-CARD-NUM: '7379335634661142', TRAN-AMT: '849.99', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000016259484', TRAN-CARD-NUM: '4011500891777367', TRAN-AMT: '-56.77', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000017874199', TRAN-CARD-NUM: '8040580410348680', TRAN-AMT: '373.66', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000019065428', TRAN-CARD-NUM: '6503535181795992', TRAN-AMT: '-535.88', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000021711604', TRAN-CARD-NUM: '9501733721429893', TRAN-AMT: '416.11', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000025430891', TRAN-CARD-NUM: '3260763612337560', TRAN-AMT: '94.33', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000028097268', TRAN-CARD-NUM: '7094142751055551', TRAN-AMT: '250.22', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000030755266', TRAN-CARD-NUM: '3766281984155154', TRAN-AMT: '829.55', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000032979555', TRAN-CARD-NUM: '6509230362553816', TRAN-AMT: '29.44', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000033688127', TRAN-CARD-NUM: '3766281984155154', TRAN-AMT: '958.99', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000043636099', TRAN-CARD-NUM: '2940139362300449', TRAN-AMT: '-945.66', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000051205286', TRAN-CARD-NUM: '7094142751055551', TRAN-AMT: '649.33', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000054288996', TRAN-CARD-NUM: '4534784102713951', TRAN-AMT: '502.66', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000054727064', TRAN-CARD-NUM: '1014086565224350', TRAN-AMT: '303.11', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000058866561', TRAN-CARD-NUM: '0500024453765740', TRAN-AMT: '183.88', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000060921254', TRAN-CARD-NUM: '5787351228879339', TRAN-AMT: '779.33', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000061394789', TRAN-CARD-NUM: '2745303720002090', TRAN-AMT: '-70.99', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000070754800', TRAN-CARD-NUM: '0923877193247330', TRAN-AMT: '355.11', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000072220498', TRAN-CARD-NUM: '6349250331648509', TRAN-AMT: '660.11', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000084515950', TRAN-CARD-NUM: '8931369351894783', TRAN-AMT: '325.00', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000085824369', TRAN-CARD-NUM: '3999169246375885', TRAN-AMT: '999.77', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000095706092', TRAN-CARD-NUM: '8931369351894783', TRAN-AMT: '482.44', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000099965527', TRAN-CARD-NUM: '0927987108636232', TRAN-AMT: '555.22', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000100915314', TRAN-CARD-NUM: '9805583408996588', TRAN-AMT: '356.22', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000107748365', TRAN-CARD-NUM: '7094142751055551', TRAN-AMT: '274.00', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000109340521', TRAN-CARD-NUM: '7379335634661142', TRAN-AMT: '840.55', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000109506921', TRAN-CARD-NUM: '6832676047698087', TRAN-AMT: '769.55', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000115716061', TRAN-CARD-NUM: '2940139362300449', TRAN-AMT: '401.22', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000130111733', TRAN-CARD-NUM: '0683586198171516', TRAN-AMT: '777.33', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000132831571', TRAN-CARD-NUM: '1014086565224350', TRAN-AMT: '-215.33', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000137879630', TRAN-CARD-NUM: '5671184478505844', TRAN-AMT: '46.66', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000139910093', TRAN-CARD-NUM: '7251508149188883', TRAN-AMT: '570.66', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000142315472', TRAN-CARD-NUM: '2871968252812490', TRAN-AMT: '843.66', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000143386237', TRAN-CARD-NUM: '8262593602473076', TRAN-AMT: '559.88', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000152467982', TRAN-CARD-NUM: '2745303720002090', TRAN-AMT: '168.33', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000160469204', TRAN-CARD-NUM: '8040580410348680', TRAN-AMT: '864.44', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000166444519', TRAN-CARD-NUM: '9056297931664011', TRAN-AMT: '183.22', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000169879332', TRAN-CARD-NUM: '6723000463207764', TRAN-AMT: '256.00', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000173069364', TRAN-CARD-NUM: '8517866958206008', TRAN-AMT: '985.33', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000174748684', TRAN-CARD-NUM: '6727055190616014', TRAN-AMT: '19.99', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000184933166', TRAN-CARD-NUM: '7251508149188883', TRAN-AMT: '989.77', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000187573156', TRAN-CARD-NUM: '0683586198171516', TRAN-AMT: '579.77', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000189414937', TRAN-CARD-NUM: '6349250331648509', TRAN-AMT: '-358.44', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000191360674', TRAN-CARD-NUM: '2745303720002090', TRAN-AMT: '848.33', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000192039153', TRAN-CARD-NUM: '7058267261837752', TRAN-AMT: '-243.00', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000194189303', TRAN-CARD-NUM: '6727055190616014', TRAN-AMT: '59.33', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000196728331', TRAN-CARD-NUM: '7427684863423209', TRAN-AMT: '-744.77', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000198494663', TRAN-CARD-NUM: '2745303720002090', TRAN-AMT: '385.77', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000201032783', TRAN-CARD-NUM: '4011500891777367', TRAN-AMT: '326.44', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000202217428', TRAN-CARD-NUM: '4385271476627819', TRAN-AMT: '299.33', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000202886897', TRAN-CARD-NUM: '2871968252812490', TRAN-AMT: '175.88', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000203305494', TRAN-CARD-NUM: '5787351228879339', TRAN-AMT: '479.22', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000204143988', TRAN-CARD-NUM: '3766281984155154', TRAN-AMT: '76.33', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000211219588', TRAN-CARD-NUM: '6723000463207764', TRAN-AMT: '553.00', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000218186931', TRAN-CARD-NUM: '8931369351894783', TRAN-AMT: '-835.11', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000220745261', TRAN-CARD-NUM: '7026637615032277', TRAN-AMT: '495.66', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000223138231', TRAN-CARD-NUM: '9501733721429893', TRAN-AMT: '851.33', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000224060323', TRAN-CARD-NUM: '9349107475869214', TRAN-AMT: '343.77', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000226849749', TRAN-CARD-NUM: '6009619150674526', TRAN-AMT: '-428.99', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000232640164', TRAN-CARD-NUM: '7427684863423209', TRAN-AMT: '160.99', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000238329981', TRAN-CARD-NUM: '6509230362553816', TRAN-AMT: '-930.33', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000241121967', TRAN-CARD-NUM: '6832676047698087', TRAN-AMT: '-445.55', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000246307558', TRAN-CARD-NUM: '7443870988897530', TRAN-AMT: '816.77', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000246312084', TRAN-CARD-NUM: '2940139362300449', TRAN-AMT: '848.77', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000246549911', TRAN-CARD-NUM: '5787351228879339', TRAN-AMT: '339.55', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000248557079', TRAN-CARD-NUM: '5975117516616077', TRAN-AMT: '905.00', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000250062442', TRAN-CARD-NUM: '6009619150674526', TRAN-AMT: '346.99', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000253579636', TRAN-CARD-NUM: '7443870988897530', TRAN-AMT: '257.55', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000253685514', TRAN-CARD-NUM: '4534784102713951', TRAN-AMT: '496.33', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000263663553', TRAN-CARD-NUM: '6503535181795992', TRAN-AMT: '526.11', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000263926805', TRAN-CARD-NUM: '0982496213629795', TRAN-AMT: '210.33', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000265935610', TRAN-CARD-NUM: '7443870988897530', TRAN-AMT: '461.99', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000272698228', TRAN-CARD-NUM: '3260763612337560', TRAN-AMT: '457.55', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000273137276', TRAN-CARD-NUM: '6503535181795992', TRAN-AMT: '764.22', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000274427056', TRAN-CARD-NUM: '0923877193247330', TRAN-AMT: '-763.00', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000274596018', TRAN-CARD-NUM: '5407099850479866', TRAN-AMT: '40.00', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000283702177', TRAN-CARD-NUM: '5975117516616077', TRAN-AMT: '89.99', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000292939458', TRAN-CARD-NUM: '8262593602473076', TRAN-AMT: '49.55', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000298764221', TRAN-CARD-NUM: '7443870988897530', TRAN-AMT: '706.11', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000298806396', TRAN-CARD-NUM: '7058267261837752', TRAN-AMT: '936.22', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000307523903', TRAN-CARD-NUM: '5787351228879339', TRAN-AMT: '-585.44', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000312054308', TRAN-CARD-NUM: '7379335634661142', TRAN-AMT: '717.00', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000312439873', TRAN-CARD-NUM: '7443870988897530', TRAN-AMT: '745.33', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000312675172', TRAN-CARD-NUM: '8931369351894783', TRAN-AMT: '728.77', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000313527007', TRAN-CARD-NUM: '8112545834239735', TRAN-AMT: '948.22', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000325686503', TRAN-CARD-NUM: '0923877193247330', TRAN-AMT: '569.99', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000328781772', TRAN-CARD-NUM: '9056297931664011', TRAN-AMT: '859.44', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000329724245', TRAN-CARD-NUM: '0500024453765740', TRAN-AMT: '14.00', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000338128146', TRAN-CARD-NUM: '7094142751055551', TRAN-AMT: '-742.99', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000341155503', TRAN-CARD-NUM: '8517866958206008', TRAN-AMT: '990.88', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000341634875', TRAN-CARD-NUM: '2760836797107565', TRAN-AMT: '997.88', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000357518499', TRAN-CARD-NUM: '7251508149188883', TRAN-AMT: '-852.33', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000358543876', TRAN-CARD-NUM: '5975117516616077', TRAN-AMT: '552.77', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000361866674', TRAN-CARD-NUM: '7427684863423209', TRAN-AMT: '446.00', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000366513257', TRAN-CARD-NUM: '0927987108636232', TRAN-AMT: '965.55', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000373973344', TRAN-CARD-NUM: '5671184478505844', TRAN-AMT: '958.33', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000375247552', TRAN-CARD-NUM: '3999169246375885', TRAN-AMT: '115.11', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000378710702', TRAN-CARD-NUM: '7379335634661142', TRAN-AMT: '-344.77', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000379084859', TRAN-CARD-NUM: '6723000463207764', TRAN-AMT: '-75.22', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000380632461', TRAN-CARD-NUM: '4859452612877065', TRAN-AMT: '428.33', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000382018782', TRAN-CARD-NUM: '5656830544981216', TRAN-AMT: '884.99', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000382291356', TRAN-CARD-NUM: '5671184478505844', TRAN-AMT: '860.77', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000392772234', TRAN-CARD-NUM: '4385271476627819', TRAN-AMT: '351.66', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000397282953', TRAN-CARD-NUM: '2871968252812490', TRAN-AMT: '-396.22', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000399296572', TRAN-CARD-NUM: '6009619150674526', TRAN-AMT: '254.77', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000400022505', TRAN-CARD-NUM: '1014086565224350', TRAN-AMT: '385.44', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000400762013', TRAN-CARD-NUM: '2760836797107565', TRAN-AMT: '617.00', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000402032668', TRAN-CARD-NUM: '3766281984155154', TRAN-AMT: '-756.66', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000407178785', TRAN-CARD-NUM: '3940246016141489', TRAN-AMT: '949.77', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000407637739', TRAN-CARD-NUM: '5975117516616077', TRAN-AMT: '-501.44', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000412515011', TRAN-CARD-NUM: '5975117516616077', TRAN-AMT: '214.77', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000415671623', TRAN-CARD-NUM: '1561409106491600', TRAN-AMT: '0.99', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000416848414', TRAN-CARD-NUM: '6832676047698087', TRAN-AMT: '995.22', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000420768809', TRAN-CARD-NUM: '7058267261837752', TRAN-AMT: '674.99', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000429557611', TRAN-CARD-NUM: '0982496213629795', TRAN-AMT: '545.66', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000432231260', TRAN-CARD-NUM: '8262593602473076', TRAN-AMT: '-962.77', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000433607101', TRAN-CARD-NUM: '9501733721429893', TRAN-AMT: '851.22', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000434343718', TRAN-CARD-NUM: '6832676047698087', TRAN-AMT: '793.22', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000435144487', TRAN-CARD-NUM: '8112545834239735', TRAN-AMT: '408.88', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000445507761', TRAN-CARD-NUM: '3940246016141489', TRAN-AMT: '129.33', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000446945803', TRAN-CARD-NUM: '3940246016141489', TRAN-AMT: '241.22', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000450622695', TRAN-CARD-NUM: '2988091353094312', TRAN-AMT: '28.33', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000458331136', TRAN-CARD-NUM: '2988091353094312', TRAN-AMT: '437.11', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000462765346', TRAN-CARD-NUM: '0982496213629795', TRAN-AMT: '587.11', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000474475283', TRAN-CARD-NUM: '5407099850479866', TRAN-AMT: '174.66', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000475609951', TRAN-CARD-NUM: '5656830544981216', TRAN-AMT: '913.88', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000475746885', TRAN-CARD-NUM: '0500024453765740', TRAN-AMT: '967.44', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000482016448', TRAN-CARD-NUM: '2760836797107565', TRAN-AMT: '310.00', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000482116790', TRAN-CARD-NUM: '4385271476627819', TRAN-AMT: '820.11', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000486159054', TRAN-CARD-NUM: '0683586198171516', TRAN-AMT: '319.88', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000490043047', TRAN-CARD-NUM: '5407099850479866', TRAN-AMT: '584.88', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000496711357', TRAN-CARD-NUM: '2760836797107565', TRAN-AMT: '161.99', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000497995808', TRAN-CARD-NUM: '9501733721429893', TRAN-AMT: '649.00', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000498548061', TRAN-CARD-NUM: '6727055190616014', TRAN-AMT: '209.00', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000498615524', TRAN-CARD-NUM: '9056297931664011', TRAN-AMT: '-907.00', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000498857207', TRAN-CARD-NUM: '3260763612337560', TRAN-AMT: '293.44', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000499424514', TRAN-CARD-NUM: '4534784102713951', TRAN-AMT: '952.55', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000500479019', TRAN-CARD-NUM: '1014086565224350', TRAN-AMT: '654.99', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000500885895', TRAN-CARD-NUM: '4859452612877065', TRAN-AMT: '-579.88', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000503557384', TRAN-CARD-NUM: '9680294154603697', TRAN-AMT: '81.44', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000504099546', TRAN-CARD-NUM: '0923877193247330', TRAN-AMT: '655.11', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000519935575', TRAN-CARD-NUM: '0923877193247330', TRAN-AMT: '164.99', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000522130011', TRAN-CARD-NUM: '7251508149188883', TRAN-AMT: '699.44', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000528007115', TRAN-CARD-NUM: '5671184478505844', TRAN-AMT: '-113.11', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000532120892', TRAN-CARD-NUM: '9680294154603697', TRAN-AMT: '-70.77', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000539225404', TRAN-CARD-NUM: '8040580410348680', TRAN-AMT: '-372.00', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000540034453', TRAN-CARD-NUM: '6832676047698087', TRAN-AMT: '202.44', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000540260014', TRAN-CARD-NUM: '3999169246375885', TRAN-AMT: '-880.22', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000544248006', TRAN-CARD-NUM: '1561409106491600', TRAN-AMT: '659.44', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000547488622', TRAN-CARD-NUM: '4011500891777367', TRAN-AMT: '403.66', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000549364593', TRAN-CARD-NUM: '8517866958206008', TRAN-AMT: '195.44', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000550089732', TRAN-CARD-NUM: '3260763612337560', TRAN-AMT: '-537.44', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000550860982', TRAN-CARD-NUM: '6349250331648509', TRAN-AMT: '850.22', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000555363230', TRAN-CARD-NUM: '9680294154603697', TRAN-AMT: '484.99', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000561673599', TRAN-CARD-NUM: '5656830544981216', TRAN-AMT: '430.55', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000569807281', TRAN-CARD-NUM: '9349107475869214', TRAN-AMT: '-998.33', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000570880433', TRAN-CARD-NUM: '6009619150674526', TRAN-AMT: '161.77', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000573732499', TRAN-CARD-NUM: '9805583408996588', TRAN-AMT: '237.44', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000576344938', TRAN-CARD-NUM: '2745303720002090', TRAN-AMT: '425.11', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000577165878', TRAN-CARD-NUM: '7427684863423209', TRAN-AMT: '621.22', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000577826814', TRAN-CARD-NUM: '0500024453765740', TRAN-AMT: '-47.88', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000585883106', TRAN-CARD-NUM: '6009619150674526', TRAN-AMT: '435.44', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000588642606', TRAN-CARD-NUM: '7058267261837752', TRAN-AMT: '568.88', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000598262041', TRAN-CARD-NUM: '1561409106491600', TRAN-AMT: '39.55', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000600564499', TRAN-CARD-NUM: '2988091353094312', TRAN-AMT: '736.33', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000601274842', TRAN-CARD-NUM: '7251508149188883', TRAN-AMT: '744.11', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000603071214', TRAN-CARD-NUM: '7251508149188883', TRAN-AMT: '166.99', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000605048564', TRAN-CARD-NUM: '8931369351894783', TRAN-AMT: '95.99', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000606140907', TRAN-CARD-NUM: '2940139362300449', TRAN-AMT: '598.33', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000606716618', TRAN-CARD-NUM: '0982496213629795', TRAN-AMT: '715.66', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000606830191', TRAN-CARD-NUM: '3940246016141489', TRAN-AMT: '-71.66', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000614267358', TRAN-CARD-NUM: '1142167692878931', TRAN-AMT: '-132.88', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000618712102', TRAN-CARD-NUM: '8112545834239735', TRAN-AMT: '21.11', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000621178666', TRAN-CARD-NUM: '1561409106491600', TRAN-AMT: '639.22', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000624335286', TRAN-CARD-NUM: '9680294154603697', TRAN-AMT: '598.44', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000627601011', TRAN-CARD-NUM: '7443870988897530', TRAN-AMT: '-538.22', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000628524597', TRAN-CARD-NUM: '1014086565224350', TRAN-AMT: '269.22', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000634329004', TRAN-CARD-NUM: '5407099850479866', TRAN-AMT: '89.11', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000635121182', TRAN-CARD-NUM: '6832676047698087', TRAN-AMT: '629.55', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000641694180', TRAN-CARD-NUM: '3999169246375885', TRAN-AMT: '554.22', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000643758597', TRAN-CARD-NUM: '7058267261837752', TRAN-AMT: '744.22', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000647754915', TRAN-CARD-NUM: '2871968252812490', TRAN-AMT: '718.55', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000652713581', TRAN-CARD-NUM: '6727055190616014', TRAN-AMT: '633.55', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000669905307', TRAN-CARD-NUM: '6727055190616014', TRAN-AMT: '425.00', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000672061881', TRAN-CARD-NUM: '5656830544981216', TRAN-AMT: '-435.00', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000672573296', TRAN-CARD-NUM: '8517866958206008', TRAN-AMT: '-710.66', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000673250360', TRAN-CARD-NUM: '7427684863423209', TRAN-AMT: '191.00', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000676149118', TRAN-CARD-NUM: '4385271476627819', TRAN-AMT: '697.44', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000685488982', TRAN-CARD-NUM: '0500024453765740', TRAN-AMT: '94.77', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000686167627', TRAN-CARD-NUM: '9805583408996588', TRAN-AMT: '81.44', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000689276136', TRAN-CARD-NUM: '9056297931664011', TRAN-AMT: '192.00', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000700096853', TRAN-CARD-NUM: '3940246016141489', TRAN-AMT: '329.99', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000703553020', TRAN-CARD-NUM: '2760836797107565', TRAN-AMT: '77.00', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000717135758', TRAN-CARD-NUM: '0982496213629795', TRAN-AMT: '-762.44', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000727152111', TRAN-CARD-NUM: '6349250331648509', TRAN-AMT: '983.55', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000731515153', TRAN-CARD-NUM: '9805583408996588', TRAN-AMT: '-25.99', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000734452614', TRAN-CARD-NUM: '4534784102713951', TRAN-AMT: '358.22', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000747646163', TRAN-CARD-NUM: '1561409106491600', TRAN-AMT: '-499.99', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000749493129', TRAN-CARD-NUM: '7058267261837752', TRAN-AMT: '13.88', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000751145919', TRAN-CARD-NUM: '9501733721429893', TRAN-AMT: '140.00', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000751696292', TRAN-CARD-NUM: '7427684863423209', TRAN-AMT: '653.55', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000760577632', TRAN-CARD-NUM: '8931369351894783', TRAN-AMT: '735.99', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000762269241', TRAN-CARD-NUM: '3940246016141489', TRAN-AMT: '988.88', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000767314476', TRAN-CARD-NUM: '0927987108636232', TRAN-AMT: '273.11', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000768119840', TRAN-CARD-NUM: '8112545834239735', TRAN-AMT: '65.44', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000770707563', TRAN-CARD-NUM: '9056297931664011', TRAN-AMT: '309.44', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000772421231', TRAN-CARD-NUM: '4385271476627819', TRAN-AMT: '405.33', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000778829157', TRAN-CARD-NUM: '8262593602473076', TRAN-AMT: '270.55', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000781512834', TRAN-CARD-NUM: '4859452612877065', TRAN-AMT: '319.00', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000784621975', TRAN-CARD-NUM: '3999169246375885', TRAN-AMT: '227.22', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000793409700', TRAN-CARD-NUM: '7026637615032277', TRAN-AMT: '168.66', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000796832699', TRAN-CARD-NUM: '6349250331648509', TRAN-AMT: '803.99', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000802663079', TRAN-CARD-NUM: '0683586198171516', TRAN-AMT: '975.11', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000803014982', TRAN-CARD-NUM: '2871968252812490', TRAN-AMT: '53.55', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000806255008', TRAN-CARD-NUM: '4534784102713951', TRAN-AMT: '-439.33', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000812607213', TRAN-CARD-NUM: '2760836797107565', TRAN-AMT: '-641.77', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000821287727', TRAN-CARD-NUM: '4859452612877065', TRAN-AMT: '34.99', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000822135100', TRAN-CARD-NUM: '5671184478505844', TRAN-AMT: '796.00', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000824152956', TRAN-CARD-NUM: '0923877193247330', TRAN-AMT: '594.77', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000828072981', TRAN-CARD-NUM: '7026637615032277', TRAN-AMT: '-362.22', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000835855923', TRAN-CARD-NUM: '5407099850479866', TRAN-AMT: '-41.77', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000838587312', TRAN-CARD-NUM: '0500024453765740', TRAN-AMT: '241.66', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000838796166', TRAN-CARD-NUM: '4385271476627819', TRAN-AMT: '-457.55', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000840146978', TRAN-CARD-NUM: '4011500891777367', TRAN-AMT: '702.22', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000841555701', TRAN-CARD-NUM: '2988091353094312', TRAN-AMT: '281.55', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000845039454', TRAN-CARD-NUM: '9056297931664011', TRAN-AMT: '45.66', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000855260493', TRAN-CARD-NUM: '6727055190616014', TRAN-AMT: '-270.99', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000858238426', TRAN-CARD-NUM: '3260763612337560', TRAN-AMT: '80.66', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000858501945', TRAN-CARD-NUM: '8262593602473076', TRAN-AMT: '198.66', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000865987685', TRAN-CARD-NUM: '2988091353094312', TRAN-AMT: '-322.99', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000869383367', TRAN-CARD-NUM: '2940139362300449', TRAN-AMT: '768.88', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000874953803', TRAN-CARD-NUM: '1014086565224350', TRAN-AMT: '399.44', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000882360848', TRAN-CARD-NUM: '0982496213629795', TRAN-AMT: '298.33', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000884070277', TRAN-CARD-NUM: '9805583408996588', TRAN-AMT: '194.33', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000898285002', TRAN-CARD-NUM: '2871968252812490', TRAN-AMT: '958.77', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000899241176', TRAN-CARD-NUM: '2988091353094312', TRAN-AMT: '462.33', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000900382063', TRAN-CARD-NUM: '0927987108636232', TRAN-AMT: '86.00', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000903281896', TRAN-CARD-NUM: '0683586198171516', TRAN-AMT: '932.55', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000909001545', TRAN-CARD-NUM: '5656830544981216', TRAN-AMT: '893.33', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000909315074', TRAN-CARD-NUM: '4011500891777367', TRAN-AMT: '759.22', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000925687557', TRAN-CARD-NUM: '0683586198171516', TRAN-AMT: '-372.99', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000926624843', TRAN-CARD-NUM: '4011500891777367', TRAN-AMT: '684.33', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000934798061', TRAN-CARD-NUM: '9501733721429893', TRAN-AMT: '-260.11', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000934945079', TRAN-CARD-NUM: '6503535181795992', TRAN-AMT: '222.44', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000942960329', TRAN-CARD-NUM: '2940139362300449', TRAN-AMT: '711.66', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000943918566', TRAN-CARD-NUM: '8112545834239735', TRAN-AMT: '437.77', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000946277676', TRAN-CARD-NUM: '3766281984155154', TRAN-AMT: '220.00', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000956474921', TRAN-CARD-NUM: '2745303720002090', TRAN-AMT: '223.33', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000957695517', TRAN-CARD-NUM: '0927987108636232', TRAN-AMT: '573.22', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000957864065', TRAN-CARD-NUM: '3766281984155154', TRAN-AMT: '314.66', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000961714986', TRAN-CARD-NUM: '3999169246375885', TRAN-AMT: '694.55', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000971342087', TRAN-CARD-NUM: '8112545834239735', TRAN-AMT: '-835.44', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000973907278', TRAN-CARD-NUM: '6349250331648509', TRAN-AMT: '784.11', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000974167587', TRAN-CARD-NUM: '5975117516616077', TRAN-AMT: '402.22', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000976770816', TRAN-CARD-NUM: '8262593602473076', TRAN-AMT: '917.44', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000982241353', TRAN-CARD-NUM: '9805583408996588', TRAN-AMT: '765.66', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+      - {TRAN-ID: '0000000996722787', TRAN-CARD-NUM: '3260763612337560', TRAN-AMT: '603.22', TRAN-PROC-TS: '2022-07-06-10.00.00.000000'}
+    # TRANSACT at the end of TRANBKP: deleted and defined again empty
+    # [app/jcl/TRANBKP.jcl:37-67], before COMBTRAN loads the combined records.
+    '@AFTER:TRANBKP:TRANSACT':
+      records: []
+    # Every account in key order. Accounts 1 to 49: balance plus postings plus
+    # interest, cycle totals zeroed by INTCALC. Account 50: balance plus
+    # postings only, with POSTTRAN's cycle totals.
+    ACCTDATA:
+      records:
+      - {ACCT-ID: '1', ACCT-CURR-BAL: '1302.66', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '2', ACCT-CURR-BAL: '1764.21', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '3', ACCT-CURR-BAL: '1890.03', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '4', ACCT-CURR-BAL: '1686.98', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '5', ACCT-CURR-BAL: '1198.69', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '6', ACCT-CURR-BAL: '2606.57', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '7', ACCT-CURR-BAL: '916.29', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '8', ACCT-CURR-BAL: '2167.68', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '9', ACCT-CURR-BAL: '3243.89', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '10', ACCT-CURR-BAL: '1169.87', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '11', ACCT-CURR-BAL: '1565.89', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '12', ACCT-CURR-BAL: '1800.11', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '13', ACCT-CURR-BAL: '2896.04', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '14', ACCT-CURR-BAL: '1503.13', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '15', ACCT-CURR-BAL: '4263.56', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '16', ACCT-CURR-BAL: '1825.71', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '17', ACCT-CURR-BAL: '-617.27', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '18', ACCT-CURR-BAL: '2725.92', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '19', ACCT-CURR-BAL: '3080.51', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '20', ACCT-CURR-BAL: '1933.76', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '21', ACCT-CURR-BAL: '969.98', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '22', ACCT-CURR-BAL: '2479.81', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '23', ACCT-CURR-BAL: '1173.49', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '24', ACCT-CURR-BAL: '1949.14', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '25', ACCT-CURR-BAL: '763.63', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '26', ACCT-CURR-BAL: '1212.86', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '27', ACCT-CURR-BAL: '3540.45', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '28', ACCT-CURR-BAL: '811.89', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '29', ACCT-CURR-BAL: '2697.27', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '30', ACCT-CURR-BAL: '-898.53', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '31', ACCT-CURR-BAL: '341.40', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '32', ACCT-CURR-BAL: '475.22', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '33', ACCT-CURR-BAL: '3396.80', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '34', ACCT-CURR-BAL: '2401.49', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '35', ACCT-CURR-BAL: '1021.95', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '36', ACCT-CURR-BAL: '2009.30', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '37', ACCT-CURR-BAL: '-125.88', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '38', ACCT-CURR-BAL: '3098.87', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '39', ACCT-CURR-BAL: '2848.51', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '40', ACCT-CURR-BAL: '1672.53', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '41', ACCT-CURR-BAL: '2047.86', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '42', ACCT-CURR-BAL: '1992.36', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '43', ACCT-CURR-BAL: '3341.91', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '44', ACCT-CURR-BAL: '2085.02', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '45', ACCT-CURR-BAL: '2278.86', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '46', ACCT-CURR-BAL: '3583.12', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '47', ACCT-CURR-BAL: '1064.63', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '48', ACCT-CURR-BAL: '1221.79', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '49', ACCT-CURR-BAL: '1158.26', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '50', ACCT-CURR-BAL: '1945.87', ACCT-CURR-CYC-CREDIT: '1501.75', ACCT-CURR-CYC-DEBIT: '-47.88'}
+    # The 50 repository 01/0001 balances updated by the purchases and the 50
+    # 03/0001 balances the returns created, in key order: accounts 1 and 50.
+    TCATBALF:
+      count: 100
+      contains:
+      - {TRANCAT-ACCT-ID: '1', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '1164.87'}
+      - {TRANCAT-ACCT-ID: '1', TRANCAT-TYPE-CD: '03', TRANCAT-CD: '1', TRAN-CAT-BAL: '-70.77'}
+      - {TRANCAT-ACCT-ID: '50', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '1501.75'}
+      - {TRANCAT-ACCT-ID: '50', TRANCAT-TYPE-CD: '03', TRANCAT-CD: '1', TRAN-CAT-BAL: '-47.88'}
+    # The generations the chain catalogues, two of them TRANSACT-BKUP's:
+    # TRANBKP's, whose 262 records '@AFTER:TRANBKP:TRANSACT-BKUP' holds, and
+    # TRANREPT's, the current one TRANSACT-BKUP holds at the end; the TRANSACT
+    # cluster TRANBKP redefines; the cluster and sequential datasets
+    # CREASTMT defines and writes. Catalog lines are platform text, the one
+    # place this scenario holds DSNs; the observed baseline pins the whole
+    # catalog.
+    '@CATALOG':
+      contains:
+      - 'AWS.M2.CARDDEMO.DALYREJS GENERATION G0001V00'
+      - 'AWS.M2.CARDDEMO.STATEMNT.HTML NONVSAM -'
+      - 'AWS.M2.CARDDEMO.STATEMNT.PS NONVSAM -'
+      - 'AWS.M2.CARDDEMO.SYSTRAN GENERATION G0001V00'
+      - 'AWS.M2.CARDDEMO.TRANREPT GENERATION G0001V00'
+      - 'AWS.M2.CARDDEMO.TRANSACT.BKUP GENERATION G0001V00'
+      - 'AWS.M2.CARDDEMO.TRANSACT.BKUP GENERATION G0002V00'
+      - 'AWS.M2.CARDDEMO.TRANSACT.COMBINED GENERATION G0001V00'
+      - 'AWS.M2.CARDDEMO.TRANSACT.DALY GENERATION G0001V00'
+      - 'AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS CLUSTER -'
+      - 'AWS.M2.CARDDEMO.TRXFL.SEQ NONVSAM -'
+      - 'AWS.M2.CARDDEMO.TRXFL.VSAM.KSDS CLUSTER -'

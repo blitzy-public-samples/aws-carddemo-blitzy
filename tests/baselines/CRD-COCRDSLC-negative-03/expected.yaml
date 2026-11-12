@@ -1,0 +1,36 @@
+# Derived from source: account given, card blank -> 'Card number not provided' [app/cbl/COCRDSLC.cbl:357-363,457-551,608-720].
+messages:
+- '                                                                              '
+- '                                                                                '
+- 'Card number not provided                                                        '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COCRDSL
+  ACCTSID: '           '
+  CARDSID: '                '
+  ERRMSG: '                                                                                '
+  INFOMSG: 'Please enter Account and Card Number    '
+  PGMNAME: COCRDSLC
+  TRNNAME: CCDL
+- '@map': COCRDSL
+  ACCTSID: '00000000050'
+  CARDSID: '*               '
+  CRDNAME: '                                                  '
+  CRDSTCD: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    format: '%H:%M:%S'
+    match: run-time
+  ERRMSG: 'Card number not provided                                                        '
+  EXPMON: '  '
+  EXPYEAR: '    '
+  INFOMSG: 'Please enter Account and Card Number    '
+  PGMNAME: COCRDSLC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CCDL

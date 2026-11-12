@@ -1,0 +1,134 @@
+# The account view finds the account but not its customer, and the message
+# condition DID-NOT-FIND-CUST-IN-CUSTDAT ('Did not find associated customer in
+# master file') still does not appear.
+# USER0001 signs on through CC00 and chooses option 1 (Account View) on the
+# main menu. COACTVWC, called from COMEN01C and not re-entered, initializes the
+# COMMAREA and sends COACTVW with its account-id prompt
+# [app/cbl/COACTVWC.cbl:282-286,353-360,460-535]. ENTER with account
+# 00000000001 re-enters it: the id passes 2210-EDIT-ACCOUNT, and 9000-READ-ACCT
+# reads CXACAIX by account, which returns card 9680294154603697 and customer
+# 000000001 (record 49 of app/data/ASCII/cardxref.txt), then ACCTDAT, which
+# finds the account [app/cbl/COACTVWC.cbl:622-681,687-822]. CUSTDAT returns
+# NOTFND because the fixture omits customer 000000001.
+# The program's only SET of DID-NOT-FIND-CUST-IN-CUSTDAT is commented out
+# [app/cbl/COACTVWC.cbl:842], and the condition is only tested
+# [app/cbl/COACTVWC.cbl:713], so its text cannot reach the screen. That is the
+# observed-only behaviour pinned here; GAP-UNC-014 asks what this never-shown
+# message code is for. The NOTFND branch instead composes 'CustId:... not found
+# in customer master.Resp: <RESP> REAS:<RESP2>' with STRING into the 75-byte
+# WS-RETURN-MSG [app/cbl/COACTVWC.cbl:839-857]. ERROR-RESP and ERROR-RESP2 are
+# X(10), and a MOVE from the S9(9) COMP RESP fields gives the nine-digit value
+# plus one space. RESP is 13 (NOTFND), so ERROR-RESP is '000000013 '. The
+# composed text is 78 characters, and STRING stops at the 75th, so only
+# '0000000' of RESP2 is shown; that is the same for any RESP2 from 0 to 99
+# (CICS gives 80 for a READ NOTFND). ERRMSG shows the 75 bytes plus 3 spaces.
+# 1200-SETUP-SCREEN-VARS moves the account fields because FOUND-ACCT-IN-MASTER
+# is set, and leaves the customer fields as the LOW-VALUES of 1100-SCREEN-INIT.
+# Those are sent as nulls and captured as spaces, so the customer block is
+# blank [app/cbl/COACTVWC.cbl:432,471-523]. The account values are record 1 of
+# app/data/ASCII/acctdata.txt, the amounts edited by PICOUT +ZZZ,ZZZ,ZZZ.99
+# [app/cpy-bms/COACTVW.CPY:302-344]. 9000-READ-ACCT clears WS-INFO-MSG, so the
+# prompt is shown again [app/cbl/COACTVWC.cbl:528-534,689]. Fields are compared
+# at their full BMS length, trailing spaces included.
+id: ACT-COACTVWC-negative-04
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, chooses Account View and asks for account 00000000001,
+  whose cross-reference and account records exist but whose customer
+  000000001 is missing from the customer master. COACTVWC shows the account
+  fields with a blank customer block and the composed message 'CustId:000000001
+  not found in customer master.Resp: 000000013  REAS:0000000'. The message
+  'Did not find associated customer in master file' never appears, because the
+  SET of its condition is commented out.
+inventory_ids:
+- INV-ACT-013  # COACTVWC message 'Did not find associated customer in master file' (recovery)
+- INV-ACT-001  # COACTVWC program
+- INV-MNU-003  # COMEN01 map, the main menu the sign-on lands on
+- INV-ACT-003  # COACTVW map
+- INV-CFG-010  # CAVW transaction, started by the step-3 ENTER after RETURN TRANSID(CAVW)
+- INV-CFG-006  # CXACAIX CSD file, the cross-reference read by account
+- INV-CFG-001  # ACCTDAT CSD file, the account read
+- INV-CFG-005  # CUSTDAT CSD file, the customer read that returns NOTFND
+- INV-LAY-002  # COCOM01Y: the COMMAREA that makes step 3 a reentry
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COACTVWC
+- INV-LAY-009  # CSMSG02Y, copied by COACTVWC
+- INV-LAY-011  # CSSTRPFY: maps the ENTER AID to CCARD-AID-ENTER
+- INV-LAY-019  # CVCRD01Y: CC-ACCT-ID, echoed in ACCTSID
+tags:
+- inferred-not-observed
+- observed-only
+gap_ids:
+- GAP-INF-005  # ACT end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-UNC-014  # purpose of message code that never reaches the screen (the commented-out SET)
+# Not in the planned gap list. The UniKix COACTVW.bms lacks the unnamed field
+# at row 1, columns 1-9, of the map this scenario asserts, and scenarios cite
+# each place where the deployed UniKix copy differs from app/.
+- GAP-DOC-025
+preconditions:
+  datasets:
+    ACCTDATA: {base: ACCTDATA}
+    CARDXREF: {base: CARDXREF}
+    # notfnd is produced by leaving the record out, so no fault is declared.
+    CUSTDATA: {base: CUSTDATA, omit_keys: ['000000001']}
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - {transid: CC00, aid: ENTER, fields: {USERID: USER0001, PASSWD: PASSWORD}, '@map': COSGN00}
+  - {aid: ENTER, fields: {OPTION: '1'}, '@map': COMEN01}
+  - {aid: ENTER, fields: {ACCTSID: '00000000001'}, '@map': COACTVW}
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    ERRMSG: '                                                                              '
+  - '@map': COACTVW
+    TRNNAME: CAVW
+    PGMNAME: COACTVWC
+    INFOMSG: 'Enter or update id of account to display     '
+    ERRMSG: '                                                                              '
+  - '@map': COACTVW
+    TRNNAME: CAVW
+    PGMNAME: COACTVWC
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000001'
+    ACSTTUS: 'Y'
+    ADTOPEN: '2014-11-20'
+    AEXPDT: '2025-05-20'
+    AREISDT: '2025-05-20'
+    ACRDLIM: '+      2,020.00'
+    ACSHLIM: '+      1,020.00'
+    ACURBAL: '+        194.00'
+    ACRCYCR: '+           .00'
+    ACRCYDB: '+           .00'
+    AADDGRP: '          '
+    ACSTNUM: '         '
+    ACSTSSN: '            '
+    ACSTDOB: '          '
+    ACSTFCO: '   '
+    ACSFNAM: '                         '
+    ACSMNAM: '                         '
+    ACSLNAM: '                         '
+    ACSADL1: '                                                  '
+    ACSSTTE: '  '
+    ACSADL2: '                                                  '
+    ACSZIPC: '     '
+    ACSCITY: '                                                  '
+    ACSCTRY: '   '
+    ACSPHN1: '             '
+    ACSGOVT: '                    '
+    ACSPHN2: '             '
+    ACSEFTC: '          '
+    ACSPFLG: ' '
+    INFOMSG: 'Enter or update id of account to display     '
+    ERRMSG: 'CustId:000000001 not found in customer master.Resp: 000000013  REAS:0000000   '

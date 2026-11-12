@@ -1,0 +1,132 @@
+# Derived baseline of scenario BIL-COBIL00C-normal-03; not observed (no TPE
+# region runs in CI).
+# USER0001 signs on (CC00), takes main-menu option 10 'Bill Payment' and, on
+# COBIL00 (transaction CB00), confirms payment of account 00000000001's
+# balance of 194.00 while TRANSACT holds only the invented keys 7, 19 and 41.
+# Authored from the source, never captured:
+# - app/cbl/COSGN00C.cbl:230-237, app/cbl/COMEN01C.cbl:115-156 and
+#   app/cpy/COMEN02Y.cpy:80-84 (USER0001 reaches COMEN01 under CM00 with a
+#   blank ERRMSG; option 10 transfers control to COBIL00C);
+# - app/cbl/COBIL00C.cbl:107-122,289-338 (first entry: LOW-VALUES map, the
+#   COTTL01Y titles, the CB00/COBIL00C header and a blank ERRMSG);
+# - app/cbl/COBIL00C.cbl:169-217,343-372,408-437,441-505 (READ ACCTDAT UPDATE
+#   finds the balance 194.00 of app/data/ASCII/acctdata.txt record 1; READ
+#   CXACAIX gives card 9680294154603697, app/data/ASCII/cardxref.txt record
+#   49; STARTBR at HIGH-VALUES and READPREV return the highest key
+#   0000000000000041, and WS-TRAN-ID-NUM PIC 9(16) plus 1 gives
+#   0000000000000042: the highest key plus 1, not the record count plus 1,
+#   the first free key or the lowest key's successor);
+# - app/cbl/COBIL00C.cbl:218-232,249-267 with app/cpy/CSDAT01Y.cpy:42-55
+#   (INITIALIZE TRAN-RECORD, then the bill-payment literals: TRAN-CAT-CD is
+#   stored '0002' and decodes to '2', TRAN-AMT is the whole balance, and both
+#   timestamps are 'YYYY-MM-DD HH:MM:SS.000000' from the region clock, hence
+#   the run-timestamp matcher with that format);
+# - app/cbl/COBIL00C.cbl:510-532,560-566 (the WRITE answers NORMAL:
+#   INITIALIZE-ALL-FIELDS blanks ACTIDIN, CURBAL and CONFIRM, and STRING builds
+#   the 61-character message, two spaces before 'Your', padded to the 78-byte
+#   ERRMSG). COBIL00 is sent again unchanged after the account REWRITE, and
+#   that second screen is the one captured [app/cbl/COBIL00C.cbl:233-242].
+# Open under GAP-INF-008 (derived BIL end-to-end baselines) and GAP-INF-012
+# (online-only copybooks). Only `report.py --import-unikix` promotes it, from
+# imported UniKix evidence; it is never edited by hand to match a run.
+# The body is the scenario's expected in harness.dump_yaml form: one screen per
+# step (the screen shown after its AID), messages holding each step's ERRMSG,
+# text at full field width with its trailing spaces, numbers as decoded text
+# with their scale. TRANSACT lists the three precondition records unchanged in
+# key order and the payment last; the account REWRITE is not asserted here.
+# CURDATE, CURTIME and the two record timestamps are the only clock-derived
+# values. The payment record's FILLER (TRAN-RECORD.FILLER#1) is deliberately
+# not asserted, as in the scenario: INITIALIZE skips FILLER, so it holds the
+# 20 bytes READPREV read from record 0000000000000041.
+file_state:
+  TRANSACT:
+    records:
+    - TRAN-AMT: '10.00'
+      TRAN-CARD-NUM: '9680294154603697'
+      TRAN-CAT-CD: '1'
+      TRAN-DESC: 'Test purchase seven                                                                                 '
+      TRAN-ID: '0000000000000007'
+      TRAN-MERCHANT-CITY: 'Testville                                         '
+      TRAN-MERCHANT-ID: '800000001'
+      TRAN-MERCHANT-NAME: 'Test Shop                                         '
+      TRAN-MERCHANT-ZIP: '27601     '
+      TRAN-ORIG-TS: '2022-06-01 09:00:00.000000'
+      TRAN-PROC-TS: '2022-06-02 09:00:00.000000'
+      TRAN-SOURCE: 'POS TERM  '
+      TRAN-TYPE-CD: '01'
+    - TRAN-AMT: '20.00'
+      TRAN-CARD-NUM: '9680294154603697'
+      TRAN-CAT-CD: '1'
+      TRAN-DESC: 'Test purchase nineteen                                                                              '
+      TRAN-ID: 0000000000000019
+      TRAN-MERCHANT-CITY: 'Testburg                                          '
+      TRAN-MERCHANT-ID: '800000002'
+      TRAN-MERCHANT-NAME: 'Test Store                                        '
+      TRAN-MERCHANT-ZIP: '27602     '
+      TRAN-ORIG-TS: '2022-06-10 10:00:00.000000'
+      TRAN-PROC-TS: '2022-06-11 10:00:00.000000'
+      TRAN-SOURCE: 'POS TERM  '
+      TRAN-TYPE-CD: '01'
+    - TRAN-AMT: '30.00'
+      TRAN-CARD-NUM: '9680294154603697'
+      TRAN-CAT-CD: '1'
+      TRAN-DESC: 'Test purchase forty-one                                                                             '
+      TRAN-ID: '0000000000000041'
+      TRAN-MERCHANT-CITY: 'Testtown                                          '
+      TRAN-MERCHANT-ID: '800000003'
+      TRAN-MERCHANT-NAME: 'Test Market                                       '
+      TRAN-MERCHANT-ZIP: '27603     '
+      TRAN-ORIG-TS: '2022-06-20 11:00:00.000000'
+      TRAN-PROC-TS: '2022-06-21 11:00:00.000000'
+      TRAN-SOURCE: 'POS TERM  '
+      TRAN-TYPE-CD: '01'
+    - TRAN-AMT: '194.00'
+      TRAN-CARD-NUM: '9680294154603697'
+      TRAN-CAT-CD: '2'
+      TRAN-DESC: 'BILL PAYMENT - ONLINE                                                                               '
+      TRAN-ID: '0000000000000042'
+      TRAN-MERCHANT-CITY: 'N/A                                               '
+      TRAN-MERCHANT-ID: '999999999'
+      TRAN-MERCHANT-NAME: 'BILL PAYMENT                                      '
+      TRAN-MERCHANT-ZIP: 'N/A       '
+      TRAN-ORIG-TS:
+        format: '%Y-%m-%d %H:%M:%S.000000'
+        match: run-timestamp
+      TRAN-PROC-TS:
+        format: '%Y-%m-%d %H:%M:%S.000000'
+        match: run-timestamp
+      TRAN-SOURCE: 'POS TERM  '
+      TRAN-TYPE-CD: '02'
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'Payment successful.  Your Transaction ID is 0000000000000042.                 '
+screens:
+- '@map': COMEN01
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COBIL00
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  PGMNAME: COBIL00C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CB00
+- '@map': COBIL00
+  ACTIDIN: '           '
+  CONFIRM: ' '
+  CURBAL: '              '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Payment successful.  Your Transaction ID is 0000000000000042.                 '
+  PGMNAME: COBIL00C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CB00

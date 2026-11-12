@@ -1,0 +1,98 @@
+# ADMIN001 selects USER0001 with U on the user list, and COUSR00C transfers
+# control to the user update program COUSR02C.
+# - Step 1: CC00 on a cleared screen sends the COSGN00 sign-on map; ADMIN001
+#   (type A) is routed to the admin menu COADM01C, map COADM01
+#   [app/cbl/COSGN00C.cbl:209-234].
+# - Step 2: option 1 is the first COADM02Y entry, 'User List (Security)',
+#   program COUSR00C; COADM01C sets the program context to 0 and XCTLs to it
+#   [app/cbl/COADM01C.cbl:115-145] [app/cpy/COADM02Y.cpy:24-27]. On that first
+#   entry COUSR00C browses USRSEC from LOW-VALUES and fills rows 1-10 in key
+#   order, so row 6 is USER0001 after ADMIN001-ADMIN005
+#   [app/cbl/COUSR00C.cbl:115-119,218-229,282-306]. Only the identification
+#   fields and the selected row's user id are asserted: the list content and
+#   its bottom-of-file message are other scenarios' items.
+# - Step 3: U in SEL0006 moves SEL0006 to CDEMO-CU00-USR-SEL-FLG and USRID06,
+#   which is FSET and so comes back on RECEIVE, to CDEMO-CU00-USR-SELECTED; the
+#   U branch sets CDEMO-TO-PROGRAM COUSR02C, the context to 0, and XCTLs with
+#   the COMMAREA [app/cbl/COUSR00C.cbl:149-199] [app/bms/COUSR00.bms:298-311].
+#   COUSR02C, entered with context 0, finds CDEMO-CU02-USR-SELECTED (the same
+#   COMMAREA bytes) set, puts it in USRIDIN and fetches the user: READ UPDATE
+#   on USRSEC succeeds, WS-MESSAGE becomes 'Press PF5 key to save your updates
+#   ...', and the record's names and type are moved to the map. The task sends
+#   COUSR02 three times with ERASE; the last send, the screen asserted, carries
+#   the fetched fields and that message [app/cbl/COUSR02C.cbl:94-105,143-172,
+#   266-278,320-339].
+# USER0001 is LAWRENCE THOMAS, type U, in the USRSEC fixture
+# [app/jcl/DUSRSECJ.jcl:40]. Text values are full field width with their
+# trailing spaces. PASSWD is a dark (DRK) field [app/bms/COUSR02.bms:130], so
+# its content is not part of the displayed screen and is not asserted. The
+# clock-derived CURDATE and CURTIME are matchers, so the clock is relative.
+id: USR-COUSR00C-alternate-07
+level: e2e
+type: alternate
+description: >-
+  ADMIN001 opens the user list (CU00) from the admin menu and enters U against
+  row 6, USER0001; COUSR00C transfers control to COUSR02C, which fetches the
+  user from USRSEC and shows map COUSR02 with USRIDIN USER0001, first name
+  LAWRENCE, last name THOMAS, user type U and 'Press PF5 key to save your
+  updates ...'.
+inventory_ids:
+- INV-USR-018  # COUSR00C list selection U -> COUSR02C (rule)
+- INV-USR-001  # COUSR00C program
+- INV-USR-005  # COUSR00 map, the list the selection is entered on
+- INV-USR-007  # COUSR02 map, the screen the selection lands on
+- INV-CFG-023  # CU00 transaction, the user list's pseudo-conversation
+- INV-CFG-008  # USRSEC CSD file, browsed by COUSR00C and read by COUSR02C
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carrying the selected user id
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the screen date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COUSR00C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-004  # derived USR end-to-end baselines, never observed on a TPE region
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    USRSEC:
+      base: USRSEC
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields:
+      USERID: ADMIN001
+      PASSWD: PASSWORD
+    '@map': COSGN00
+  - aid: ENTER
+    fields:
+      OPTION: '1'
+    '@map': COADM01
+  - aid: ENTER
+    fields:
+      SEL0006: U
+    '@map': COUSR00
+expected:
+  screens:
+  - '@map': COADM01
+    TRNNAME: 'CA00'
+    PGMNAME: 'COADM01C'
+  - '@map': COUSR00
+    TRNNAME: 'CU00'
+    PGMNAME: 'COUSR00C'
+    USRID06: 'USER0001'
+  - '@map': COUSR02
+    TRNNAME: 'CU02'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COUSR02C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    USRIDIN: 'USER0001'
+    FNAME: 'LAWRENCE            '
+    LNAME: 'THOMAS              '
+    USRTYPE: 'U'
+    ERRMSG: 'Press PF5 key to save your updates ...                                        '

@@ -1,0 +1,46 @@
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'Account:00000000001 not found in Acct Master file.Resp:000000013  Reas:0000   '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COACTVW
+  ACCTSID: '           '
+  ERRMSG: '                                                                              '
+  INFOMSG: 'Enter or update id of account to display     '
+  PGMNAME: COACTVWC
+  TRNNAME: CAVW
+- '@map': COACTVW
+  ACCTSID: '00000000001'
+  ACSADL1: '618 Deshaun Route                                 '
+  ACSADL2: 'Apt. 802                                          '
+  ACSCITY: 'Altenwerthshire                                   '
+  ACSCTRY: USA
+  ACSEFTC: 0053581756
+  ACSFNAM: 'Immanuel                 '
+  ACSGOVT: 00000000000049368437
+  ACSLNAM: 'Kessler                  '
+  ACSMNAM: 'Madeline                 '
+  ACSPFLG: Y
+  ACSPHN1: (908)119-8310
+  ACSPHN2: (373)693-8684
+  ACSSTTE: NC
+  ACSTDOB: '1961-06-08'
+  ACSTFCO: '274'
+  ACSTNUM: '000000001'
+  ACSTSSN: '020-97-3888 '
+  ACSZIPC: '12546'
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Account:00000000001 not found in Acct Master file.Resp:000000013  Reas:0000   '
+  INFOMSG: 'Enter or update id of account to display     '
+  PGMNAME: COACTVWC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CAVW

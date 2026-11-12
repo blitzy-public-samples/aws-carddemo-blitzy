@@ -1,0 +1,119 @@
+# USER0001 selects the monthly report on the Transaction Reports screen without
+# confirming it, and CORPT00C asks for the confirmation instead of submitting
+# the job: the composed 'Please confirm to print the <name> report...' message.
+#
+# Step 1 signs on as USER0001 through CC00; COSGN00C routes the type-U user to
+# the COMEN01 main menu (the sign-on and the full menu belong to
+# SEC-COSGN00C-normal-02, so only the menu header is pinned here).
+# Step 2 enters option 9, 'Transaction Reports': COMEN01C transfers control to
+# CORPT00C with CDEMO-PGM-CONTEXT 0, so CORPT00C takes its first-entry path,
+# moves LOW-VALUES to CORPT0AO and sends CORPT00 with the CR00 header and a
+# blank ERRMSG [app/cbl/COMEN01C.cbl:115-156] [app/cbl/CORPT00C.cbl:176-181]
+# (that screen is MNU-COMEN01C-alternate-09's outcome; its header, the still
+# empty MONTHLY and CONFIRM fields and the blank ERRMSG are pinned here only as
+# the starting state).
+# Step 3 types X in MONTHLY and presses ENTER with CONFIRM left empty:
+# - RECEIVE MAP fills CORPT0AI. Every unprotected field is FSET, so all of them
+#   come back: MONTHLY as 'X', the other selectors and the date fields as the
+#   spaces of their BMS INITIAL, CONFIRM (no INITIAL) as empty
+#   [app/bms/CORPT00.bms:80-210] [app/cbl/CORPT00C.cbl:183-186,596-604].
+# - PROCESS-ENTER-KEY takes the first WHEN, because MONTHLYI is neither spaces
+#   nor LOW-VALUES: WS-REPORT-NAME becomes 'Monthly' and the month's start and
+#   end dates are computed into the job's parameter lines, then
+#   SUBMIT-JOB-TO-INTRDR is performed [app/cbl/CORPT00C.cbl:212-238].
+# - CONFIRMI is spaces or LOW-VALUES, so STRING joins 'Please confirm to print
+#   the ', WS-REPORT-NAME up to its first space and ' report...' into
+#   WS-MESSAGE (cleared at task start), sets the error flag, puts the cursor on
+#   CONFIRM and performs SEND-TRNRPT-SCREEN [app/cbl/CORPT00C.cbl:165-170,464-474].
+# - SEND-TRNRPT-SCREEN refreshes the header from CURRENT-DATE, moves
+#   WS-MESSAGE to the 78-byte ERRMSGO and sends CORPT00 with ERASE from
+#   CORPT0AO, which redefines CORPT0AI, so the received MONTHLY 'X' is sent
+#   back. It then ends the task with GO TO RETURN-TO-CICS, so the WRITEQ TD to
+#   JOBS after the confirmation check is never reached and no job is submitted
+#   [app/cbl/CORPT00C.cbl:476-510,556-591,609-628].
+#
+# Expected values are derived from the source; no TPE region runs in CI. The
+# UniKix copy's CORPT00C, CORPT00.bms and COMEN01C equal app/ apart from
+# whitespace, so no copy-difference gap applies. Screen values are whole fields
+# at their BMS length, trailing spaces kept (the terminal shows the empty
+# CONFIRM as a space); CURDATE and CURTIME come from the run clock, hence the
+# matchers and clock_mode relative.
+id: RPT-CORPT00C-alternate-01
+level: e2e
+type: alternate
+description: >-
+  Signed on as USER0001, the user opens Transaction Reports (main menu option
+  9), marks the Monthly report with X and presses ENTER without confirming.
+  CORPT00C submits nothing: it shows CORPT00 again with MONTHLY still X, the
+  confirmation field empty and 'Please confirm to print the Monthly report...'
+  in ERRMSG.
+# The sign-on items (CC00, COSGN00, the USRSEC CSD file), the menu option and
+# its CM00 transaction are verified by the SEC and MNU scenarios; the JOBS TDQ
+# write and the monthly date range are the primary items of the scenarios that
+# confirm with Y, so none of them is listed here.
+inventory_ids:
+- INV-RPT-027  # CORPT00C message 'Please confirm to print the <WS-REPORT-NAME> report...' (rule)
+- INV-RPT-001  # CORPT00C program
+- INV-MNU-003  # COMEN01 map, the menu option 9 is entered on
+- INV-RPT-002  # CORPT00 map, the report screen of steps 2 and 3
+- INV-CFG-019  # CR00 transaction, under which CORPT00C receives the selection
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA COMEN01C passes with the XCTL
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the screen date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by CORPT00C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-009  # derived RPT end-to-end baselines, never observed on a TPE region
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '9'
+  - aid: ENTER
+    '@map': CORPT00
+    fields:
+      MONTHLY: X
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+  - '@map': CORPT00
+    TRNNAME: CR00
+    PGMNAME: CORPT00C
+    MONTHLY: ' '
+    CONFIRM: ' '
+    ERRMSG: '                                                                              '
+  - '@map': CORPT00
+    TRNNAME: CR00
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: CORPT00C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    MONTHLY: X
+    YEARLY: ' '
+    CUSTOM: ' '
+    SDTMM: '  '
+    SDTDD: '  '
+    SDTYYYY: '    '
+    EDTMM: '  '
+    EDTDD: '  '
+    EDTYYYY: '    '
+    CONFIRM: ' '
+    ERRMSG: 'Please confirm to print the Monthly report...                                 '

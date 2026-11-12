@@ -1,0 +1,98 @@
+# Transaction CAUP is entered from a cleared screen, with no sign-on. COACTUPC
+# runs with EIBCALEN = 0, so it initialises CARDDEMO-COMMAREA and its own
+# COMMAREA, sets CDEMO-PGM-ENTER and ACUP-DETAILS-NOT-FETCHED, and sends a fresh
+# COACTUP screen: no user id or user type is checked
+# [app/cbl/COACTUPC.cbl:880-886,964-973]. That fresh screen carries the prompt
+# 'Enter or update id of account to update' and a blank message, and the task
+# returns with TRANSID CAUP and the COMMAREA it built, now CDEMO-PGM-REENTER
+# [app/cbl/COACTUPC.cbl:1007-1019,2955-2981].
+#
+# Whether direct entry without sign-on is intended is the open question of
+# GAP-UNC-010, so the behaviour is pinned as observed (observed-only).
+#
+# Every value is derived from the source (inferred-not-observed): no TPE region
+# runs in CI. Field values are the full BMS field widths, trailing spaces kept,
+# as the screen capture reads them.
+id: ACT-COACTUPC-alternate-06
+level: e2e
+type: alternate
+description: >-
+  CAUP entered directly, without sign-on and without a COMMAREA, starts
+  COACTUPC on its own COACTUP screen. The step's input screen must be
+  identified as COACTUP before its AID is pressed, which shows no sign-on
+  screen was sent. ENTER on that fresh screen with no account id is then
+  handled by CAUP inside the conversation COACTUPC started: the account filter
+  is blank, so the result keeps the search prompt, marks the account id with
+  '*' and shows 'No input received'.
+# Primary item first, then the program, the map and the transaction asserted,
+# and the online-only copybooks COACTUPC copies. The search prompt and
+# 'No input received' are asserted here but verified by their own scenarios,
+# so they are not listed.
+inventory_ids:
+- INV-ACT-067  # COACTUPC entry without COMMAREA starts without sign-on
+- INV-ACT-002  # COACTUPC program
+- INV-ACT-004  # COACTUP map
+- INV-CFG-009  # transaction CAUP
+- INV-LAY-002  # COCOM01Y copybook: CDEMO-PGM-CONTEXT
+- INV-LAY-005  # COTTL01Y copybook: screen titles
+- INV-LAY-006  # CSDAT01Y copybook: screen date and time
+- INV-LAY-007  # CSLKPCDY copybook
+- INV-LAY-008  # CSMSG01Y copybook
+- INV-LAY-009  # CSMSG02Y copybook
+- INV-LAY-010  # CSSETATY copybook
+- INV-LAY-011  # CSSTRPFY copybook: AID to CCARD-AID mapping
+- INV-LAY-013  # CSUTLDPY copybook
+- INV-LAY-014  # CSUTLDWY copybook
+- INV-LAY-019  # CVCRD01Y copybook: CC-ACCT-ID
+tags:
+- inferred-not-observed
+- observed-only
+gap_ids:
+- GAP-INF-005  # account (ACT) e2e baselines are derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-UNC-010  # CAUP starts without any sign-on check when entered directly
+- GAP-DOC-025  # the UniKix COACTUP map drops the unnamed field at row 1, columns 1-9
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  # '@map' names the input screen the adapter identifies after starting the
+  # transaction (Clear, CAUP, Enter): COACTUPC's own fresh screen, not the
+  # COSGN00 sign-on screen. The AID is then pressed on it with no field entered.
+  - transid: CAUP
+    '@map': COACTUP
+    fields: {}
+    aid: ENTER
+expected:
+  # The ENTER task restores the COMMAREA (CDEMO-PGM-REENTER,
+  # ACUP-DETAILS-NOT-FETCHED) and edits the search key
+  # [app/cbl/COACTUPC.cbl:887-893,996-1003]. ACCTSID arrives empty (FSET with
+  # no data), so CC-ACCT-ID is low-values and 1210-EDIT-ACCOUNT sets
+  # FLG-ACCTFILTER-BLANK and 'Account number not provided'; 1200-EDIT-MAP-INPUTS
+  # then overwrites that message with NO-SEARCH-CRITERIA-RECEIVED
+  # [app/cbl/COACTUPC.cbl:1051-1062,1429-1446,1783-1797]. 2000-DECIDE-ACTION
+  # reads nothing, since the filter is not valid [app/cbl/COACTUPC.cbl:2568-2580].
+  # The screen shows the initial (empty) account and customer fields, the
+  # search prompt for ACUP-DETAILS-NOT-FETCHED, and, because the filter is blank
+  # on re-entry, '*' padded with spaces in the account id
+  # [app/cbl/COACTUPC.cbl:2698-2714,2955-2981,3176-3189].
+  screens:
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COACTUPC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACCTSID: '*          '
+    ACSTTUS: ' '
+    ACSTNUM: '         '
+    ACSFNAM: '                         '
+    ACSLNAM: '                         '
+    INFOMSG: 'Enter or update id of account to update      '
+    ERRMSG: 'No input received                                                             '
+    FKEYS: ENTER=Process F3=Exit

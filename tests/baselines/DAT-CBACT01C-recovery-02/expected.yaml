@@ -1,0 +1,32 @@
+# Derived baseline of DAT-CBACT01C-recovery-02, from app/cbl/CBACT01C.cbl:71-189;
+# never observed: no adapter fails a READ after a successful OPEN
+# (GAP-MIS-013), so capture.py refuses this scenario, the expectation is
+# inferred (GAP-INF-013) and there is no datasets/ folder.
+# The first READ returns record 1 of the repository ACCTDATA; its 13 lines
+# (1100-DISPLAY-ACCT-RECORD, then the main loop's raw 300-byte ACCOUNT-RECORD)
+# are those DAT-CBACT01C-normal-01 observed for account 00000000001. The
+# second READ's io-error is taken as file status 30: numeric and not 9x, so
+# 9910-DISPLAY-IO-STATUS shows NNNN0030. 9999-ABEND-PROGRAM calls CEE3ABD
+# without parameters (GAP-DEF-001); the stub ends the run, the adapter appends
+# its marker last and reports return_code null (GAP-STB-001). The close and
+# 'END OF EXECUTION' lines are never reached. Pinned, never corrected.
+messages:
+- START OF EXECUTION OF PROGRAM CBACT01C
+- ACCT-ID                 :00000000001
+- ACCT-ACTIVE-STATUS      :Y
+- ACCT-CURR-BAL           :000000019400+
+- ACCT-CREDIT-LIMIT       :000000202000+
+- ACCT-CASH-CREDIT-LIMIT  :000000102000+
+- ACCT-OPEN-DATE          :2014-11-20
+- ACCT-EXPIRAION-DATE     :2025-05-20
+- ACCT-REISSUE-DATE       :2025-05-20
+- ACCT-CURR-CYC-CREDIT    :000000000000+
+- ACCT-CURR-CYC-DEBIT     :000000000000+
+- 'ACCT-GROUP-ID           :          '
+- '-------------------------------------------------'
+- '00000000001Y00000001940{00000020200{00000010200{2014-11-202025-05-202025-05-2000000000000{00000000000{A000000000                                                                                                                                                                                            '
+- ERROR READING ACCOUNT FILE
+- 'FILE STATUS IS: NNNN0030'
+- ABENDING PROGRAM
+- CARDDEMO-ABEND CEE3ABD
+return_code: null

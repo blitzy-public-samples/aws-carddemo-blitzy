@@ -1,0 +1,66 @@
+id: MNU-COMEN01C-alternate-06
+level: e2e
+type: alternate
+description: >-
+  USER0001 signs on through transaction CC00 and reaches the main menu COMEN01,
+  then enters option 6. The OPTION field is JUSTIFY=(RIGHT,ZERO), so '6' is
+  received as '06' [app/bms/COMEN01.bms:145-147]. COMEN01C's PROCESS-ENTER-KEY
+  takes the option as 6, which is numeric, not zero and within
+  CDEMO-MENU-OPT-COUNT 10; option 6 'Transaction List' has user type 'U' and
+  program COTRN00C, which does not begin 'DUMMY', so COMEN01C transfers control
+  to COTRN00C by XCTL with CDEMO-PGM-CONTEXT zero
+  [app/cbl/COMEN01C.cbl:115-156] [app/cpy/COMEN02Y.cpy:21,55-59]. COTRN00C,
+  entered for the first time, browses TRANSACT from its lowest key and sends
+  its list map COTRN00, carrying its own transaction id CT00 and program name
+  COTRN00C [app/cbl/COTRN00C.cbl:107-116,206-225,527-536,573-574].
+# Primary item first, then the program, the map the option is entered on, the
+# map the XCTL lands on, the transaction that runs the menu step, and the
+# online-only copybooks COMEN01C copies. The sign-on step's own items (COSGN00,
+# CC00, USRSEC) belong to the SEC scenarios, and the list content, its
+# transaction and the TRANSACT file to the TRN-COTRN00C scenarios.
+inventory_ids:
+- INV-MNU-014
+- INV-MNU-001
+- INV-MNU-003
+- INV-TRN-004
+- INV-CFG-018
+- INV-LAY-002
+- INV-LAY-003
+- INV-LAY-005
+- INV-LAY-006
+- INV-LAY-008
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-003
+- GAP-INF-012
+# TRANSACT is built from the repository's daily transactions, so COTRN00C's
+# first browse finds records to list.
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+    TRANSACT: {base: DALYTRAN}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '6'
+# The landing screen is asserted by identification only: the map the XCTL
+# reaches and the transaction and program names COTRN00C writes into its
+# header. Screen values are whole fields at their BMS length.
+expected:
+  screens:
+  - '@map': COMEN01
+  - '@map': COTRN00
+    TRNNAME: CT00
+    PGMNAME: COTRN00C

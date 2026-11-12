@@ -1,0 +1,325 @@
+# Boundary of the leap-year check in the shared date edit: 29 February of a
+# common year. COACTUPC refuses an account Open Date of 2023-02-29 with
+# 'Open Date:Not a leap year.Cannot have 29 days in this month.' and writes
+# nothing. Open Date carries the February boundaries for all four date fields,
+# which share EDIT-DATE-CCYYMMDD: 2023-02-28 (boundary-16), 2023-02-29 (this
+# scenario), 2024-02-29 (boundary-18) and 2023-02-30 (boundary-15).
+#
+# Step 1: USER0001 signs on through CC00; COSGN00C routes the type 'U' user to
+# the main menu COMEN01 [app/cbl/COSGN00C.cbl:221-237].
+# Step 2: option '2' (Account Update) makes COMEN01C XCTL to COACTUPC, which
+# takes its fresh-entry path and sends COACTUP with the search-key prompt
+# [app/cbl/COMEN01C.cbl:115-156] [app/cbl/COACTUPC.cbl:964-973,2955-2961].
+# Step 3: ENTER with account 00000000001. 9000-READ-ACCT reads CXACAIX (card
+# 9680294154603697, customer 000000001), ACCTDAT and CUSTDAT, keeps the values
+# in ACUP-OLD-DETAILS and sets ACUP-SHOW-DETAILS; 3202-SHOW-ORIGINAL-VALUES
+# fills the map and 3320-UNPROTECT-FEW-ATTRS turns every input field's MDT on
+# [app/cbl/COACTUPC.cbl:2568-2580,2787-2865,3441-3562,3608-3884].
+# Step 4: ENTER with OPNYEAR 2023, OPNMON 02 and OPNDAY 29 typed over
+# 2014-11-20; every other field comes back as sent. 1205-COMPARE-OLD-NEW finds
+# the new open date, so 1200-EDIT-MAP-INPUTS sets ACUP-CHANGES-NOT-OK and runs
+# the field edits in screen order: Account Status 'Y' passes 1220-EDIT-YESNO,
+# then 'Open Date' goes through EDIT-DATE-CCYYMMDD THRU
+# EDIT-DATE-CCYYMMDD-EXIT [app/cbl/COACTUPC.cbl:1452-1482,1681-1775].
+# - EDIT-YEAR-CCYY: 2023 is supplied, numeric and of century 20; EDIT-MONTH: 02
+#   is 1-12 and numeric; EDIT-DAY: 29 is numeric and 1-31, so no earlier
+#   predicate fires [app/cpy/CSUTLDPY.cpy:25-207] [app/cpy/CSUTLDWY.cpy:4-34].
+# - EDIT-DAY-MONTH-YEAR: February is not a 31-day month and the day is not 30,
+#   so the leap-year check decides. The year's last two digits, 23, are not 00,
+#   so the divisor is 4; 2023 / 4 is 505 remainder 3, so INPUT-ERROR and the
+#   day, month and year flags are set, the message is composed into the cleared
+#   WS-RETURN-MSG and control goes to EDIT-DATE-CCYYMMDD-EXIT before
+#   EDIT-DATE-LE, so CSUTLDTC is not called for this date
+#   [app/cpy/CSUTLDPY.cpy:209-272].
+# Every later edit writes WS-RETURN-MSG only while WS-RETURN-MSG-OFF holds, so
+# this first message stands, and INPUT-ERROR keeps ACUP-CHANGES-OK-NOT-CONFIRMED
+# unset [app/cbl/COACTUPC.cbl:1484-1676]. 2000-DECIDE-ACTION continues on
+# ACUP-CHANGES-NOT-OK: no READ UPDATE or REWRITE runs [app/cbl/COACTUPC.cbl:
+# 2596-2597]. 3203-SHOW-UPDATED-VALUES echoes the received values (the valid
+# amounts edited again as +ZZZ,ZZZ,ZZZ.99), 3250-SETUP-INFOMSG sets
+# PROMPT-FOR-CHANGES, and 3390-SETUP-INFOMSG-ATTRS brightens F12=Cancel because
+# ACUP-CHANGES-MADE holds, while F5=Save stays dark [app/cbl/COACTUPC.cbl:
+# 2718-2720,2870-2981,3566-3581].
+#
+# Expected values are derived from the source; no TPE region runs in CI.
+# - ERRMSG is TRIM('Open Date') and ':Not a leap year.Cannot have 29 days in
+#   this month.', 60 characters, in the 75-byte WS-RETURN-MSG and the 78-byte
+#   field; INFOMSG is the 40-byte WS-INFO-MSG in the 45-byte field. Every text
+#   value is the whole field at its BMS length, trailing spaces kept.
+# - CSSETATY makes the three open-date fields red; colour is not captured, and
+#   no '*' is shown because none of them is blank [app/cpy/CSSETATY.cpy:18-27].
+# - AADDGRP shows ACCT-GROUP-ID, blank in every repository account (GAP-DEF-005):
+#   the blank received field becomes LOW-VALUES, shown as spaces
+#   [app/cbl/COACTUPC.cbl:1213-1218,2921].
+# - The header is the COTTL01Y titles, CAUP, COACTUPC and CURDATE mm/dd/yy and
+#   CURTIME hh:mm:ss of the run clock through CSDAT01Y, hence the matchers and
+#   clock_mode relative [app/cbl/COACTUPC.cbl:2668-2692].
+id: ACT-COACTUPC-boundary-17
+level: e2e
+type: boundary
+description: >-
+  USER0001 signs on, chooses main menu option 2 'Account Update', fetches
+  account 00000000001 and changes its open date to 2023-02-29, the day after
+  the last day of February in a common year. 2023 is not a leap year, so
+  COACTUPC refuses the date with 'Open Date:Not a leap year.Cannot have 29
+  days in this month.', shows the entered values again with 'Update account
+  details presented above.', and leaves the account and customer records
+  unchanged.
+# Primary item first, then the program, the maps the steps land on, the
+# transaction the fetch and the edit run under, the CSD files the fetch reads
+# and the online-only copybooks COACTUPC copies. The sign-on and menu items are
+# verified by the SEC and MNU scenarios; the batch record copybooks and the
+# data files by the lowest level that executes them.
+inventory_ids:
+- INV-ACT-081  # COACTUPC Open Date: no 29th of February outside a leap year (rule)
+- INV-ACT-002  # COACTUPC program
+- INV-MNU-003  # COMEN01 map, the main menu option 2 is entered on
+- INV-ACT-004  # COACTUP map, the account update screen of steps 2-4
+- INV-CFG-009  # CAUP transaction, under which the fetch and the refused edit run
+- INV-CFG-006  # CXACAIX CSD file, the account-to-card path the fetch reads
+- INV-CFG-001  # ACCTDAT CSD file, read by the fetch and left unchanged
+- INV-CFG-005  # CUSTDAT CSD file, read by the fetch and left unchanged
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carrying the fetched values
+- INV-LAY-005  # COTTL01Y copybook, TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y copybook, CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y copybook, copied by COACTUPC
+- INV-LAY-007  # CSLKPCDY copybook, the edit lookups compiled into COACTUPC
+- INV-LAY-009  # CSMSG02Y copybook, the abend variables
+- INV-LAY-010  # CSSETATY copybook, the error attributes of the open-date fields
+- INV-LAY-011  # CSSTRPFY copybook, the AID mapping that turns ENTER into CCARD-AID-ENTER
+- INV-LAY-013  # CSUTLDPY copybook, EDIT-DATE-CCYYMMDD and its leap-year check
+- INV-LAY-014  # CSUTLDWY copybook, WS-EDIT-DATE-CCYYMMDD and its 88-levels
+- INV-LAY-019  # CVCRD01Y copybook, CC-ACCT-ID and the AID flags
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-005  # ACT end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+# The UniKix CSUTLDPY drops TRIM from the field name, so its message starts with
+# the 25-byte name and is cut at 75 characters; a unikix run observes the copy.
+- GAP-DOC-024
+# The UniKix COACTUP.bms lacks the unnamed field at row 1, columns 1-9, of the
+# map this scenario asserts.
+- GAP-DOC-025
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user USER0001.
+    USRSEC: {base: USRSEC}
+    # Account 00000000001 as in the repository: open date 2014-11-20.
+    ACCTDATA: {base: ACCTDATA}
+    # Record 49 maps account 00000000001 to card 9680294154603697 and customer
+    # 000000001; CXACAIX is its alternate-index path.
+    CARDXREF: {base: CARDXREF}
+    # Customer 000000001 replaced by invented values that pass every edit, so
+    # the open date is the only field in error and every screen value is known.
+    CUSTDATA:
+      base: CUSTDATA
+      records:
+      - CUST-ID: '000000001'
+        CUST-FIRST-NAME: Testfirst
+        CUST-MIDDLE-NAME: Testmiddle
+        CUST-LAST-NAME: Testlast
+        CUST-ADDR-LINE-1: 100 Test Street
+        CUST-ADDR-LINE-2: Suite 1
+        CUST-ADDR-LINE-3: Raleigh
+        CUST-ADDR-STATE-CD: NC
+        CUST-ADDR-COUNTRY-CD: USA
+        CUST-ADDR-ZIP: '27601'
+        CUST-PHONE-NUM-1: '(919)555-0101'
+        CUST-PHONE-NUM-2: '(919)555-0102'
+        CUST-SSN: '123456789'
+        CUST-GOVT-ISSUED-ID: TESTGOVT0001
+        CUST-DOB-YYYY-MM-DD: '1961-06-08'
+        CUST-EFT-ACCOUNT-ID: '0053581756'
+        CUST-PRI-CARD-HOLDER-IND: 'Y'
+        CUST-FICO-CREDIT-SCORE: '700'
+  parameters:
+    clock_mode: relative
+  faults: []
+# PASSWORD is the documented demo password of README.md, not a secret.
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: USER0001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '2'}
+    '@map': COMEN01
+  - aid: ENTER
+    fields: {ACCTSID: '00000000001'}
+    '@map': COACTUP
+  - aid: ENTER
+    fields: {OPNYEAR: '2023', OPNMON: '02', OPNDAY: '29'}
+    '@map': COACTUP
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN002: '02. Account Update                      '
+    ERRMSG: '                                                                              '
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    PGMNAME: COACTUPC
+    ACCTSID: '           '
+    INFOMSG: 'Enter or update id of account to update      '
+    ERRMSG: '                                                                              '
+  # The fetched values, offered for change.
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COACTUPC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000001'
+    ACSTTUS: 'Y'
+    OPNYEAR: '2014'
+    OPNMON: '11'
+    OPNDAY: '20'
+    ACRDLIM: '+      2,020.00'
+    EXPYEAR: '2025'
+    EXPMON: '05'
+    EXPDAY: '20'
+    ACSHLIM: '+      1,020.00'
+    RISYEAR: '2025'
+    RISMON: '05'
+    RISDAY: '20'
+    ACURBAL: '+        194.00'
+    ACRCYCR: '+           .00'
+    AADDGRP: '          '
+    ACRCYDB: '+           .00'
+    ACSTNUM: '000000001'
+    ACTSSN1: '123'
+    ACTSSN2: '45'
+    ACTSSN3: '6789'
+    DOBYEAR: '1961'
+    DOBMON: '06'
+    DOBDAY: '08'
+    ACSTFCO: '700'
+    ACSFNAM: 'Testfirst                '
+    ACSMNAM: 'Testmiddle               '
+    ACSLNAM: 'Testlast                 '
+    ACSADL1: '100 Test Street                                   '
+    ACSSTTE: 'NC'
+    ACSADL2: 'Suite 1                                           '
+    ACSZIPC: '27601'
+    ACSCITY: 'Raleigh                                           '
+    ACSCTRY: 'USA'
+    ACSPH1A: '919'
+    ACSPH1B: '555'
+    ACSPH1C: '0101'
+    ACSGOVT: 'TESTGOVT0001        '
+    ACSPH2A: '919'
+    ACSPH2B: '555'
+    ACSPH2C: '0102'
+    ACSEFTC: '0053581756'
+    ACSPFLG: 'Y'
+    INFOMSG: 'Update account details presented above.      '
+    ERRMSG: '                                                                              '
+    FKEYS: 'ENTER=Process F3=Exit'
+    FKEY05: '       '
+    FKEY12: '          '
+  # The values received, echoed with the refused open date and the message.
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COACTUPC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000001'
+    ACSTTUS: 'Y'
+    OPNYEAR: '2023'
+    OPNMON: '02'
+    OPNDAY: '29'
+    ACRDLIM: '+      2,020.00'
+    EXPYEAR: '2025'
+    EXPMON: '05'
+    EXPDAY: '20'
+    ACSHLIM: '+      1,020.00'
+    RISYEAR: '2025'
+    RISMON: '05'
+    RISDAY: '20'
+    ACURBAL: '+        194.00'
+    ACRCYCR: '+           .00'
+    AADDGRP: '          '
+    ACRCYDB: '+           .00'
+    ACSTNUM: '000000001'
+    ACTSSN1: '123'
+    ACTSSN2: '45'
+    ACTSSN3: '6789'
+    DOBYEAR: '1961'
+    DOBMON: '06'
+    DOBDAY: '08'
+    ACSTFCO: '700'
+    ACSFNAM: 'Testfirst                '
+    ACSMNAM: 'Testmiddle               '
+    ACSLNAM: 'Testlast                 '
+    ACSADL1: '100 Test Street                                   '
+    ACSSTTE: 'NC'
+    ACSADL2: 'Suite 1                                           '
+    ACSZIPC: '27601'
+    ACSCITY: 'Raleigh                                           '
+    ACSCTRY: 'USA'
+    ACSPH1A: '919'
+    ACSPH1B: '555'
+    ACSPH1C: '0101'
+    ACSGOVT: 'TESTGOVT0001        '
+    ACSPH2A: '919'
+    ACSPH2B: '555'
+    ACSPH2C: '0102'
+    ACSEFTC: '0053581756'
+    ACSPFLG: 'Y'
+    INFOMSG: 'Update account details presented above.      '
+    ERRMSG: 'Open Date:Not a leap year.Cannot have 29 days in this month.                  '
+    FKEYS: 'ENTER=Process F3=Exit'
+    FKEY05: '       '
+    FKEY12: F12=Cancel
+  # One ERRMSG value per step: blank on the menu, the fresh and the fetched
+  # update screens, the leap-year message after the refused edit.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - '                                                                              '
+  - 'Open Date:Not a leap year.Cannot have 29 days in this month.                  '
+  file_state:
+    # Nothing is rewritten: account 00000000001 keeps its open date and customer
+    # 000000001 the values loaded, and each dataset keeps its 50 records.
+    ACCTDATA:
+      count: 50
+      contains:
+      - ACCT-ID: '1'
+        ACCT-ACTIVE-STATUS: 'Y'
+        ACCT-CURR-BAL: '194.00'
+        ACCT-CREDIT-LIMIT: '2020.00'
+        ACCT-CASH-CREDIT-LIMIT: '1020.00'
+        ACCT-OPEN-DATE: '2014-11-20'
+        ACCT-EXPIRAION-DATE: '2025-05-20'
+        ACCT-REISSUE-DATE: '2025-05-20'
+        ACCT-CURR-CYC-CREDIT: '0.00'
+        ACCT-CURR-CYC-DEBIT: '0.00'
+        ACCT-ADDR-ZIP: A000000000
+        ACCT-GROUP-ID: '          '
+    CUSTDATA:
+      count: 50
+      contains:
+      - CUST-ID: '1'
+        CUST-FIRST-NAME: 'Testfirst                '
+        CUST-MIDDLE-NAME: 'Testmiddle               '
+        CUST-LAST-NAME: 'Testlast                 '
+        CUST-ADDR-LINE-1: '100 Test Street                                   '
+        CUST-ADDR-LINE-2: 'Suite 1                                           '
+        CUST-ADDR-LINE-3: 'Raleigh                                           '
+        CUST-ADDR-STATE-CD: 'NC'
+        CUST-ADDR-COUNTRY-CD: 'USA'
+        CUST-ADDR-ZIP: '27601     '
+        CUST-PHONE-NUM-1: '(919)555-0101  '
+        CUST-PHONE-NUM-2: '(919)555-0102  '
+        CUST-SSN: '123456789'
+        CUST-GOVT-ISSUED-ID: 'TESTGOVT0001        '
+        CUST-DOB-YYYY-MM-DD: '1961-06-08'
+        CUST-EFT-ACCOUNT-ID: '0053581756'
+        CUST-PRI-CARD-HOLDER-IND: 'Y'
+        CUST-FICO-CREDIT-SCORE: '700'

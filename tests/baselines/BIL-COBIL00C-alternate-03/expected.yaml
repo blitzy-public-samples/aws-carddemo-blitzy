@@ -1,0 +1,35 @@
+# Derived baseline (capture_platform: derived in manifest.yaml) for
+# BIL-COBIL00C-alternate-03, authored from the source because only unikix can
+# run the scenario. The scenario is tagged inferred-not-observed (GAP-INF-008,
+# GAP-INF-012); `report.py --import-unikix <execution_id>` replaces this file
+# on eligible evidence.
+#
+# CB00 entered directly, with no COMMAREA: COBIL00C finds EIBCALEN = 0, moves
+# 'COSGN00C' to CDEMO-TO-PROGRAM and performs RETURN-TO-PREV-SCREEN, which sets
+# CDEMO-FROM-TRANID 'CB00', CDEMO-FROM-PROGRAM 'COBIL00C' and
+# CDEMO-PGM-CONTEXT 0 and XCTLs to COSGN00C passing CARDDEMO-COMMAREA, so the
+# bill payment screen COBIL00 is never sent [app/cbl/COBIL00C.cbl:95-110,
+# 273-284]. COSGN00C starts with EIBCALEN > 0 and EIBAID ENTER, treats the
+# entry as a sign-on attempt and sends map COSGN00, the step's input screen
+# [app/cbl/COSGN00C.cbl:75-157].
+#
+# The asserted screen is the one after the step's ENTER, pressed on that
+# sign-on screen with nothing typed. CC00 restarts COSGN00C with its COMMAREA;
+# USERID is FSET but empty, so USERIDI is spaces or LOW-VALUES and COSGN00C
+# sends COSGN00 again with 'Please enter User ID ...', under the header
+# POPULATE-HEADER-INFO builds: TRNNAME CC00 and PGMNAME COSGN00C
+# [app/cbl/COSGN00C.cbl:36-37,117-122,145-157,177-204]. ERRMSG is pinned even
+# though the first COSGN00C entry's message (a MAPFAIL on the unformatted
+# 'CB00' input) is uncertain, because it comes from the second entry, whose
+# result does not depend on the first's. It is kept because the scenario's
+# expected names it: an expected.yaml holds exactly the keys the scenario
+# asserts.
+#
+# Values are at their full BMS width, with trailing spaces kept: TRNNAME 4,
+# PGMNAME 8, ERRMSG 78 [app/bms/COSGN00.bms]. The scenario asserts no clock or
+# region field (CURDATE, CURTIME, APPLID, SYSID), so none is pinned here.
+screens:
+- '@map': COSGN00
+  ERRMSG: 'Please enter User ID ...                                                      '
+  PGMNAME: COSGN00C
+  TRNNAME: CC00

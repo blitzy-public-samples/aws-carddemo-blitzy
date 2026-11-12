@@ -1,0 +1,170 @@
+# Custom report start-month boundary, upper edge: start month 12 is the
+# highest month CORPT00C accepts. The CORPT00C custom-date boundary set is
+# boundary-01 start month 12 (accepted), -02 month 13 ('Start Date - Not a
+# valid Month...'), -03 month 00 (refused only through CSUTLDTC as 'Start
+# Date - Not a valid date...'), -04 start day 31 (accepted) and -05 day 32
+# ('Start Date - Not a valid Day...'). Here CUSTOM is 'X', the start date
+# 12/01/2022, the end date 12/31/2022 and CONFIRM is left empty, so the
+# accepted month shows as the next prompt, the request for confirmation.
+#
+# Steps 1-2 reach the empty CORPT00 screen as MNU-COMEN01C-alternate-09 does:
+# USER0001 signs on through CC00, COSGN00C routes the type-U user to the main
+# menu COMEN01, and option 9 'Transaction Reports' [app/cpy/COMEN02Y.cpy:74-78]
+# transfers control to CORPT00C with CDEMO-PGM-CONTEXT zero, so CORPT00C takes
+# its first-entry path, sets CDEMO-PGM-REENTER and sends CORPT0AO at
+# LOW-VALUES with a blank ERRMSG [app/cbl/COMEN01C.cbl:115-156]
+# [app/cbl/CORPT00C.cbl:172-181,556-580].
+#
+# Step 3 runs under CR00, the TRANSID CORPT00C returned with. ENTER on the
+# re-entry receives the map into CORPT0AI and performs PROCESS-ENTER-KEY
+# [app/cbl/CORPT00C.cbl:183-186,596-604]:
+# - MONTHLY and YEARLY keep their blank INITIAL and CUSTOM holds 'X', so the
+#   custom branch runs. No date part is empty, so none of the six empty-field
+#   messages is sent [app/cbl/CORPT00C.cbl:212-213,239,256-303].
+# - NUMVAL-C moves each part back through WS-NUM-99 or WS-NUM-9999, which
+#   leaves the two-digit and four-digit entries unchanged: '12', '01', '2022',
+#   '12', '31', '2022' [app/cbl/CORPT00C.cbl:74-75,305-327].
+# - The month check is a text comparison of the normalized two characters,
+#   SDTMMI NOT NUMERIC OR SDTMMI > '12'. '12' is numeric and not greater than
+#   '12', so 'Start Date - Not a valid Month...' is not sent; this is the upper
+#   edge of that rule [app/cbl/CORPT00C.cbl:329-336]. The day, year and end
+#   date checks pass too: '01' and '31' are not above '31' and both years are
+#   numeric [app/cbl/CORPT00C.cbl:338-379].
+# - The start date 2022-12-01 and then the end date 2022-12-31 are passed to
+#   CSUTLDTC with mask YYYY-MM-DD. Both are calendar dates, so CEEDAYS returns
+#   a zero feedback token and the result severity is '0000'; neither 'Start
+#   Date - Not a valid date...' nor 'End Date - Not a valid date...' is sent
+#   [app/cbl/CORPT00C.cbl:381-426] [app/cbl/CSUTLDTC.cbl:103-130]. That CEEDAYS
+#   accepts these dates is inferred, not observed (GAP-INF-001), and whether
+#   UniKix supplies CEEDAYS is unknown (GAP-MIS-010).
+# - The dates go into the job's PARM lines, WS-REPORT-NAME becomes 'Custom'
+#   and, with no error flag set, SUBMIT-JOB-TO-INTRDR runs. CONFIRMI is spaces
+#   or LOW-VALUES, so STRING joins 'Please confirm to print the ', 'Custom' and
+#   ' report...' into WS-MESSAGE (cleared at task start), sets the error flag,
+#   puts the cursor on CONFIRM and performs SEND-TRNRPT-SCREEN
+#   [app/cbl/CORPT00C.cbl:165-170,429-436,462-474].
+# - SEND-TRNRPT-SCREEN rebuilds the header from COTTL01Y and CSDAT01Y, moves
+#   WS-MESSAGE to the 78-byte ERRMSGO and sends CORPT00 with ERASE from
+#   CORPT0AO, which redefines CORPT0AI, so the normalized entries come back as
+#   entered. It ends the task with GO TO RETURN-TO-CICS, so the WRITEQ TD to
+#   JOBS is never reached and no report job is submitted
+#   [app/cbl/CORPT00C.cbl:476-510,556-591,609-628].
+#
+# That nothing is submitted shows in ERRMSG, which holds the confirmation
+# request instead of 'Custom report submitted for printing ...'. @TDQ:JOBS is
+# deliberately not asserted: its capture (GAP-MIS-017) belongs to
+# RPT-CORPT00C-normal-01..03, and asserting it here would block this month rule
+# on an observation its path never reaches.
+#
+# Expected values are derived from the source; no TPE region runs in CI. The
+# UniKix copy's CORPT00C, CORPT00.bms and COMEN01C equal app/ apart from
+# whitespace; its CSUTLDTC differs (GAP-DOC-021). Screen values are whole
+# fields at their BMS length, trailing spaces kept, because comparison never
+# trims; CONFIRM, which has no INITIAL, shows as a space. CURDATE and CURTIME
+# come from the region clock, hence the matchers and clock_mode relative.
+id: RPT-CORPT00C-boundary-01
+level: e2e
+type: boundary
+description: >-
+  USER0001 signs on, chooses main-menu option 9 (Transaction Reports) and, on
+  CORPT00 (CR00), asks for a custom report from 12/01/2022 to 12/31/2022
+  without confirming. Start month 12, the upper edge of the month check, is
+  accepted: no month, day or date message is sent, both dates pass CSUTLDTC
+  with mask YYYY-MM-DD, and CORPT00C shows CORPT00 again with the entered
+  values and 'Please confirm to print the Custom report...' in ERRMSG,
+  submitting no report job.
+# Primary item first, then the program, the maps asserted, the transaction
+# step 3 runs under, the online-only copybooks CORPT00C copies, and the
+# CSUTLDTC date acceptance both entered dates reach. The confirmation message
+# and the custom date range are the primary items of their own CORPT00C
+# scenarios; sign-on and the menu option (CC00, CM00, COSGN00, USRSEC) are
+# verified by the SEC and MNU scenarios; CVTRA05Y, which CORPT00C also copies,
+# at the lowest level that executes it.
+inventory_ids:
+- INV-RPT-017  # CORPT00C message 'Start Date - Not a valid Month...' (rule): month 12 accepted
+- INV-RPT-001  # CORPT00C program
+- INV-MNU-003  # COMEN01 map, where option 9 is entered
+- INV-RPT-002  # CORPT00 map, the report screen of steps 2 and 3
+- INV-CFG-019  # CR00 transaction, under which CORPT00C receives the request
+- INV-LAY-002  # COCOM01Y: the COMMAREA that makes step 3 a re-entry
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by CORPT00C
+- INV-UTL-003  # CSUTLDTC date acceptance: 2022-12-01 and 2022-12-31 with mask YYYY-MM-DD
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-009  # RPT end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-INF-001  # which dates CEEDAYS accepts is inferred, not observed
+- GAP-MIS-010  # whether UniKix supplies CEEDAYS, which CSUTLDTC calls
+# Not in the planned gap list: both dates pass through the UniKix copy's
+# CSUTLDTC, which trims the Vstring lengths it gives CEEDAYS. The entry lists
+# INV-UTL-003, so a unikix record of this scenario never verifies the app/
+# date acceptance; both dates fill their 10 characters, so the trim does not
+# change the outcome asserted here.
+- GAP-DOC-021
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user USER0001; CORPT00C reads no file.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '9'
+  # MONTHLY, YEARLY and CONFIRM are left at their initial blank.
+  - aid: ENTER
+    '@map': CORPT00
+    fields:
+      CUSTOM: 'X'
+      SDTMM: '12'
+      SDTDD: '01'
+      SDTYYYY: '2022'
+      EDTMM: '12'
+      EDTDD: '31'
+      EDTYYYY: '2022'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    ERRMSG: '                                                                              '
+  - '@map': CORPT00
+    TRNNAME: CR00
+    PGMNAME: CORPT00C
+    ERRMSG: '                                                                              '
+  - '@map': CORPT00
+    TRNNAME: CR00
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: CORPT00C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    MONTHLY: ' '
+    YEARLY: ' '
+    CUSTOM: 'X'
+    SDTMM: '12'
+    SDTDD: '01'
+    SDTYYYY: '2022'
+    EDTMM: '12'
+    EDTDD: '31'
+    EDTYYYY: '2022'
+    CONFIRM: ' '
+    ERRMSG: 'Please confirm to print the Custom report...                                  '
+  # One ERRMSG value per step: blank on the main menu and on the first
+  # CORPT00 screen, the confirmation request after ENTER.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Please confirm to print the Custom report...                                  '

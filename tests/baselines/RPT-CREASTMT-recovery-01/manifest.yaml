@@ -1,0 +1,16 @@
+# Derived baseline: expected.yaml is authored from app/jcl/CREASTMT.JCL, never
+# observed, because the COND=(0,NE) bypass is a JCL-semantics item only BPE
+# evaluates (GAP-INF-011; GAP-MIS-006, GAP-MIS-007). It names no execution_id
+# or execution_fingerprint and holds no datasets/ until an imported UniKix run
+# replaces it. source_identity lists the JCL alone: the asserted outcome follows
+# from its step and COND statements, and the steps it bypasses (the TRXFL load,
+# the statement delete and CBSTM03A) contribute nothing to it.
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: derived
+source_commit: 1cb86ff9135b33aa50b652ee9dee065d47e913bd
+source_identity:
+  commit: 1cb86ff9135b33aa50b652ee9dee065d47e913bd
+  tree: app
+  units:
+    app/jcl/CREASTMT.JCL: 87a18700fac7bccfffbefa5d80fed0b171fdc36caeebb575c8a3cf66e4fc3caa

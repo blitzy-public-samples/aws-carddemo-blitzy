@@ -1,0 +1,120 @@
+# COACTVWC with an account whose cross-reference exists but whose master record
+# does not: the ACCTDAT READ returns NOTFND and the screen shows the composed
+# 'Account:<id> not found in Acct Master file.Resp:<RESP> Reas:<RESP2>' message.
+#
+# Steps 1-2: USER0001 signs on through CC00, COSGN00C XCTLs the type 'U' user
+# to COMEN01C, and option '1' XCTLs to COACTVWC, which takes the
+# CDEMO-PGM-ENTER path, sends COACTVW with its prompt and returns TRANSID CAVW
+# [app/cbl/COSGN00C.cbl:221-240] [app/cbl/COMEN01C.cbl:117-155]
+# [app/cbl/COACTVWC.cbl:353-360,577-591].
+# Step 3: ENTER with account 00000000002, a non-zero 11-digit number, passes
+# 2210-EDIT-ACCOUNT [app/cbl/COACTVWC.cbl:649-681]. 9200-GETCARDXREF-BYACCT
+# reads CXACAIX by that account: cardxref.txt record 3 (card
+# 0923877193247330, customer 000000002) is the account's only cross-reference,
+# so the READ is NORMAL [app/cbl/COACTVWC.cbl:723-740]. 9300-GETACCTDATA-BYACCT
+# then reads ACCTDAT, from which the fixture omits account 00000000002, and gets
+# NOTFND: ERROR-RESP and ERROR-RESP2 (PIC X(10)) receive the S9(9) COMP RESP and
+# RESP2 as 9 unsigned digits and a blank, and the STRING composes the message
+# into the 75-byte WS-RETURN-MSG [app/cbl/COACTVWC.cbl:776-807].
+# - The literal parts and ERROR-RESP take 71 bytes, so the STRING overflows
+#   and keeps only the first 4 digits of ERROR-RESP2: '0000' for any RESP2 below
+#   100000 (CICS gives 80 for a READ NOTFND). RESP is DFHRESP(NOTFND), 13.
+# - ERRMSG (78) receives the 75 bytes padded with 3 blanks [app/cbl/COACTVWC.cbl:532].
+# The SET DID-NOT-FIND-ACCT-IN-ACCTDAT is commented out, so 9000-READ-ACCT does
+# not stop: 9400-GETCUSTDATA-BYCUST reads CUSTDAT for customer 000000002 with
+# RESP NORMAL, and 1200-SETUP-SCREEN-VARS shows that customer's fields
+# [app/cbl/COACTVWC.cbl:687-718,825-838,460-523]. The account fields are moved
+# from ACCOUNT-RECORD, which no READ filled in this task, so they are not
+# asserted. INFOMSG falls back to the prompt because 9000-READ-ACCT cleared
+# WS-INFO-MSG [app/cbl/COACTVWC.cbl:689,527-534].
+#
+# The customer read is part of this NOTFND path, so CUSTDAT (INV-CFG-005) is
+# listed and the customer fields asserted, beside the CXACAIX and ACCTDAT files.
+# Whether the lookup is meant to go on after the account NOTFND is the suspected
+# defect GAP-DEF-020, hence the suspected-defect tag.
+#
+# Expected values are derived from the source (no TPE region runs in CI). Text
+# fields are whole BMS fields with trailing blanks; CURDATE and CURTIME come
+# from the region clock, hence the matchers and clock_mode relative. The UniKix
+# copy of COACTVW.bms lacks the unnamed field at row 1, columns 1-9 (GAP-DOC-025).
+id: ACT-COACTVWC-negative-07
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, chooses main menu option 1 'Account View' and asks for
+  account 00000000002, whose card cross-reference exists but whose account
+  master record is absent. COACTVWC shows 'Account:00000000002 not found in
+  Acct Master file.Resp:000000013  Reas:0000' (the RESP2 digits cut off by the
+  75-byte message field), keeps the account id, and still shows customer
+  000000002 read from the customer master.
+inventory_ids:
+- INV-ACT-020  # COACTVWC message 'Account:<id> not found in Acct Master file.Resp:<RESP> Reas:<RESP2>'
+- INV-ACT-001  # COACTVWC program
+- INV-MNU-003  # COMEN01 map, where option 1 is entered
+- INV-ACT-003  # COACTVW map, the account view screen of steps 2-3
+- INV-CFG-010  # CAVW transaction, under which the account lookup runs
+- INV-CFG-006  # CXACAIX CSD file, read NORMAL by account id
+- INV-CFG-001  # ACCTDAT CSD file, read NOTFND
+- INV-CFG-005  # CUSTDAT CSD file, read NORMAL after the NOTFND
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carried across CAVW
+- INV-LAY-005  # COTTL01Y copybook, TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y copybook, CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y copybook, copied by COACTVWC
+- INV-LAY-009  # CSMSG02Y copybook, the abend data of the HANDLE ABEND
+- INV-LAY-011  # CSSTRPFY copybook, the AID mapping of ENTER
+- INV-LAY-019  # CVCRD01Y copybook, CC-ACCT-ID and the AID flags
+tags:
+- inferred-not-observed
+- suspected-defect
+gap_ids:
+- GAP-INF-005  # ACT end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-DEF-020  # the failed account read goes on to the customer read and shows the customer
+- GAP-DOC-025  # the UniKix COACTVW.bms differs from app/ at row 1, columns 1-9
+preconditions:
+  datasets:
+    # Account 00000000002 keeps its cross-reference and customer but loses its
+    # account master record: the NOTFND fault of the ACCTDAT READ.
+    ACCTDATA: {base: ACCTDATA, omit_keys: ['00000000002']}
+    CARDXREF: {base: CARDXREF}
+    CUSTDATA: {base: CUSTDATA}
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: USER0001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '1'}
+    '@map': COMEN01
+  - aid: ENTER
+    fields: {ACCTSID: '00000000002'}
+    '@map': COACTVW
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+  - '@map': COACTVW
+    TRNNAME: CAVW
+    PGMNAME: COACTVWC
+    INFOMSG: 'Enter or update id of account to display     '
+    ERRMSG: '                                                                              '
+  - '@map': COACTVW
+    TRNNAME: CAVW
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COACTVWC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000002'
+    ACSTNUM: '000000002'
+    ACSFNAM: 'Enrico                   '
+    ACSMNAM: 'April                    '
+    ACSLNAM: 'Rosenbaum                '
+    INFOMSG: 'Enter or update id of account to display     '
+    ERRMSG: 'Account:00000000002 not found in Acct Master file.Resp:000000013  Reas:0000   '

@@ -1,0 +1,119 @@
+# ACCTFILE rebuilds the account master KSDS from its sequential twin, in three
+# IDCAMS steps [app/jcl/ACCTFILE.jcl:19-62]:
+# - STEP05 DELETEs the existing cluster, then IF MAXCC LE 08 THEN SET MAXCC = 0
+#   zeroes the condition code whether or not the cluster existed
+#   [app/jcl/ACCTFILE.jcl:22-27];
+# - STEP10 DEFINEs it again, KEYS(11 0) RECORDSIZE(300 300) INDEXED
+#   [app/jcl/ACCTFILE.jcl:33-50];
+# - STEP15 REPROs the 50 records of ACCTDATA-PS into it [app/jcl/ACCTFILE.jcl:54-62].
+# The cluster exists before the job, holding one invented account whose key the
+# input lacks, so its absence afterwards shows that STEP05 deleted the old cluster
+# and STEP10 defined an empty one before the load. The DELETE succeeds here, so
+# the MAXCC reset changes nothing; the reset after a failing DELETE is the
+# JCL-semantics item of DAT-ACCTFILE-recovery-01, which only unikix runs, so it is
+# not listed here: listing it would take the scenario away from gnucobol-batch.
+# The step lines are the job driver's and bpe.py's common form; neither adapter
+# writes a line per job. ACCTDATA is compared in ACCT-ID order: the inline records
+# pin the key set and record 49's ACCT-ADDR-ZIP, loaded at its ASCII value
+# (GAP-DOC-012); the baseline, captured on gnucobol-batch, holds every field.
+id: DAT-ACCTFILE-normal-01
+level: integration
+type: normal
+description: >-
+  ACCTFILE deletes the existing account master cluster (STEP05 IDCAMS DELETE,
+  then IF MAXCC LE 08 THEN SET MAXCC = 0) [app/jcl/ACCTFILE.jcl:22-27], defines it
+  again with KEYS(11 0) and RECORDSIZE(300 300) (STEP10) [app/jcl/ACCTFILE.jcl:33-41]
+  and REPROs the 50 repository account records into it (STEP15)
+  [app/jcl/ACCTFILE.jcl:54-61]. Every step ends with RC 0, the stale record of the
+  pre-existing cluster is gone, and ACCTDATA holds exactly the 50 repository
+  accounts in ACCT-ID order.
+inventory_ids:
+- INV-DAT-005  # ACCTFILE job
+tags: []
+gap_ids:
+- GAP-STB-005  # IDCAMS DELETE, DEFINE CLUSTER, IF MAXCC and REPRO emulated on gnucobol-batch
+- GAP-STB-009  # catalog emulation: the cluster's DSN deleted and defined again
+- GAP-STB-010  # Berkeley DB indexed file in place of the VSAM KSDS
+- GAP-DOC-012  # record 49 ACCT-ADDR-ZIP is A000000000 in ASCII and ZEROAPR in EBCDIC
+preconditions:
+  datasets:
+    ACCTDATA-PS: {base: ACCTDATA-PS}
+    # The cluster before the job: one invented account, absent from the input.
+    ACCTDATA:
+      records:
+      - ACCT-ID: '99999999999'
+        ACCT-ACTIVE-STATUS: 'N'
+        ACCT-CURR-BAL: '1.00'
+        ACCT-CREDIT-LIMIT: '1000.00'
+        ACCT-CASH-CREDIT-LIMIT: '500.00'
+        ACCT-OPEN-DATE: '2020-01-01'
+        ACCT-EXPIRAION-DATE: '2029-12-31'
+        ACCT-REISSUE-DATE: '2029-12-31'
+        ACCT-CURR-CYC-CREDIT: '0.00'
+        ACCT-CURR-CYC-DEBIT: '0.00'
+        ACCT-ADDR-ZIP: '99999'
+        ACCT-GROUP-ID: DEFAULT
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  job: ACCTFILE
+expected:
+  return_code: 0
+  messages:
+  - STEP STEP05 RC 0000
+  - STEP STEP10 RC 0000
+  - STEP STEP15 RC 0000
+  file_state:
+    ACCTDATA:
+      records:
+      - {ACCT-ID: '1'}
+      - {ACCT-ID: '2'}
+      - {ACCT-ID: '3'}
+      - {ACCT-ID: '4'}
+      - {ACCT-ID: '5'}
+      - {ACCT-ID: '6'}
+      - {ACCT-ID: '7'}
+      - {ACCT-ID: '8'}
+      - {ACCT-ID: '9'}
+      - {ACCT-ID: '10'}
+      - {ACCT-ID: '11'}
+      - {ACCT-ID: '12'}
+      - {ACCT-ID: '13'}
+      - {ACCT-ID: '14'}
+      - {ACCT-ID: '15'}
+      - {ACCT-ID: '16'}
+      - {ACCT-ID: '17'}
+      - {ACCT-ID: '18'}
+      - {ACCT-ID: '19'}
+      - {ACCT-ID: '20'}
+      - {ACCT-ID: '21'}
+      - {ACCT-ID: '22'}
+      - {ACCT-ID: '23'}
+      - {ACCT-ID: '24'}
+      - {ACCT-ID: '25'}
+      - {ACCT-ID: '26'}
+      - {ACCT-ID: '27'}
+      - {ACCT-ID: '28'}
+      - {ACCT-ID: '29'}
+      - {ACCT-ID: '30'}
+      - {ACCT-ID: '31'}
+      - {ACCT-ID: '32'}
+      - {ACCT-ID: '33'}
+      - {ACCT-ID: '34'}
+      - {ACCT-ID: '35'}
+      - {ACCT-ID: '36'}
+      - {ACCT-ID: '37'}
+      - {ACCT-ID: '38'}
+      - {ACCT-ID: '39'}
+      - {ACCT-ID: '40'}
+      - {ACCT-ID: '41'}
+      - {ACCT-ID: '42'}
+      - {ACCT-ID: '43'}
+      - {ACCT-ID: '44'}
+      - {ACCT-ID: '45'}
+      - {ACCT-ID: '46'}
+      - {ACCT-ID: '47'}
+      - {ACCT-ID: '48'}
+      - {ACCT-ID: '49', ACCT-ADDR-ZIP: 'A000000000'}
+      - {ACCT-ID: '50'}

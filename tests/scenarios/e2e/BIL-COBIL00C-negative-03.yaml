@@ -1,0 +1,142 @@
+# COBIL00C refuses a confirmation value other than Y, y, N, n, blank or
+# LOW-VALUES with 'Invalid value. Valid values are (Y/N)...' and pays nothing
+# [app/cbl/COBIL00C.cbl:173-191].
+#
+# Steps 1-2 reach the empty Bill Payment screen: USER0001 (type U) is routed
+# to COMEN01C, and option 10 transfers control to COBIL00C with the plain
+# COCOM01Y COMMAREA and CDEMO-PGM-CONTEXT 0 [app/cbl/COSGN00C.cbl:230-237]
+# [app/cbl/COMEN01C.cbl:115-156] [app/cpy/COMEN02Y.cpy:80-84]. COBIL00C pads
+# that COMMAREA with spaces into its own, so CDEMO-CB00-TRN-SELECTED is blank,
+# sets the re-enter flag and sends COBIL00 from LOW-VALUES with a blank ERRMSG
+# [app/cbl/COBIL00C.cbl:63-73,104-122,289-301].
+# Step 3 enters repository account 00000000001 with CONFIRM X and presses
+# ENTER under CB00 [app/cbl/COBIL00C.cbl:123-127]:
+# - ACTIDIN is supplied, so the empty-id check sets no message and the id is
+#   moved to ACCT-ID [app/cbl/COBIL00C.cbl:158-171].
+# - CONFIRM X falls to WHEN OTHER: the error flag is set, the message is moved
+#   to WS-MESSAGE, the cursor goes to CONFIRM, and SEND-BILLPAY-SCREEN sends
+#   COBIL00 with ERASE [app/cbl/COBIL00C.cbl:185-190,289-301]. READ-ACCTDAT-FILE
+#   runs only for Y, y, blank or LOW-VALUES, so ACCTDAT is never read.
+# - The MOVE of ACCT-CURR-BAL to CURBALI comes after that SEND, and the error
+#   flag skips every later block, so no second SEND, no CXACAIX read and no
+#   TRANSACT browse, write or ACCTDAT rewrite follows before RETURN TRANSID CB00
+#   [app/cbl/COBIL00C.cbl:146-149,193-244]. The screen therefore keeps the
+#   CURBAL the SEND carried: the blank that step 2's LOW-VALUES left there
+#   (the map gives CURBAL no INITIAL), not the account's balance.
+# COBIL0AO redefines the COBIL0AI that RECEIVE MAP filled, so ACTIDIN and
+# CONFIRM are sent back as entered.
+#
+# Expected values are derived from the source; no TPE region runs in CI. Text
+# values are full field width with their trailing spaces. CURDATE and CURTIME
+# come from the region clock, so they are matchers and the clock is relative.
+id: BIL-COBIL00C-negative-03
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, chooses main-menu option 10 (Bill Payment) and, on
+  COBIL00, enters repository account 00000000001 with CONFIRM X. COBIL00C
+  rejects the confirmation with 'Invalid value. Valid values are (Y/N)...',
+  sends the screen back with the entered values and a blank balance, and
+  neither reads nor changes the account or the transaction file.
+# Primary item first, then the program, the maps asserted, and the transaction
+# step 3 runs under, and the online-only copybooks COBIL00C copies. No CSD file
+# item is listed: this path issues no file command, and ACCTDATA and TRANSACT
+# are only observed to stay unchanged. Sign-on and the menu option (CC00, CM00,
+# COSGN00, USRSEC, option 10) are verified by the SEC and MNU scenarios; the
+# batch record copybooks and data files at the lowest level that executes them.
+inventory_ids:
+- INV-BIL-005  # COBIL00C message 'Invalid value. Valid values are (Y/N)...'
+- INV-BIL-001  # COBIL00C program
+- INV-MNU-003  # COMEN01 map, where option 10 is entered
+- INV-BIL-002  # COBIL00 map, the bill payment screen of steps 2 and 3
+- INV-CFG-012  # CB00 transaction, under which COBIL00C receives the entry
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carrying the program context
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the screen date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COBIL00C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-008  # BIL end-to-end baselines derived, never observed on a TPE region
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+    ACCTDATA: {base: ACCTDATA}
+    # TRANSACT has no repository data of its own (datasets.yaml source
+    # 'built', which a base cannot name), so it is built from the 300
+    # repository daily transactions, which share its 350-byte record shape.
+    TRANSACT: {base: DALYTRAN}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '10'
+  - aid: ENTER
+    '@map': COBIL00
+    fields:
+      ACTIDIN: '00000000001'
+      CONFIRM: 'X'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: 'CM00'
+    PGMNAME: 'COMEN01C'
+    OPTN010: '10. Bill Payment                        '
+  - '@map': COBIL00
+    TRNNAME: 'CB00'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COBIL00C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ERRMSG: '                                                                              '
+  - '@map': COBIL00
+    TRNNAME: 'CB00'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COBIL00C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACTIDIN: '00000000001'
+    CURBAL: '              '
+    CONFIRM: 'X'
+    ERRMSG: 'Invalid value. Valid values are (Y/N)...                                      '
+  # The ERRMSG of each step: the menu and the empty bill payment screen carry
+  # none.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Invalid value. Valid values are (Y/N)...                                      '
+  file_state:
+    # Only a confirmed payment rewrites ACCTDAT, and the refused confirmation
+    # never reads it, so account 00000000001 keeps its fixture values.
+    ACCTDATA:
+      count: 50
+      contains:
+      - ACCT-ID: '1'
+        ACCT-ACTIVE-STATUS: 'Y'
+        ACCT-CURR-BAL: '194.00'
+        ACCT-CREDIT-LIMIT: '2020.00'
+        ACCT-CASH-CREDIT-LIMIT: '1020.00'
+        ACCT-OPEN-DATE: '2014-11-20'
+        ACCT-EXPIRAION-DATE: '2025-05-20'
+        ACCT-REISSUE-DATE: '2025-05-20'
+        ACCT-CURR-CYC-CREDIT: '0.00'
+        ACCT-CURR-CYC-DEBIT: '0.00'
+        ACCT-ADDR-ZIP: 'A000000000'
+        ACCT-GROUP-ID: '          '
+    # Only a confirmed payment writes TRANSACT, so the file still holds
+    # exactly the 300 fixture records.
+    TRANSACT:
+      count: 300

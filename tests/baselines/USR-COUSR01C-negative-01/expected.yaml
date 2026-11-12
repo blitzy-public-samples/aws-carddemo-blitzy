@@ -1,0 +1,40 @@
+# Derived baseline of scenario USR-COUSR01C-negative-01 (capture_platform:
+# derived), authored from the source and never observed: no TPE region runs in
+# CI. Open until a UniKix run is imported: GAP-INF-004 (derived USR end-to-end
+# baselines) and GAP-INF-012 (online-only copybooks such as CSMSG01Y).
+# Step 1: ADMIN001 signs on and COADM01C sends its admin menu on first entry
+# with a blank message [app/cbl/COADM01C.cbl:79-90,172-184].
+# Step 2: option 2 XCTLs to COUSR01C [app/cbl/COADM01C.cbl:139-145], whose
+# first entry sends COUSR01 with its header and a blank message
+# [app/cbl/COUSR01C.cbl:75-87,184-197].
+# Step 3: PF5 is none of ENTER, PF3 and PF4, so WHEN OTHER moves
+# CCDA-MSG-INVALID-KEY to WS-MESSAGE and sends COUSR01 again; no USRSEC access
+# [app/cbl/COUSR01C.cbl:89-103] [app/cpy/CSMSG01Y.cpy:20-21].
+# Values are full BMS width with trailing spaces kept (ERRMSG 78, TITLE01 and
+# TITLE02 40, from COTTL01Y), because screens and messages compare exactly.
+# messages holds each step's ERRMSG in step order. CURDATE and CURTIME come
+# from the region clock, so they are matchers; CURTIME is 8 bytes on COUSR01.
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'Invalid key pressed. Please see below...                                      '
+screens:
+- '@map': COADM01
+  ERRMSG: '                                                                              '
+  PGMNAME: COADM01C
+  TRNNAME: CA00
+- '@map': COUSR01
+  ERRMSG: '                                                                              '
+  PGMNAME: COUSR01C
+  TRNNAME: CU01
+- '@map': COUSR01
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Invalid key pressed. Please see below...                                      '
+  PGMNAME: COUSR01C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CU01

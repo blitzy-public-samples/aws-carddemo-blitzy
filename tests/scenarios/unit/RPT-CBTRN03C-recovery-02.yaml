@@ -1,0 +1,121 @@
+# The TRANFILE read-error abend of CBTRN03C. The six files open, DATEPARM is
+# read and the first READ of TRANFILE returns record 9900000000000611, whose
+# processing date lies inside the window: the program displays the record,
+# looks up its card, type and category and writes the four header lines and the
+# detail line [app/cbl/CBTRN03C.cbl:160-196,274-290,324-341,361-374]. The second
+# READ fails with an I/O error, so 1000-TRANFILE-GET-NEXT displays 'ERROR
+# READING TRANSACTION FILE', the status through 9910-DISPLAY-IO-STATUS and
+# 'ABENDING PROGRAM', then calls CEE3ABD without parameters; record
+# 9900000000000612 is never displayed or reported, and no totals, close or
+# end-of-execution line follow [app/cbl/CBTRN03C.cbl:248-272,626-646].
+#
+# No adapter injects a read failure after a successful open (GAP-MIS-013), so
+# the scenario stays implemented-unexecuted and its baseline is derived from the
+# source (GAP-INF-013). The record display and the five report lines are those a
+# GnuCOBOL 3.2 run of the app/ source writes for record 9900000000000611 under
+# the suite's compile options. Both records are invented: ids, description and
+# merchants match no repository transaction. DATEPARM is built from the
+# parameter, because no job or data file creates it (GAP-MIS-001).
+id: RPT-CBTRN03C-recovery-02
+level: unit
+type: recovery
+description: >-
+  CBTRN03C opens its files, reads the date window and reports the first
+  in-window transaction (the four header lines and one detail line); the second
+  READ of TRANFILE then fails with an I/O error, so it displays 'ERROR READING
+  TRANSACTION FILE', the file status and 'ABENDING PROGRAM' and abends through
+  CEE3ABD without writing any total.
+# Only the I/O-failure-after-open item: this case never executes, so listing the
+# program, the CVTRA05Y or CVTRA07Y layout or the data files here would block
+# items that the executed CBTRN03C scenarios verify (one scenario lists an item
+# only when the item's verification depends on it).
+inventory_ids:
+- INV-RPT-044  # CBTRN03C abend on read, write or close failure after open (recovery)
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-MIS-013  # no adapter injects a read failure after a successful open
+- GAP-INF-013  # the derived baseline of a post-open fault scenario
+- GAP-MIS-001  # DATEPARM is supplied as a parameter file
+- GAP-STB-001  # CEE3ABD stub: no abend code, dump or LE condition handling
+- GAP-DEF-001  # the parameterless CALL 'CEE3ABD'
+# CBTRN03C reads its three lookup files as Berkeley DB indexed files and is
+# compiled with the mapped options on gnucobol-batch, so the case cites those
+# two stub limitations, as every scenario whose program uses a seam does.
+- GAP-STB-010  # Berkeley DB indexed files in place of the VSAM KSDS
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
+preconditions:
+  datasets:
+    # Card 9680294154603697 is account 00000000001 in the repository CARDXREF;
+    # type 01 is 'Purchase' and category 01/0001 'Regular Sales Draft'.
+    CARDXREF:
+      base: CARDXREF
+    TRANTYPE:
+      base: TRANTYPE
+    TRANCATG:
+      base: TRANCATG
+    TRANSACT-DALY:
+      records:
+      - TRAN-ID: '9900000000000611'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '0001'
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic purchase
+        TRAN-AMT: '10.00'
+        TRAN-MERCHANT-ID: '999000611'
+        TRAN-MERCHANT-NAME: Synthetic Merchant 611
+        TRAN-MERCHANT-CITY: Synthetic City
+        TRAN-MERCHANT-ZIP: '99999'
+        TRAN-CARD-NUM: '9680294154603697'
+        TRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+        TRAN-PROC-TS: '2022-07-05-10.00.00.000000'
+      - TRAN-ID: '9900000000000612'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '0001'
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic purchase
+        TRAN-AMT: '10.00'
+        TRAN-MERCHANT-ID: '999000612'
+        TRAN-MERCHANT-NAME: Synthetic Merchant 612
+        TRAN-MERCHANT-CITY: Synthetic City
+        TRAN-MERCHANT-ZIP: '99999'
+        TRAN-CARD-NUM: '9680294154603697'
+        TRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+        TRAN-PROC-TS: '2022-07-05-10.00.00.000000'
+  parameters:
+    DATEPARM: '2022-07-01 2022-07-31'
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults:
+  # after: 1 -- the first READ returns record 1, the second fails.
+  - target: TRANSACT-DALY
+    operation: read
+    condition: io-error
+    after: 1
+inputs:
+  program: CBTRN03C
+expected:
+  return_code: null
+  messages:
+  - 'START OF EXECUTION OF PROGRAM CBTRN03C'
+  - 'Reporting from 2022-07-01 to 2022-07-31'
+  # DISPLAY TRAN-RECORD of the first record: the whole 350-byte record, TRAN-AMT
+  # as the overpunch-signed 0000000100{ and the 20-byte FILLER as trailing spaces.
+  - '9900000000000611010001POS TERM  Synthetic purchase                                                                                  0000000100{999000611Synthetic Merchant 611                            Synthetic City                                    99999     96802941546036972022-07-05 09:15:00.0000002022-07-05-10.00.00.000000                    '
+  - 'ERROR READING TRANSACTION FILE'
+  # An io-error is taken as IBM file status 30 (inferred, GAP-INF-013): numeric
+  # and not 9x, so 9910-DISPLAY-IO-STATUS shows it as NNNN0030.
+  - 'FILE STATUS IS: NNNN0030'
+  - 'ABENDING PROGRAM'
+  - 'CARDDEMO-ABEND CEE3ABD'
+  datasets:
+    TRANREPT:
+      records:
+      # REPORT-NAME-HEADER, the blank line, TRANSACTION-HEADER-1 and the
+      # TRANSACTION-HEADER-2 separator, then the first detail line; the abend
+      # comes before any page, account or grand total.
+      - 'DALYREPT                              Daily Transaction Report                 Date Range: 2022-07-01 to 2022-07-31                  '
+      - '                                                                                                                                     '
+      - 'Transaction ID   Account ID  Transaction Type   Tran Category                      Tran Source            Amount                     '
+      - '-------------------------------------------------------------------------------------------------------------------------------------'
+      - '9900000000000611 00000000001 01-Purchase        0001-Regular Sales Draft           POS TERM                10.00                     '

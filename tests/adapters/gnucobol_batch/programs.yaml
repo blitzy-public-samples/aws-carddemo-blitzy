@@ -1,0 +1,614 @@
+# gnucobol-batch program table: how each batch unit of app/cbl is compiled and
+# launched, and which logical dataset each of its ASSIGN TO ddnames reads or writes.
+#
+# Purpose
+#   Scenarios name logical datasets only (tests/fixtures/datasets.yaml). This file is
+#   the gnucobol-batch mapping from a unit's ddnames to those names, so the same
+#   scenario runs unchanged on any adapter that supplies its own mapping. It only
+#   describes the app/ sources, which are read and never changed.
+#
+# Readers
+#   harness/scenarios.py  capable_adapters: inputs.program X is gnucobol-capable when
+#                         programs[X] exists and its run is not `called`
+#   harness/results.py    source_identity: the sha256 of each unit's sources
+#   build.py              compile table and the declared key profiles of the loaders
+#   datasets.py           materialization before a run and read-back after it
+#   jobs.py, adapter.py   DD_<ddname> environment, launch mode, TIOT of the shim
+#
+# Schema (schema_version 1; under programs, mapping keys are sorted at every level)
+#   programs:
+#     <UNIT>:                      a batch program name: one to eight upper-case letters
+#                                  and digits, starting with a letter; build.py refuses
+#                                  any other key, because it names bin/<UNIT> or
+#                                  modules/<UNIT>.so and logs/<UNIT>.log
+#       called_by: <UNIT>          run: called only; the unit whose executable holds it
+#       calls: [<UNIT>...]         units linked into this one; their dd entries are
+#                                  merged into this unit's DD environment at run time
+#       compile:
+#         extra_flags: [...]       flags beyond the common ones build.py adds to every
+#                                  compile: -std=ibm -fsign=EBCDIC -ftab-width=4
+#                                  -fbinary-truncate -I app/cpy; only the exact
+#                                  flags build.py allows (today
+#                                  -fbinary-byteorder=native) are accepted, so no
+#                                  flag can choose an output, listing, temporary or
+#                                  configuration path or forward C compiler or linker
+#                                  options
+#         link_with: [<UNIT>...]   sources compiled in the same cobc call, after the
+#                                  unit's own (main first)
+#         mode: executable|module  cobc -x or cobc -m
+#       dd:
+#         <DDNAME>:
+#           access: sequential|random|dynamic   ACCESS MODE of the SELECT (default
+#                                               sequential when the SELECT has none)
+#           also_accepts: [<logical>...]        optional fallback input names, tried
+#                                               in order after `logical`
+#           keys:                               indexed only, exactly as the SELECT
+#             alternates:                       declares them
+#             - duplicates: true|false          WITH DUPLICATES present or not
+#               length: <n>
+#               offset: <0-based>
+#             primary:
+#               length: <n>
+#               offset: <0-based>
+#           logical: <name>                     a datasets.yaml dataset name
+#           open: input|output|io|extend        the OPEN mode of the program
+#           organization: sequential|indexed    ORGANIZATION of the SELECT (record
+#                                               sequential when the SELECT has none)
+#           record_length: <n>                  FD record length = datasets.yaml
+#       run: executable|parmdrv|dtcdrv|called
+#         executable  <build dir>/<UNIT>, with DD_<ddname> for each dd
+#         parmdrv     <build dir>/PARMDRV <UNIT> <parm> (tests/stubs/PARMDRV.cbl), for a
+#                     unit whose PROCEDURE DIVISION USING takes the z/OS EXEC PARM
+#         dtcdrv      <build dir>/DTCDRV (tests/stubs/DTCDRV.cbl), which CALLs the unit
+#                     once per DTCIN record
+#         called      never launched; runs only inside its called_by executable
+#       sources: [<repo-relative path>...]      main source first
+#       tiot:                                   CBSTM03A only: what the page-zero shim
+#         dds: [<DDNAME>...]                    (tests/stubs/psa_tiot_shim.c) puts in
+#         job: <name>                           CARDDEMO_DDS (comma-joined, in list
+#         step: <name>                          order), CARDDEMO_JOB and CARDDEMO_STEP
+#
+# Key rule
+#   keys are the program's own SELECT declaration, never the dataset's LISTCAT or
+#   datasets.yaml definition. GnuCOBOL 3.2 with Berkeley DB keeps alternate key i in
+#   <file>.i, and OPEN fails with status 35 when a declared alternate's file is absent:
+#   CBACT04C abends on a CARDXREF loaded with its primary key only. datasets.py
+#   builds or re-keys each indexed file to the declared profile, duplicates flag
+#   included, before the program opens it. Offsets are 0-based, as in datasets.yaml.
+#   The primary key of every indexed dd equals the dataset's key; only the alternates
+#   may differ.
+
+schema_version: 1
+
+programs:
+
+  CBACT01C:
+    calls: []
+    compile:
+      extra_flags: []
+      link_with: []
+      mode: executable
+    dd:
+      # [app/cbl/CBACT01C.cbl:29-33,37-40,135]
+      ACCTFILE:
+        access: sequential
+        keys:
+          alternates: []
+          primary:
+            length: 11
+            offset: 0
+        logical: ACCTDATA
+        open: input
+        organization: indexed
+        record_length: 300
+    run: executable
+    sources:
+    - app/cbl/CBACT01C.cbl
+
+  CBACT02C:
+    calls: []
+    compile:
+      extra_flags: []
+      link_with: []
+      mode: executable
+    dd:
+      # [app/cbl/CBACT02C.cbl:29-33,37-40,120]
+      CARDFILE:
+        access: sequential
+        keys:
+          alternates: []
+          primary:
+            length: 16
+            offset: 0
+        logical: CARDDATA
+        open: input
+        organization: indexed
+        record_length: 150
+    run: executable
+    sources:
+    - app/cbl/CBACT02C.cbl
+
+  CBACT03C:
+    calls: []
+    compile:
+      extra_flags: []
+      link_with: []
+      mode: executable
+    dd:
+      # [app/cbl/CBACT03C.cbl:29-33,37-40,120]
+      XREFFILE:
+        access: sequential
+        keys:
+          alternates: []
+          primary:
+            length: 16
+            offset: 0
+        logical: CARDXREF
+        open: input
+        organization: indexed
+        record_length: 50
+    run: executable
+    sources:
+    - app/cbl/CBACT03C.cbl
+
+  # PROCEDURE DIVISION USING EXTERNAL-PARMS takes the INTCALC STEP15 PARM
+  # [app/cbl/CBACT04C.cbl:175-180] [app/jcl/INTCALC.jcl:22], so the unit is a module
+  # that PARMDRV calls: PARMDRV CBACT04C <preconditions.parameters.parm>.
+  # The JCL's XREFFIL1 DD (the CARDXREF AIX path) has no SELECT in the program and is
+  # not mapped [app/jcl/INTCALC.jcl:31-32].
+  CBACT04C:
+    calls: []
+    compile:
+      extra_flags: []
+      link_with: []
+      mode: module
+    dd:
+      # [app/cbl/CBACT04C.cbl:41-45,84-87,291]
+      ACCTFILE:
+        access: random
+        keys:
+          alternates: []
+          primary:
+            length: 11
+            offset: 0
+        logical: ACCTDATA
+        open: io
+        organization: indexed
+        record_length: 300
+      # [app/cbl/CBACT04C.cbl:47-51,76-82,272]
+      DISCGRP:
+        access: random
+        keys:
+          alternates: []
+          primary:
+            length: 16
+            offset: 0
+        logical: DISCGRP
+        open: input
+        organization: indexed
+        record_length: 50
+      # [app/cbl/CBACT04C.cbl:28-32,61-67,236]
+      TCATBALF:
+        access: sequential
+        keys:
+          alternates: []
+          primary:
+            length: 17
+            offset: 0
+        logical: TCATBALF
+        open: input
+        organization: indexed
+        record_length: 50
+      # The interest transactions, INTCALC SYSTRAN(+1) [app/cbl/CBACT04C.cbl:53-56,89-92,309]
+      TRANSACT:
+        access: sequential
+        logical: SYSTRAN
+        open: output
+        organization: sequential
+        record_length: 350
+      # ALTERNATE RECORD KEY FD-XREF-ACCT-ID, after the 16-byte card and the 9-digit
+      # customer, has no WITH DUPLICATES, although the dataset's AIX is NONUNIQUEKEY
+      # [app/cbl/CBACT04C.cbl:34-39,69-74,254].
+      XREFFILE:
+        access: random
+        keys:
+          alternates:
+          - duplicates: false
+            length: 11
+            offset: 25
+          primary:
+            length: 16
+            offset: 0
+        logical: CARDXREF
+        open: input
+        organization: indexed
+        record_length: 50
+    run: parmdrv
+    sources:
+    - app/cbl/CBACT04C.cbl
+
+  CBCUS01C:
+    calls: []
+    compile:
+      extra_flags: []
+      link_with: []
+      mode: executable
+    dd:
+      # [app/cbl/CBCUS01C.cbl:29-33,37-40,120]
+      CUSTFILE:
+        access: sequential
+        keys:
+          alternates: []
+          primary:
+            length: 9
+            offset: 0
+        logical: CUSTDATA
+        open: input
+        organization: indexed
+        record_length: 500
+    run: executable
+    sources:
+    - app/cbl/CBCUS01C.cbl
+
+  # CBSTM03A and CBSTM03B are compiled together in one cobc -x call, main first.
+  # -fbinary-byteorder=native because TIOT-INDEX is a POINTER that BUMP-TIOT
+  # redefines as binary [app/cbl/CBSTM03A.CBL:236-237]; the PSA/TCB/TIOT walk from
+  # address 0 runs only with the page-zero shim preloaded (GAP-STB-003, GAP-MIS-002).
+  CBSTM03A:
+    calls:
+    - CBSTM03B
+    compile:
+      extra_flags:
+      - -fbinary-byteorder=native
+      link_with:
+      - CBSTM03B
+      mode: executable
+    dd:
+      # No ORGANIZATION clause: record sequential [app/cbl/CBSTM03A.CBL:39-47,293]
+      HTMLFILE:
+        access: sequential
+        logical: HTMLFILE
+        open: output
+        organization: sequential
+        record_length: 100
+      STMTFILE:
+        access: sequential
+        logical: STMTFILE
+        open: output
+        organization: sequential
+        record_length: 80
+    run: executable
+    sources:
+    - app/cbl/CBSTM03A.CBL
+    # The STEP040 DDs in JCL order [app/jcl/CREASTMT.JCL:79-96]
+    tiot:
+      dds:
+      - STEPLIB
+      - SYSPRINT
+      - SYSOUT
+      - TRNXFILE
+      - XREFFILE
+      - ACCTFILE
+      - CUSTFILE
+      - STMTFILE
+      - HTMLFILE
+      job: CREASTMT
+      step: STEP040
+
+  # The file service CBSTM03A calls with operations O/C/R/K/W/Z
+  # [app/cbl/CBSTM03B.CBL:99-125]. It produces no artifact of its own: build.py
+  # compiles it only as the link_with source of CBSTM03A, with the same flags, and its
+  # dd entries reach the run through CBSTM03A's calls.
+  CBSTM03B:
+    called_by: CBSTM03A
+    calls: []
+    compile:
+      extra_flags:
+      - -fbinary-byteorder=native
+      link_with: []
+      mode: executable
+    dd:
+      # [app/cbl/CBSTM03B.CBL:49-53,75-78,209]
+      ACCTFILE:
+        access: random
+        keys:
+          alternates: []
+          primary:
+            length: 11
+            offset: 0
+        logical: ACCTDATA
+        open: input
+        organization: indexed
+        record_length: 300
+      # [app/cbl/CBSTM03B.CBL:43-47,70-73,184]
+      CUSTFILE:
+        access: random
+        keys:
+          alternates: []
+          primary:
+            length: 9
+            offset: 0
+        logical: CUSTDATA
+        open: input
+        organization: indexed
+        record_length: 500
+      # FD-TRNXS-ID is the 16-byte card number plus the 16-byte transaction id
+      # [app/cbl/CBSTM03B.CBL:31-35,58-63,136]
+      TRNXFILE:
+        access: sequential
+        keys:
+          alternates: []
+          primary:
+            length: 32
+            offset: 0
+        logical: TRXFL
+        open: input
+        organization: indexed
+        record_length: 350
+      # [app/cbl/CBSTM03B.CBL:37-41,65-68,160]
+      XREFFILE:
+        access: sequential
+        keys:
+          alternates: []
+          primary:
+            length: 16
+            offset: 0
+        logical: CARDXREF
+        open: input
+        organization: indexed
+        record_length: 50
+    run: called
+    sources:
+    - app/cbl/CBSTM03B.CBL
+
+  # Run by no step of app/jcl or app/proc (GAP-UNC-003); unit scenarios run it directly.
+  CBTRN01C:
+    calls: []
+    compile:
+      extra_flags: []
+      link_with: []
+      mode: executable
+    dd:
+      # [app/cbl/CBTRN01C.cbl:52-56,86-89,327]
+      ACCTFILE:
+        access: random
+        keys:
+          alternates: []
+          primary:
+            length: 11
+            offset: 0
+        logical: ACCTDATA
+        open: input
+        organization: indexed
+        record_length: 300
+      # [app/cbl/CBTRN01C.cbl:46-50,81-84,309]
+      CARDFILE:
+        access: random
+        keys:
+          alternates: []
+          primary:
+            length: 16
+            offset: 0
+        logical: CARDDATA
+        open: input
+        organization: indexed
+        record_length: 150
+      # [app/cbl/CBTRN01C.cbl:34-38,71-74,273]
+      CUSTFILE:
+        access: random
+        keys:
+          alternates: []
+          primary:
+            length: 9
+            offset: 0
+        logical: CUSTDATA
+        open: input
+        organization: indexed
+        record_length: 500
+      # [app/cbl/CBTRN01C.cbl:29-32,66-69,254]
+      DALYTRAN:
+        access: sequential
+        logical: DALYTRAN
+        open: input
+        organization: sequential
+        record_length: 350
+      # [app/cbl/CBTRN01C.cbl:58-62,91-94,345]
+      TRANFILE:
+        access: random
+        keys:
+          alternates: []
+          primary:
+            length: 16
+            offset: 0
+        logical: TRANSACT
+        open: input
+        organization: indexed
+        record_length: 350
+      # [app/cbl/CBTRN01C.cbl:40-44,76-79,291]
+      XREFFILE:
+        access: random
+        keys:
+          alternates: []
+          primary:
+            length: 16
+            offset: 0
+        logical: CARDXREF
+        open: input
+        organization: indexed
+        record_length: 50
+    run: executable
+    sources:
+    - app/cbl/CBTRN01C.cbl
+
+  CBTRN02C:
+    calls: []
+    compile:
+      extra_flags: []
+      link_with: []
+      mode: executable
+    dd:
+      # [app/cbl/CBTRN02C.cbl:51-55,86-89,311]
+      ACCTFILE:
+        access: random
+        keys:
+          alternates: []
+          primary:
+            length: 11
+            offset: 0
+        logical: ACCTDATA
+        open: io
+        organization: indexed
+        record_length: 300
+      # FD-REJS-RECORD is the 350-byte transaction plus the 80-byte validation trailer
+      # [app/cbl/CBTRN02C.cbl:46-49,81-84,293]
+      DALYREJS:
+        access: sequential
+        logical: DALYREJS
+        open: output
+        organization: sequential
+        record_length: 430
+      # [app/cbl/CBTRN02C.cbl:29-32,66-69,238]
+      DALYTRAN:
+        access: sequential
+        logical: DALYTRAN
+        open: input
+        organization: sequential
+        record_length: 350
+      # [app/cbl/CBTRN02C.cbl:57-61,91-97,329]
+      TCATBALF:
+        access: random
+        keys:
+          alternates: []
+          primary:
+            length: 17
+            offset: 0
+        logical: TCATBALF
+        open: io
+        organization: indexed
+        record_length: 50
+      # OPEN OUTPUT recreates the loaded KSDS on GnuCOBOL, so any precondition records
+      # are dropped (GAP-STB-010) [app/cbl/CBTRN02C.cbl:34-38,71-74,256]
+      TRANFILE:
+        access: random
+        keys:
+          alternates: []
+          primary:
+            length: 16
+            offset: 0
+        logical: TRANSACT
+        open: output
+        organization: indexed
+        record_length: 350
+      # [app/cbl/CBTRN02C.cbl:40-44,76-79,275]
+      XREFFILE:
+        access: random
+        keys:
+          alternates: []
+          primary:
+            length: 16
+            offset: 0
+        logical: CARDXREF
+        open: input
+        organization: indexed
+        record_length: 50
+    run: executable
+    sources:
+    - app/cbl/CBTRN02C.cbl
+
+  CBTRN03C:
+    calls: []
+    compile:
+      extra_flags: []
+      link_with: []
+      mode: executable
+    dd:
+      # [app/cbl/CBTRN03C.cbl:33-37,67-70,414]
+      CARDXREF:
+        access: random
+        keys:
+          alternates: []
+          primary:
+            length: 16
+            offset: 0
+        logical: CARDXREF
+        open: input
+        organization: indexed
+        record_length: 50
+      # Supplied as a parameter file: no job or data file creates
+      # AWS.M2.CARDDEMO.DATEPARM (GAP-MIS-001) [app/cbl/CBTRN03C.cbl:55-57,87-88,468]
+      DATEPARM:
+        access: sequential
+        logical: DATEPARM
+        open: input
+        organization: sequential
+        record_length: 80
+      # [app/cbl/CBTRN03C.cbl:45-49,77-82,450]
+      TRANCATG:
+        access: random
+        keys:
+          alternates: []
+          primary:
+            length: 6
+            offset: 0
+        logical: TRANCATG
+        open: input
+        organization: indexed
+        record_length: 60
+      # The program expects its input sorted by card number: in the TRANREPT job it
+      # reads TRANSACT.DALY(+1), the SORT output [app/jcl/TRANREPT.jcl:37-55,65-66].
+      # TRANSACT-DALY keeps the scenario's written record order, while TRANSACT, a KSDS
+      # logical, arrives from the runner in primary-key (transaction id) order, so
+      # card-ordered scenarios supply TRANSACT-DALY [app/cbl/CBTRN03C.cbl:29-31,61-65,378].
+      TRANFILE:
+        access: sequential
+        also_accepts:
+        - TRANSACT
+        logical: TRANSACT-DALY
+        open: input
+        organization: sequential
+        record_length: 350
+      # [app/cbl/CBTRN03C.cbl:51-53,84-85,396]
+      TRANREPT:
+        access: sequential
+        logical: TRANREPT
+        open: output
+        organization: sequential
+        record_length: 133
+      # [app/cbl/CBTRN03C.cbl:39-43,72-75,432]
+      TRANTYPE:
+        access: random
+        keys:
+          alternates: []
+          primary:
+            length: 2
+            offset: 0
+        logical: TRANTYPE
+        open: input
+        organization: indexed
+        record_length: 60
+    run: executable
+    sources:
+    - app/cbl/CBTRN03C.cbl
+
+  # PROCEDURE DIVISION USING LS-DATE, LS-DATE-FORMAT, LS-RESULT [app/cbl/CSUTLDTC.cbl:83-88]:
+  # a module that DTCDRV calls once per DTCIN record (GAP-STB-004). CSUTLDTC itself does
+  # no I/O; its CALL 'CEEDAYS' resolves to the CEEDAYS.so stub through COB_LIBRARY_PATH
+  # (GAP-STB-002) [app/cbl/CSUTLDTC.cbl:116].
+  CSUTLDTC:
+    calls: []
+    compile:
+      extra_flags: []
+      link_with: []
+      mode: module
+    dd:
+      # The driver's DD, not CSUTLDTC's: the call list of 80-byte records, date X(10),
+      # mask X(10), filler X(60): DTC-REC of FD DTC-FILE [tests/stubs/DTCDRV.cbl:95-100]
+      DTCIN:
+        access: sequential
+        logical: DTCIN
+        open: input
+        organization: sequential
+        record_length: 80
+    run: dtcdrv
+    sources:
+    - app/cbl/CSUTLDTC.cbl

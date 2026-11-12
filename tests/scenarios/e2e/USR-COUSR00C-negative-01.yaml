@@ -1,0 +1,73 @@
+# An AID key other than ENTER, PF3, PF7 and PF8 on the user list. ADMIN001
+# (user type A) signs on through CC00, and COSGN00C transfers control to the
+# admin menu COADM01C [app/cbl/COSGN00C.cbl:230-234]. Option 1 of COADM02Y is
+# 'User List (Security)', program COUSR00C, so COADM01C transfers control to it
+# with the program context reset [app/cpy/COADM02Y.cpy:24-27]
+# [app/cbl/COADM01C.cbl:127-145]. Entered without the reenter flag, COUSR00C
+# browses USRSEC and sends map COUSR0A of mapset COUSR00 [app/cbl/COUSR00C.cbl:113-119].
+# PF5 then reenters it: EVALUATE EIBAID reaches WHEN OTHER, which moves
+# CCDA-MSG-INVALID-KEY of CSMSG01Y to WS-MESSAGE, and SEND-USRLST-SCREEN rebuilds
+# the header from COTTL01Y and CSDAT01Y and sends the screen again
+# [app/cbl/COUSR00C.cbl:120-137,522-526,562-584] [app/cpy/CSMSG01Y.cpy:20-21].
+# The list rows and PAGENUM are not asserted: on this path the output map holds
+# what RECEIVE MAP returned, so their content depends on which fields the
+# terminal sent; the list content is the COUSR00C user-list item. The ERRMSG of
+# the first list screen is not asserted either: the forward browse of the 10
+# fixture users may reach ENDFILE and send its own message
+# [app/cbl/COUSR00C.cbl:281-300,634-640], which the paging scenarios pin.
+id: USR-COUSR00C-negative-01
+level: e2e
+type: negative
+description: >-
+  ADMIN001 signs on, chooses option 1 (User List) on the admin menu and, on the
+  user list, presses PF5. COUSR00C accepts only ENTER, PF3, PF7 and PF8, so it
+  sends the user list screen again with its header (CU00, COUSR00C, the titles,
+  the run date and time) and 'Invalid key pressed. Please see below...' in the
+  message line; no user record is changed.
+inventory_ids:
+- INV-USR-009  # COUSR00C message 'Invalid key pressed. Please see below...' (rule)
+- INV-USR-001  # COUSR00C program
+- INV-MNU-004  # COADM01 map, the admin menu the sign-on lands on
+- INV-USR-005  # COUSR00 map
+- INV-CFG-023  # CU00 transaction, the TRANSID COUSR00C returns with
+- INV-CFG-008  # USRSEC CSD file, read by the sign-on and browsed by the user list
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA that makes the PF5 entry a reentry
+- INV-LAY-005  # COTTL01Y copybook, TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y copybook, CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y copybook, CCDA-MSG-INVALID-KEY
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-004  # USR end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - {transid: CC00, aid: ENTER, fields: {USERID: ADMIN001, PASSWD: PASSWORD}, '@map': COSGN00}
+  - {aid: ENTER, fields: {OPTION: '1'}, '@map': COADM01}
+  - {aid: PF5, fields: {}, '@map': COUSR00}
+expected:
+  screens:
+  # One entry per step, each the screen the step ends on. Text fields are
+  # compared at their full BMS length with trailing spaces: ERRMSG is 78 bytes,
+  # the 40-character message followed by spaces from WS-MESSAGE; CURTIME is the
+  # 8-byte hh:mm:ss of CSDAT01Y.
+  - '@map': COADM01
+    TRNNAME: CA00
+    PGMNAME: COADM01C
+  - '@map': COUSR00
+    TRNNAME: CU00
+    PGMNAME: COUSR00C
+  - '@map': COUSR00
+    TRNNAME: CU00
+    PGMNAME: COUSR00C
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time, format: '%H:%M:%S'}
+    ERRMSG: 'Invalid key pressed. Please see below...                                      '

@@ -1,0 +1,56 @@
+# Derived baseline of scenario USR-COUSR02C-recovery-01: ADMIN001 signs on,
+# takes admin option 3 to COUSR02C and enters user id USER0003 while the
+# region file USRSEC is unavailable. Authored from the source, never captured:
+# app/cbl/COADM01C.cbl:115-152 (the XCTL to COUSR02C),
+# app/cbl/COUSR02C.cbl:84-105,266-315 (the first-entry send of a cleared
+# COUSR02 with a blank ERRMSG) and app/cbl/COUSR02C.cbl:143-172,320-353 (the
+# READ UPDATE of USRSEC answering neither NORMAL nor NOTFND: 'Unable to lookup
+# User...', the user id kept, the name, password and type cleared, and no
+# second send). Open until a UniKix run is imported: GAP-INF-004 (derived USR
+# end-to-end baselines), GAP-INF-012 (online-only copybooks) and GAP-MIS-011
+# (region file control to put USRSEC out of service).
+# One screen per step and the ERRMSG of each step in messages; values are full
+# BMS field width with their trailing spaces. PASSWD is asserted, as the
+# scenario asserts it: the field is dark (ATTRB=(DRK,FSET,UNPROT),
+# app/bms/COUSR02.bms:130-134) and the s3270 screen capture shows a dark field
+# as blanks, so it reads 8 spaces and no password appears.
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'Unable to lookup User...                                                      '
+screens:
+- '@map': COADM01
+  PGMNAME: COADM01C
+  TRNNAME: CA00
+- '@map': COUSR02
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  FNAME: '                    '
+  LNAME: '                    '
+  PASSWD: '        '
+  PGMNAME: COUSR02C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CU02
+  USRIDIN: '        '
+  USRTYPE: ' '
+- '@map': COUSR02
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Unable to lookup User...                                                      '
+  FNAME: '                    '
+  LNAME: '                    '
+  PASSWD: '        '
+  PGMNAME: COUSR02C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CU02
+  USRIDIN: USER0003
+  USRTYPE: ' '

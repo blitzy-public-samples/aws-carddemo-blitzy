@@ -1,0 +1,186 @@
+# COTRN02C cannot add a valid, confirmed transaction because the region file
+# TRANSACT is out of service when the add browses it for the highest id.
+#
+# Steps 1-2 reach the empty Add Transaction screen as TRN-COTRN02C-normal-01
+# does: USER0001 (type U) is routed to COMEN01C, and option 8 transfers control
+# to COTRN02C with the program context reset, so COTRN02C sets the re-enter
+# flag, finds no transaction selected and sends COTRN02 with a blank ERRMSG
+# [app/cbl/COSGN00C.cbl:230-237] [app/cbl/COMEN01C.cbl:115-156]
+# [app/cbl/COTRN02C.cbl:119-130,516-528]. Sign-on reads only USRSEC, and
+# neither the menu nor COTRN02C's first send touches a file, so the fault,
+# applied after the sign-on step, first acts in step 3.
+# Step 3 enters the valid field set of the TRN-COTRN02C scenarios, card number
+# only, with CONFIRM Y, under the CT02 that step 2 returned with
+# [app/cbl/COTRN02C.cbl:131-135,164-172]:
+# - ACTIDIN holds only its INITIAL blank, so the card branch runs: the card is
+#   numeric, moves back through WS-CARD-NUM-N unchanged, READ CCXREF by card is
+#   NORMAL (CCXREF is not faulted), and XREF-ACCT-ID 00000000050 (record 1 of
+#   the CARDXREF fixture) is moved into ACTIDIN
+#   [app/cbl/COTRN02C.cbl:195-223,609-623].
+# - VALIDATE-INPUT-DATA-FIELDS finds every field supplied and well formed, and
+#   CSUTLDTC accepts both dates with mask YYYY-MM-DD; NUMVAL-C turns
+#   +00000012.34 into 12.34 and WS-TRAN-AMT-E (PIC +99999999.99) edits it back
+#   into TRNAMT as +00000012.34 [app/cbl/COTRN02C.cbl:235-437].
+# - CONFIRM Y performs ADD-TRANSACTION, whose first TRANSACT request is the
+#   STARTBR at HIGH-VALUES [app/cbl/COTRN02C.cbl:442-445]. On the unavailable
+#   file it answers neither NORMAL nor NOTFND (NOTOPEN for a closed file,
+#   DISABLED for a disabled one), so WHEN OTHER sets the error flag, moves
+#   'Unable to lookup Transaction...' to WS-MESSAGE, puts the cursor on ACTIDIN
+#   and performs SEND-TRNADD-SCREEN [app/cbl/COTRN02C.cbl:642-668].
+# - SEND-TRNADD-SCREEN sends COTRN02 FROM the map area RECEIVE filled, with
+#   ERASE, then RETURN TRANSID CT02 ends the task
+#   [app/cbl/COTRN02C.cbl:516-534]. The READPREV, ENDBR and WRITE of
+#   ADD-TRANSACTION never run [app/cbl/COTRN02C.cbl:446-466], so no record is
+#   written and the READPREV branch carrying the same literal (line 693) is not
+#   reached here.
+# The screen therefore shows the entered values again, with ACTIDIN filled in
+# from the cross-reference and CONFIRM still Y. BMS pads each received field
+# with blanks to its length, so expected text values are full field width with
+# their trailing spaces. The DISPLAY of RESP and RESP2 goes to the region log,
+# not to the terminal, and is not asserted. CURDATE and CURTIME come from the
+# region clock, so they are matchers and the clock is relative. The expected
+# outcome is derived from the source (GAP-INF-007); without a confirmed region
+# file control the runner raises MissingPrerequisite under GAP-MIS-011.
+id: TRN-COTRN02C-recovery-03
+level: e2e
+type: recovery
+description: >-
+  USER0001 signs on, chooses main-menu option 8 (Transaction Add) and enters a
+  valid transaction for repository card 0500024453765740 on COTRN02 with
+  CONFIRM Y while the region file TRANSACT is unavailable. The STARTBR that
+  looks for the highest transaction id fails with a response other than NORMAL
+  or NOTFND, so COTRN02C shows 'Unable to lookup Transaction...' with the
+  entered values and account 00000000050 kept, and TRANSACT is left unchanged.
+# The recovery message is the primary item, then the program, the maps
+# asserted, the transaction step 3 runs under, the CSD files COTRN02C reads on
+# this path (CCXREF by card; TRANSACT, where the STARTBR fails; CXACAIX is not
+# read because the account id is left blank), and the online-only copybooks it
+# copies. Sign-on and the menu option (CC00, CM00, COSGN00, USRSEC) are
+# verified by the SEC and MNU scenarios; the batch record copybooks (CVTRA05Y,
+# CVACT03Y) and the data files at the lowest level that executes them.
+inventory_ids:
+- INV-TRN-060  # COTRN02C message 'Unable to lookup Transaction...' (recovery)
+- INV-TRN-003  # COTRN02C program
+- INV-MNU-003  # COMEN01 map, where option 8 is entered
+- INV-TRN-006  # COTRN02 map, the add screen of steps 2 and 3
+- INV-CFG-022  # CT02 transaction, under which COTRN02C receives step 3
+- INV-CFG-004  # CCXREF CSD file, read by card number to fill in the account
+- INV-CFG-007  # TRANSACT CSD file, the file the STARTBR fails on
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carrying the program context
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the screen date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COTRN02C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-007  # TRN end-to-end baselines derived, never observed on a TPE region
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-MIS-011  # no confirmed region file control to make TRANSACT unavailable
+preconditions:
+  datasets:
+    # COSGN00C reads USER0001 from the 10 repository users.
+    USRSEC: {base: USRSEC}
+    CARDXREF: {base: CARDXREF}
+    # TRANSACT is loaded from the repository's 300 daily transactions (the
+    # same 350-byte shape as TRAN-RECORD): the TRANSACT entry of datasets.yaml
+    # is `source: built` and holds no repository data of its own, so it cannot
+    # be a base. A working browse would find records, so the failure comes from
+    # the fault alone, and the load gives the file_state assertion a known
+    # starting content.
+    TRANSACT: {base: DALYTRAN}
+  parameters:
+    clock_mode: relative
+  # No `after`: the unikix adapter applies an online fault after the sign-on
+  # step, and the STARTBR of step 3 is the first TRANSACT request that follows.
+  # The schema has no browse operation, so the STARTBR is a read.
+  faults:
+  - target: TRANSACT
+    operation: read
+    condition: unavailable
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '8'
+  # ACTIDIN is left as sent, so the card number selects the cross-reference.
+  - aid: ENTER
+    '@map': COTRN02
+    fields:
+      CARDNIN: '0500024453765740'
+      TTYPCD: '01'
+      TCATCD: '0001'
+      TRNSRC: 'POS TERM'
+      TDESC: 'Test purchase'
+      TRNAMT: '+00000012.34'
+      TORIGDT: '2022-07-01'
+      TPROCDT: '2022-07-01'
+      MID: '800000001'
+      MNAME: 'Test Merchant'
+      MCITY: 'Testville'
+      MZIP: '27601'
+      CONFIRM: 'Y'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: 'CM00'
+    PGMNAME: 'COMEN01C'
+    OPTN008: '08. Transaction Add                     '
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: 'CT02'
+    PGMNAME: 'COTRN02C'
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: 'CT02'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COTRN02C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACTIDIN: '00000000050'
+    CARDNIN: '0500024453765740'
+    TTYPCD: '01'
+    TCATCD: '0001'
+    TRNSRC: 'POS TERM  '
+    TDESC: 'Test purchase                                               '
+    TRNAMT: '+00000012.34'
+    TORIGDT: '2022-07-01'
+    TPROCDT: '2022-07-01'
+    MID: '800000001'
+    MNAME: 'Test Merchant                 '
+    MCITY: 'Testville                '
+    MZIP: '27601     '
+    CONFIRM: 'Y'
+    ERRMSG: 'Unable to lookup Transaction...                                               '
+  # The ERRMSG of each step: the menu and the empty add screen carry none.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Unable to lookup Transaction...                                               '
+  file_state:
+    # Read back once the fault is removed. Nothing is written: TRANSACT still
+    # holds the 300 fixture records, and the highest of them, the key an add
+    # would follow, is unchanged.
+    TRANSACT:
+      count: 300
+      contains:
+      - TRAN-ID: '0000000996722787'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: 'POS TERM  '
+        TRAN-DESC: 'Purchase at Kilback LLC                                                                             '
+        TRAN-AMT: '603.22'
+        TRAN-MERCHANT-ID: '800000000'
+        TRAN-MERCHANT-NAME: 'Kilback LLC                                       '
+        TRAN-MERCHANT-CITY: 'Cummeratamouth                                    '
+        TRAN-MERCHANT-ZIP: '53200-7529'
+        TRAN-CARD-NUM: '3260763612337560'
+        TRAN-ORIG-TS: '2022-06-10 19:27:53.000000'
+        TRAN-PROC-TS: '                          '

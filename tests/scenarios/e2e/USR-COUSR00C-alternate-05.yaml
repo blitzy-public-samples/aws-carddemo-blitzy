@@ -1,0 +1,254 @@
+# ADMIN001 pages forward and then back through an 11-user list, and the backward
+# browse of COUSR00C runs off the start of USRSEC: the READPREV ENDFILE branch moves
+# 'You have reached the top of the page...' to WS-MESSAGE and sends the list
+# [app/cbl/COUSR00C.cbl:653-674].
+#
+# The invented user TESTU003 (TESTFIRST TESTLAST, type U) is added to the 10
+# DUSRSECJ users so that a second page exists. Its key sorts between ADMIN005 and
+# USER0001, so page 1 holds ADMIN001-ADMIN005, TESTU003 and USER0001-USER0004, and
+# page 2 holds USER0005. TESTU003 is data only and never signs on.
+#
+# Expected values are derived from the source (no TPE region runs in CI):
+# 1. ADMIN001 signs on through CC00; COSGN00C transfers the type-A user to
+#    COADM01C, which sends COADM01 (CA00) with a blank message
+#    [app/cbl/COSGN00C.cbl:209-234].
+# 2. Option 1 is COADM02Y's 'User List (Security)', program COUSR00C; COADM01C sets
+#    the program context to 0 and transfers control [app/cbl/COADM01C.cbl:115-155]
+#    [app/cpy/COADM02Y.cpy:24-27]. On that first entry COUSR00C clears its map and
+#    browses forward from LOW-VALUES. EIBAID is still ENTER, so no record is
+#    skipped; ten READNEXTs fill rows 1-10 (CDEMO-CU00-USRID-LAST = USER0004), the
+#    eleventh finds USER0005, so NEXT-PAGE-YES, page 1 and no message
+#    [app/cbl/COUSR00C.cbl:110-119,218-232,282-330].
+# 3. PF8 restarts the browse at USER0004, skips it with one READNEXT, puts USER0005
+#    in row 1 (CDEMO-CU00-USRID-FIRST), and the next READNEXT returns ENDFILE:
+#    'You have reached the bottom of the page...'. Rows 2-10 stay as
+#    INITIALIZE-USER-DATA blanked them, NEXT-PAGE-NO, page 2
+#    [app/cbl/COUSR00C.cbl:260-277,282-330,446-501,631-640].
+# 4. PF7 finds page 2 > 1 and browses backward from USER0005. The first READPREV
+#    after STARTBR returns USER0005 itself and is skipped; ten READPREVs fill rows
+#    10 down to 1 (USER0004 ... ADMIN001); the extra READPREV runs past ADMIN001,
+#    the lowest key of the file, and returns ENDFILE, which sets the message of line
+#    671. With NEXT-PAGE-YES and end of file the page number becomes 1
+#    [app/cbl/COUSR00C.cbl:237-255,336-379,653-674].
+# Every SEND on this path carries ERASE, so each step ends on the screen of its
+# last SEND [app/cbl/COUSR00C.cbl:522-544]. Text values are full field width with
+# their trailing spaces: ERRMSG is the 78-byte ERRMSGO, PAGENUM the 8-byte image of
+# CDEMO-CU00-PAGE-NUM PIC 9(08). The clock-derived CURDATE and CURTIME are
+# matchers, so the clock is relative.
+id: USR-COUSR00C-alternate-05
+level: e2e
+type: alternate
+description: >-
+  ADMIN001 opens the user list (CU00) from the admin menu with 11 users in USRSEC,
+  pages forward with PF8 to the second page ('You have reached the bottom of the
+  page...') and back with PF7. The backward browse fills page 1 again and its
+  extra READPREV reaches the start of the file, so COUSR00C shows page 1 with
+  'You have reached the top of the page...'.
+inventory_ids:
+- INV-USR-016  # COUSR00C message 'You have reached the top of the page...' (rule)
+- INV-USR-001  # COUSR00C program
+- INV-USR-005  # COUSR00 map, the user list
+- INV-MNU-004  # COADM01 map, the admin menu the list is chosen from
+- INV-CFG-023  # CU00 transaction, the list's pseudo-conversation
+- INV-CFG-008  # USRSEC CSD file, browsed forward and backward
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carrying the paging state
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the screen date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COUSR00C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-004  # derived USR end-to-end baselines, never observed on a TPE region
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    USRSEC:
+      base: USRSEC
+      records:
+      - SEC-USR-ID: TESTU003
+        SEC-USR-FNAME: TESTFIRST
+        SEC-USR-LNAME: TESTLAST
+        SEC-USR-PWD: TESTPWD3
+        SEC-USR-TYPE: U
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    '@map': COSGN00
+    fields:
+      USERID: ADMIN001
+      PASSWD: PASSWORD
+    aid: ENTER
+  - '@map': COADM01
+    fields:
+      OPTION: '1'
+    aid: ENTER
+  - '@map': COUSR00
+    fields: {}
+    aid: PF8
+  - '@map': COUSR00
+    fields: {}
+    aid: PF7
+expected:
+  screens:
+  - '@map': COADM01
+    TRNNAME: 'CA00'
+    PGMNAME: 'COADM01C'
+    ERRMSG: '                                                                              '
+  - '@map': COUSR00
+    TRNNAME: 'CU00'
+    PGMNAME: 'COUSR00C'
+    PAGENUM: '00000001'
+    USRID01: 'ADMIN001'
+    FNAME01: 'MARGARET            '
+    LNAME01: 'GOLD                '
+    UTYPE01: 'A'
+    USRID02: 'ADMIN002'
+    FNAME02: 'RUSSELL             '
+    LNAME02: 'RUSSELL             '
+    UTYPE02: 'A'
+    USRID03: 'ADMIN003'
+    FNAME03: 'RAYMOND             '
+    LNAME03: 'WHITMORE            '
+    UTYPE03: 'A'
+    USRID04: 'ADMIN004'
+    FNAME04: 'EMMANUEL            '
+    LNAME04: 'CASGRAIN            '
+    UTYPE04: 'A'
+    USRID05: 'ADMIN005'
+    FNAME05: 'GRANVILLE           '
+    LNAME05: 'LACHAPELLE          '
+    UTYPE05: 'A'
+    USRID06: 'TESTU003'
+    FNAME06: 'TESTFIRST           '
+    LNAME06: 'TESTLAST            '
+    UTYPE06: 'U'
+    USRID07: 'USER0001'
+    FNAME07: 'LAWRENCE            '
+    LNAME07: 'THOMAS              '
+    UTYPE07: 'U'
+    USRID08: 'USER0002'
+    FNAME08: 'AJITH               '
+    LNAME08: 'KUMAR               '
+    UTYPE08: 'U'
+    USRID09: 'USER0003'
+    FNAME09: 'LAURITZ             '
+    LNAME09: 'ALME                '
+    UTYPE09: 'U'
+    USRID10: 'USER0004'
+    FNAME10: 'AVERARDO            '
+    LNAME10: 'MAZZI               '
+    UTYPE10: 'U'
+    ERRMSG: '                                                                              '
+  - '@map': COUSR00
+    TRNNAME: 'CU00'
+    PGMNAME: 'COUSR00C'
+    PAGENUM: '00000002'
+    USRID01: 'USER0005'
+    FNAME01: 'LEE                 '
+    LNAME01: 'TING                '
+    UTYPE01: 'U'
+    USRID02: '        '
+    FNAME02: '                    '
+    LNAME02: '                    '
+    UTYPE02: ' '
+    USRID03: '        '
+    FNAME03: '                    '
+    LNAME03: '                    '
+    UTYPE03: ' '
+    USRID04: '        '
+    FNAME04: '                    '
+    LNAME04: '                    '
+    UTYPE04: ' '
+    USRID05: '        '
+    FNAME05: '                    '
+    LNAME05: '                    '
+    UTYPE05: ' '
+    USRID06: '        '
+    FNAME06: '                    '
+    LNAME06: '                    '
+    UTYPE06: ' '
+    USRID07: '        '
+    FNAME07: '                    '
+    LNAME07: '                    '
+    UTYPE07: ' '
+    USRID08: '        '
+    FNAME08: '                    '
+    LNAME08: '                    '
+    UTYPE08: ' '
+    USRID09: '        '
+    FNAME09: '                    '
+    LNAME09: '                    '
+    UTYPE09: ' '
+    USRID10: '        '
+    FNAME10: '                    '
+    LNAME10: '                    '
+    UTYPE10: ' '
+    ERRMSG: 'You have reached the bottom of the page...                                    '
+  - '@map': COUSR00
+    TRNNAME: 'CU00'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COUSR00C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    PAGENUM: '00000001'
+    USRIDIN: '        '
+    SEL0001: ' '
+    USRID01: 'ADMIN001'
+    FNAME01: 'MARGARET            '
+    LNAME01: 'GOLD                '
+    UTYPE01: 'A'
+    SEL0002: ' '
+    USRID02: 'ADMIN002'
+    FNAME02: 'RUSSELL             '
+    LNAME02: 'RUSSELL             '
+    UTYPE02: 'A'
+    SEL0003: ' '
+    USRID03: 'ADMIN003'
+    FNAME03: 'RAYMOND             '
+    LNAME03: 'WHITMORE            '
+    UTYPE03: 'A'
+    SEL0004: ' '
+    USRID04: 'ADMIN004'
+    FNAME04: 'EMMANUEL            '
+    LNAME04: 'CASGRAIN            '
+    UTYPE04: 'A'
+    SEL0005: ' '
+    USRID05: 'ADMIN005'
+    FNAME05: 'GRANVILLE           '
+    LNAME05: 'LACHAPELLE          '
+    UTYPE05: 'A'
+    SEL0006: ' '
+    USRID06: 'TESTU003'
+    FNAME06: 'TESTFIRST           '
+    LNAME06: 'TESTLAST            '
+    UTYPE06: 'U'
+    SEL0007: ' '
+    USRID07: 'USER0001'
+    FNAME07: 'LAWRENCE            '
+    LNAME07: 'THOMAS              '
+    UTYPE07: 'U'
+    SEL0008: ' '
+    USRID08: 'USER0002'
+    FNAME08: 'AJITH               '
+    LNAME08: 'KUMAR               '
+    UTYPE08: 'U'
+    SEL0009: ' '
+    USRID09: 'USER0003'
+    FNAME09: 'LAURITZ             '
+    LNAME09: 'ALME                '
+    UTYPE09: 'U'
+    SEL0010: ' '
+    USRID10: 'USER0004'
+    FNAME10: 'AVERARDO            '
+    LNAME10: 'MAZZI               '
+    UTYPE10: 'U'
+    ERRMSG: 'You have reached the top of the page...                                       '
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'You have reached the bottom of the page...                                    '
+  - 'You have reached the top of the page...                                       '

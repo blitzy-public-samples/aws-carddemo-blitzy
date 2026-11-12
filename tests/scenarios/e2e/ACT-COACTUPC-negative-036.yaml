@@ -1,0 +1,293 @@
+# The Expiry Date edit of the account update refuses the 31st of a 30-day
+# month: COACTUPC shows 'Expiry Date:Cannot have 31 days in this month.' and
+# rewrites nothing.
+#
+# Step 1: USER0001 signs on through CC00; COSGN00C routes the type U user to the
+# main menu COMEN01 [app/cbl/COSGN00C.cbl:221-237].
+# Step 2: option '2' is 'Account Update' of COMEN02Y, so COMEN01C XCTLs to
+# COACTUPC with CDEMO-PGM-CONTEXT zero; COACTUPC takes its fresh-entry path and
+# sends COACTUP with the search-key prompt [app/cbl/COMEN01C.cbl:115-156]
+# [app/cpy/COMEN02Y.cpy:31-35] [app/cbl/COACTUPC.cbl:964-973,2955-2961].
+# Step 3: ENTER with ACCTSID 00000000001. 9000-READ-ACCT reads CXACAIX by
+# account (card 9680294154603697, customer 000000001, record 49 of
+# app/data/ASCII/cardxref.txt), ACCTDAT and CUSTDAT; 9500-STORE-FETCHED-DATA
+# keeps the values in ACUP-OLD-DETAILS, ACUP-SHOW-DETAILS is set and
+# 3202-SHOW-ORIGINAL-VALUES fills the map, the amounts edited as
+# +ZZZ,ZZZ,ZZZ.99 [app/cbl/COACTUPC.cbl:371,2568-2580,2787-2865,3608-3884].
+# 3320-UNPROTECT-FEW-ATTRS turns every field's MDT on, so all of them come back
+# on the next AID [app/cbl/COACTUPC.cbl:3441-3562].
+# Step 4: ENTER with the expiry month and day typed as 09 and 31 (the year is
+# typed as the 2025 it already holds). 1100-RECEIVE-MAP builds
+# ACUP-NEW-EXPIRAION-DATE as '20250931' [app/cbl/COACTUPC.cbl:778-783,
+# 1167-1186]; 1205-COMPARE-OLD-NEW finds it different from the fetched
+# '20250520' and sets CHANGE-HAS-OCCURRED, so 1200-EDIT-MAP-INPUTS sets
+# ACUP-CHANGES-NOT-OK and edits every field in screen order
+# [app/cbl/COACTUPC.cbl:1452-1494,1681-1705]:
+# - Account Status 'Y' passes 1220-EDIT-YESNO.
+# - Open Date 20141120 passes the year, month, day and combination checks of
+#   EDIT-DATE-CCYYMMDD and EDIT-DATE-LE's CSUTLDTC call with mask YYYYMMDD
+#   [app/cpy/CSUTLDPY.cpy:18-313].
+# - Credit Limit '+      2,020.00' passes 1250-EDIT-SIGNED-9V2.
+# - Expiry Date, the primary item: EDIT-YEAR-CCYY accepts 2025 (century 20),
+#   EDIT-MONTH accepts 09 (WS-VALID-MONTH, TEST-NUMVAL zero) and EDIT-DAY
+#   accepts 31 (WS-VALID-DAY). EDIT-DAY-MONTH-YEAR then finds month 9 outside
+#   WS-31-DAY-MONTH (1, 3, 5, 7, 8, 10, 12) with WS-DAY-31, sets INPUT-ERROR,
+#   FLG-DAY-NOT-OK and FLG-MONTH-NOT-OK and, WS-RETURN-MSG being still off,
+#   STRINGs FUNCTION TRIM('Expiry Date') and ':Cannot have 31 days in this
+#   month.' into it [app/cpy/CSUTLDPY.cpy:209-223] [app/cpy/CSUTLDWY.cpy:16-31].
+# - The later edits still run, but each composes its message only while
+#   WS-RETURN-MSG-OFF holds, so the Expiry Date message is the one shown.
+# INPUT-ERROR keeps ACUP-CHANGES-NOT-OK: 2000-DECIDE-ACTION continues, so no
+# READ UPDATE or REWRITE runs [app/cbl/COACTUPC.cbl:1669-1675,2585-2597].
+# 3203-SHOW-UPDATED-VALUES echoes the received values, each valid amount
+# re-edited to the same text; 3250-SETUP-INFOMSG sets PROMPT-FOR-CHANGES for
+# ACUP-CHANGES-NOT-OK and moves WS-RETURN-MSG to ERRMSG
+# [app/cbl/COACTUPC.cbl:2718-2720,2870-2949,2955-2982]. 3390-SETUP-INFOMSG-ATTRS
+# brightens FKEY12 for ACUP-CHANGES-MADE, while FKEY05 stays dark because no
+# confirmation is prompted [app/cbl/COACTUPC.cbl:3566-3584]. CSSETATY colours
+# EXPMON and EXPDAY red; colour is not captured [app/cbl/COACTUPC.cbl:3237-3255].
+#
+# Expected values are derived from the source (no TPE region runs in CI):
+# - Text values are whole fields at their BMS length, trailing spaces kept.
+#   ERRMSG is the 46-character message in the 75-byte WS-RETURN-MSG padded to
+#   78; INFOMSG is the 40-byte WS-INFO-MSG padded to 45.
+# - The header is 3100-SCREEN-INIT's: the COTTL01Y titles, CAUP, COACTUPC and
+#   CURDATE mm/dd/yy and CURTIME hh:mm:ss of the run clock through CSDAT01Y,
+#   hence the matchers and clock_mode relative [app/cbl/COACTUPC.cbl:2668-2692].
+# - AADDGRP shows ACCT-GROUP-ID, blank in every repository account
+#   (GAP-DEF-005); the blank received field becomes LOW-VALUES, sent back as
+#   nulls and shown as spaces [app/cbl/COACTUPC.cbl:1213-1218,2921].
+# - ACSZIPC is 5 bytes, so the 10-byte zip shows its first 5.
+# - FKEY05 and FKEY12 are ATTRB=(ASKIP,DRK) in the map; the screen capture
+#   renders a dark field as blanks unless 3390 makes it bright.
+# - CUSTDATA record 000000001 is replaced by invented values that pass every
+#   customer edit and fill every screen field.
+id: ACT-COACTUPC-negative-036
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, chooses main menu option 2 'Account Update', fetches
+  account 00000000001 on the COACTUP screen and changes its expiry date to
+  2025-09-31. COACTUPC's Expiry Date edit refuses the 31st of a 30-day month:
+  the screen comes back with the entered values, 'Expiry Date:Cannot have 31
+  days in this month.' in the message line, the change prompt and F12=Cancel,
+  and neither the account nor the customer record is rewritten.
+# Primary item first, then the program, the maps the steps enter on and land
+# on, the transaction steps 3 and 4 run under, the CSD files the fetch reads,
+# and the online-only copybooks COACTUPC copies. Sign-on and the menu (CC00,
+# CM00, COSGN00, USRSEC) are verified by the SEC and MNU scenarios; the batch
+# record copybooks and the data files at the lowest level that executes them.
+inventory_ids:
+- INV-ACT-094  # COACTUPC Expiry Date: no 31st in a 30-day month (rule)
+- INV-ACT-002  # COACTUPC program
+- INV-MNU-003  # COMEN01 map, where option 2 is entered
+- INV-ACT-004  # COACTUP map, the update screen of steps 2-4
+- INV-CFG-009  # CAUP transaction, under which the fetch and the edit run
+- INV-CFG-006  # CXACAIX CSD file, the account-to-card path the fetch reads
+- INV-CFG-001  # ACCTDAT CSD file, read by the fetch and left unchanged
+- INV-CFG-005  # CUSTDAT CSD file, read by the fetch and left unchanged
+- INV-LAY-002  # COCOM01Y: the COMMAREA carrying the fetched values between steps
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-007  # CSLKPCDY, copied by COACTUPC
+- INV-LAY-008  # CSMSG01Y, copied by COACTUPC
+- INV-LAY-009  # CSMSG02Y, copied by COACTUPC
+- INV-LAY-010  # CSSETATY: the error attributes of the expiry fields
+- INV-LAY-011  # CSSTRPFY: maps the ENTER AID to CCARD-AID-ENTER
+- INV-LAY-013  # CSUTLDPY: EDIT-DATE-CCYYMMDD and EDIT-DAY-MONTH-YEAR
+- INV-LAY-014  # CSUTLDWY: WS-31-DAY-MONTH and WS-DAY-31
+- INV-LAY-019  # CVCRD01Y: CC-ACCT-ID and the AID flags
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-005  # ACT end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+# The UniKix copy of CSUTLDPY drops FUNCTION TRIM from the field name of every
+# composed date-edit message, so a UniKix run never verifies the primary item
+# while this entry is open.
+- GAP-DOC-024
+# The Open Date edit before the Expiry Date edit calls CSUTLDTC, so the message
+# pinned here rests on CEEDAYS accepting 20141120, which no run has observed.
+- GAP-INF-001
+# The UniKix copy of COACTUPC changes the credit-limit receive and edit that run
+# before the Expiry Date edit (022), and its COACTUP.bms differs at row 1,
+# columns 1-9, beside TRNNAME (025).
+- GAP-DOC-022
+- GAP-DOC-025
+preconditions:
+  datasets:
+    # The 10 repository users, for the USER0001 sign-on.
+    USRSEC: {base: USRSEC}
+    # Account 00000000001 (expiry 2025-05-20) and its cross-reference record
+    # (card 9680294154603697, customer 000000001) as in the repository.
+    ACCTDATA: {base: ACCTDATA}
+    CARDXREF: {base: CARDXREF}
+    # Customer 000000001 replaced by invented values that pass every edit of
+    # 1200-EDIT-MAP-INPUTS and fill every screen field: the repository record
+    # fails the Phone Number 2 area code, the state/zip combination and the
+    # FICO range. FILLER stays as in the base record.
+    CUSTDATA:
+      base: CUSTDATA
+      records:
+      - CUST-ID: '000000001'
+        CUST-FIRST-NAME: Testfirst
+        CUST-MIDDLE-NAME: Testmiddle
+        CUST-LAST-NAME: Testlast
+        CUST-ADDR-LINE-1: 100 Test Street
+        CUST-ADDR-LINE-2: Suite 1
+        CUST-ADDR-LINE-3: Raleigh
+        CUST-ADDR-STATE-CD: NC
+        CUST-ADDR-COUNTRY-CD: USA
+        CUST-ADDR-ZIP: '27601'
+        CUST-PHONE-NUM-1: '(919)555-0101'
+        CUST-PHONE-NUM-2: '(919)555-0102'
+        CUST-SSN: '123456789'
+        CUST-GOVT-ISSUED-ID: TESTGOVT0001
+        CUST-DOB-YYYY-MM-DD: '1961-06-08'
+        CUST-EFT-ACCOUNT-ID: '0053581756'
+        CUST-PRI-CARD-HOLDER-IND: 'Y'
+        CUST-FICO-CREDIT-SCORE: '700'
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: USER0001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '2'}
+    '@map': COMEN01
+  - aid: ENTER
+    fields: {ACCTSID: '00000000001'}
+    '@map': COACTUP
+  # The expiry date 2025-05-20 changed to 2025-09-31; every other field goes
+  # back as fetched.
+  - aid: ENTER
+    fields: {EXPYEAR: '2025', EXPMON: '09', EXPDAY: '31'}
+    '@map': COACTUP
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN002: '02. Account Update                      '
+    ERRMSG: '                                                                              '
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    PGMNAME: COACTUPC
+    ACCTSID: '           '
+    INFOMSG: 'Enter or update id of account to update      '
+    ERRMSG: '                                                                              '
+  # The fetched account and customer, with the change prompt.
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    PGMNAME: COACTUPC
+    ACCTSID: '00000000001'
+    ACSTTUS: 'Y'
+    OPNYEAR: '2014'
+    OPNMON: '11'
+    OPNDAY: '20'
+    ACRDLIM: '+      2,020.00'
+    EXPYEAR: '2025'
+    EXPMON: '05'
+    EXPDAY: '20'
+    ACSTNUM: '000000001'
+    INFOMSG: 'Update account details presented above.      '
+    ERRMSG: '                                                                              '
+  # The received values echoed, the expiry date as entered, and the message.
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COACTUPC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000001'
+    ACSTTUS: 'Y'
+    OPNYEAR: '2014'
+    OPNMON: '11'
+    OPNDAY: '20'
+    ACRDLIM: '+      2,020.00'
+    EXPYEAR: '2025'
+    EXPMON: '09'
+    EXPDAY: '31'
+    ACSHLIM: '+      1,020.00'
+    RISYEAR: '2025'
+    RISMON: '05'
+    RISDAY: '20'
+    ACURBAL: '+        194.00'
+    ACRCYCR: '+           .00'
+    AADDGRP: '          '
+    ACRCYDB: '+           .00'
+    ACSTNUM: '000000001'
+    ACTSSN1: '123'
+    ACTSSN2: '45'
+    ACTSSN3: '6789'
+    DOBYEAR: '1961'
+    DOBMON: '06'
+    DOBDAY: '08'
+    ACSTFCO: '700'
+    ACSFNAM: 'Testfirst                '
+    ACSMNAM: 'Testmiddle               '
+    ACSLNAM: 'Testlast                 '
+    ACSADL1: '100 Test Street                                   '
+    ACSSTTE: 'NC'
+    ACSADL2: 'Suite 1                                           '
+    ACSZIPC: '27601'
+    ACSCITY: 'Raleigh                                           '
+    ACSCTRY: 'USA'
+    ACSPH1A: '919'
+    ACSPH1B: '555'
+    ACSPH1C: '0101'
+    ACSGOVT: 'TESTGOVT0001        '
+    ACSPH2A: '919'
+    ACSPH2B: '555'
+    ACSPH2C: '0102'
+    ACSEFTC: '0053581756'
+    ACSPFLG: 'Y'
+    INFOMSG: 'Update account details presented above.      '
+    ERRMSG: 'Expiry Date:Cannot have 31 days in this month.                                '
+    FKEYS: 'ENTER=Process F3=Exit'
+    FKEY05: '       '
+    FKEY12: F12=Cancel
+  # One ERRMSG value per step: blank on the menu, the fresh and the fetched
+  # update screens, the Expiry Date message after the edit.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - '                                                                              '
+  - 'Expiry Date:Cannot have 31 days in this month.                                '
+  file_state:
+    # Nothing is rewritten: account 00000000001 keeps its expiry date 2025-05-20
+    # and customer 000000001 the values loaded; each dataset keeps its 50
+    # records.
+    ACCTDATA:
+      count: 50
+      contains:
+      - {ACCT-ID: '1', ACCT-ACTIVE-STATUS: 'Y', ACCT-CURR-BAL: '194.00', ACCT-CREDIT-LIMIT: '2020.00',
+         ACCT-CASH-CREDIT-LIMIT: '1020.00', ACCT-OPEN-DATE: '2014-11-20', ACCT-EXPIRAION-DATE: '2025-05-20',
+         ACCT-REISSUE-DATE: '2025-05-20', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00',
+         ACCT-ADDR-ZIP: A000000000, ACCT-GROUP-ID: '          '}
+    CUSTDATA:
+      count: 50
+      contains:
+      - CUST-ID: '1'
+        CUST-FIRST-NAME: 'Testfirst                '
+        CUST-MIDDLE-NAME: 'Testmiddle               '
+        CUST-LAST-NAME: 'Testlast                 '
+        CUST-ADDR-LINE-1: '100 Test Street                                   '
+        CUST-ADDR-LINE-2: 'Suite 1                                           '
+        CUST-ADDR-LINE-3: 'Raleigh                                           '
+        CUST-ADDR-STATE-CD: 'NC'
+        CUST-ADDR-COUNTRY-CD: 'USA'
+        CUST-ADDR-ZIP: '27601     '
+        CUST-PHONE-NUM-1: '(919)555-0101  '
+        CUST-PHONE-NUM-2: '(919)555-0102  '
+        CUST-SSN: '123456789'
+        CUST-GOVT-ISSUED-ID: 'TESTGOVT0001        '
+        CUST-DOB-YYYY-MM-DD: '1961-06-08'
+        CUST-EFT-ACCOUNT-ID: '0053581756'
+        CUST-PRI-CARD-HOLDER-IND: 'Y'
+        CUST-FICO-CREDIT-SCORE: '700'

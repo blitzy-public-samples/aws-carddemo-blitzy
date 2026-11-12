@@ -1,0 +1,91 @@
+# An AID key other than ENTER, PF3, PF4, PF5 and PF12 on the Update User
+# screen. ADMIN001 signs on through CC00 and COSGN00C routes the type 'A' user
+# to the admin menu COADM01 [app/cbl/COSGN00C.cbl:221-237]. Option '3' is
+# 'User Update (Security)', so COADM01C sets CDEMO-PGM-CONTEXT to 0 and
+# transfers control with XCTL to COUSR02C [app/cbl/COADM01C.cbl:115-145]
+# [app/cpy/COADM02Y.cpy:34-37]. COADM01C passes only the COCOM01Y COMMAREA, so
+# on this first entry COUSR02C finds CDEMO-CU02-USR-SELECTED blank: it sets
+# CDEMO-PGM-REENTER, clears COUSR2AO to LOW-VALUES, sends COUSR02 with its own
+# header and a blank message line, and returns with TRANSID(CU02) and the
+# COMMAREA [app/cbl/COUSR02C.cbl:90-105,135-138,266-278]. PF7 then starts CU02
+# again with that COMMAREA: COUSR02C receives the map, EVALUATE EIBAID handles
+# only ENTER, PF3, PF4, PF5 and PF12, and WHEN OTHER sets WS-ERR-FLG and moves
+# CCDA-MSG-INVALID-KEY of CSMSG01Y to WS-MESSAGE; SEND-USRUPD-SCREEN rebuilds
+# the header from COTTL01Y and CSDAT01Y and moves the message to ERRMSG
+# [app/cbl/COUSR02C.cbl:106-131,266-315] [app/cpy/CSMSG01Y.cpy:20-21]. USRSEC
+# is read and rewritten only by the ENTER, PF5 and PF3 paths (PF3 performs the
+# PF5 save before it returns), so no user changes and no file_state is asserted.
+# USRIDIN, FNAME, LNAME, PASSWD and USRTYPE are not asserted: on this path they
+# are whatever the received map held, sent back unchanged, and carry no
+# business outcome.
+# Text fields are compared at their full BMS length with trailing spaces:
+# ERRMSG is 78 bytes, the 40-character message followed by spaces from the
+# 80-byte WS-MESSAGE; the titles are 40. CURTIME is the 8-byte hh:mm:ss of
+# CSDAT01Y. The baseline is derived from the source: no TPE region runs in CI.
+id: USR-COUSR02C-negative-01
+level: e2e
+type: negative
+description: >-
+  ADMIN001 signs on, selects option 3 'User Update (Security)' on the admin
+  menu and presses PF7 on the empty Update User screen COUSR02. COUSR02C
+  accepts only ENTER, PF3, PF4, PF5 and PF12, so it sends COUSR02 again with
+  its header (CU02, COUSR02C, the titles, the run date and time) and 'Invalid
+  key pressed. Please see below...' in the message line; no user is updated.
+inventory_ids:
+- INV-USR-034  # COUSR02C message 'Invalid key pressed. Please see below...' (rule)
+- INV-USR-003  # COUSR02C program
+- INV-MNU-004  # COADM01 map, the admin menu option 3 is entered on
+- INV-USR-007  # COUSR02 map, the screen PF7 is pressed on and sent again
+- INV-CFG-025  # CU02 transaction, under which PF7 is processed
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA that makes the PF7 entry a reentry
+- INV-LAY-005  # COTTL01Y copybook, TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y copybook, CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y copybook, CCDA-MSG-INVALID-KEY
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-004  # USR end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user ADMIN001; this path writes nothing.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: ADMIN001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '3'}
+    '@map': COADM01
+  - aid: PF7
+    fields: {}
+    '@map': COUSR02
+expected:
+  screens:
+  - '@map': COADM01
+    TRNNAME: CA00
+    PGMNAME: COADM01C
+    ERRMSG: '                                                                              '
+  - '@map': COUSR02
+    TRNNAME: CU02
+    PGMNAME: COUSR02C
+    ERRMSG: '                                                                              '
+  - '@map': COUSR02
+    TRNNAME: CU02
+    PGMNAME: COUSR02C
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    ERRMSG: 'Invalid key pressed. Please see below...                                      '
+  # One ERRMSG value per step: blank on the admin menu and on the first Update
+  # User screen, the invalid-key message after PF7.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Invalid key pressed. Please see below...                                      '

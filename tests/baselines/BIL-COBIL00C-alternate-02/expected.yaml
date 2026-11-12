@@ -1,0 +1,126 @@
+# Derived baseline (capture_platform: derived in manifest.yaml) for
+# BIL-COBIL00C-alternate-02, authored from the source because only unikix can
+# run the scenario. The scenario is tagged inferred-not-observed (GAP-INF-008,
+# GAP-INF-012); `report.py --import-unikix <execution_id>` replaces this file
+# on eligible evidence.
+#
+# It holds exactly the keys the scenario's expected names, screens, messages
+# and file_state, with the scenario's values: compare checks every one of them
+# against this file, and a key missing here fails the scenario with an error.
+# One screen per step, each the screen shown after the step's AID:
+# - step 1: COSGN00C XCTLs the type-U USER0001 to COMEN01C, which sends the
+#   main menu under CM00 with a blank ERRMSG [app/cbl/COSGN00C.cbl:221-240]
+#   [app/cbl/COMEN01C.cbl:82-90,182-194];
+# - step 2: option 10 XCTLs to COBIL00C, whose first entry sends a fresh
+#   COBIL00 under CB00 with a blank ERRMSG [app/cpy/COMEN02Y.cpy:80-84]
+#   [app/cbl/COMEN01C.cbl:115-155] [app/cbl/COBIL00C.cbl:107-122,289-338];
+# - step 3: account 00000000001 with CONFIRM blank is read for update, its
+#   194.00 balance edited as +0000000194.00, and 'Confirm to make a bill
+#   payment...' requested [app/cbl/COBIL00C.cbl:154-244,343-372];
+# - step 4: PF4 takes CLEAR-CURRENT-SCREEN, so the typed Y is never evaluated
+#   and ACTIDIN, CURBAL, CONFIRM and ERRMSG are sent as spaces
+#   [app/cbl/COBIL00C.cbl:136-137,552-566];
+# - step 5: PF3 XCTLs to CDEMO-FROM-PROGRAM COMEN01C, which sends the main
+#   menu afresh with its ten COMEN02Y options and a blank ERRMSG
+#   [app/cbl/COBIL00C.cbl:128-135,273-284] [app/cbl/COMEN01C.cbl:236-277].
+# Text is whole BMS fields with trailing spaces kept [app/bms/COBIL00.bms]
+# [app/bms/COMEN01.bms]; CURDATE and CURTIME come from the region clock
+# through CSDAT01Y, hence the run-date and run-time matchers. messages are the
+# five ERRMSG values. file_state: no step rewrites account 1 or writes a
+# payment, so ACCTDATA and TRANSACT keep the fixture records.
+file_state:
+  ACCTDATA:
+    contains:
+    - ACCT-ACTIVE-STATUS: Y
+      ACCT-ADDR-ZIP: A000000000
+      ACCT-CASH-CREDIT-LIMIT: '1020.00'
+      ACCT-CREDIT-LIMIT: '2020.00'
+      ACCT-CURR-BAL: '194.00'
+      ACCT-CURR-CYC-CREDIT: '0.00'
+      ACCT-CURR-CYC-DEBIT: '0.00'
+      ACCT-EXPIRAION-DATE: '2025-05-20'
+      ACCT-GROUP-ID: '          '
+      ACCT-ID: '1'
+      ACCT-OPEN-DATE: '2014-11-20'
+      ACCT-REISSUE-DATE: '2025-05-20'
+    count: 50
+  TRANSACT:
+    contains:
+    - TRAN-AMT: '603.22'
+      TRAN-CARD-NUM: '3260763612337560'
+      TRAN-CAT-CD: '1'
+      TRAN-DESC: 'Purchase at Kilback LLC                                                                             '
+      TRAN-ID: 0000000996722787
+      TRAN-MERCHANT-CITY: 'Cummeratamouth                                    '
+      TRAN-MERCHANT-ID: '800000000'
+      TRAN-MERCHANT-NAME: 'Kilback LLC                                       '
+      TRAN-MERCHANT-ZIP: 53200-7529
+      TRAN-ORIG-TS: '2022-06-10 19:27:53.000000'
+      TRAN-PROC-TS: '                          '
+      TRAN-SOURCE: 'POS TERM  '
+      TRAN-TYPE-CD: '01'
+    count: 300
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'Confirm to make a bill payment...                                             '
+- '                                                                              '
+- '                                                                              '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COBIL00
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  PGMNAME: COBIL00C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CB00
+- '@map': COBIL00
+  ACTIDIN: '00000000001'
+  CONFIRM: ' '
+  CURBAL: '+0000000194.00'
+  ERRMSG: 'Confirm to make a bill payment...                                             '
+  PGMNAME: COBIL00C
+  TRNNAME: CB00
+- '@map': COBIL00
+  ACTIDIN: '           '
+  CONFIRM: ' '
+  CURBAL: '              '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  PGMNAME: COBIL00C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CB00
+- '@map': COMEN01
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  OPTN001: '01. Account View                        '
+  OPTN002: '02. Account Update                      '
+  OPTN003: '03. Credit Card List                    '
+  OPTN004: '04. Credit Card View                    '
+  OPTN005: '05. Credit Card Update                  '
+  OPTN006: '06. Transaction List                    '
+  OPTN007: '07. Transaction View                    '
+  OPTN008: '08. Transaction Add                     '
+  OPTN009: '09. Transaction Reports                 '
+  OPTN010: '10. Bill Payment                        '
+  PGMNAME: COMEN01C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CM00

@@ -1,0 +1,53 @@
+adapter: gnucobol-batch
+baseline_version: 1.0.0
+decoded:
+  datasets:
+    TRANREPT:
+    - 'DALYREPT                              Daily Transaction Report                 Date Range: 2022-07-01 to 2022-07-31                  '
+    - '                                                                                                                                     '
+    - 'Transaction ID   Account ID  Transaction Type   Tran Category                      Tran Source            Amount                     '
+    - '-------------------------------------------------------------------------------------------------------------------------------------'
+    - '9900000000000501 00000000002 01-Purchase        0001-Regular Sales Draft           POS TERM                50.00                     '
+    - '9900000000000502 00000000002 02-Payment         0001-Cash payment                  POS TERM      -         20.00                     '
+    - 'Account Total....................................................................................+         30.00                     '
+    - '-------------------------------------------------------------------------------------------------------------------------------------'
+    - '9900000000000503 00000000001 01-Purchase        0001-Regular Sales Draft           POS TERM                30.00                     '
+    - '9900000000000504 00000000001 03-Credit          0001-Credit to Account             POS TERM      -          5.00                     '
+    - 'Account Total....................................................................................+         25.00                     '
+    - '-------------------------------------------------------------------------------------------------------------------------------------'
+    - '9900000000000505 00000000001 01-Purchase        0002-Regular Cash Advance          POS TERM               100.00                     '
+    - '9900000000000506 00000000001 01-Purchase        0001-Regular Sales Draft           POS TERM                12.34                     '
+    - 'Page Total ......................................................................................+        179.68                     '
+    - '-------------------------------------------------------------------------------------------------------------------------------------'
+    - 'Grand Total......................................................................................+        179.68                     '
+  messages:
+  - START OF EXECUTION OF PROGRAM CBTRN03C
+  - Reporting from 2022-07-01 to 2022-07-31
+  - '9900000000000501010001POS TERM  Synthetic purchase                                                                                  0000000500{900000501Synthetic Store One                               Testville                                         00000     09238771932473302022-07-05 09:00:00.0000002022-07-05-10.00.00.000000                    '
+  - '9900000000000502020001POS TERM  Synthetic cash payment                                                                              0000000200}900000502Synthetic Payment Desk                            Testville                                         00000     09238771932473302022-07-05 09:00:00.0000002022-07-05-10.00.00.000000                    '
+  - '9900000000000503010001POS TERM  Synthetic purchase                                                                                  0000000300{900000503Synthetic Store Two                               Testville                                         00000     96802941546036972022-07-05 09:00:00.0000002022-07-05-10.00.00.000000                    '
+  - '9900000000000504030001POS TERM  Synthetic account credit                                                                            0000000050}900000504Synthetic Credit Office                           Testville                                         00000     96802941546036972022-07-05 09:00:00.0000002022-07-05-10.00.00.000000                    '
+  - '9900000000000505010002POS TERM  Synthetic cash advance                                                                              0000001000{900000505Synthetic Cash Point                              Testville                                         00000     99990000333300012022-07-05 09:00:00.0000002022-07-05-10.00.00.000000                    '
+  - '9900000000000506010001POS TERM  Synthetic purchase                                                                                  0000000123D900000506Synthetic Store Three                             Testville                                         00000     99990000333300012022-07-05 09:00:00.0000002022-07-05-10.00.00.000000                    '
+  - TRAN-AMT 00000001234+
+  - WS-PAGE-TOTAL00000016734+
+  - END OF EXECUTION OF PROGRAM CBTRN03C
+  return_code: 0
+evidence_path: tests/reports/results/RPT-CBTRN03C-normal-01.yaml
+execution_fingerprint: 56de7c1980cb027f7c4e11dd9f27f1dc204403bc4b6fc72ceabc5e11136f50f7
+execution_id: gnucobol-batch-95afea5b6eff2518
+gap_id: null
+reason: null
+scenario_digest: 00b72f2b3fb0b9a5052ecd57f20e1f7a03b7c60a1e514d5fc280df7ee07bc746
+scenario_id: RPT-CBTRN03C-normal-01
+source_identity:
+  commit: 5e233f7fcf4b35b5fbeb2e336ce61d6d04febfa4
+  tree: app
+  units:
+    app/cbl/CBTRN03C.cbl: c9c5428073cbe19c1cd19fc066ed99972560c209a80b4aea3bae3cc5e20a3536
+    app/cpy/CVACT03Y.cpy: ffc6079e09b28739e154bf6c1e1c36d408209faa91f6cf7008078dc596a1c370
+    app/cpy/CVTRA03Y.cpy: fb15dbc4a6924cbddce0704932f9e61c067ac10004cd00839dff0ed7c7bb0667
+    app/cpy/CVTRA04Y.cpy: 89803bc13a06347e1f3d8a599a5383b87235b203dce9f18a486bc233186479f8
+    app/cpy/CVTRA05Y.cpy: d7bde0e78ff608497087b9909c889ed39e347269f964bda767b92b547fbb5fec
+    app/cpy/CVTRA07Y.cpy: 72ba597b1a40e1e6cf908e15da9e6a818a0ab899ef1d27d15edeb074963102fa
+status: passed

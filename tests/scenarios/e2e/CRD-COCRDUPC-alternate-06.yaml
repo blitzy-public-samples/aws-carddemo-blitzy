@@ -1,0 +1,111 @@
+# Transaction CCUP entered directly from a cleared screen, with no sign-on.
+# A transaction started this way runs COCRDUPC with EIBCALEN = 0, so it
+# initializes CARDDEMO-COMMAREA and its own COMMAREA, sets CDEMO-PGM-ENTER and
+# CCUP-DETAILS-NOT-FETCHED, and takes the fresh-entry branch of its EVALUATE
+# instead of returning to sign-on as eleven of the online programs do: no user
+# id or user type is checked and no file is read [app/cbl/COCRDUPC.cbl:374-394,
+# 499-511]. 3000-SEND-MAP sends COCRDUP with ERASE, its own CCUP and COCRDUPC
+# header, the prompt 'Please enter Account and Card Number' (3250-SETUP-INFOMSG,
+# CDEMO-PGM-ENTER) and a blank message line; ACCTSID and CARDSID are sent FSET
+# and unprotected. The task sets CDEMO-PGM-REENTER and returns with TRANSID CCUP
+# and a 2000-byte COMMAREA [app/cbl/COCRDUPC.cbl:546-558,1035-1174,1324-1336].
+# Whether direct entry without sign-on is intended is the open question of
+# GAP-UNC-010, so the behaviour is pinned as the source shows it (observed-only).
+#
+# The step's '@map' names the input screen the adapter identifies after starting
+# the transaction (Clear, CCUP, Enter): COCRDUP, not TEXT, because the cleared
+# terminal is never the input screen of a step that starts a transaction, and a
+# step whose '@map' does not match is not driven at all. Had COCRDUPC returned
+# to the sign-on screen, that screen would be identified instead, driving would
+# stop there, and screen 1 would not match. The direct-entry screen itself is
+# never captured, because every step presses an AID; screen 1 is the result of
+# ENTER pressed on it with no field entered.
+#
+# That ENTER re-enters COCRDUPC with its own COMMAREA. COCRDUPC tests
+# CDEMO-FROM-PROGRAM in its fresh working storage before copying DFHCOMMAREA,
+# which is not COMEN01C, so the COMMAREA is restored and CDEMO-PGM-REENTER with
+# CCUP-DETAILS-NOT-FETCHED selects WHEN OTHER [app/cbl/COCRDUPC.cbl:388-401,
+# 429-542]. 1100-RECEIVE-MAP gets the FSET search fields back empty, so
+# CC-ACCT-ID and CC-CARD-NUM hold LOW-VALUES [app/cbl/COCRDUPC.cbl:578-605].
+# 1210-EDIT-ACCOUNT sets FLG-ACCTFILTER-BLANK with 'Account number not provided',
+# 1220-EDIT-CARD sets FLG-CARDFILTER-BLANK, and with both filters blank the
+# message becomes 'No input received' (NO-SEARCH-CRITERIA-RECEIVED)
+# [app/cbl/COCRDUPC.cbl:641-661,721-800]. 2000-DECIDE-ACTION reads no card,
+# because neither filter is valid [app/cbl/COCRDUPC.cbl:954-966]. The map is
+# resent: the search fields get LOW-VALUES whichever way the CC-ACCT-ID-N and
+# CC-CARD-NUM-N zero tests go, and 3300 then replaces them with '*' because each
+# filter is blank on a re-entry; the card detail fields stay at LOW-VALUES, and
+# CCUP-DETAILS-NOT-FETCHED brings the prompt back [app/cbl/COCRDUPC.cbl:1082-1163,
+# 1243-1261]. The program still asks for no sign-on and shows no card data.
+#
+# Every value is derived from the source (inferred-not-observed): no TPE region
+# runs in CI. Screen fields are compared at their full BMS length, trailing
+# spaces kept; fields left at LOW-VALUES read as spaces. The 80-character ERRMSG
+# ends on FKEYS's attribute position (row 24, column 1), which reads as a space.
+# FKEYS shows its BMS INITIAL, because 3100-SCREEN-INIT leaves FKEYSO at
+# LOW-VALUES. EXPDAY and FKEYSC are dark (DRK) on this screen, so they are not
+# asserted. CURDATE and CURTIME come from the region clock, so they are matchers.
+id: CRD-COCRDUPC-alternate-06
+level: e2e
+type: alternate
+description: >-
+  CCUP is entered directly, with no sign-on and no COMMAREA. COCRDUPC starts a
+  fresh COMMAREA and shows its own credit card update screen (COCRDUP) rather
+  than the sign-on screen. ENTER on that screen with no account or card number
+  is handled by COCRDUPC itself: the screen is resent with 'No input received',
+  '*' in both search fields, the prompt 'Please enter Account and Card Number'
+  and every card detail field blank.
+# Primary item first, then the program, the map asserted, the transaction both
+# tasks run, and the online-only copybooks COCRDUPC copies. The prompt
+# (INV-CRD-048) and 'No input received' (INV-CRD-058) are the primary items of
+# other COCRDUPC scenarios; here they are asserted only as the screen the
+# direct-entry path leads to. No file is read, so no CSD file is listed and no
+# dataset is loaded.
+inventory_ids:
+- INV-CRD-078  # COCRDUPC entry without COMMAREA starts without sign-on
+- INV-CRD-003  # COCRDUPC program
+- INV-CRD-006  # COCRDUP map
+- INV-CFG-015  # transaction CCUP
+- INV-LAY-002  # COCOM01Y: CARDDEMO-COMMAREA, CDEMO-PGM-CONTEXT
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COCRDUPC
+- INV-LAY-009  # CSMSG02Y, the abend variables COCRDUPC copies
+- INV-LAY-011  # CSSTRPFY: YYYY-STORE-PFKEY maps EIBAID to CCARD-AID-ENTER
+- INV-LAY-019  # CVCRD01Y: CCARD-AID flags, CC-ACCT-ID and CC-CARD-NUM
+tags:
+- inferred-not-observed
+- observed-only
+gap_ids:
+- GAP-INF-006  # card (CRD) e2e baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-UNC-010  # direct entry without sign-on: intended or not
+preconditions:
+  datasets: {}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CCUP
+    '@map': COCRDUP
+    fields: {}
+    aid: ENTER
+expected:
+  screens:
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    PGMNAME: COCRDUPC
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    ACCTSID: '*          '
+    CARDSID: '*               '
+    CRDNAME: '                                                  '
+    CRDSTCD: ' '
+    EXPMON: '  '
+    EXPYEAR: '    '
+    INFOMSG: 'Please enter Account and Card Number    '
+    ERRMSG: 'No input received                                                               '
+    FKEYS: 'ENTER=Process F3=Exit'

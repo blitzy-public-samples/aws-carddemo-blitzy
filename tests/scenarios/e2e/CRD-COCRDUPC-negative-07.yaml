@@ -1,0 +1,163 @@
+# The card update refuses a card active status left blank. 1240-EDIT-CARDSTATUS
+# has two branches that set the same 88-level CARD-STATUS-MUST-BE-YES-NO,
+# 'Card Active Status must be Y or N' [app/cbl/COCRDUPC.cbl:195-196]: the
+# not-supplied branch (LOW-VALUES, SPACES or ZEROS) and the not-Y-or-N branch
+# [app/cbl/COCRDUPC.cbl:845-876]. CRD-COCRDUPC-alternate-03 enters X; this
+# scenario takes the blank branch.
+#
+# USER0001 (type U in the USRSEC fixture) signs on through CC00 and reaches the
+# main menu, whose option 5 'Credit Card Update' makes COMEN01C XCTL to
+# COCRDUPC with CDEMO-FROM-PROGRAM COMEN01C and CDEMO-PGM-CONTEXT 0
+# [app/cbl/COMEN01C.cbl:145-155] [app/cpy/COMEN02Y.cpy:49-53]. That first entry
+# INITIALIZEs CARDDEMO-COMMAREA, which blanks CDEMO-FROM-PROGRAM, and takes WHEN
+# CCUP-DETAILS-NOT-FETCHED AND CDEMO-PGM-ENTER: COCRDUP goes out with blank
+# search keys, ERRMSG blank and, from 3250-SETUP-INFOMSG, the prompt 'Please
+# enter Account and Card Number'; CDEMO-PGM-REENTER is set and the task
+# returns TRANSID CCUP [app/cbl/COCRDUPC.cbl:388-394,502-511,546-558,1084-1085,
+# 1141-1142].
+#
+# Step 3 runs under CCUP on the WHEN OTHER path. 1100-RECEIVE-MAP takes account
+# 00000000050 and card 0500024453765740 (record 1 of carddata.txt);
+# 1210-EDIT-ACCOUNT and 1220-EDIT-CARD accept them, and 2000-DECIDE-ACTION
+# (WHEN CCUP-DETAILS-NOT-FETCHED shares the PFK12 body) reads CARDDAT by card
+# number [app/cbl/COCRDUPC.cbl:535-542,641-661,721-799,954-966,1376-1394].
+# 9000-READ-DATA uppercases CARD-EMBOSSED-NAME before keeping it, so the name
+# shows as 'ANIYA VON'; expiry 2023-03-09 splits into year 2023, month 03 and
+# the dark day 09; the status is Y [app/cbl/COCRDUPC.cbl:1343-1369]. With
+# CCUP-SHOW-DETAILS, INFOMSG is 'Details of selected card shown above' and the
+# name, status and expiry fields go out unprotected with MDT on
+# [app/cbl/COCRDUPC.cbl:1107-1112,1145-1146,1181-1190].
+#
+# Step 4 erases CRDSTCD (the adapter's MoveCursor1 and EraseEOF, with nothing
+# typed) and presses ENTER. The field arrives as nulls or spaces, so
+# CCUP-NEW-CRDSTCD is LOW-VALUES either way [app/cbl/COCRDUPC.cbl:614-619].
+# The other fields come back as fetched, but the new card data differs from the
+# old in the status byte, so 1200-EDIT-MAP-INPUTS sets CCUP-CHANGES-NOT-OK and
+# runs the edits in order [app/cbl/COCRDUPC.cbl:667-708]:
+# - 1230-EDIT-NAME accepts 'ANIYA VON': letters and spaces only, so the
+#   converted check field trims to nothing [app/cbl/COCRDUPC.cbl:806-840].
+# - 1240-EDIT-CARDSTATUS finds the status not supplied, sets INPUT-ERROR and
+#   FLG-CARDSTATUS-BLANK and, WS-RETURN-MSG being still off, the message.
+# - 1250 and 1260 accept month 03 and year 2023 [app/cbl/COCRDUPC.cbl:877-947].
+# INPUT-ERROR leaves CCUP-CHANGES-NOT-OK, which 2000-DECIDE-ACTION passes over
+# [app/cbl/COCRDUPC.cbl:710-714,982-983]. 3200-SETUP-SCREEN-VARS sends the
+# received values (CCUP-CHANGES-MADE), 3250 moves PROMPT-FOR-CHANGES, 'Update
+# card details presented above.', to INFOMSG and the message to ERRMSG, and
+# 3300 puts '*' in CRDSTCD, red, with the cursor there
+# [app/cbl/COCRDUPC.cbl:1113-1123,1147-1148,1161-1163,1224-1226,1279-1283].
+# No READ UPDATE or REWRITE is issued, so CARDDATA keeps its 50 records as
+# loaded.
+#
+# Screen fields are compared at their full BMS length, trailing spaces
+# included; positions the program leaves as LOW-VALUES read back as spaces.
+# ERRMSG is the 75-byte WS-RETURN-MSG in the 80-byte ERRMSGO, whose last
+# position (row 24, column 1) is the attribute byte of FKEYS, shown as a space
+# [app/bms/COCRDUP.bms]. INFOMSG is the 40-byte WS-INFO-MSG. CURDATE and
+# CURTIME come from the region clock, so they are matchers in the MM/DD/YY and
+# HH:MM:SS forms of 3100-SCREEN-INIT [app/cbl/COCRDUPC.cbl:1052-1076]. The
+# UniKix copy rewrites only the alphabets test of 1230-EDIT-NAME (GAP-DOC-023),
+# which 'ANIYA VON' passes there too, so no doc-conflict entry applies. The
+# baseline is derived from the source: no TPE region runs in CI.
+id: CRD-COCRDUPC-negative-07
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, selects main-menu option 5 'Credit Card Update' and, on the
+  COCRDUPC update screen (CCUP), fetches card 0500024453765740 of account
+  00000000050. The card active status field is then erased and ENTER pressed.
+  1240-EDIT-CARDSTATUS finds the status not supplied, so COCRDUP is sent again
+  with 'Card Active Status must be Y or N' in the message line, '*' in the
+  status field, the other fetched values kept, the prompt 'Update card details
+  presented above.', and the card record unchanged.
+# Primary item first, then the program, the maps asserted, the transaction the
+# fetch and the edit run under, the CSD file the fetch reads, and the
+# online-only copybooks COCRDUPC copies. Sign-on and the menu (CC00, CM00,
+# COSGN00, USRSEC) are verified by the SEC and MNU scenarios, the information
+# messages by their own CRD scenarios, and the batch record copybooks and the
+# data files at the lowest level that executes them.
+inventory_ids:
+- INV-CRD-062  # COCRDUPC message 'Card Active Status must be Y or N' (rule), blank branch
+- INV-CRD-003  # COCRDUPC program
+- INV-MNU-003  # COMEN01 map, where option 5 is entered
+- INV-CRD-006  # COCRDUP map: search, detail and refusal screens
+- INV-CFG-015  # CCUP transaction, the TRANSID COCRDUPC returns with
+- INV-CFG-003  # CARDDAT CSD file: the card read by card number on the fetch
+- INV-LAY-002  # COCOM01Y: the COMMAREA whose CDEMO-PGM-REENTER routes ENTER to the edits
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COCRDUPC
+- INV-LAY-009  # CSMSG02Y: abend data, copied by COCRDUPC
+- INV-LAY-011  # CSSTRPFY: YYYY-STORE-PFKEY maps ENTER to CCARD-AID-ENTER
+- INV-LAY-019  # CVCRD01Y: CCARD-AID and the CC-ACCT-ID and CC-CARD-NUM keys
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-006  # CRD end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    CARDDATA: {base: CARDDATA}
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - {transid: CC00, aid: ENTER, fields: {USERID: USER0001, PASSWD: PASSWORD}, '@map': COSGN00}
+  - {aid: ENTER, fields: {OPTION: '5'}, '@map': COMEN01}
+  - {aid: ENTER, fields: {ACCTSID: '00000000050', CARDSID: '0500024453765740'}, '@map': COCRDUP}
+  # An empty value erases the 1-character field and types nothing.
+  - {aid: ENTER, fields: {CRDSTCD: ''}, '@map': COCRDUP}
+expected:
+  screens:
+  # One entry per step, each the screen the step ends on.
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN005: '05. Credit Card Update                  '
+    ERRMSG: '                                                                              '
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    PGMNAME: COCRDUPC
+    ACCTSID: '           '
+    CARDSID: '                '
+    INFOMSG: 'Please enter Account and Card Number    '
+    ERRMSG: '                                                                                '
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    PGMNAME: COCRDUPC
+    ACCTSID: '00000000050'
+    CARDSID: '0500024453765740'
+    CRDNAME: 'ANIYA VON                                         '
+    CRDSTCD: 'Y'
+    EXPMON: '03'
+    EXPYEAR: '2023'
+    INFOMSG: 'Details of selected card shown above    '
+    ERRMSG: '                                                                                '
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    PGMNAME: COCRDUPC
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time, format: '%H:%M:%S'}
+    ACCTSID: '00000000050'
+    CARDSID: '0500024453765740'
+    CRDNAME: 'ANIYA VON                                         '
+    CRDSTCD: '*'
+    EXPMON: '03'
+    EXPYEAR: '2023'
+    INFOMSG: 'Update card details presented above.    '
+    ERRMSG: 'Card Active Status must be Y or N                                               '
+  file_state:
+    # The refusal issues no READ UPDATE or REWRITE: CARDDATA keeps its 50
+    # records, and card 0500024453765740 its repository values, status Y.
+    CARDDATA:
+      count: 50
+      contains:
+      - CARD-NUM: '0500024453765740'
+        CARD-ACCT-ID: '50'
+        CARD-CVV-CD: '747'
+        CARD-EMBOSSED-NAME: 'Aniya Von                                         '
+        CARD-EXPIRAION-DATE: '2023-03-09'
+        CARD-ACTIVE-STATUS: 'Y'

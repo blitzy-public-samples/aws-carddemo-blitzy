@@ -1,0 +1,42 @@
+# Derived baseline of scenario CRD-COCRDSLC-negative-01 (capture_platform:
+# derived), authored from app/cbl/COCRDSLC.cbl:126-130,339-348,412-577,736-773
+# and app/cbl/COCRDLIC.cbl:517-541, never captured: inferred-not-observed
+# (GAP-INF-006, GAP-INF-012) until report.py --import-unikix promotes a UniKix
+# run. One screen per step, each the screen shown after the step's AID: the
+# main menu after USER0001 signs on, the card list after option 3, and the
+# card detail after S on row 1, where COCRDSLC reads card 0500024453765740 from
+# CARDDAT and moves FOUND-CARDS-FOR-ACCOUNT to INFOMSG. Values are at full BMS
+# field width with their trailing spaces; CURDATE and CURTIME come from the
+# region clock, so they are run-date and run-time matchers.
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  OPTN003: '03. Credit Card List                    '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COCRDLI
+  ACCTNO1: '00000000050'
+  CRDNUM1: '0500024453765740'
+  CRDSTS1: Y
+  ERRMSG: '                                                                              '
+  INFOMSG: 'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD    '
+  PGMNAME: COCRDLIC
+  TRNNAME: CCLI
+- '@map': COCRDSL
+  ACCTSID: '00000000050'
+  CARDSID: '0500024453765740'
+  CRDNAME: 'Aniya Von                                         '
+  CRDSTCD: Y
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                                '
+  EXPMON: '03'
+  EXPYEAR: '2023'
+  INFOMSG: '   Displaying requested details         '
+  PGMNAME: COCRDSLC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CCDL

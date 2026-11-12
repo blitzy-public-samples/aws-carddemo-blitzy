@@ -1,0 +1,21 @@
+adapter: gnucobol-batch
+baseline_version: 1.0.0
+decoded:
+  messages:
+  - START OF EXECUTION OF PROGRAM CBCUS01C
+  - END OF EXECUTION OF PROGRAM CBCUS01C
+  return_code: 0
+evidence_path: tests/reports/results/DAT-CBCUS01C-boundary-01.yaml
+execution_fingerprint: 007113762100cea0aed714b1f3102673919d69963cf5c10c37dce0292ec3ea7e
+execution_id: gnucobol-batch-186cdf0019e93a03
+gap_id: null
+reason: null
+scenario_digest: 7b0bb3210ad0c2c8a9966fac3b495f30b142d40be39151252c5aa652310964b2
+scenario_id: DAT-CBCUS01C-boundary-01
+source_identity:
+  commit: e5efe25babd80bcd8653ae033cd2ea3ae0df2aa7
+  tree: app
+  units:
+    app/cbl/CBCUS01C.cbl: 494b1ca4ab8a4334eef77d2b87cc7df266f80cbeab2a3f191e9c776d4437d497
+    app/cpy/CVCUS01Y.cpy: 944fd9a8eb10a683d0db97b9a87f2151982f649970287eb74358826056af25f8
+status: passed

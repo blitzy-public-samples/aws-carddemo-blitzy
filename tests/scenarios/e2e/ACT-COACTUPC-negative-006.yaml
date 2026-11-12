@@ -1,0 +1,146 @@
+# An account number of all zeros, and then one that is not numeric, entered
+# on the COACTUP search screen is refused with 'Account Number if supplied must
+# be a 11 digit Non-Zero Number', and no account is fetched.
+#
+# Step 1: USER0001 signs on through CC00 and COSGN00C routes the type 'U' user
+# to the main menu COMEN01 [app/cbl/COSGN00C.cbl:221-237].
+# Step 2: option '2' is the 'Account Update' entry of COMEN02Y
+# [app/cpy/COMEN02Y.cpy:31-35], so COMEN01C transfers control (XCTL) to
+# COACTUPC with CDEMO-FROM-PROGRAM COMEN01C and CDEMO-PGM-ENTER set
+# [app/cbl/COMEN01C.cbl:115-156]. COACTUPC takes its fresh-entry path and sends
+# COACTUP from a cleared output map: the account number blank, the search-key
+# prompt in INFOMSG and an empty message line, then sets CDEMO-PGM-REENTER and
+# returns with TRANSID CAUP [app/cbl/COACTUPC.cbl:964-973,2668-2702,2955-2983].
+# Steps 3 and 4 run CAUP with CDEMO-PGM-REENTER set and no account details
+# fetched, so the WHEN OTHER branch receives the map, edits it, decides and
+# sends it again [app/cbl/COACTUPC.cbl:996-1003]. 1100-RECEIVE-MAP moves
+# ACCTSIDI to CC-ACCT-ID and, with no details fetched, receives nothing else
+# [app/cbl/COACTUPC.cbl:1051-1062]. 1200-EDIT-MAP-INPUTS edits only the search
+# key [app/cbl/COACTUPC.cbl:1433-1446]: 1210-EDIT-ACCOUNT finds the key
+# supplied, and CC-ACCT-ID-N equal to zero in step 3 and CC-ACCT-ID not
+# numeric in step 4, so it sets INPUT-ERROR and, the return message being
+# blank, composes the message with STRING into the 75-byte WS-RETURN-MSG
+# [app/cbl/COACTUPC.cbl:1783-1813]. The filter flag stays NOT-OK, so
+# 2000-DECIDE-ACTION issues no read: its WHEN ACUP-DETAILS-NOT-FETCHED shares
+# the PF12 block, which reads only a valid filter [app/cbl/COACTUPC.cbl:2568-2580].
+# 3200-SETUP-SCREEN-VARS echoes CC-ACCT-ID into ACCTSID, since the filter is not
+# valid, and blanks every detail field through 3201-SHOW-INITIAL-VALUES;
+# 3250-SETUP-INFOMSG keeps the search-key prompt and moves WS-RETURN-MSG to
+# ERRMSG [app/cbl/COACTUPC.cbl:2698-2781,2955-2981]. WS-RETURN-MSG is cleared at
+# the start of every task [app/cbl/COACTUPC.cbl:876], so step 4 composes the
+# same message afresh.
+#
+# Expected values are derived from the source (no TPE region runs in CI). Text
+# values keep their full BMS field width with trailing spaces: ERRMSG is the
+# 75-byte WS-RETURN-MSG padded to the 78-byte field, INFOMSG the 40-byte
+# WS-INFO-MSG padded to 45, and fields left at LOW-VALUES show as spaces. The
+# SSN fields are not asserted: left at LOW-VALUES, they show their BMS INITIAL
+# values. The UniKix copy's 1210-EDIT-ACCOUNT is the same as app/'s.
+id: ACT-COACTUPC-negative-006
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, selects main-menu option 2 and reaches the COACTUP account
+  search screen. Entering account number 00000000000, and then ABCDEFGHIJK, is
+  refused each time with 'Account Number if supplied must be a 11 digit
+  Non-Zero Number': COACTUPC echoes the entered value in ACCTSID, keeps the
+  search-key prompt, shows no account details and reads no file.
+# Primary item first, then the program, the maps the steps enter on and land
+# on, the transaction the refused edits run under, and the online-only
+# copybooks COACTUPC copies (batch copybooks are covered by the batch levels).
+# No CSD file is listed: no file is read while the filter is not valid. The
+# sign-on step only establishes the session; CC00, COSGN00, COSGN00C, CM00 and
+# the USRSEC read are verified by the SEC and MNU scenarios.
+inventory_ids:
+- INV-ACT-057  # COACTUPC message 'Account Number if supplied must be a 11 digit Non-Zero Number' (rule)
+- INV-ACT-002  # COACTUPC program
+- INV-MNU-003  # COMEN01 map, the main menu option 2 is entered on
+- INV-ACT-004  # COACTUP map, the account search screen of steps 2-4
+- INV-CFG-009  # CAUP transaction, under which the refused edits run
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carried between the tasks
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the header date and time
+- INV-LAY-007  # CSLKPCDY copybook, copied by COACTUPC
+- INV-LAY-008  # CSMSG01Y copybook, copied by COACTUPC
+- INV-LAY-009  # CSMSG02Y copybook, copied by COACTUPC
+- INV-LAY-010  # CSSETATY copybook, copied by COACTUPC
+- INV-LAY-011  # CSSTRPFY copybook, the AID mapping of the ENTER key
+- INV-LAY-013  # CSUTLDPY copybook, copied by COACTUPC
+- INV-LAY-014  # CSUTLDWY copybook, copied by COACTUPC
+- INV-LAY-019  # CVCRD01Y copybook, CC-ACCT-ID and its numeric redefinition
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-005  # ACT end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+# The UniKix copy of COACTUP.bms drops the unnamed field at row 1, columns 1-9,
+# where TRNNAME is asserted, so a UniKix run never verifies the COACTUP map item
+# while that entry is open.
+- GAP-DOC-025
+preconditions:
+  datasets:
+    # The fixture users, USER0001 among them for the sign-on, and the
+    # repository accounts, customers and cross-references, so the refusal comes
+    # from the edit and not from missing data.
+    USRSEC: {base: USRSEC}
+    ACCTDATA: {base: ACCTDATA}
+    CUSTDATA: {base: CUSTDATA}
+    CARDXREF: {base: CARDXREF}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: USER0001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '2'}
+    '@map': COMEN01
+  - aid: ENTER
+    fields: {ACCTSID: '00000000000'}
+    '@map': COACTUP
+  - aid: ENTER
+    fields: {ACCTSID: ABCDEFGHIJK}
+    '@map': COACTUP
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN002: '02. Account Update                      '
+    ERRMSG: '                                                                              '
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    PGMNAME: COACTUPC
+    ACCTSID: '           '
+    INFOMSG: 'Enter or update id of account to update      '
+    ERRMSG: '                                                                              '
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COACTUPC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000000'
+    ACSTNUM: '         '
+    INFOMSG: 'Enter or update id of account to update      '
+    ERRMSG: 'Account Number if supplied must be a 11 digit Non-Zero Number                 '
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COACTUPC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACCTSID: ABCDEFGHIJK
+    ACSTNUM: '         '
+    INFOMSG: 'Enter or update id of account to update      '
+    ERRMSG: 'Account Number if supplied must be a 11 digit Non-Zero Number                 '
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Account Number if supplied must be a 11 digit Non-Zero Number                 '
+  - 'Account Number if supplied must be a 11 digit Non-Zero Number                 '

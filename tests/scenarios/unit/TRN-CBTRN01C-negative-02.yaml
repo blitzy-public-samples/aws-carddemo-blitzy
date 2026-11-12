@@ -1,0 +1,95 @@
+# The account-not-found rule of CBTRN01C: a daily transaction whose card is in
+# the cross-reference file but whose account is not in the account file
+# [app/cbl/CBTRN01C.cbl:170-179,227-250]. The card 9999000011110002, customer
+# 000000901 and account 00000000901 are invented and added to the repository
+# CARDXREF; ACCTDATA holds accounts 00000000001-00000000050 only, so the keyed
+# READ of ACCTFILE takes INVALID KEY. CBTRN01C opens every file INPUT and posts
+# nothing, so the outcome is its DISPLAY lines and return code 0.
+#
+# The second message is the 350-byte DALYTRAN record exactly as DISPLAY writes
+# it, trailing spaces included (DALYTRAN-PROC-TS and FILLER are blank). The read
+# that reaches end of file does not end the loop body, so the lookup and its six
+# lines repeat for the same card before the end line
+# [app/cbl/CBTRN01C.cbl:164-186]. That repetition is the GAP-DEF-006 behaviour,
+# pinned here as observed; TRN-CBTRN01C-boundary-01 carries its
+# suspected-defect tag.
+id: TRN-CBTRN01C-negative-02
+level: unit
+type: negative
+description: >-
+  CBTRN01C reads one daily transaction whose card 9999000011110002 is in the
+  cross-reference file with account 00000000901, which the account file does
+  not hold: it displays 'INVALID ACCOUNT NUMBER FOUND' and 'ACCOUNT 00000000901
+  NOT FOUND', repeats the lookup once after end of file, and ends with return
+  code 0.
+inventory_ids:
+- INV-TRN-071  # CBTRN01C account not found (rule)
+- INV-TRN-007  # CBTRN01C program
+- INV-LAY-018  # CVACT03Y copybook: the synthetic XREF record and its displayed ids
+- INV-DTA-003  # cardxref.txt, the CARDXREF base
+- INV-DTA-013  # EBCDIC cross-reference data file, its cross-check counterpart
+- INV-DTA-001  # acctdata.txt, the ACCTDATA base
+- INV-DTA-011  # EBCDIC account data file, its cross-check counterpart
+- INV-DTA-004  # custdata.txt, the CUSTDATA base
+- INV-DTA-014  # EBCDIC customer data file, its cross-check counterpart
+- INV-DTA-002  # carddata.txt, the CARDDATA base
+- INV-DTA-012  # EBCDIC card data file, its cross-check counterpart
+tags: []
+gap_ids:
+- GAP-UNC-003  # no job or proc step runs CBTRN01C
+- GAP-STB-010  # Berkeley DB indexed files in place of the VSAM KSDS
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
+preconditions:
+  datasets:
+    DALYTRAN:
+      records:
+      - DALYTRAN-ID: '9900000000000202'
+        DALYTRAN-TYPE-CD: '01'
+        DALYTRAN-CAT-CD: '0001'
+        DALYTRAN-SOURCE: POS TERM
+        DALYTRAN-DESC: Purchase at Example Store 0202
+        DALYTRAN-AMT: '10.00'
+        DALYTRAN-MERCHANT-ID: '900000202'
+        DALYTRAN-MERCHANT-NAME: Example Store 0202
+        DALYTRAN-MERCHANT-CITY: Exampleville
+        DALYTRAN-MERCHANT-ZIP: '99999'
+        DALYTRAN-CARD-NUM: '9999000011110002'
+        DALYTRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+    CARDXREF:
+      base: CARDXREF
+      records:
+      - XREF-CARD-NUM: '9999000011110002'
+        XREF-CUST-ID: '000000901'
+        XREF-ACCT-ID: '00000000901'
+    ACCTDATA:
+      base: ACCTDATA
+    CUSTDATA:
+      base: CUSTDATA
+    CARDDATA:
+      base: CARDDATA
+    TRANSACT:
+      records: []
+  parameters:
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults: []
+inputs:
+  program: CBTRN01C
+expected:
+  return_code: 0
+  messages:
+  - START OF EXECUTION OF PROGRAM CBTRN01C
+  - '9900000000000202010001POS TERM  Purchase at Example Store 0202                                                                      0000000100{900000202Example Store 0202                                Exampleville                                      99999     99990000111100022022-07-05 09:15:00.000000                                              '
+  - SUCCESSFUL READ OF XREF
+  - 'CARD NUMBER: 9999000011110002'
+  - 'ACCOUNT ID : 00000000901'
+  - 'CUSTOMER ID: 000000901'
+  - INVALID ACCOUNT NUMBER FOUND
+  - ACCOUNT 00000000901 NOT FOUND
+  - SUCCESSFUL READ OF XREF
+  - 'CARD NUMBER: 9999000011110002'
+  - 'ACCOUNT ID : 00000000901'
+  - 'CUSTOMER ID: 000000901'
+  - INVALID ACCOUNT NUMBER FOUND
+  - ACCOUNT 00000000901 NOT FOUND
+  - END OF EXECUTION OF PROGRAM CBTRN01C

@@ -1,0 +1,150 @@
+# COTRN02C refuses a transaction whose Merchant Zip is empty with 'Merchant
+# Zip can NOT be empty...', the last check of the empty-field series
+# [app/cbl/COTRN02C.cbl:312-317].
+#
+# Steps 1-2 reach the empty Add Transaction screen as TRN-COTRN02C-normal-01
+# does: USER0001 (type U) is routed to COMEN01C, and option 8 transfers control
+# to COTRN02C with the program context reset, so COTRN02C sets the re-enter
+# flag, finds no transaction selected and sends COTRN02 with a blank ERRMSG
+# [app/cbl/COSGN00C.cbl:230-237] [app/cbl/COMEN01C.cbl:115-156]
+# [app/cbl/COTRN02C.cbl:115-130,516-534].
+# Step 3 enters the valid field set of the TRN-COTRN02C scenarios, card number
+# only, with Merchant Zip left empty and CONFIRM not entered, under the CT02
+# that step 2 returned with [app/cbl/COTRN02C.cbl:131-135]:
+# - ACTIDIN is blank, so the card path reads CCXREF by card number; card
+#   0500024453765740 is record 1 of the CARDXREF fixture, and the account id
+#   00000000050 it holds is moved to ACTIDIN [app/cbl/COTRN02C.cbl:210-223,609-623].
+# - The error flag is off, so the data fields keep what was entered. Type CD,
+#   Category CD, Source, Description, Amount, both dates, Merchant ID, Name and
+#   City are supplied, so the EVALUATE of empty fields reaches its last WHEN:
+#   MZIP is SPACES or LOW-VALUES whether the cleared field arrives empty or
+#   carries the map's INITIAL blank (FSET) [app/bms/COTRN02.bms:267-272].
+#   'Merchant Zip can NOT be empty...' moves to WS-MESSAGE, the cursor to MZIP,
+#   and SEND-TRNADD-SCREEN sends COTRN02 with ERASE and ends the task with
+#   RETURN TRANSID CT02 [app/cbl/COTRN02C.cbl:235-320,516-534].
+# - The task ends inside VALIDATE-INPUT-DATA-FIELDS, so the numeric, amount
+#   and date checks, the CONFIRM evaluation and ADD-TRANSACTION never run, and
+#   TRANSACT is neither browsed nor written [app/cbl/COTRN02C.cbl:164-188,442-466].
+# The output map shares storage with the input map, so the screen shows the
+# fields as received, padded with blanks to their BMS length, with ACTIDIN
+# filled from the cross-reference; MZIP and CONFIRM show blank. CURDATE and
+# CURTIME come from the region clock, so they are matchers and the clock is
+# relative.
+id: TRN-COTRN02C-negative-17
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, chooses main-menu option 8 (Transaction Add) and enters a
+  transaction for repository card 0500024453765740 with every field supplied
+  except Merchant Zip. COTRN02C fills the account id 00000000050 from the
+  cross-reference, keeps the entered fields on the screen, shows 'Merchant Zip
+  can NOT be empty...' and writes nothing to TRANSACT.
+# Primary item first, then the program, the maps asserted, the transaction step
+# 3 runs under, the CSD file COTRN02C reads, and the online-only copybooks it
+# copies. Sign-on and the menu (CC00, CM00, COSGN00, USRSEC, the option-8
+# navigation) are verified by the SEC and MNU scenarios; TRANSACT is asserted
+# only as left unchanged, so its CSD file is verified by the scenarios that
+# browse and write it; the batch record copybooks and data files are verified
+# at the lowest level that executes them.
+inventory_ids:
+- INV-TRN-046  # COTRN02C message 'Merchant Zip can NOT be empty...'
+- INV-TRN-003  # COTRN02C program
+- INV-MNU-003  # COMEN01 map, where option 8 is entered
+- INV-TRN-006  # COTRN02 map, the add screen of steps 2 and 3
+- INV-CFG-022  # CT02 transaction, under which COTRN02C receives the add
+- INV-CFG-004  # CCXREF CSD file, read by card number
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carrying the program context
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the screen date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COTRN02C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-007  # TRN end-to-end baselines derived, never observed on a TPE region
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+# TRANSACT holds the repository's 300 daily transactions, as in
+# TRN-COTRN02C-normal-01: the logical TRANSACT dataset is built and holds no
+# repository data of its own, so it takes DALYTRAN, whose 350-byte records have
+# the TRAN-RECORD shape, as its base. CARDXREF is the region's CCXREF file (and
+# the CXACAIX path); USRSEC holds the demo users.
+preconditions:
+  datasets:
+    CARDXREF: {base: CARDXREF}
+    TRANSACT: {base: DALYTRAN}
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '8'
+  # ACTIDIN is left blank, so the card number selects the cross-reference;
+  # MZIP is cleared and left empty.
+  - aid: ENTER
+    '@map': COTRN02
+    fields:
+      CARDNIN: '0500024453765740'
+      TTYPCD: '01'
+      TCATCD: '0001'
+      TRNSRC: 'POS TERM'
+      TDESC: 'Test purchase'
+      TRNAMT: '+00000012.34'
+      TORIGDT: '2022-07-01'
+      TPROCDT: '2022-07-01'
+      MID: '800000001'
+      MNAME: 'Test Merchant'
+      MCITY: 'Testville'
+      MZIP: ''
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: 'CM00'
+    PGMNAME: 'COMEN01C'
+    OPTN008: '08. Transaction Add                     '
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: 'CT02'
+    PGMNAME: 'COTRN02C'
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: 'CT02'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COTRN02C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACTIDIN: '00000000050'
+    CARDNIN: '0500024453765740'
+    TTYPCD: '01'
+    TCATCD: '0001'
+    TRNSRC: 'POS TERM  '
+    TDESC: 'Test purchase                                               '
+    TRNAMT: '+00000012.34'
+    TORIGDT: '2022-07-01'
+    TPROCDT: '2022-07-01'
+    MID: '800000001'
+    MNAME: 'Test Merchant                 '
+    MCITY: 'Testville                '
+    MZIP: '          '
+    CONFIRM: ' '
+    ERRMSG: 'Merchant Zip can NOT be empty...                                              '
+  # The ERRMSG of each step: the menu and the empty add screen carry none.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Merchant Zip can NOT be empty...                                              '
+  file_state:
+    # No record is written: TRANSACT keeps the 300 fixture transactions, and
+    # COTRN02C's only change to it, the WRITE of ADD-TRANSACTION, is never
+    # reached.
+    TRANSACT:
+      count: 300

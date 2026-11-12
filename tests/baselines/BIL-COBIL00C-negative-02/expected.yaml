@@ -1,0 +1,33 @@
+# Derived baseline, not observed: exactly the screen fields the scenario's
+# expected asserts, one screen per step. The sign-on lands on the main menu
+# COMEN01C sends under CM00; option 10 XCTLs to COBIL00C, whose first display
+# sends COBIL00 under CB00 with every field blank; the ENTER with the account
+# id erased re-enters COBIL00C, which refuses it with 'Acct ID can NOT be
+# empty...' before any file is read [app/cbl/COBIL00C.cbl:98-167,289-338]
+# [app/bms/COBIL00.bms]. Text fields are whole BMS fields, trailing spaces
+# kept; the screen date and time are run-clock matchers.
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  OPTN010: '10. Bill Payment                        '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COBIL00
+  ACTIDIN: '           '
+  ERRMSG: '                                                                              '
+  PGMNAME: COBIL00C
+  TRNNAME: CB00
+- '@map': COBIL00
+  ACTIDIN: '           '
+  CONFIRM: ' '
+  CURBAL: '              '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Acct ID can NOT be empty...                                                   '
+  PGMNAME: COBIL00C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CB00

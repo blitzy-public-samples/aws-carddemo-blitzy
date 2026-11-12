@@ -1,0 +1,11 @@
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: gnucobol-batch
+execution_fingerprint: 222a2918acbadd502b625056d68a792034df559c98b42835eeb1c6d3e735b199
+execution_id: gnucobol-batch-e2126156aa5cafb6
+source_commit: b301367779f1872f84377d9948b1c4bd2634bfc8
+source_identity:
+  commit: b301367779f1872f84377d9948b1c4bd2634bfc8
+  tree: app
+  units:
+    app/jcl/DEFCUST.jcl: 488bddaab9561e741bff7569c17413bed9fc833e17b658dbbe94ca663de980b3

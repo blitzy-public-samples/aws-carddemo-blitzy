@@ -1,0 +1,226 @@
+# A confirmed bill payment whose generated transaction id already exists, so
+# COBIL00C shows 'Tran ID already exist...'. The duplicate is built the way
+# TRN-COTRN02C-negative-28 builds it for COTRN02C: TRANSACT holds the highest
+# possible key, so the next id overflows to a key that is also present.
+#
+# Steps 1-2 reach the empty Bill Payment screen: USER0001 (type U) signs on
+# through CC00 and is routed to COMEN01C [app/cbl/COSGN00C.cbl:230-237], and
+# option 10 'Bill Payment' (program COBIL00C, user type U)
+# [app/cpy/COMEN02Y.cpy:80-84] transfers control to COBIL00C with the program
+# context reset [app/cbl/COMEN01C.cbl:115-156]. Not re-entered, COBIL00C sets
+# the re-enter flag and moves LOW-VALUES to COBIL0AO; the COMMAREA COMEN01C
+# passes ends before CDEMO-CB00-INFO, so the move pads CDEMO-CB00-TRN-SELECTED
+# with spaces and no account is preselected. It sends COBIL00 with a blank
+# ERRMSG and returns TRANSID CB00 [app/cbl/COBIL00C.cbl:107-122,146-149,289-301].
+# Step 3 enters account 00000000001 with CONFIRM Y and presses ENTER under CB00
+# [app/cbl/COBIL00C.cbl:123-127]; PROCESS-ENTER-KEY runs
+# [app/cbl/COBIL00C.cbl:154-244]:
+# - The account id is supplied, CONFIRM Y sets CONF-PAY-YES, and READ ACCTDAT
+#   UPDATE finds account 1 (balance 194.00); WS-CURR-BAL PIC +9999999999.99
+#   puts +0000000194.00 into CURBAL. The balance is above zero, so the payment
+#   proceeds [app/cbl/COBIL00C.cbl:169-206,343-372].
+# - READ CXACAIX by account 1 is NORMAL (cardxref.txt record 49, card
+#   9680294154603697). STARTBR TRANSACT at HIGH-VALUES and READPREV return the
+#   highest key, 9999999999999999 [app/cbl/COBIL00C.cbl:210-215,408-505].
+# - MOVE TRAN-ID TO WS-TRAN-ID-NUM PIC 9(16) and ADD 1 with no ON SIZE ERROR
+#   [app/cbl/COBIL00C.cbl:57,216-217]: 10000000000000000 does not fit 16
+#   digits, and under Enterprise COBOL "truncation rules apply and the value of
+#   the affected resultant identifier is computed" (Enterprise COBOL for z/OS
+#   6.3/6.4 Language Reference, SIZE ERROR phrases), so the high-order digit is
+#   lost and the new TRAN-ID is 0000000000000000 [app/cbl/COBIL00C.cbl:218-232].
+# - WRITE TRANSACT with key 0000000000000000 answers DUPREC: WRITE-TRANSACT-FILE
+#   sets WS-ERR-FLG, moves 'Tran ID already exist...' to WS-MESSAGE and sends
+#   COBIL00, without RETURN [app/cbl/COBIL00C.cbl:510-547].
+# - The pay block tests no error flag after the WRITE: COMPUTE ACCT-CURR-BAL =
+#   ACCT-CURR-BAL - TRAN-AMT (TRAN-AMT holds the whole balance) gives 0.00, and
+#   UPDATE-ACCTDAT-FILE rewrites the account, NORMAL, under the READ UPDATE of
+#   this task. SEND-BILLPAY-SCREEN then sends COBIL00 again with WS-MESSAGE
+#   unchanged, and the task returns TRANSID CB00
+#   [app/cbl/COBIL00C.cbl:233-244,377-403,146-149].
+#
+# Expected values are derived from the source (no TPE region runs in CI):
+# - COBIL0AO redefines COBIL0AI, so ACTIDIN and CONFIRM come back as received;
+#   CURBAL holds the balance read before the payment. Both SENDs erase the
+#   screen and carry the same fields, so the second is the one captured.
+# - ERRMSG is the 78-byte ERRMSGO: the 24-character message and 54 spaces
+#   (WS-MESSAGE X(80) moved to X(78)); comparisons never trim.
+# - The header is POPULATE-HEADER-INFO's [app/cbl/COBIL00C.cbl:319-338]: the
+#   COTTL01Y titles, CB00, COBIL00C, and CURDATE (mm/dd/yy) and CURTIME
+#   (hh:mm:ss) from the region clock, hence matchers and the relative clock.
+id: BIL-COBIL00C-negative-07
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, chooses main-menu option 10 (Bill Payment) and confirms
+  payment of account 00000000001's balance of 194.00 on COBIL00 while TRANSACT
+  holds the invented keys 0000000000000000 and 9999999999999999. The next id,
+  9999999999999999 plus 1 in WS-TRAN-ID-NUM PIC 9(16), truncates to
+  0000000000000000; the WRITE answers DUPREC and COBIL00C shows 'Tran ID
+  already exist...', writing no transaction. Finding, pinned as derived and
+  not registered as a gap: the pay block runs COMPUTE and UPDATE-ACCTDAT-FILE
+  after the failed WRITE without testing WS-ERR-FLG, so the account is
+  rewritten with ACCT-CURR-BAL 0.00 although no payment transaction exists
+  [app/cbl/COBIL00C.cbl:233-235,533-539].
+# Primary item first, then the program, the maps asserted, the transaction
+# step 3 runs under, the CSD files COBIL00C reads, browses, writes and
+# rewrites, and the online-only copybooks it copies. The next-TRAN-ID, TRANSACT
+# WRITE and full-balance payment items are verified by the scenarios whose
+# payment succeeds (BIL-COBIL00C-normal-01). Sign-on and the menu (CC00, CM00,
+# COSGN00, USRSEC, the option-10 navigation) are verified by the SEC and MNU
+# scenarios, and the batch record copybooks and data files at the lowest level
+# that executes them.
+inventory_ids:
+- INV-BIL-015  # COBIL00C message 'Tran ID already exist...' (rule)
+- INV-BIL-001  # COBIL00C program
+- INV-MNU-003  # COMEN01 map, where option 10 is entered
+- INV-BIL-002  # COBIL00 map, the bill payment screen of steps 2 and 3
+- INV-CFG-012  # CB00 transaction, under which COBIL00C receives the payment
+- INV-CFG-001  # ACCTDAT CSD file: read for update and rewritten
+- INV-CFG-006  # CXACAIX CSD file: cross-reference read by account id
+- INV-CFG-007  # TRANSACT CSD file: browsed backwards, the WRITE refused
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carrying the program context
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the screen date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COBIL00C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-008  # BIL end-to-end baselines derived, never observed on a TPE region
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+    # Account 00000000001 has a balance of 194.00, so there is something to pay.
+    ACCTDATA: {base: ACCTDATA}
+    # The region's CXACAIX path over the cross-reference finds account 1's card.
+    CARDXREF: {base: CARDXREF}
+    # Two invented transactions and nothing else: the highest possible key, so
+    # the next id overflows, and the all-zero key the overflow produces.
+    TRANSACT:
+      records:
+      - TRAN-ID: '0000000000000000'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Test lowest key purchase
+        TRAN-AMT: '10.00'
+        TRAN-MERCHANT-ID: '800000001'
+        TRAN-MERCHANT-NAME: Test Shop
+        TRAN-MERCHANT-CITY: Testville
+        TRAN-MERCHANT-ZIP: '27601'
+        TRAN-CARD-NUM: '9680294154603697'
+        TRAN-ORIG-TS: '2022-06-01 09:00:00.000000'
+        TRAN-PROC-TS: '2022-06-02 09:00:00.000000'
+      - TRAN-ID: '9999999999999999'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Test highest key purchase
+        TRAN-AMT: '20.00'
+        TRAN-MERCHANT-ID: '800000002'
+        TRAN-MERCHANT-NAME: Test Store
+        TRAN-MERCHANT-CITY: Testburg
+        TRAN-MERCHANT-ZIP: '27602'
+        TRAN-CARD-NUM: '9680294154603697'
+        TRAN-ORIG-TS: '2022-06-15 10:00:00.000000'
+        TRAN-PROC-TS: '2022-06-16 10:00:00.000000'
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '10'
+  # Account id and confirmation in one ENTER, so the payment runs at once.
+  - aid: ENTER
+    '@map': COBIL00
+    fields:
+      ACTIDIN: '00000000001'
+      CONFIRM: 'Y'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: 'CM00'
+    PGMNAME: 'COMEN01C'
+  - '@map': COBIL00
+    TRNNAME: 'CB00'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COBIL00C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ERRMSG: '                                                                              '
+  - '@map': COBIL00
+    TRNNAME: 'CB00'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COBIL00C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACTIDIN: '00000000001'
+    CURBAL: '+0000000194.00'
+    CONFIRM: 'Y'
+    ERRMSG: 'Tran ID already exist...                                                      '
+  # The ERRMSG of each step: the menu and the empty payment screen carry none.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Tran ID already exist...                                                      '
+  file_state:
+    # The refused WRITE adds nothing: TRANSACT holds exactly the two invented
+    # records, unchanged. Values are in decoded form: TRAN-CAT-CD is the number
+    # 1, text keeps its trailing spaces.
+    TRANSACT:
+      records:
+      - TRAN-ID: '0000000000000000'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: 'POS TERM  '
+        TRAN-DESC: 'Test lowest key purchase                                                                            '
+        TRAN-AMT: '10.00'
+        TRAN-MERCHANT-ID: '800000001'
+        TRAN-MERCHANT-NAME: 'Test Shop                                         '
+        TRAN-MERCHANT-CITY: 'Testville                                         '
+        TRAN-MERCHANT-ZIP: '27601     '
+        TRAN-CARD-NUM: '9680294154603697'
+        TRAN-ORIG-TS: '2022-06-01 09:00:00.000000'
+        TRAN-PROC-TS: '2022-06-02 09:00:00.000000'
+      - TRAN-ID: '9999999999999999'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: 'POS TERM  '
+        TRAN-DESC: 'Test highest key purchase                                                                           '
+        TRAN-AMT: '20.00'
+        TRAN-MERCHANT-ID: '800000002'
+        TRAN-MERCHANT-NAME: 'Test Store                                        '
+        TRAN-MERCHANT-CITY: 'Testburg                                          '
+        TRAN-MERCHANT-ZIP: '27602     '
+        TRAN-CARD-NUM: '9680294154603697'
+        TRAN-ORIG-TS: '2022-06-15 10:00:00.000000'
+        TRAN-PROC-TS: '2022-06-16 10:00:00.000000'
+    # The rewrite after the refused WRITE stands: account 1's balance is 0.00
+    # and every other field is the record READ UPDATE returned. The other 49
+    # accounts are untouched. ACCT-ID is the number 1.
+    ACCTDATA:
+      count: 50
+      contains:
+      - ACCT-ID: '1'
+        ACCT-ACTIVE-STATUS: 'Y'
+        ACCT-CURR-BAL: '0.00'
+        ACCT-CREDIT-LIMIT: '2020.00'
+        ACCT-CASH-CREDIT-LIMIT: '1020.00'
+        ACCT-OPEN-DATE: '2014-11-20'
+        ACCT-EXPIRAION-DATE: '2025-05-20'
+        ACCT-REISSUE-DATE: '2025-05-20'
+        ACCT-CURR-CYC-CREDIT: '0.00'
+        ACCT-CURR-CYC-DEBIT: '0.00'
+        ACCT-ADDR-ZIP: 'A000000000'
+        ACCT-GROUP-ID: '          '

@@ -1,0 +1,122 @@
+# USER0001 selects the first transaction with S on the transaction list, and
+# COTRN00C transfers control to the transaction view program COTRN01C, which
+# shows that transaction's detail.
+# - Step 1: CC00 on a cleared screen sends the COSGN00 sign-on map; USER0001
+#   (type U) is routed to the main menu COMEN01C, map COMEN01
+#   [app/cbl/COSGN00C.cbl:209-237].
+# - Step 2: option 6 'Transaction List' (program COTRN00C, user type U) is
+#   XCTLed to with the program context 0 [app/cbl/COMEN01C.cbl:143-156]
+#   [app/cpy/COMEN02Y.cpy:55-59]. COMEN01C's COMMAREA ends before
+#   CDEMO-CT00-INFO, so the move into COTRN00C's longer CARDDEMO-COMMAREA
+#   fills that area with spaces; on this first entry PROCESS-ENTER-KEY finds no
+#   selection and browses TRANSACT from LOW-VALUES (STARTBR without an option
+#   positions GTEQ), filling rows 1-10 in key order, so row 1 is the lowest key
+#   0000000000683580 [app/cbl/COTRN00C.cbl:107-116,146-229,279-326,381-396].
+#   Only the identification fields and row 1's id are asserted: the list
+#   content and its paging are other scenarios' items.
+# - Step 3: S in SEL0001 moves SEL0001 to CDEMO-CT00-TRN-SEL-FLG and TRNID01,
+#   which is FSET and so comes back on RECEIVE, to CDEMO-CT00-TRN-SELECTED;
+#   the S branch sets CDEMO-TO-PROGRAM COTRN01C, the context to 0, and XCTLs
+#   with the COMMAREA [app/cbl/COTRN00C.cbl:118-121,148-195]
+#   [app/bms/COTRN00.bms:153-166]. COTRN01C appends CDEMO-CT01-INFO after
+#   COCOM01Y with the same layout as CDEMO-CT00-INFO, so
+#   CDEMO-CT01-TRN-SELECTED is the same COMMAREA bytes
+#   [app/cbl/COTRN00C.cbl:61-70] [app/cbl/COTRN01C.cbl:52-61]. Entered with
+#   context 0, COTRN01C moves the selected id to TRNIDIN, reads TRANSACT by
+#   that key (READ UPDATE, NORMAL) and moves the record to the detail fields;
+#   WS-MESSAGE stays spaces. The task sends COTRN01 twice with ERASE, both
+#   with the same fields [app/cbl/COTRN01C.cbl:94-109,144-192,213-225,267-282].
+# The record is the first DALYTRAN record by key [app/data/ASCII/dailytran.txt:1]
+# laid out by CVTRA05Y [app/cpy/CVTRA05Y.cpy:4-19]. Every value is the whole
+# field at its BMS length, trailing spaces kept [app/cpy-bms/COTRN01.CPY]:
+# TRAN-ORIG-TS is cut to the 10-byte TORIGDT, the blank TRAN-PROC-TS gives a
+# blank TPROCDT, TRAN-DESC is cut to the 60-byte TDESC, TRAN-AMT 0000005047G
+# (+504.77) is edited through WS-TRAN-AMT PIC +99999999.99, and the numeric
+# TRAN-CAT-CD and TRAN-MERCHANT-ID keep their leading zeros. The clock-derived
+# CURDATE and CURTIME are matchers, so the clock is relative.
+id: TRN-COTRN00C-alternate-07
+level: e2e
+type: alternate
+description: >-
+  USER0001 opens the transaction list (CT00) from the main menu and enters S
+  against row 1, transaction 0000000000683580; COTRN00C transfers control to
+  COTRN01C, which reads the transaction from TRANSACT and shows map COTRN01
+  with its card 4859452612877065, type 01, category 0001, source POS TERM,
+  description 'Purchase at Abshire-Lowe', amount +00000504.77, origination
+  date 2022-06-10, a blank processing date, merchant 800000000 Abshire-Lowe of
+  North Enoshaven 72112, and no message.
+inventory_ids:
+- INV-TRN-020  # COTRN00C list selection S -> COTRN01C (rule)
+- INV-TRN-001  # COTRN00C program
+- INV-MNU-003  # COMEN01 map, the menu option 6 is entered on
+- INV-TRN-004  # COTRN00 map, the list the selection is entered on
+- INV-TRN-005  # COTRN01 map, the screen the selection lands on
+- INV-CFG-020  # CT00 transaction, the list's pseudo-conversation
+- INV-CFG-021  # CT01 transaction, the view's pseudo-conversation
+- INV-CFG-007  # TRANSACT CSD file, browsed by COTRN00C and read by COTRN01C
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carrying the selected id
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the screen date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COTRN00C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-007  # derived TRN end-to-end baselines, never observed on a TPE region
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+# TRANSACT has no repository data of its own (source: built), so it takes the
+# repository's daily transactions as its base: DALYTRAN records are the same
+# 350 bytes, and their 300 transaction ids are unique keys.
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+    TRANSACT: {base: DALYTRAN}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+    '@map': COSGN00
+  - aid: ENTER
+    fields:
+      OPTION: '6'
+    '@map': COMEN01
+  - aid: ENTER
+    fields:
+      SEL0001: S
+    '@map': COTRN00
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: 'CM00'
+    PGMNAME: 'COMEN01C'
+  - '@map': COTRN00
+    TRNNAME: 'CT00'
+    PGMNAME: 'COTRN00C'
+    TRNID01: '0000000000683580'
+  - '@map': COTRN01
+    TRNNAME: 'CT01'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COTRN01C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    TRNIDIN: '0000000000683580'
+    TRNID: '0000000000683580'
+    CARDNUM: '4859452612877065'
+    TTYPCD: '01'
+    TCATCD: '0001'
+    TRNSRC: 'POS TERM  '
+    TDESC: 'Purchase at Abshire-Lowe                                    '
+    TRNAMT: '+00000504.77'
+    TORIGDT: '2022-06-10'
+    TPROCDT: '          '
+    MID: '800000000'
+    MNAME: 'Abshire-Lowe                  '
+    MCITY: 'North Enoshaven          '
+    MZIP: '72112     '
+    ERRMSG: '                                                                              '

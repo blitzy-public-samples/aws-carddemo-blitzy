@@ -1,0 +1,135 @@
+id: ACT-COACTUPC-alternate-01
+level: e2e
+type: alternate
+description: >-
+  USER0001 signs on through CC00, reaches the main menu and enters option 2
+  'Account Update'. COMEN01C moves CM00 and COMEN01C to CDEMO-FROM-TRANID and
+  CDEMO-FROM-PROGRAM, zeroes CDEMO-PGM-CONTEXT and transfers control to
+  COACTUPC [app/cbl/COMEN01C.cbl:146-156] [app/cpy/COMEN02Y.cpy:31-35].
+  Entered from LIT-MENUPGM without CDEMO-PGM-REENTER, COACTUPC takes its
+  fresh-entry path: it initializes its own COMMAREA, so ACUP-DETAILS-NOT-FETCHED
+  holds, and performs 3000-SEND-MAP [app/cbl/COACTUPC.cbl:964-973].
+  3100-SCREEN-INIT clears the output map and fills the header (CAUP, COACTUPC,
+  the COTTL01Y titles, the run clock's date and time); 3200-SETUP-SCREEN-VARS
+  leaves every account and customer field at LOW-VALUES because
+  CDEMO-PGM-ENTER is set; 3250-SETUP-INFOMSG sets PROMPT-FOR-SEARCH-KEYS and
+  moves WS-INFO-MSG to INFOMSG and the cleared WS-RETURN-MSG to ERRMSG
+  [app/cbl/COACTUPC.cbl:2649-2727,2955-2983]. 3310-PROTECT-ALL-ATTRS protects
+  every data field, and 3300-SETUP-SCREEN-ATTRS reopens only the account
+  number, places the cursor there and exits before any per-field attribute
+  logic; 3390-SETUP-INFOMSG-ATTRS shows INFOMSG bright and leaves the F5 and
+  F12 keys dark [app/cbl/COACTUPC.cbl:2986-3006,3165-3192,3441-3495,3566-3583].
+  The map is sent with ERASE [app/cbl/COACTUPC.cbl:3589-3602], and COACTUPC
+  returns with TRANSID CAUP, so the next input on this screen runs CAUP.
+# Primary item first, then the program, the maps the steps enter on and land
+# on, the transaction whose conversation this screen opens, and the online-only
+# copybooks COACTUPC copies. No CSD file is listed: the fresh-entry path reads
+# no CXACAIX, ACCTDAT or CUSTDAT record. The sign-on step only establishes the
+# session; CC00, COSGN00, COSGN00C and the USRSEC read are verified by the
+# SEC-COSGN00C scenarios, and the menu routing itself by MNU-COMEN01C-alternate-02.
+inventory_ids:
+- INV-ACT-029  # COACTUPC message 'Enter or update id of account to update' (PROMPT-FOR-SEARCH-KEYS)
+- INV-ACT-002  # COACTUPC program
+- INV-MNU-003  # COMEN01 map, the screen option 2 is entered on
+- INV-ACT-004  # COACTUP map, the screen the XCTL lands on
+- INV-CFG-009  # CAUP transaction, which COACTUPC's RETURN TRANSID arms
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA passed with the XCTL
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the header date and time
+- INV-LAY-007  # CSLKPCDY copybook
+- INV-LAY-008  # CSMSG01Y copybook
+- INV-LAY-009  # CSMSG02Y copybook
+- INV-LAY-010  # CSSETATY copybook
+- INV-LAY-011  # CSSTRPFY copybook
+- INV-LAY-013  # CSUTLDPY copybook
+- INV-LAY-014  # CSUTLDWY copybook
+- INV-LAY-019  # CVCRD01Y copybook
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-005  # account view and update (ACT) end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+# The UniKix copy of COACTUP.bms drops the unnamed field at row 1, columns 1-9,
+# where the landing screen's header is asserted, so a UniKix run never verifies
+# the COACTUP map item while that entry is open.
+- GAP-DOC-025
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user USER0001 from USRSEC.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: USER0001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '2'}
+    '@map': COMEN01
+# Screen values are whole fields at their BMS length, trailing spaces kept:
+# comparison never trims. A field the program leaves at LOW-VALUES is sent with
+# the INITIAL text of the physical map when it has one (the SSN parts and the
+# key legend), and otherwise shows as spaces. Protection is not observable in
+# the captured text: every data field except ACCTSID is protected here.
+# FKEY05 and FKEY12 are not asserted: they stay dark (non-display) on this path.
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COACTUPC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACCTSID: '           '
+    ACSTTUS: ' '
+    OPNYEAR: '    '
+    OPNMON: '  '
+    OPNDAY: '  '
+    ACRDLIM: '               '
+    EXPYEAR: '    '
+    EXPMON: '  '
+    EXPDAY: '  '
+    ACSHLIM: '               '
+    RISYEAR: '    '
+    RISMON: '  '
+    RISDAY: '  '
+    ACURBAL: '               '
+    ACRCYCR: '               '
+    AADDGRP: '          '
+    ACRCYDB: '               '
+    ACSTNUM: '         '
+    ACTSSN1: '999'
+    ACTSSN2: '99'
+    ACTSSN3: '9999'
+    DOBYEAR: '    '
+    DOBMON: '  '
+    DOBDAY: '  '
+    ACSTFCO: '   '
+    ACSFNAM: '                         '
+    ACSMNAM: '                         '
+    ACSLNAM: '                         '
+    ACSADL1: '                                                  '
+    ACSSTTE: '  '
+    ACSADL2: '                                                  '
+    ACSZIPC: '     '
+    ACSCITY: '                                                  '
+    ACSCTRY: '   '
+    ACSPH1A: '   '
+    ACSPH1B: '   '
+    ACSPH1C: '    '
+    ACSGOVT: '                    '
+    ACSPH2A: '   '
+    ACSPH2B: '   '
+    ACSPH2C: '    '
+    ACSEFTC: '          '
+    ACSPFLG: ' '
+    INFOMSG: 'Enter or update id of account to update      '
+    ERRMSG: '                                                                              '
+    FKEYS: 'ENTER=Process F3=Exit'

@@ -1,0 +1,28 @@
+datasets:
+  TRANTYPE:
+  - TRAN-TYPE: '01'
+    TRAN-TYPE-DESC: 'Purchase                                          '
+    TRAN-TYPE-RECORD.FILLER#1: '00000000'
+  - TRAN-TYPE: '02'
+    TRAN-TYPE-DESC: 'Payment                                           '
+    TRAN-TYPE-RECORD.FILLER#1: '00000000'
+  - TRAN-TYPE: '03'
+    TRAN-TYPE-DESC: 'Credit                                            '
+    TRAN-TYPE-RECORD.FILLER#1: '00000000'
+  - TRAN-TYPE: '04'
+    TRAN-TYPE-DESC: 'Authorization                                     '
+    TRAN-TYPE-RECORD.FILLER#1: '00000000'
+  - TRAN-TYPE: '05'
+    TRAN-TYPE-DESC: 'Refund                                            '
+    TRAN-TYPE-RECORD.FILLER#1: '00000000'
+  - TRAN-TYPE: '06'
+    TRAN-TYPE-DESC: 'Reversal                                          '
+    TRAN-TYPE-RECORD.FILLER#1: '00000000'
+  - TRAN-TYPE: '07'
+    TRAN-TYPE-DESC: 'Adjustment                                        '
+    TRAN-TYPE-RECORD.FILLER#1: '00000000'
+messages:
+- STEP STEP05 RC 0000
+- STEP STEP10 RC 0000
+- STEP STEP15 RC 0000
+return_code: 0

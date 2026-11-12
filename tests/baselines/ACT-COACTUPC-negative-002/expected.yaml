@@ -1,0 +1,23 @@
+screens:
+- '@map': COMEN01
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COACTUP
+  ACCTSID: '           '
+  ERRMSG: '                                                                              '
+  INFOMSG: 'Enter or update id of account to update      '
+  PGMNAME: COACTUPC
+  TRNNAME: CAUP
+- '@map': COACTUP
+  ACCTSID: '*          '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'No input received                                                             '
+  INFOMSG: 'Enter or update id of account to update      '
+  PGMNAME: COACTUPC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CAUP

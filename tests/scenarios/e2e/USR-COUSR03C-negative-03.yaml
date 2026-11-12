@@ -1,0 +1,104 @@
+# Delete User with a user id that USRSEC does not hold. ADMIN001 (type A) signs
+# on through CC00 and COSGN00C transfers control to COADM01C, which sends the
+# admin menu COADM01. Option '4' is 'User Delete (Security)', program COUSR03C
+# [app/cpy/COADM02Y.cpy:39-42], and COADM01C XCTLs to it with CDEMO-PGM-CONTEXT
+# 0 [app/cbl/COADM01C.cbl:136-145]. COADM01C passes only the COCOM01Y COMMAREA,
+# so the group MOVE into COUSR03C's longer CARDDEMO-COMMAREA pads
+# CDEMO-CU03-USR-SELECTED with spaces and no user is fetched. COUSR03C clears
+# COUSR3AO to LOW-VALUES, sends COUSR03 with its CU03 header, empty fields and a
+# blank message, and returns TRANSID CU03 with CDEMO-PGM-REENTER set
+# [app/cbl/COUSR03C.cbl:90-105,134-137,213-225].
+#
+# The third step enters TESTU009 and presses ENTER. PROCESS-ENTER-KEY finds the
+# id supplied, moves SPACES to the first name, last name and user type, and
+# reads USRSEC by the id with UPDATE [app/cbl/COUSR03C.cbl:142-161,267-278].
+# RESP NOTFND moves 'User ID NOT found...' to WS-MESSAGE, sets the error flag and
+# sends COUSR03 again [app/cbl/COUSR03C.cbl:287-292]; ERR-FLG-ON skips moving
+# record fields into the map [app/cbl/COUSR03C.cbl:164-169]. The DELETE path
+# (PF5) issues the same message on its own NOTFND [app/cbl/COUSR03C.cbl:323-328],
+# but it reads the record first, so the READ is where an absent id surfaces.
+#
+# Expected values are derived from the source (no TPE region runs in CI):
+# - COUSR3AO redefines COUSR3AI [app/cpy-bms/COUSR03.CPY:85], so USRIDIN comes
+#   back as entered, and FNAME, LNAME and USRTYPE show the spaces moved into them
+#   at their BMS lengths of 20, 20 and 1 [app/bms/COUSR03.bms:103-134].
+# - ERRMSG is the 78-byte ERRMSGO: the 20-character message and 58 spaces
+#   (WS-MESSAGE X(80) moved to X(78)); comparisons never trim.
+# - The header is POPULATE-HEADER-INFO's [app/cbl/COUSR03C.cbl:243-262]: the
+#   COTTL01Y titles, CU03, COUSR03C, CURDATE as mm/dd/yy of the run date and
+#   CURTIME as hh:mm:ss, both from the region clock, hence the matchers and
+#   clock_mode relative.
+# TESTU009 is an invented user id that no fixture record holds; it is the key
+# looked up on COUSR03, never a sign-on credential.
+id: USR-COUSR03C-negative-03
+level: e2e
+type: negative
+description: >-
+  ADMIN001 signs on, chooses admin option 4 'User Delete (Security)' and fetches
+  user TESTU009, which USRSEC does not hold, on the COUSR03 Delete User screen.
+  The READ returns NOTFND and COUSR03C sends COUSR03 again with 'User ID NOT
+  found...' in ERRMSG, the entered id kept and the name and type fields blank.
+inventory_ids:
+- INV-USR-052  # COUSR03C message 'User ID NOT found...' (recovery)
+- INV-USR-004  # COUSR03C program
+- INV-MNU-004  # COADM01 map, the admin menu option 4 is entered on
+- INV-USR-008  # COUSR03 map, the Delete User screen
+- INV-CFG-026  # CU03 transaction, under which the fetch runs
+- INV-CFG-008  # USRSEC CSD file, read at sign-on and read for update by the fetch
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carrying CDEMO-PGM-CONTEXT
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the header date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COUSR03C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-004  # user administration (USR) end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    # The 10 repository users, for the ADMIN001 sign-on; TESTU009 is not among them.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: ADMIN001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '4'}
+    '@map': COADM01
+  - aid: ENTER
+    fields: {USRIDIN: TESTU009}
+    '@map': COUSR03
+expected:
+  screens:
+  - '@map': COADM01
+    TRNNAME: CA00
+    PGMNAME: COADM01C
+  - '@map': COUSR03
+    TRNNAME: CU03
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COUSR03C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    USRIDIN: '        '
+    FNAME: '                    '
+    LNAME: '                    '
+    USRTYPE: ' '
+    ERRMSG: '                                                                              '
+  - '@map': COUSR03
+    TRNNAME: CU03
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COUSR03C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    USRIDIN: TESTU009
+    FNAME: '                    '
+    LNAME: '                    '
+    USRTYPE: ' '
+    ERRMSG: 'User ID NOT found...                                                          '

@@ -1,0 +1,125 @@
+id: RPT-CBSTM03A-recovery-02
+level: unit
+type: recovery
+description: >-
+  CBSTM03A walks the page-zero PSA, TCB and TIOT and displays the CREASTMT
+  STEP040 job, step and DD names, opens STMTFILE and HTMLFILE for output, and has
+  CBSTM03B open TRNXFILE and read its first record in 8100-TRNXFILE-OPEN. In
+  8500-READTRNX-READ that record is stored in the card table and the next READ
+  of TRNXFILE fails with an I/O error: CBSTM03B returns the file status in
+  LK-M03B-RC, so CBSTM03A displays 'ERROR READING TRNXFILE' and the return code,
+  then 9999-ABEND-PROGRAM displays 'ABENDING PROGRAM' and calls CEE3ABD without
+  parameters. XREFFILE, CUSTFILE and ACCTFILE are never opened, no statement line
+  is written, and the close paragraphs are never reached
+  [app/cbl/CBSTM03A.CBL:266-301,311-312,730-761,818-847,921-923]
+  [app/cbl/CBSTM03B.CBL:114-155]. No adapter injects a read failure after a
+  successful open (GAP-MIS-013), so the scenario stays implemented-unexecuted
+  and its baseline is derived from the source (GAP-INF-013).
+# Only the read-or-close-failure item: this case never executes, so listing the
+# program, CBSTM03B, the COSTM01 layout or the data files here would block items
+# that the executed CBSTM03A scenarios verify (one scenario lists an item only
+# when the item's verification depends on it).
+inventory_ids:
+- INV-RPT-052
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-MIS-013
+- GAP-INF-013
+- GAP-STB-003
+- GAP-STB-001
+- GAP-DEF-001
+# CBSTM03B reads four Berkeley DB indexed files and both units are compiled
+# with the mapped options on gnucobol-batch, so the case cites those two stub
+# limitations, as every scenario whose program uses a seam does.
+- GAP-STB-010
+- GAP-STB-011
+preconditions:
+  datasets:
+    # Card 9680294154603697 is the repository cross-reference of customer
+    # 000000001 and account 00000000001 (app/data/ASCII/cardxref.txt record 49).
+    # The fault ends the run before XREFFILE is opened, so one record suffices.
+    CARDXREF:
+      records:
+      - XREF-CARD-NUM: '9680294154603697'
+        XREF-CUST-ID: '000000001'
+        XREF-ACCT-ID: '00000000001'
+    ACCTDATA:
+      base: ACCTDATA
+    CUSTDATA:
+      base: CUSTDATA
+    # Two synthetic statement work records on that card, in the CREASTMT OUTREC
+    # shape: TRNX-PROC-TS keeps only the first 24 bytes of the TRANSACT
+    # timestamp, so its last 2 bytes are spaces [app/jcl/CREASTMT.JCL:44-55].
+    # Ids, merchant and description are invented.
+    TRXFL:
+      records:
+      - TRNX-CARD-NUM: '9680294154603697'
+        TRNX-ID: '9900000000000741'
+        TRNX-TYPE-CD: '01'
+        TRNX-CAT-CD: '0001'
+        TRNX-SOURCE: 'POS TERM'
+        TRNX-DESC: 'Purchase at Synthetic Test Merchant'
+        TRNX-AMT: '10.00'
+        TRNX-MERCHANT-ID: '900000741'
+        TRNX-MERCHANT-NAME: 'Synthetic Test Merchant'
+        TRNX-MERCHANT-CITY: 'Testville'
+        TRNX-MERCHANT-ZIP: '99741'
+        TRNX-ORIG-TS: '2022-07-05 09:15:00.000000'
+        TRNX-PROC-TS: '2022-07-06-10.00.00.0000'
+      - TRNX-CARD-NUM: '9680294154603697'
+        TRNX-ID: '9900000000000742'
+        TRNX-TYPE-CD: '01'
+        TRNX-CAT-CD: '0001'
+        TRNX-SOURCE: 'POS TERM'
+        TRNX-DESC: 'Purchase at Synthetic Test Merchant'
+        TRNX-AMT: '10.00'
+        TRNX-MERCHANT-ID: '900000742'
+        TRNX-MERCHANT-NAME: 'Synthetic Test Merchant'
+        TRNX-MERCHANT-CITY: 'Testville'
+        TRNX-MERCHANT-ZIP: '99742'
+        TRNX-ORIG-TS: '2022-07-05 09:15:00.000000'
+        TRNX-PROC-TS: '2022-07-06-10.00.00.0000'
+  parameters:
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults:
+  # after: 1 -- the first READ (8100-TRNXFILE-OPEN) returns record 1, the second
+  # (8500-READTRNX-READ) fails.
+  - target: TRXFL
+    operation: read
+    condition: io-error
+    after: 1
+inputs:
+  program: CBSTM03A
+expected:
+  return_code: null
+  messages:
+  # The control-block walk over the shim's TIOT for job CREASTMT, step STEP040 and
+  # the STEP040 DDs: TIOTJSTP is 8 bytes, so the first line ends in a space; every
+  # supplied DD has a UCB address, and the walk stops at the last entry, which the
+  # post-loop DISPLAY shows (GAP-STB-003).
+  - 'Running JCL : CREASTMT Step STEP040 '
+  - 'DD Names from TIOT: '
+  - ': STEPLIB  -- valid UCB'
+  - ': SYSPRINT -- valid UCB'
+  - ': SYSOUT   -- valid UCB'
+  - ': TRNXFILE -- valid UCB'
+  - ': XREFFILE -- valid UCB'
+  - ': ACCTFILE -- valid UCB'
+  - ': CUSTFILE -- valid UCB'
+  - ': STMTFILE -- valid UCB'
+  - ': HTMLFILE -- valid UCB'
+  - 'ERROR READING TRNXFILE'
+  # An io-error is taken as IBM file status 30 (inferred, GAP-INF-013), which
+  # CBSTM03B moves to LK-M03B-RC unchanged.
+  - 'RETURN CODE: 30'
+  - 'ABENDING PROGRAM'
+  - 'CARDDEMO-ABEND CEE3ABD'
+  datasets:
+    # Opened for output before the TRNXFILE loop; nothing is written before the
+    # abend.
+    STMTFILE:
+      count: 0
+    HTMLFILE:
+      count: 0

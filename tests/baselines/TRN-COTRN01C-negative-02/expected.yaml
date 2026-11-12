@@ -1,0 +1,37 @@
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  OPTN007: '07. Transaction View                    '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COTRN01
+  ERRMSG: '                                                                              '
+  PGMNAME: COTRN01C
+  TRNIDIN: '                '
+  TRNNAME: CT01
+- '@map': COTRN01
+  CARDNUM: '                '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    format: '%H:%M:%S'
+    match: run-time
+  ERRMSG: 'Tran ID can NOT be empty...                                                   '
+  MCITY: '                         '
+  MID: '         '
+  MNAME: '                              '
+  MZIP: '          '
+  PGMNAME: COTRN01C
+  TCATCD: '    '
+  TDESC: '                                                            '
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TORIGDT: '          '
+  TPROCDT: '          '
+  TRNAMT: '            '
+  TRNID: '                '
+  TRNIDIN: '                '
+  TRNNAME: CT01
+  TRNSRC: '          '
+  TTYPCD: '  '

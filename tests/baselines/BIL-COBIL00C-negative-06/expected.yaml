@@ -1,0 +1,57 @@
+# Derived from the source, never observed: one screens entry per step.
+# In step 3 the HIGH-VALUES STARTBR answers NOTFND on the empty TRANSACT and
+# COBIL00 is sent with 'Transaction ID NOT found...', but the pay block tests
+# no error flag: READPREV answers INVREQ and sends COBIL00 again, and the
+# RESP-less ENDBR abends the task (AEIP) before the WRITE and the REWRITE
+# [app/cbl/COBIL00C.cbl:208-217,441-505]. The last screen is therefore the
+# region's unformatted abend message, not COBIL00, and both files stay as
+# loaded. Pinned as the scenario derives it, never corrected.
+file_state:
+  ACCTDATA:
+    contains:
+    - ACCT-ACTIVE-STATUS: Y
+      ACCT-ADDR-ZIP: A000000000
+      ACCT-CASH-CREDIT-LIMIT: '1020.00'
+      ACCT-CREDIT-LIMIT: '2020.00'
+      ACCT-CURR-BAL: '194.00'
+      ACCT-CURR-CYC-CREDIT: '0.00'
+      ACCT-CURR-CYC-DEBIT: '0.00'
+      ACCT-EXPIRAION-DATE: '2025-05-20'
+      ACCT-GROUP-ID: '          '
+      ACCT-ID: '1'
+      ACCT-OPEN-DATE: '2014-11-20'
+      ACCT-REISSUE-DATE: '2025-05-20'
+    count: 50
+  TRANSACT:
+    records: []
+messages:
+- '                                                                              '
+- '                                                                              '
+screens:
+- '@map': COMEN01
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  OPTN010: '10. Bill Payment                        '
+  PGMNAME: COMEN01C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CM00
+- '@map': COBIL00
+  ACTIDIN: '           '
+  CONFIRM: ' '
+  CURBAL: '              '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  PGMNAME: COBIL00C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CB00
+- '@map': TEXT

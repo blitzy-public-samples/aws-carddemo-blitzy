@@ -1,0 +1,121 @@
+# PF3 on the COTRN01 transaction view screen returns to the COMEN01C main menu.
+#
+# Step 1: USER0001 (type U in the USRSEC fixture) signs on through CC00 and
+# COSGN00C XCTLs to COMEN01C, which sends the main menu and returns TRANSID
+# CM00 [app/cbl/COSGN00C.cbl:221-240] [app/cbl/COMEN01C.cbl:82-90,107-110].
+# Step 2: option '7' of the COMEN02Y table is 'Transaction View', user type U,
+# program COTRN01C, so COMEN01C moves CM00 and COMEN01C to CDEMO-FROM-TRANID and
+# CDEMO-FROM-PROGRAM, zeroes CDEMO-PGM-CONTEXT and XCTLs to COTRN01C
+# [app/cbl/COMEN01C.cbl:115-156] [app/cpy/COMEN02Y.cpy:61-65]. COTRN01C copies
+# the shorter COCOM01Y COMMAREA into its own, so the CDEMO-CT01-INFO extension
+# is padded with spaces and CDEMO-CT01-TRN-SELECTED is blank: on this first
+# entry it sets CDEMO-PGM-REENTER, clears its output map, reads no TRANSACT
+# record and sends COTRN01 with its own CT01 and COTRN01C header and a blank
+# ERRMSG, then returns with TRANSID CT01 and the COMMAREA
+# [app/cbl/COTRN01C.cbl:52-61,88-109,136-139,213-262].
+# Step 3: PF3 with nothing typed. CT01 starts COTRN01C with the re-entered
+# COMMAREA, so it receives the map and takes the DFHPF3 branch:
+# CDEMO-FROM-PROGRAM still holds COMEN01C, set by the menu's XCTL, and becomes
+# CDEMO-TO-PROGRAM (a blank FROM-PROGRAM would fall back to the same literal
+# 'COMEN01C'). RETURN-TO-PREV-SCREEN records CT01/COTRN01C as the caller, zeroes
+# CDEMO-PGM-CONTEXT and XCTLs to COMEN01C with the COMMAREA
+# [app/cbl/COTRN01C.cbl:110-122,197-208].
+# COMEN01C, entered with a COMMAREA whose context is zero, takes its first-entry
+# path: it clears its output map and sends the main menu afresh with its own
+# CM00 and COMEN01C header, the ten COMEN02Y options built as '<nn>. <name>' in
+# 40-character fields and WS-MESSAGE still spaces in ERRMSG
+# [app/cbl/COMEN01C.cbl:77-90,182-277] [app/cpy/COMEN02Y.cpy:21-84].
+#
+# Expected values are derived from the source (no TPE region runs in CI):
+# - Text values are whole fields at their BMS length with trailing spaces kept:
+#   ERRMSG 78 on both COTRN01 and COMEN01, the titles and options 40
+#   [app/bms/COTRN01.bms] [app/bms/COMEN01.bms]; the titles are COTTL01Y's
+#   [app/cpy/COTTL01Y.cpy:17-22].
+# - CURDATE (mm/dd/yy) and CURTIME (hh:mm:ss) come from the region clock
+#   through CSDAT01Y, hence the matchers and clock_mode relative.
+# - The empty view fields of screen 2 are not asserted: the first-entry content
+#   belongs to the other COTRN01C scenarios, and this one pins the PF3 return.
+id: TRN-COTRN01C-alternate-01
+level: e2e
+type: alternate
+description: >-
+  USER0001 signs on, chooses main menu option 7 'Transaction View' and lands on
+  the COTRN01C transaction view screen (CT01) with no transaction selected,
+  then presses PF3 without entering a transaction id. COTRN01C transfers
+  control back to the calling program COMEN01C, which shows the main menu
+  (CM00) with its ten options and no message.
+# The sign-on step and the option step only establish the session: CC00, CM00,
+# COSGN00C and COMEN01C are verified by the SEC-COSGN00C and MNU-COMEN01C
+# scenarios, so they are not listed here. The PF3 branch issues no file
+# command, so no CSD file is listed.
+inventory_ids:
+- INV-TRN-027  # COTRN01C PF3 return (navigation rule)
+- INV-TRN-002  # COTRN01C program
+- INV-TRN-005  # COTRN01 map, the screen PF3 is pressed on
+- INV-MNU-003  # COMEN01 map, the screen the XCTL lands on
+- INV-CFG-021  # CT01 transaction, under which PF3 is processed
+- INV-LAY-002  # COCOM01Y: the COMMAREA whose CDEMO-FROM-PROGRAM selects the PF3 target
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COTRN01C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-007  # online transaction (TRN) end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user USER0001 from USRSEC.
+    USRSEC: {base: USRSEC}
+    # The region's TRANSACT file holds the repository's daily transactions, as
+    # in the other TRN scenarios; nothing on this path reads it. TRANSACT is a
+    # built dataset with no repository data of its own, so its base is the
+    # 350-byte DALYTRAN it is built from.
+    TRANSACT: {base: DALYTRAN}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: USER0001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '7'}
+    '@map': COMEN01
+  - aid: PF3
+    fields: {}
+    '@map': COTRN01
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    ERRMSG: '                                                                              '
+  - '@map': COTRN01
+    TRNNAME: CT01
+    PGMNAME: COTRN01C
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    ERRMSG: '                                                                              '
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    OPTN001: '01. Account View                        '
+    OPTN002: '02. Account Update                      '
+    OPTN003: '03. Credit Card List                    '
+    OPTN004: '04. Credit Card View                    '
+    OPTN005: '05. Credit Card Update                  '
+    OPTN006: '06. Transaction List                    '
+    OPTN007: '07. Transaction View                    '
+    OPTN008: '08. Transaction Add                     '
+    OPTN009: '09. Transaction Reports                 '
+    OPTN010: '10. Bill Payment                        '
+    ERRMSG: '                                                                              '

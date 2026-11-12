@@ -1,0 +1,129 @@
+datasets:
+  USRSEC:
+  - SEC-USR-FILLER: '                       '
+    SEC-USR-FNAME: 'MARGARET            '
+    SEC-USR-ID: ADMIN001
+    SEC-USR-LNAME: 'GOLD                '
+    SEC-USR-PWD: PASSWORD
+    SEC-USR-TYPE: A
+  - SEC-USR-FILLER: '                       '
+    SEC-USR-FNAME: 'RUSSELL             '
+    SEC-USR-ID: ADMIN002
+    SEC-USR-LNAME: 'RUSSELL             '
+    SEC-USR-PWD: PASSWORD
+    SEC-USR-TYPE: A
+  - SEC-USR-FILLER: '                       '
+    SEC-USR-FNAME: 'RAYMOND             '
+    SEC-USR-ID: ADMIN003
+    SEC-USR-LNAME: 'WHITMORE            '
+    SEC-USR-PWD: PASSWORD
+    SEC-USR-TYPE: A
+  - SEC-USR-FILLER: '                       '
+    SEC-USR-FNAME: 'EMMANUEL            '
+    SEC-USR-ID: ADMIN004
+    SEC-USR-LNAME: 'CASGRAIN            '
+    SEC-USR-PWD: PASSWORD
+    SEC-USR-TYPE: A
+  - SEC-USR-FILLER: '                       '
+    SEC-USR-FNAME: 'GRANVILLE           '
+    SEC-USR-ID: ADMIN005
+    SEC-USR-LNAME: 'LACHAPELLE          '
+    SEC-USR-PWD: PASSWORD
+    SEC-USR-TYPE: A
+  - SEC-USR-FILLER: '                       '
+    SEC-USR-FNAME: 'LAWRENCE            '
+    SEC-USR-ID: USER0001
+    SEC-USR-LNAME: 'THOMAS              '
+    SEC-USR-PWD: PASSWORD
+    SEC-USR-TYPE: U
+  - SEC-USR-FILLER: '                       '
+    SEC-USR-FNAME: 'AJITH               '
+    SEC-USR-ID: USER0002
+    SEC-USR-LNAME: 'KUMAR               '
+    SEC-USR-PWD: PASSWORD
+    SEC-USR-TYPE: U
+  - SEC-USR-FILLER: '                       '
+    SEC-USR-FNAME: 'LAURITZ             '
+    SEC-USR-ID: USER0003
+    SEC-USR-LNAME: 'ALME                '
+    SEC-USR-PWD: PASSWORD
+    SEC-USR-TYPE: U
+  - SEC-USR-FILLER: '                       '
+    SEC-USR-FNAME: 'AVERARDO            '
+    SEC-USR-ID: USER0004
+    SEC-USR-LNAME: 'MAZZI               '
+    SEC-USR-PWD: PASSWORD
+    SEC-USR-TYPE: U
+  - SEC-USR-FILLER: '                       '
+    SEC-USR-FNAME: 'LEE                 '
+    SEC-USR-ID: USER0005
+    SEC-USR-LNAME: 'TING                '
+    SEC-USR-PWD: PASSWORD
+    SEC-USR-TYPE: U
+  USRSEC-PS:
+  - SEC-USR-FILLER: '                       '
+    SEC-USR-FNAME: 'MARGARET            '
+    SEC-USR-ID: ADMIN001
+    SEC-USR-LNAME: 'GOLD                '
+    SEC-USR-PWD: PASSWORD
+    SEC-USR-TYPE: A
+  - SEC-USR-FILLER: '                       '
+    SEC-USR-FNAME: 'RUSSELL             '
+    SEC-USR-ID: ADMIN002
+    SEC-USR-LNAME: 'RUSSELL             '
+    SEC-USR-PWD: PASSWORD
+    SEC-USR-TYPE: A
+  - SEC-USR-FILLER: '                       '
+    SEC-USR-FNAME: 'RAYMOND             '
+    SEC-USR-ID: ADMIN003
+    SEC-USR-LNAME: 'WHITMORE            '
+    SEC-USR-PWD: PASSWORD
+    SEC-USR-TYPE: A
+  - SEC-USR-FILLER: '                       '
+    SEC-USR-FNAME: 'EMMANUEL            '
+    SEC-USR-ID: ADMIN004
+    SEC-USR-LNAME: 'CASGRAIN            '
+    SEC-USR-PWD: PASSWORD
+    SEC-USR-TYPE: A
+  - SEC-USR-FILLER: '                       '
+    SEC-USR-FNAME: 'GRANVILLE           '
+    SEC-USR-ID: ADMIN005
+    SEC-USR-LNAME: 'LACHAPELLE          '
+    SEC-USR-PWD: PASSWORD
+    SEC-USR-TYPE: A
+  - SEC-USR-FILLER: '                       '
+    SEC-USR-FNAME: 'LAWRENCE            '
+    SEC-USR-ID: USER0001
+    SEC-USR-LNAME: 'THOMAS              '
+    SEC-USR-PWD: PASSWORD
+    SEC-USR-TYPE: U
+  - SEC-USR-FILLER: '                       '
+    SEC-USR-FNAME: 'AJITH               '
+    SEC-USR-ID: USER0002
+    SEC-USR-LNAME: 'KUMAR               '
+    SEC-USR-PWD: PASSWORD
+    SEC-USR-TYPE: U
+  - SEC-USR-FILLER: '                       '
+    SEC-USR-FNAME: 'LAURITZ             '
+    SEC-USR-ID: USER0003
+    SEC-USR-LNAME: 'ALME                '
+    SEC-USR-PWD: PASSWORD
+    SEC-USR-TYPE: U
+  - SEC-USR-FILLER: '                       '
+    SEC-USR-FNAME: 'AVERARDO            '
+    SEC-USR-ID: USER0004
+    SEC-USR-LNAME: 'MAZZI               '
+    SEC-USR-PWD: PASSWORD
+    SEC-USR-TYPE: U
+  - SEC-USR-FILLER: '                       '
+    SEC-USR-FNAME: 'LEE                 '
+    SEC-USR-ID: USER0005
+    SEC-USR-LNAME: 'TING                '
+    SEC-USR-PWD: PASSWORD
+    SEC-USR-TYPE: U
+messages:
+- STEP PREDEL RC 0000
+- STEP STEP01 RC 0000
+- STEP STEP02 RC 0000
+- STEP STEP03 RC 0000
+return_code: 0

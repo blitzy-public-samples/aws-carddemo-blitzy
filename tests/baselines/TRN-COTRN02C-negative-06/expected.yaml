@@ -1,0 +1,24 @@
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'Account or Card Number must be entered...                                     '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COTRN02
+  ERRMSG: '                                                                              '
+  PGMNAME: COTRN02C
+  TRNNAME: CT02
+- '@map': COTRN02
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Account or Card Number must be entered...                                     '
+  PGMNAME: COTRN02C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CT02

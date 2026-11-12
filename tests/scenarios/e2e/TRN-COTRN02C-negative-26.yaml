@@ -1,0 +1,172 @@
+# Transaction add for an account the card cross-reference does not hold.
+# USER0001 (user type U) signs on through CC00 and COSGN00C transfers control
+# to the main menu COMEN01C [app/cbl/COSGN00C.cbl:230-237]. Option 8 of
+# COMEN02Y is 'Transaction Add', user type U, program COTRN02C
+# [app/cpy/COMEN02Y.cpy:67-72], so COMEN01C resets the program context and
+# transfers control to COTRN02C [app/cbl/COMEN01C.cbl:115-156]. COMEN01C passes
+# only the COCOM01Y COMMAREA, so CDEMO-CT02-TRN-SELECTED is padded with spaces
+# and nothing is pre-filled: COTRN02C sets the re-enter flag, moves LOW-VALUES
+# to COTRN2AO and sends COTRN02 with its CT02 header and a blank ERRMSG
+# [app/cbl/COTRN02C.cbl:115-130,516-571].
+#
+# Step 3 enters the valid field set of TRN-COTRN02C-normal-01 with CONFIRM Y,
+# except that the card number is left blank and the account number is
+# 99999999999, and presses ENTER under CT02:
+# - VALIDATE-INPUT-KEY-FIELDS takes the account branch because ACTIDIN is
+#   supplied. The id is numeric, so NUMVAL gives 99999999999, which is moved
+#   back unchanged into the 9(11) WS-ACCT-ID-N, XREF-ACCT-ID and ACTIDINI
+#   [app/cbl/COTRN02C.cbl:195-208].
+# - READ-CXACAIX-FILE reads the cross-reference by account id through the
+#   CXACAIX path. The repository cross-reference holds accounts 00000000001 to
+#   00000000050 only, so the READ answers NOTFND: the notfnd condition is
+#   produced by omission, and no fault entry is needed. The NOTFND branch sets
+#   the error flag, moves 'Account ID NOT found...' to WS-MESSAGE, puts the
+#   cursor on ACTIDIN and performs SEND-TRNADD-SCREEN
+#   [app/cbl/COTRN02C.cbl:576-596].
+# - SEND-TRNADD-SCREEN fills the header, moves WS-MESSAGE (X(80)) to the 78-byte
+#   ERRMSGO, sends COTRN02 with ERASE and ends the task with RETURN TRANSID CT02
+#   [app/cbl/COTRN02C.cbl:516-534]. Control never comes back: the card number
+#   is not filled from the cross-reference, the data fields are not validated,
+#   CONFIRM is not evaluated and ADD-TRANSACTION never runs, so TRANSACT is
+#   neither browsed nor written.
+#
+# Screen 3 echoes the entered values: COTRN2AO redefines COTRN2AI, every entry
+# field of COTRN02 carries FSET so RECEIVE MAP returns each one, and nothing
+# on this path changes them [app/cpy-bms/COTRN02.CPY] [app/bms/COTRN02.bms].
+# The blank card number comes back without data and shows blank.
+#
+# Expected values are derived from the source; no TPE region runs in CI.
+# Screen values are whole fields at their BMS length with trailing spaces,
+# because comparison never trims. CURDATE and CURTIME come from the region
+# clock through CSDAT01Y, hence the matchers and clock_mode relative. The
+# account id 99999999999 is invented and matches no repository account.
+id: TRN-COTRN02C-negative-26
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, chooses main menu option 8 'Transaction Add' and, on
+  COTRN02, enters account 99999999999 with no card number and an otherwise
+  valid transaction confirmed with Y. The CXACAIX read by account id answers
+  NOTFND, so COTRN02C sends COTRN02 again with the entered values kept and
+  'Account ID NOT found...' in ERRMSG, and writes no transaction.
+# Primary item first, then the program, the maps asserted, the transaction
+# step 3 runs under, the CSD file the failing lookup reads, and the online-only
+# copybooks COTRN02C copies. The sign-on and menu items (CC00, CM00, COSGN00,
+# COSGN00C, COMEN01C, USRSEC) belong to the SEC and MNU scenarios. The TRANSACT
+# CSD file is not listed: this path never opens it, and its file_state below
+# only shows that nothing was written. The batch record copybooks (CVTRA05Y,
+# CVACT01Y, CVACT03Y) and the data files are verified at the lowest level that
+# executes them.
+inventory_ids:
+- INV-TRN-055  # COTRN02C message 'Account ID NOT found...' (recovery: not found for a user-entered key)
+- INV-TRN-003  # COTRN02C program
+- INV-MNU-003  # COMEN01 map, where option 8 is entered
+- INV-TRN-006  # COTRN02 map, the add screen of steps 2 and 3
+- INV-CFG-022  # CT02 transaction, under which the ENTER of step 3 runs COTRN02C
+- INV-CFG-006  # CXACAIX CSD file, the account-id read that answers NOTFND
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA that makes the ENTER a reentry
+- INV-LAY-005  # COTTL01Y copybook, TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y copybook, CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y copybook, copied by COTRN02C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-007  # TRN end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user USER0001 from USRSEC. CARDXREF is the
+    # region's CCXREF file, read here through its CXACAIX path; it holds no
+    # account 99999999999.
+    USRSEC: {base: USRSEC}
+    CARDXREF: {base: CARDXREF}
+    # TRANSACT holds no repository data of its own (datasets.yaml source
+    # 'built'), so it cannot be its own base: it is built from the 300
+    # repository daily transactions, which share its 350-byte record shape,
+    # as every COTRN02C scenario builds it.
+    TRANSACT: {base: DALYTRAN}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '8'
+  # The valid field set of TRN-COTRN02C-normal-01, with the account number
+  # supplied and the card number left blank, so the account selects the
+  # cross-reference.
+  - aid: ENTER
+    '@map': COTRN02
+    fields:
+      ACTIDIN: '99999999999'
+      CARDNIN: ''
+      TTYPCD: '01'
+      TCATCD: '0001'
+      TRNSRC: 'POS TERM'
+      TDESC: 'Test purchase'
+      TRNAMT: '+00000012.34'
+      TORIGDT: '2022-07-01'
+      TPROCDT: '2022-07-01'
+      MID: '800000001'
+      MNAME: 'Test Merchant'
+      MCITY: 'Testville'
+      MZIP: '27601'
+      CONFIRM: 'Y'
+expected:
+  screens:
+  # One entry per step, each the screen the step ends on.
+  - '@map': COMEN01
+    TRNNAME: 'CM00'
+    PGMNAME: 'COMEN01C'
+    OPTN008: '08. Transaction Add                     '
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: 'CT02'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COTRN02C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACTIDIN: '           '
+    CARDNIN: '                '
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: 'CT02'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COTRN02C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACTIDIN: '99999999999'
+    CARDNIN: '                '
+    TTYPCD: '01'
+    TCATCD: '0001'
+    TRNSRC: 'POS TERM  '
+    TDESC: 'Test purchase                                               '
+    TRNAMT: '+00000012.34'
+    TORIGDT: '2022-07-01'
+    TPROCDT: '2022-07-01'
+    MID: '800000001'
+    MNAME: 'Test Merchant                 '
+    MCITY: 'Testville                '
+    MZIP: '27601     '
+    CONFIRM: 'Y'
+    ERRMSG: 'Account ID NOT found...                                                       '
+  # The ERRMSG of each step: the menu and the empty add screen carry none.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Account ID NOT found...                                                       '
+  file_state:
+    # The 300 fixture records and nothing more: CONFIRM Y was entered, but the
+    # task ended at the failed lookup, before ADD-TRANSACTION.
+    TRANSACT:
+      count: 300

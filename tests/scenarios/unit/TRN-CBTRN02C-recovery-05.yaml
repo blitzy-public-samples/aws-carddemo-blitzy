@@ -1,0 +1,139 @@
+# The close-failure path of the CBTRN02C rejects file, pinned with its wrong
+# diagnostic. One valid synthetic transaction is posted; the main line then
+# closes DALYTRAN, TRANFILE and XREFFILE, each successfully, and the CLOSE of
+# DALYREJS fails. 9300-DALYREJS-CLOSE displays 'ERROR CLOSING DAILY REJECTS
+# FILE' but moves XREFFILE-STATUS, not DALYREJS-STATUS, to IO-STATUS
+# [app/cbl/CBTRN02C.cbl:637-653]. The cross-reference file was closed just
+# before by 9200-XREFFILE-CLOSE, so its status is '00', and
+# 9910-DISPLAY-IO-STATUS shows 'FILE STATUS IS: NNNN0000' whatever status the
+# failing close returned [app/cbl/CBTRN02C.cbl:619-635,714-727].
+# 9999-ABEND-PROGRAM then calls CEE3ABD, which never returns, so the
+# ACCTFILE and TCATBALF closes, the two count lines and the end-of-execution
+# line are never reached [app/cbl/CBTRN02C.cbl:221-232,707-711]. The defect is
+# pinned as the source has it and never fixed (GAP-DEF-002).
+#
+# Derived, never observed. No adapter injects a close failure after a
+# successful open (GAP-MIS-013), so gnucobol-batch raises MissingPrerequisite
+# and the scenario stays implemented-unexecuted; its baseline is derived from
+# the source (GAP-INF-013) and capture.py refuses to capture it.
+#
+# How the posted state was derived. Card 9680294154603697 cross-references
+# account 00000000001 [app/data/ASCII/cardxref.txt:49], whose balance is 194.00,
+# credit limit 2020.00, cycle fields 0.00 and expiration 2025-05-20
+# [app/data/ASCII/acctdata.txt:1]. The 10.00 purchase passes both checks of
+# 1500-B-LOOKUP-ACCT (0.00 - 0.00 + 10.00 is within the limit, and 2022-07-05
+# is before the expiration) [app/cbl/CBTRN02C.cbl:393-422]. Its TCATBAL key
+# 00000000001/01/0001 is loaded at 0.00 [app/data/ASCII/tcatbal.txt:1], so the
+# record is updated, not created, and no 'TCATBAL record not found' line is
+# written. 2000-POST-TRANSACTION updates TCATBAL, rewrites the account and
+# writes TRANSACT before the loop reaches end of file
+# [app/cbl/CBTRN02C.cbl:424-444,526-579]; TRANFILE is closed successfully
+# before the failure, so its one record is complete. The account and TCATBAL
+# records were rewritten before the abend, which leaves those two files open.
+#
+# Decoded values follow harness/codec.py: unsigned numeric fields lose their
+# leading zeros, amounts keep their scale, and text fields keep their trailing
+# spaces. TRAN-PROC-TS is the fixed run clock.
+id: TRN-CBTRN02C-recovery-05
+level: unit
+type: recovery
+description: >-
+  CBTRN02C posts one synthetic 10.00 purchase for account 00000000001, closes
+  the daily transaction, transaction and cross-reference files, and then the
+  close of the daily rejects file fails: the program displays 'ERROR CLOSING
+  DAILY REJECTS FILE' followed by the cross-reference file's status
+  'FILE STATUS IS: NNNN0000' instead of the rejects file's own, and abends
+  through CEE3ABD with no count lines, no end-of-execution line and no return
+  code. The posting made before the closes stands: one TRANSACT record, the
+  account balance 194.00 raised to 204.00 and its TCATBAL balance to 10.00.
+# Only the failure item. This case cannot run (GAP-MIS-013), and listing the
+# program, its posting items, its copybooks or the data files here would hold
+# those items at implemented-unexecuted although their other scenarios verify
+# them.
+inventory_ids:
+- INV-TRN-088  # CBTRN02C abend on read, write, rewrite or close failure after open (recovery)
+tags:
+- inferred-not-observed
+- suspected-defect
+gap_ids:
+- GAP-DEF-002  # the DALYREJS close error displays XREFFILE-STATUS
+- GAP-MIS-013  # no adapter injects a failure after a successful open
+- GAP-INF-013  # the derived baselines of the post-open fault unit scenarios
+- GAP-STB-001  # the CEE3ABD stub: no abend code, dump or LE condition handling
+- GAP-DEF-001  # CALL 'CEE3ABD' without parameters
+# CBTRN02C runs on Berkeley DB indexed files and is compiled with the mapped
+# options on gnucobol-batch, so the case cites those two stub limitations, as
+# every scenario whose program uses a seam does.
+- GAP-STB-010  # Berkeley DB indexed files in place of the VSAM KSDS; TRANFILE is recreated by OPEN OUTPUT
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
+preconditions:
+  datasets:
+    # Invented transaction: the id, merchant id, name, city and zip match no
+    # repository record and no real merchant.
+    DALYTRAN:
+      records:
+      - DALYTRAN-ID: '9900000000000431'
+        DALYTRAN-TYPE-CD: '01'
+        DALYTRAN-CAT-CD: '1'
+        DALYTRAN-SOURCE: POS TERM
+        DALYTRAN-DESC: Synthetic purchase before a rejects close fault
+        DALYTRAN-AMT: '10.00'
+        DALYTRAN-MERCHANT-ID: '800000431'
+        DALYTRAN-MERCHANT-NAME: Synthetic Merchant Close
+        DALYTRAN-MERCHANT-CITY: Sampleton
+        DALYTRAN-MERCHANT-ZIP: '99431'
+        DALYTRAN-CARD-NUM: '9680294154603697'
+        DALYTRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+    CARDXREF: {base: CARDXREF}
+    ACCTDATA: {base: ACCTDATA}
+    TCATBALF: {base: TCATBALF}
+  parameters:
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  # The status the failing close returns is not asserted: the diagnostic shows
+  # the cross-reference file's status in its place (GAP-DEF-002).
+  faults:
+  - target: DALYREJS
+    operation: close
+    condition: io-error
+inputs:
+  program: CBTRN02C
+expected:
+  return_code: null
+  messages:
+  - START OF EXECUTION OF PROGRAM CBTRN02C
+  - ERROR CLOSING DAILY REJECTS FILE
+  - 'FILE STATUS IS: NNNN0000'
+  - ABENDING PROGRAM
+  - CARDDEMO-ABEND CEE3ABD
+  datasets:
+    # TRANFILE is opened OUTPUT, so TRANSACT holds only this run's posting
+    # (GAP-STB-010), and it was closed before the failing close.
+    TRANSACT:
+      records:
+      - TRAN-ID: '9900000000000431'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: 'POS TERM  '
+        TRAN-AMT: '10.00'
+        TRAN-MERCHANT-ID: '800000431'
+        TRAN-MERCHANT-ZIP: '99431     '
+        TRAN-CARD-NUM: '9680294154603697'
+        TRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+        TRAN-PROC-TS: '2022-07-06-10.00.00.000000'
+  file_state:
+    ACCTDATA:
+      count: 50
+      contains:
+      - ACCT-ID: '1'
+        ACCT-CURR-BAL: '204.00'
+        ACCT-CREDIT-LIMIT: '2020.00'
+        ACCT-CURR-CYC-CREDIT: '10.00'
+        ACCT-CURR-CYC-DEBIT: '0.00'
+    TCATBALF:
+      count: 50
+      contains:
+      - TRANCAT-ACCT-ID: '1'
+        TRANCAT-TYPE-CD: '01'
+        TRANCAT-CD: '1'
+        TRAN-CAT-BAL: '10.00'

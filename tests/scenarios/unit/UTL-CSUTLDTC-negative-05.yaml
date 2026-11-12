@@ -1,0 +1,64 @@
+# UTL-CSUTLDTC-negative-05: CSUTLDTC called with a picture string that none of
+# its callers passes. CORPT00C and COTRN02C pass YYYY-MM-DD, and COACTUPC passes
+# YYYYMMDD through CSUTLDPY (EDIT-DATE-LE) [app/cbl/CORPT00C.cbl:389-412]
+# [app/cbl/COTRN02C.cbl:390-413] [app/cpy/CSUTLDPY.cpy:284-296]; YYYY-XX-DD is
+# neither.
+#
+# The CEEDAYS stub refuses every picture other than those two with the
+# severity-3 token for message 2518 (x'09D6') before it looks at the date
+# (its header Rules and evaluate's picture == NULL branch)
+# [tests/stubs/ceedays.c:35-47,234-236]; CSUTLDTC maps that token to
+# 'Bad Pic String ' and sets RETURN-CODE to the severity
+# [app/cbl/CSUTLDTC.cbl:68,98,122-124,141-142]. That a real CEEDAYS refuses this
+# picture with the same token is inferred, not observed (GAP-INF-001), so the
+# scenario carries inferred-not-observed although its baseline is captured on
+# gnucobol-batch.
+#
+# The expected line is the one DTCDRV printed for this call list, byte for byte.
+# Result bytes 46-47 are x'000A', the binary Vstring length that MOVE
+# WS-DATE-TO-TEST TO WS-DATE copies ahead of the first 8 date characters
+# [app/cbl/CSUTLDTC.cbl:122]; RESULT shows them as '..' and HEX as 000A. They
+# are pinned as observed, never corrected.
+id: UTL-CSUTLDTC-negative-05
+level: unit
+type: negative
+description: >-
+  CSUTLDTC is called once with the date 2022-07-18 and the unsupported mask
+  YYYY-XX-DD. CEEDAYS answers with severity 3 and message 2518, which CSUTLDTC
+  reports as 'Bad Pic String ' in its 80-byte result: severity 0003, 'Mesg
+  Code:' 2518, the text, 'TstDate:' with x'000A' and '2022-07-', and 'Mask
+  used:YYYY-XX-DD'. RETURN-CODE after the call is 0003, and the driver ends with
+  return code 0.
+inventory_ids:
+- INV-UTL-003  # CSUTLDTC date acceptance for masks YYYY-MM-DD and YYYYMMDD (rule)
+- INV-UTL-001  # CSUTLDTC program
+- INV-UTL-002  # CSUTLDTC CEEDAYS feedback-token mapping (rule)
+- INV-UTL-004  # CSUTLDTC result message layout and RETURN-CODE (interface)
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-STB-002  # CEEDAYS stub: only the pictures YYYY-MM-DD and YYYYMMDD are supported
+- GAP-INF-001  # which pictures and dates a real CEEDAYS accepts is known only through the stub
+- GAP-STB-004  # DTCDRV emulates only the CALL interface of CSUTLDTC's callers
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
+preconditions:
+  parameters:
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults: []
+inputs:
+  program: CSUTLDTC
+  param_files:
+    # One DTCIN record per call: bytes 1-10 the date, bytes 11-20 the mask, the
+    # rest of the 80-byte record spaces [tests/stubs/DTCDRV.cbl:29-36].
+    DTCIN:
+    - '2022-07-18YYYY-XX-DD'
+expected:
+  # DTCDRV's own exit status after the last record; the call's RETURN-CODE is
+  # the RC=0003 of the line below.
+  return_code: 0
+  messages:
+  - "DTCDRV DATE=2022-07-18 MASK=YYYY-XX-DD RC=0003 RESULT=0003Mesg Code: 2518 Bad Pic String  TstDate: ..2022-07- Mask used:YYYY-XX-DD     HEX=\
+    303030334D65736720436F64653A2032353138204261642050696320537472696E672020\
+    547374446174653A20000A323032322D30372D204D61736B20757365643A595959592D58\
+    582D444420202020"

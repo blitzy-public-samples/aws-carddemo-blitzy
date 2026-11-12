@@ -1,0 +1,173 @@
+# COCRDUPC refuses a card name holding a digit. USER0001 (type U in the USRSEC
+# fixture) signs on through CC00 and reaches the main menu, whose option 5
+# 'Credit Card Update' makes COMEN01C XCTL to COCRDUPC with itself as the
+# calling program and CDEMO-PGM-CONTEXT 0 [app/cpy/COMEN02Y.cpy:49-53]
+# [app/cbl/COMEN01C.cbl:145-155]. Entered from the menu program and not as a
+# re-entry, COCRDUPC initializes the COMMAREA and its own data, sets
+# CDEMO-PGM-ENTER and CCUP-DETAILS-NOT-FETCHED, and sends COCRDUP with both
+# search keys empty and the prompt 'Please enter Account and Card Number'; only
+# then does it set CDEMO-PGM-REENTER and return TRANSID CCUP
+# [app/cbl/COCRDUPC.cbl:384-394,502-511,546-558,1084-1085,1141-1142].
+#
+# Step 3 runs under CCUP and takes WHEN OTHER: 1200-EDIT-MAP-INPUTS finds both
+# search keys numeric and non-zero, and 2000-DECIDE-ACTION, with the details
+# not yet fetched, reads CARDDAT by the card number alone. The READ is NORMAL,
+# so 9000-READ-DATA keeps the fetched values as the old details, with the
+# embossed name converted to upper case, and sets CCUP-SHOW-DETAILS
+# [app/cbl/COCRDUPC.cbl:535-542,641-661,721-800,954-966,1343-1394]. COCRDUP
+# shows the card with 'Details of selected card shown above', and
+# 3300-SETUP-SCREEN-ATTRS sends the name, status and expiry unprotected with
+# their MDT set (DFHBMFSE) and the search keys protected with their MDT set
+# (DFHBMPRF), so all of them come back on the next AID
+# [app/cbl/COCRDUPC.cbl:1107-1112,1145-1146,1181-1190].
+#
+# Step 4 replaces the name with 'TEST HOLDER 9', an invented value. 1200 finds
+# the new details differ from the old (the name changed), sets
+# CCUP-CHANGES-NOT-OK and performs 1230-EDIT-NAME: the name is supplied, so it
+# is copied to CARD-NAME-CHECK, whose letters INSPECT converts to spaces; the
+# '9' remains, FUNCTION LENGTH(FUNCTION TRIM(...)) is 1, not 0, and the edit
+# sets INPUT-ERROR, FLG-CARDNAME-NOT-OK and, WS-RETURN-MSG being off since the
+# start of the task, WS-NAME-MUST-BE-ALPHA [app/cbl/COCRDUPC.cbl:183-184,
+# 384,680-698,806-837]. The status 'Y', month '03' and year '2023' sent back
+# pass their edits and leave the message alone [app/cbl/COCRDUPC.cbl:845-944].
+# The input error keeps CCUP-CHANGES-NOT-OK, which 2000-DECIDE-ACTION passes
+# over, so 9200-WRITE-PROCESSING never runs and CARDDAT is not updated
+# [app/cbl/COCRDUPC.cbl:710-714,982-983]. COCRDUP is sent with the new details
+# (CCUP-CHANGES-MADE), the entered keys echoed, INFOMSG PROMPT-FOR-CHANGES and
+# the refusal in ERRMSG [app/cbl/COCRDUPC.cbl:1087-1117,1147-1148,1161-1163].
+#
+# The UniKix copy rewrites this test as CARD-NAME-CHECK = SPACES OR LOW-VALUES
+# (GAP-DOC-023), which refuses this name too, but its records never verify the
+# app/ item. Screen fields are compared at their full BMS length, trailing
+# spaces included: ERRMSG is 80 characters (the 75-byte WS-RETURN-MSG padded)
+# on COCRDUP and 78 on COMEN01, INFOMSG 40, ACCTSID 11, CARDSID 16, CRDNAME 50.
+# EXPDAY is a dark field, so it is not asserted. CURDATE and CURTIME come from
+# the region clock, so they are matchers in the MM/DD/YY and HH:MM:SS forms of
+# 3100-SCREEN-INIT [app/cbl/COCRDUPC.cbl:1052-1074]. The baseline is derived
+# from the source: no TPE region runs in CI.
+id: CRD-COCRDUPC-negative-04
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, selects option 5 'Credit Card Update' on the main menu,
+  fetches card 0500024453765740 of account 00000000050 on the COCRDUPC update
+  screen (CCUP) and replaces the name on the card with 'TEST HOLDER 9'.
+  1230-EDIT-NAME finds a character other than a letter or a space, so COCRDUP
+  is sent again with 'Card name can only contain alphabets and spaces', the
+  entered name and the other details as sent back, and the prompt 'Update card
+  details presented above.'; the card master is not updated.
+# Primary item first, then the program, the maps asserted, the transaction that
+# runs the fetch and the edit, the CSD file read, and the online-only copybooks
+# COCRDUPC copies. Sign-on and the menu (CC00, CM00, COSGN00, USRSEC) are
+# verified by the SEC and MNU scenarios, and the batch record copybooks and the
+# data files at the lowest level that executes them.
+inventory_ids:
+- INV-CRD-057  # COCRDUPC message 'Card name can only contain alphabets and spaces' (rule)
+- INV-CRD-003  # COCRDUPC program
+- INV-MNU-003  # COMEN01 map, the main menu option 5 is entered on
+- INV-CRD-006  # COCRDUP map, the search, detail and refusal screens
+- INV-CFG-015  # CCUP transaction, under which the fetch and the name edit run
+- INV-CFG-003  # CARDDAT CSD file: the card read by card number, left unchanged
+- INV-LAY-002  # COCOM01Y: the COMMAREA whose CDEMO-PGM-REENTER makes ENTER a re-entry
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COCRDUPC
+- INV-LAY-009  # CSMSG02Y: abend data, copied by COCRDUPC
+- INV-LAY-011  # CSSTRPFY: YYYY-STORE-PFKEY maps ENTER to CCARD-AID-ENTER
+- INV-LAY-019  # CVCRD01Y: CCARD-AID, CC-ACCT-ID, CC-CARD-NUM and CCARD-ERROR-MSG
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-006  # CRD end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-DOC-023  # the UniKix copy rewrites the alphabets-only test of 1230-EDIT-NAME
+preconditions:
+  datasets:
+    # Record 1 of the repository card master is card 0500024453765740 of
+    # account 00000000050, embossed 'Aniya Von', expiring 2023-03-09, active.
+    # USRSEC holds the sign-on user.
+    CARDDATA: {base: CARDDATA}
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '5'
+  - aid: ENTER
+    '@map': COCRDUP
+    fields:
+      ACCTSID: '00000000050'
+      CARDSID: '0500024453765740'
+  - aid: ENTER
+    '@map': COCRDUP
+    fields:
+      CRDNAME: 'TEST HOLDER 9'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN005: '05. Credit Card Update                  '
+    ERRMSG: '                                                                              '
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    PGMNAME: COCRDUPC
+    ACCTSID: '           '
+    CARDSID: '                '
+    INFOMSG: 'Please enter Account and Card Number    '
+    ERRMSG: '                                                                                '
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    PGMNAME: COCRDUPC
+    ACCTSID: '00000000050'
+    CARDSID: '0500024453765740'
+    CRDNAME: 'ANIYA VON                                         '
+    CRDSTCD: 'Y'
+    EXPMON: '03'
+    EXPYEAR: '2023'
+    INFOMSG: 'Details of selected card shown above    '
+    ERRMSG: '                                                                                '
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    PGMNAME: COCRDUPC
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000050'
+    CARDSID: '0500024453765740'
+    CRDNAME: 'TEST HOLDER 9                                     '
+    CRDSTCD: 'Y'
+    EXPMON: '03'
+    EXPYEAR: '2023'
+    INFOMSG: 'Update card details presented above.    '
+    ERRMSG: 'Card name can only contain alphabets and spaces                                 '
+  # One ERRMSG value per step: blank on the menu, the search screen and the
+  # card details, then the refusal of the name.
+  messages:
+  - '                                                                              '
+  - '                                                                                '
+  - '                                                                                '
+  - 'Card name can only contain alphabets and spaces                                 '
+  # The refusal writes nothing: CARDDATA keeps its 50 records, and the card
+  # keeps its name in its original case, its status and its expiry.
+  file_state:
+    CARDDATA:
+      count: 50
+      contains:
+      - CARD-NUM: '0500024453765740'
+        CARD-ACCT-ID: '50'
+        CARD-CVV-CD: '747'
+        CARD-EMBOSSED-NAME: 'Aniya Von                                         '
+        CARD-EXPIRAION-DATE: '2023-03-09'
+        CARD-ACTIVE-STATUS: 'Y'

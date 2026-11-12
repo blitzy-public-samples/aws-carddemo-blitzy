@@ -1,0 +1,87 @@
+# The read-failure branch of CBTRN01C after every file has opened: the first
+# DALYTRAN READ returns record 1 (card 4859452612877065), which the main loop
+# displays and verifies through XREFFILE and ACCTFILE; the second READ ends
+# with a status other than 00 or 10, so 1000-DALYTRAN-GET-NEXT displays
+# 'ERROR READING DAILY TRANSACTION FILE', Z-DISPLAY-IO-STATUS shows the status
+# and Z-ABEND-PROGRAM calls CEE3ABD without parameters; the closes and the
+# end-of-execution line are never reached [app/cbl/CBTRN01C.cbl:155-197,
+# 202-225,227-250,469-489]. No adapter fails a READ after a successful OPEN
+# (GAP-MIS-013), so the scenario stays implemented-unexecuted and its expected
+# outcome is derived from the source (GAP-INF-013); nothing is captured for it.
+id: TRN-CBTRN01C-recovery-02
+level: unit
+type: recovery
+description: >-
+  CBTRN01C opens its six files, reads, displays and verifies the first daily
+  transaction, and the second DALYTRAN READ fails with an I/O error: the
+  program displays the read error and the file status and abends through
+  CEE3ABD, with no end-of-execution line and no return code. No job runs
+  CBTRN01C (GAP-UNC-003).
+# Only the read-or-close-failure item: this case never executes, so listing the
+# program, its copybooks or the data files here would block items that the
+# executed CBTRN01C scenarios verify (a scenario lists an item only when the
+# item's verification depends on it).
+inventory_ids:
+- INV-TRN-073
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-MIS-013
+- GAP-INF-013
+- GAP-UNC-003
+- GAP-STB-001
+- GAP-DEF-001
+# CBTRN01C opens five indexed files and is compiled with the mapped options on
+# gnucobol-batch, so the case also cites those two stub limitations: every
+# scenario whose program uses a seam cites its stub-limitation entry.
+- GAP-STB-010
+- GAP-STB-011
+preconditions:
+  datasets:
+    DALYTRAN:
+      base: DALYTRAN
+    CARDXREF:
+      base: CARDXREF
+    ACCTDATA:
+      base: ACCTDATA
+    CUSTDATA:
+      base: CUSTDATA
+    CARDDATA:
+      base: CARDDATA
+    # TRANFILE is opened INPUT and never read; an empty KSDS lets the open
+    # succeed, where leaving it out is the open-failure case
+    # (TRN-CBTRN01C-recovery-01).
+    TRANSACT:
+      records: []
+  parameters:
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults:
+  # after: 1 -- the first READ returns record 1, the second fails.
+  - target: DALYTRAN
+    operation: read
+    condition: io-error
+    after: 1
+inputs:
+  program: CBTRN01C
+expected:
+  return_code: null
+  messages:
+  - 'START OF EXECUTION OF PROGRAM CBTRN01C'
+  # Record 1 of the repository DALYTRAN: the main loop's DISPLAY DALYTRAN-RECORD,
+  # the whole 350-byte record, trailing filler included. It and the five lookup
+  # lines after it are the lines GnuCOBOL 3.2 shows for the first record on the
+  # repository fixtures without a fault.
+  - '0000000000683580010001POS TERM  Purchase at Abshire-Lowe                                                                            0000005047G800000000Abshire-Lowe                                      North Enoshaven                                   72112     48594526128770652022-06-10 19:27:53.000000                                              '
+  # 2000-LOOKUP-XREF finds the card, then 3000-READ-ACCOUNT finds account 7.
+  - 'SUCCESSFUL READ OF XREF'
+  - 'CARD NUMBER: 4859452612877065'
+  - 'ACCOUNT ID : 00000000007'
+  - 'CUSTOMER ID: 000000007'
+  - 'SUCCESSFUL READ OF ACCOUNT FILE'
+  - 'ERROR READING DAILY TRANSACTION FILE'
+  # An io-error is taken as IBM file status 30 (inferred, GAP-INF-013): numeric
+  # and not 9x, so Z-DISPLAY-IO-STATUS shows it as NNNN0030.
+  - 'FILE STATUS IS: NNNN0030'
+  - 'ABENDING PROGRAM'
+  - 'CARDDEMO-ABEND CEE3ABD'

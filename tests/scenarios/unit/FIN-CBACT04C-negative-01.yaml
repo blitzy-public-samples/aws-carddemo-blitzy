@@ -1,0 +1,95 @@
+# CBACT04C when neither the account's disclosure group nor the DEFAULT group
+# holds a rate for the category.
+#
+# Every dataset is synthetic, with invented ids outside the repository's account
+# range 00000000001-00000000050, so that no DEFAULT record can exist: the
+# repository DISCGRP has DEFAULT records, and the repository ACCTDATA leaves
+# ACCT-GROUP-ID blank (the group id sits in ACCT-ADDR-ZIP). Here ACCT-GROUP-ID
+# is set, so the first lookup uses the intended group.
+#
+# Path [app/cbl/CBACT04C.cbl:181-213,415-460,628-648]:
+# - The only TCATBALF record (account 00000000908, type 01, category 0001,
+#   balance 1200.00) is displayed as its 50-byte CVTRA01Y image. TRAN-CAT-BAL
+#   S9(9)V99 is overpunch-signed, so +1200.00 shows as 0000012000{. The FILLER
+#   displays as 22 trailing spaces, which the quoted line keeps.
+# - The account and its cross-reference (read by the alternate key
+#   XREF-ACCT-ID) are found, so no 'ACCOUNT NOT FOUND' line is written.
+# - The DISCGRP read of key NOGROUP01/01/0001 gives status 23. 1200-GET-
+#   INTEREST-RATE accepts 23, displays the two fallback lines and retries with
+#   group 'DEFAULT', keeping the type and the category.
+# - DISCGRP holds only A000000000/01/0001, so DEFAULT/01/0001 is also status 23.
+#   1200-A-GET-DEFAULT-INT-RATE accepts only 00, so it displays its error line,
+#   the status as NNNN0023 and the abend line, then calls CEE3ABD.
+# - SYSTRAN was opened OUTPUT before the loop and nothing is written to it, so
+#   it is left empty. The abend comes before any account rewrite.
+id: FIN-CBACT04C-negative-01
+level: unit
+type: negative
+description: >-
+  The account's disclosure group (NOGROUP01) and the DEFAULT group both lack a
+  record for type 01 and category 0001. CBACT04C displays the fallback lines,
+  then 'ERROR READING DEFAULT DISCLOSURE GROUP' with file status 23, and abends
+  through CEE3ABD before writing any interest transaction
+  [app/cbl/CBACT04C.cbl:415-460,628-648].
+# No DTA item: every record is synthetic, so no data file is verified here.
+inventory_ids:
+- INV-FIN-009
+- INV-FIN-001
+- INV-LAY-022
+# Untagged by design: GAP-DEF-001 (the parameterless CALL 'CEE3ABD' that ends
+# every CB* abend path) is cited as the gap this abend passes through, as in
+# every CB* recovery case. suspected-defect marks the cases that pin a
+# program's own defect.
+tags: []
+gap_ids:
+- GAP-STB-001
+- GAP-DEF-001
+- GAP-STB-004
+- GAP-STB-010
+- GAP-STB-011
+preconditions:
+  datasets:
+    # The only disclosure group record. There is no DEFAULT key.
+    DISCGRP:
+      records:
+      - DIS-ACCT-GROUP-ID: A000000000
+        DIS-TRAN-TYPE-CD: '01'
+        DIS-TRAN-CAT-CD: 1
+        DIS-INT-RATE: '15.00'
+    ACCTDATA:
+      records:
+      - ACCT-ID: '00000000908'
+        ACCT-CURR-BAL: '100.00'
+        ACCT-GROUP-ID: NOGROUP01
+    CARDXREF:
+      records:
+      - XREF-CARD-NUM: '9999000022220908'
+        XREF-CUST-ID: '000000908'
+        XREF-ACCT-ID: '00000000908'
+    TCATBALF:
+      records:
+      - TRANCAT-ACCT-ID: '00000000908'
+        TRANCAT-TYPE-CD: '01'
+        TRANCAT-CD: 1
+        TRAN-CAT-BAL: '1200.00'
+  parameters:
+    parm: '2022071800'
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults: []
+inputs:
+  program: CBACT04C
+expected:
+  return_code: null
+  messages:
+  - START OF EXECUTION OF PROGRAM CBACT04C
+  - '000000009080100010000012000{                      '
+  - DISCLOSURE GROUP RECORD MISSING
+  - TRY WITH DEFAULT GROUP CODE
+  - ERROR READING DEFAULT DISCLOSURE GROUP
+  - 'FILE STATUS IS: NNNN0023'
+  - ABENDING PROGRAM
+  - CARDDEMO-ABEND CEE3ABD
+  datasets:
+    SYSTRAN:
+      records: []

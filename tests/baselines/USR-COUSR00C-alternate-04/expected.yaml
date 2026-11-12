@@ -1,0 +1,70 @@
+screens:
+- '@map': COADM01
+  PGMNAME: COADM01C
+  TRNNAME: CA00
+- '@map': COUSR00
+  PGMNAME: COUSR00C
+  TRNNAME: CU00
+- '@map': COUSR00
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'You have reached the bottom of the page...                                    '
+  FNAME01: 'LAURITZ             '
+  FNAME02: 'AVERARDO            '
+  FNAME03: 'LEE                 '
+  FNAME04: '                    '
+  FNAME05: '                    '
+  FNAME06: '                    '
+  FNAME07: '                    '
+  FNAME08: '                    '
+  FNAME09: '                    '
+  FNAME10: '                    '
+  LNAME01: 'ALME                '
+  LNAME02: 'MAZZI               '
+  LNAME03: 'TING                '
+  LNAME04: '                    '
+  LNAME05: '                    '
+  LNAME06: '                    '
+  LNAME07: '                    '
+  LNAME08: '                    '
+  LNAME09: '                    '
+  LNAME10: '                    '
+  PAGENUM: '00000001'
+  PGMNAME: COUSR00C
+  SEL0001: ' '
+  SEL0002: ' '
+  SEL0003: ' '
+  SEL0004: ' '
+  SEL0005: ' '
+  SEL0006: ' '
+  SEL0007: ' '
+  SEL0008: ' '
+  SEL0009: ' '
+  SEL0010: ' '
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CU00
+  USRID01: USER0003
+  USRID02: USER0004
+  USRID03: USER0005
+  USRID04: '        '
+  USRID05: '        '
+  USRID06: '        '
+  USRID07: '        '
+  USRID08: '        '
+  USRID09: '        '
+  USRID10: '        '
+  USRIDIN: '        '
+  UTYPE01: U
+  UTYPE02: U
+  UTYPE03: U
+  UTYPE04: ' '
+  UTYPE05: ' '
+  UTYPE06: ' '
+  UTYPE07: ' '
+  UTYPE08: ' '
+  UTYPE09: ' '
+  UTYPE10: ' '

@@ -1,0 +1,102 @@
+# Derived baseline of scenario CRD-COCRDUPC-alternate-05 (capture_platform
+# derived, tag inferred-not-observed): USER0001 signs on, takes main menu
+# option 5 'Credit Card Update' and presses PF3 on the fresh COCRDUP screen.
+# Authored from the source at commit 93ebec71ff7b59a68cedd7c501afe496a8eaa68d,
+# never captured, because no TPE region runs in CI:
+# - step 1: COSGN00C routes user type U to COMEN01C, which, not re-entered,
+#   clears WS-MESSAGE and COMEN1AO and sends COMEN01 with WS-TRANID CM00,
+#   WS-PGMNAME COMEN01C, the app/cpy/COTTL01Y.cpy titles, the CSDAT01Y date
+#   and time, and the ten app/cpy/COMEN02Y.cpy options as '<nn>. <name>' in
+#   40-byte fields [app/cbl/COSGN00C.cbl:221-239]
+#   [app/cbl/COMEN01C.cbl:77-90,182-277];
+# - step 2: COMEN01C XCTLs to COCRDUPC [app/cpy/COMEN02Y.cpy:49-53]
+#   [app/cbl/COMEN01C.cbl:145-155]. Entered from LIT-MENUPGM without
+#   CDEMO-PGM-REENTER, COCRDUPC initializes CARDDEMO-COMMAREA, which blanks the
+#   FROM fields, and takes the fresh-entry branch: 3100-SCREEN-INIT moves
+#   LOW-VALUES to CCRDUPAO and sets the CCUP/COCRDUPC header, 3200 leaves the
+#   search and card fields alone under CDEMO-PGM-ENTER, INFOMSG takes
+#   PROMPT-FOR-SEARCH-KEYS and ERRMSG the blank X(75) WS-RETURN-MSG
+#   [app/cbl/COCRDUPC.cbl:384-394,502-511,1052-1163,1324-1336];
+# - step 3: PF3 is always valid; with CDEMO-FROM-TRANID and CDEMO-FROM-PROGRAM
+#   blank the target is LIT-MENUTRANID CM00 and LIT-MENUPGM COMEN01C,
+#   CDEMO-PGM-ENTER is set, then SYNCPOINT and XCTL
+#   [app/cpy/CSSTRPFY.cpy:34-35] [app/cbl/COCRDUPC.cbl:413-476]. COMEN01C, not
+#   re-entered, sends the same menu as step 1, so the 'PF03 pressed.Exiting'
+#   condition of WS-RETURN-MSG never reaches the screen.
+# Steps 1 and 2 name more fields than the scenario's own expected screens:
+# each added value is the one the step's send derives from the source above,
+# so the baseline pins whole screens without contradicting the scenario.
+# Values are whole BMS fields (tests/inventory/layouts.yaml) with trailing
+# spaces kept; LOW-VALUES fields show as spaces. EXPDAY and FKEYSC are dark
+# and not asserted. CURDATE and CURTIME come from the region clock, so they
+# are the only matcher fields. The path issues no file command, so nothing is
+# asserted on file state. Open under GAP-INF-006 and GAP-INF-012. Only
+# `report.py --import-unikix` promotes this baseline; it is never edited by
+# hand to match a run.
+screens:
+- '@map': COMEN01
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  OPTION: '  '
+  OPTN001: '01. Account View                        '
+  OPTN002: '02. Account Update                      '
+  OPTN003: '03. Credit Card List                    '
+  OPTN004: '04. Credit Card View                    '
+  OPTN005: '05. Credit Card Update                  '
+  OPTN006: '06. Transaction List                    '
+  OPTN007: '07. Transaction View                    '
+  OPTN008: '08. Transaction Add                     '
+  OPTN009: '09. Transaction Reports                 '
+  OPTN010: '10. Bill Payment                        '
+  OPTN011: '                                        '
+  OPTN012: '                                        '
+  PGMNAME: COMEN01C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CM00
+- '@map': COCRDUP
+  ACCTSID: '           '
+  CARDSID: '                '
+  CRDNAME: '                                                  '
+  CRDSTCD: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                                '
+  EXPMON: '  '
+  EXPYEAR: '    '
+  INFOMSG: 'Please enter Account and Card Number    '
+  PGMNAME: COCRDUPC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CCUP
+- '@map': COMEN01
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  OPTION: '  '
+  OPTN001: '01. Account View                        '
+  OPTN002: '02. Account Update                      '
+  OPTN003: '03. Credit Card List                    '
+  OPTN004: '04. Credit Card View                    '
+  OPTN005: '05. Credit Card Update                  '
+  OPTN006: '06. Transaction List                    '
+  OPTN007: '07. Transaction View                    '
+  OPTN008: '08. Transaction Add                     '
+  OPTN009: '09. Transaction Reports                 '
+  OPTN010: '10. Bill Payment                        '
+  OPTN011: '                                        '
+  OPTN012: '                                        '
+  PGMNAME: COMEN01C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CM00

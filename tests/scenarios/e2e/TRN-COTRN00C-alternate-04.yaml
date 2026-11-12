@@ -1,0 +1,146 @@
+id: TRN-COTRN00C-alternate-04
+level: e2e
+type: alternate
+description: >-
+  USER0001 signs on, takes main-menu option 6 to the COTRN00C transaction list,
+  and searches from transaction id 0000000992103545, the second-highest key of
+  TRANSACT. On ENTER, PROCESS-ENTER-KEY accepts the numeric id as the browse
+  key and resets the page counter; PROCESS-PAGE-FORWARD starts a TRANSACT
+  browse at that key, issues no positioning read because the AID is ENTER,
+  clears the ten rows and reads forward [app/cbl/COTRN00C.cbl:206-225,279-296].
+  Only 0000000992103545 and 0000000996722787 remain, so the third READNEXT
+  returns ENDFILE. That branch sets 'You have reached the bottom of the
+  page...' in WS-MESSAGE and sends the map [app/cbl/COTRN00C.cbl:297-303,624-646].
+  The task then counts the partly filled page as page 1, ends the browse,
+  blanks the search field and sends the map again. WS-MESSAGE is not reset
+  between the two sends, so the final screen keeps the message, with the two
+  rows above eight blank ones [app/cbl/COTRN00C.cbl:314-326,527-547]. The
+  unfiltered first page of step 2 holds ten of the 300 records and still finds
+  an eleventh, so it shows no message.
+# Primary item first, then the program, the maps the steps enter on and land
+# on, the transaction the search runs under (COTRN00C returns with TRANSID
+# CT00), the CSD file browsed, and the online-only copybooks COTRN00C copies.
+# Sign-on and the main menu are covered by the SEC and MNU scenarios that own
+# them; CVTRA05Y is a batch copybook, listed at the lowest level that executes it.
+inventory_ids:
+- INV-TRN-017
+- INV-TRN-001
+- INV-TRN-004
+- INV-MNU-003
+- INV-CFG-020
+- INV-CFG-007
+- INV-LAY-002
+- INV-LAY-005
+- INV-LAY-006
+- INV-LAY-008
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-007
+- GAP-INF-012
+# TRANSACT has no repository source of its own (source: built), so it is built
+# from the repository's 300 daily transactions, whose 350-byte records share
+# the TRAN-RECORD shape; the two highest keys are 0000000992103545 and
+# 0000000996722787.
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+    TRANSACT: {base: DALYTRAN}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '6'
+  - aid: ENTER
+    '@map': COTRN00
+    fields:
+      TRNIDIN: '0000000992103545'
+# Steps 1 and 2 assert only the screen each lands on. Their content is pinned by
+# the scenarios of the programs that send them.
+# Screen 3 is the second SEND of the search task. The first SEND, from the
+# ENDFILE branch, still holds 0000000992103545 in TRNIDIN; the second holds
+# spaces, and every other field is the same in both. Screen values are whole
+# fields at their BMS length, trailing spaces kept. PAGENUM is the PIC 9(8) page
+# counter moved to the PIC X(8) field. Each row shows TRAN-ID, the MM/DD/YY of
+# TRAN-ORIG-TS, the first 26 characters of TRAN-DESC and TRAN-AMT edited as
+# +99999999.99 [app/cbl/COTRN00C.cbl:381-405]. Every SEL field shows a blank:
+# PROCESS-ENTER-KEY never writes it, so the SEND carries back what the RECEIVE
+# returned, the space of the map's INITIAL.
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+  - '@map': COTRN00
+    TRNNAME: CT00
+    PGMNAME: COTRN00C
+  - '@map': COTRN00
+    TRNNAME: CT00
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COTRN00C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    PAGENUM: '00000001'
+    TRNIDIN: '                '
+    SEL0001: ' '
+    TRNID01: '0000000992103545'
+    TDATE01: '06/10/22'
+    TDESC01: 'Purchase at Dickens, Barto'
+    TAMT001: '+00000635.99'
+    SEL0002: ' '
+    TRNID02: '0000000996722787'
+    TDATE02: '06/10/22'
+    TDESC02: 'Purchase at Kilback LLC   '
+    TAMT002: '+00000603.22'
+    SEL0003: ' '
+    TRNID03: '                '
+    TDATE03: '        '
+    TDESC03: '                          '
+    TAMT003: '            '
+    SEL0004: ' '
+    TRNID04: '                '
+    TDATE04: '        '
+    TDESC04: '                          '
+    TAMT004: '            '
+    SEL0005: ' '
+    TRNID05: '                '
+    TDATE05: '        '
+    TDESC05: '                          '
+    TAMT005: '            '
+    SEL0006: ' '
+    TRNID06: '                '
+    TDATE06: '        '
+    TDESC06: '                          '
+    TAMT006: '            '
+    SEL0007: ' '
+    TRNID07: '                '
+    TDATE07: '        '
+    TDESC07: '                          '
+    TAMT007: '            '
+    SEL0008: ' '
+    TRNID08: '                '
+    TDATE08: '        '
+    TDESC08: '                          '
+    TAMT008: '            '
+    SEL0009: ' '
+    TRNID09: '                '
+    TDATE09: '        '
+    TDESC09: '                          '
+    TAMT009: '            '
+    SEL0010: ' '
+    TRNID10: '                '
+    TDATE10: '        '
+    TDESC10: '                          '
+    TAMT010: '            '
+    ERRMSG: 'You have reached the bottom of the page...                                    '

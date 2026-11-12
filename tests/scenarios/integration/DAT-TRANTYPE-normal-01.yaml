@@ -1,0 +1,75 @@
+# The TRANTYPE load job replaces the transaction type KSDS with the
+# repository's seven types [app/jcl/TRANTYPE.jcl:19-62]:
+# - STEP05 IDCAMS deletes the cluster and sets MAXCC to 0 [app/jcl/TRANTYPE.jcl:22-27];
+# - STEP10 IDCAMS defines it again with KEYS(2 0) and RECORDSIZE(60 60)
+#   [app/jcl/TRANTYPE.jcl:33-49];
+# - STEP15 IDCAMS REPROs the sequential TRANTYPE-PS into it [app/jcl/TRANTYPE.jcl:54-61].
+# The KSDS exists before the run and holds one invented stale type, 99, so the
+# scenario shows that the delete and define leave nothing of the old content:
+# after the job it holds exactly the seven TRAN-TYPE-RECORD records (CVTRA03Y,
+# 60 bytes) of trantype.txt in key order, FILLER included, and the stale type is
+# gone. Every step ends RC 0000 and the job's return code is 0.
+# On gnucobol-batch the IDCAMS steps run through the utility replacement
+# (GAP-STB-005), the catalog is the per-scenario emulation (GAP-STB-009) and the
+# KSDS is a Berkeley DB indexed file (GAP-STB-010). No value depends on the run
+# date, so the clock is relative and unikix runs the same scenario.
+id: DAT-TRANTYPE-normal-01
+level: integration
+type: normal
+description: >-
+  The TRANTYPE job deletes and redefines the transaction type KSDS and loads it
+  from TRANTYPE-PS: the stale type 99 that the KSDS held before the run is gone,
+  the seven repository types 01 Purchase to 07 Adjustment are loaded in key
+  order, and STEP05, STEP10 and STEP15 each end with return code 0.
+inventory_ids:
+- INV-DAT-024  # TRANTYPE job
+tags: []
+gap_ids:
+- GAP-STB-005  # IDCAMS DELETE, DEFINE CLUSTER, SET MAXCC and REPRO replacement
+- GAP-STB-009  # per-scenario catalog in place of the z/OS catalog
+- GAP-STB-010  # Berkeley DB indexed file in place of the VSAM KSDS
+preconditions:
+  datasets:
+    TRANTYPE-PS:
+      base: TRANTYPE-PS
+    # The KSDS before the run: one invented record the job must not keep.
+    TRANTYPE:
+      records:
+      - TRAN-TYPE: '99'
+        TRAN-TYPE-DESC: Stale
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  job: TRANTYPE
+expected:
+  return_code: 0
+  messages:
+  - STEP STEP05 RC 0000
+  - STEP STEP10 RC 0000
+  - STEP STEP15 RC 0000
+  datasets:
+    # Text values are full field width: decoded text keeps its trailing spaces.
+    TRANTYPE:
+      records:
+      - TRAN-TYPE: '01'
+        TRAN-TYPE-DESC: 'Purchase                                          '
+        TRAN-TYPE-RECORD.FILLER#1: '00000000'
+      - TRAN-TYPE: '02'
+        TRAN-TYPE-DESC: 'Payment                                           '
+        TRAN-TYPE-RECORD.FILLER#1: '00000000'
+      - TRAN-TYPE: '03'
+        TRAN-TYPE-DESC: 'Credit                                            '
+        TRAN-TYPE-RECORD.FILLER#1: '00000000'
+      - TRAN-TYPE: '04'
+        TRAN-TYPE-DESC: 'Authorization                                     '
+        TRAN-TYPE-RECORD.FILLER#1: '00000000'
+      - TRAN-TYPE: '05'
+        TRAN-TYPE-DESC: 'Refund                                            '
+        TRAN-TYPE-RECORD.FILLER#1: '00000000'
+      - TRAN-TYPE: '06'
+        TRAN-TYPE-DESC: 'Reversal                                          '
+        TRAN-TYPE-RECORD.FILLER#1: '00000000'
+      - TRAN-TYPE: '07'
+        TRAN-TYPE-DESC: 'Adjustment                                        '
+        TRAN-TYPE-RECORD.FILLER#1: '00000000'

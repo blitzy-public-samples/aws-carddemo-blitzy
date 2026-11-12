@@ -1,0 +1,118 @@
+# The customer master load job CUSTFILE run end to end: close the CUSTDAT
+# region file (CLCIFIL), DELETE the customer KSDS with IF MAXCC LE 08 THEN SET
+# MAXCC = 0 (STEP05), DEFINE it again with KEYS(9 0) and RECORDSIZE(500 500)
+# (STEP10), REPRO the sequential CUSTDATA.PS into it (STEP15), and reopen the
+# region file (OPCIFIL) [app/jcl/CUSTFILE.jcl:22-27,32-38,43-60,64-72,76-81].
+#
+# The KSDS already exists and holds one stale customer, CUST-ID 999999999, so
+# the scenario shows the job replaces the file rather than adding to it: the
+# DELETE finds the cluster (RC 0 before the MAXCC reset), and after the REPRO
+# the KSDS holds exactly the 50 repository customers in CUST-ID order, without
+# the stale record. The stale customer is invented data that matches no real
+# person. The two CEMT steps act on the CICS region: gnucobol-batch replaces
+# them with a no-op of RC 0 (GAP-STB-008), and on UniKix they run the copy's
+# no-op SDSF.cbl (GAP-DOC-031), so neither adapter changes region state
+# through them and this scenario asserts none.
+#
+# The inline values are those observed on gnucobol-batch; the observed
+# baseline holds the decoded records in full and their raw bytes. Text keeps
+# its full field width, because decoded comparison is exact. Only the job item
+# is listed: CVCUS01Y and the customer data files are verified by the unit
+# scenarios that execute them (DAT-CBCUS01C-*). The job writes no date, so its
+# outcome holds at any run date: the scenario declares clock_mode relative,
+# which lets unikix run it without the clock control it lacks (GAP-MIS-015).
+id: DAT-CUSTFILE-normal-01
+level: integration
+type: normal
+description: >-
+  CUSTFILE deletes the existing customer KSDS (which holds one stale record),
+  defines it again, loads the 50 repository customers from the sequential
+  customer file and ends with every step at return code 0; the KSDS then holds
+  the 50 customers in CUST-ID order and no longer holds the stale record.
+inventory_ids:
+- INV-DAT-008  # CUSTFILE job
+tags: []
+gap_ids:
+- GAP-STB-005  # IDCAMS DELETE, DEFINE CLUSTER and REPRO replacement
+- GAP-STB-008  # SDSF CEMT steps CLCIFIL and OPCIFIL replaced by a no-op with RC 0
+- GAP-STB-009  # per-scenario catalog in place of the z/OS catalog
+- GAP-STB-010  # Berkeley DB indexed file in place of the VSAM KSDS
+- GAP-DOC-031  # on UniKix the CEMT steps run the copy's no-op SDSF.cbl
+preconditions:
+  datasets:
+    CUSTDATA-PS: {base: CUSTDATA-PS}
+    CUSTDATA:
+      records:
+      - CUST-ID: '999999999'
+        CUST-FIRST-NAME: Synthetic
+        CUST-LAST-NAME: Stale
+        CUST-ADDR-LINE-1: 9 Invented Way
+        CUST-ADDR-LINE-3: Testville
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  job: CUSTFILE
+expected:
+  return_code: 0
+  messages:
+  - STEP CLCIFIL RC 0000
+  - STEP STEP05 RC 0000
+  - STEP STEP10 RC 0000
+  - STEP STEP15 RC 0000
+  - STEP OPCIFIL RC 0000
+  datasets:
+    # The 50 customers of the sequential file, in CUST-ID order; the stale
+    # record 999999999 is gone.
+    CUSTDATA:
+      records:
+      - {CUST-ID: '1', CUST-FIRST-NAME: 'Immanuel                 ', CUST-LAST-NAME: 'Kessler                  '}
+      - {CUST-ID: '2', CUST-FIRST-NAME: 'Enrico                   ', CUST-LAST-NAME: 'Rosenbaum                '}
+      - {CUST-ID: '3', CUST-FIRST-NAME: 'Larry                    ', CUST-LAST-NAME: 'Homenick                 '}
+      - {CUST-ID: '4', CUST-FIRST-NAME: 'Delbert                  ', CUST-LAST-NAME: 'Parisian                 '}
+      - {CUST-ID: '5', CUST-FIRST-NAME: 'Treva                    ', CUST-LAST-NAME: 'Schowalter               '}
+      - {CUST-ID: '6', CUST-FIRST-NAME: 'Ignacio                  ', CUST-LAST-NAME: 'Douglas                  '}
+      - {CUST-ID: '7', CUST-FIRST-NAME: 'Cooper                   ', CUST-LAST-NAME: 'Mayert                   '}
+      - {CUST-ID: '8', CUST-FIRST-NAME: 'Kelsie                   ', CUST-LAST-NAME: 'Dicki                    '}
+      - {CUST-ID: '9', CUST-FIRST-NAME: 'Melvin                   ', CUST-LAST-NAME: 'Ondricka                 '}
+      - {CUST-ID: '10', CUST-FIRST-NAME: 'Maybell                  ', CUST-LAST-NAME: 'Mann                     '}
+      - {CUST-ID: '11', CUST-FIRST-NAME: 'Hayden                   ', CUST-LAST-NAME: 'Pfannerstill             '}
+      - {CUST-ID: '12', CUST-FIRST-NAME: 'Maci                     ', CUST-LAST-NAME: 'Robel                    '}
+      - {CUST-ID: '13', CUST-FIRST-NAME: 'Mariane                  ', CUST-LAST-NAME: 'Fadel                    '}
+      - {CUST-ID: '14', CUST-FIRST-NAME: 'Chelsea                  ', CUST-LAST-NAME: 'Marks                    '}
+      - {CUST-ID: '15', CUST-FIRST-NAME: 'Aubree                   ', CUST-LAST-NAME: 'Hermann                  '}
+      - {CUST-ID: '16', CUST-FIRST-NAME: 'Carroll                  ', CUST-LAST-NAME: 'Bergstrom                '}
+      - {CUST-ID: '17', CUST-FIRST-NAME: 'Sigrid                   ', CUST-LAST-NAME: 'Mann                     '}
+      - {CUST-ID: '18', CUST-FIRST-NAME: 'Emile                    ', CUST-LAST-NAME: 'White                    '}
+      - {CUST-ID: '19', CUST-FIRST-NAME: 'Hadley                   ', CUST-LAST-NAME: 'Hamill                   '}
+      - {CUST-ID: '20', CUST-FIRST-NAME: 'Carter                   ', CUST-LAST-NAME: 'Veum                     '}
+      - {CUST-ID: '21', CUST-FIRST-NAME: 'Jerrold                  ', CUST-LAST-NAME: 'Maggio                   '}
+      - {CUST-ID: '22', CUST-FIRST-NAME: 'Allene                   ', CUST-LAST-NAME: 'Brown                    '}
+      - {CUST-ID: '23', CUST-FIRST-NAME: 'Johnson                  ', CUST-LAST-NAME: 'Ruecker                  '}
+      - {CUST-ID: '24', CUST-FIRST-NAME: 'Stefanie                 ', CUST-LAST-NAME: 'Dickinson                '}
+      - {CUST-ID: '25', CUST-FIRST-NAME: 'Elliott                  ', CUST-LAST-NAME: 'Howell                   '}
+      - {CUST-ID: '26', CUST-FIRST-NAME: 'Marjory                  ', CUST-LAST-NAME: 'Stracke                  '}
+      - {CUST-ID: '27', CUST-FIRST-NAME: 'Ward                     ', CUST-LAST-NAME: 'Jones                    '}
+      - {CUST-ID: '28', CUST-FIRST-NAME: 'Hester                   ', CUST-LAST-NAME: 'Hane                     '}
+      - {CUST-ID: '29', CUST-FIRST-NAME: 'Rickie                   ', CUST-LAST-NAME: 'Daugherty                '}
+      - {CUST-ID: '30', CUST-FIRST-NAME: 'Layla                    ', CUST-LAST-NAME: 'Ullrich                  '}
+      - {CUST-ID: '31', CUST-FIRST-NAME: 'Lucious                  ', CUST-LAST-NAME: 'O''Connell                '}
+      - {CUST-ID: '32', CUST-FIRST-NAME: 'Stephany                 ', CUST-LAST-NAME: 'Fisher                   '}
+      - {CUST-ID: '33', CUST-FIRST-NAME: 'Bernice                  ', CUST-LAST-NAME: 'Herman                   '}
+      - {CUST-ID: '34', CUST-FIRST-NAME: 'Faustino                 ', CUST-LAST-NAME: 'Schmidt                  '}
+      - {CUST-ID: '35', CUST-FIRST-NAME: 'Angelica                 ', CUST-LAST-NAME: 'Dach                     '}
+      - {CUST-ID: '36', CUST-FIRST-NAME: 'Toney                    ', CUST-LAST-NAME: 'Gerhold                  '}
+      - {CUST-ID: '37', CUST-FIRST-NAME: 'Shany                    ', CUST-LAST-NAME: 'Walker                   '}
+      - {CUST-ID: '38', CUST-FIRST-NAME: 'Angela                   ', CUST-LAST-NAME: 'Ankunding                '}
+      - {CUST-ID: '39', CUST-FIRST-NAME: 'Aliyah                   ', CUST-LAST-NAME: 'Berge                    '}
+      - {CUST-ID: '40', CUST-FIRST-NAME: 'Davon                    ', CUST-LAST-NAME: 'Emmerich                 '}
+      - {CUST-ID: '41', CUST-FIRST-NAME: 'Lucinda                  ', CUST-LAST-NAME: 'Dach                     '}
+      - {CUST-ID: '42', CUST-FIRST-NAME: 'Heather                  ', CUST-LAST-NAME: 'Nienow                   '}
+      - {CUST-ID: '43', CUST-FIRST-NAME: 'Britney                  ', CUST-LAST-NAME: 'Waters                   '}
+      - {CUST-ID: '44', CUST-FIRST-NAME: 'Irving                   ', CUST-LAST-NAME: 'Emard                    '}
+      - {CUST-ID: '45', CUST-FIRST-NAME: 'Dixie                    ', CUST-LAST-NAME: 'Beier                    '}
+      - {CUST-ID: '46', CUST-FIRST-NAME: 'Cindy                    ', CUST-LAST-NAME: 'Cremin                   '}
+      - {CUST-ID: '47', CUST-FIRST-NAME: 'Rigoberto                ', CUST-LAST-NAME: 'Hoeger                   '}
+      - {CUST-ID: '48', CUST-FIRST-NAME: 'Lyric                    ', CUST-LAST-NAME: 'Pacocha                  '}
+      - {CUST-ID: '49', CUST-FIRST-NAME: 'Immanuel                 ', CUST-LAST-NAME: 'Bednar                   '}
+      - {CUST-ID: '50', CUST-FIRST-NAME: 'Aniya                    ', CUST-LAST-NAME: 'Von                      '}

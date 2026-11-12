@@ -1,0 +1,11 @@
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: gnucobol-batch
+execution_fingerprint: b680803441b32f3ba3163ccb4b49fac52be7540880a3e2badb283b0be3a4a856
+execution_id: gnucobol-batch-4654a28c18ff0633
+source_commit: 762594987fe9fa26d8d7774b7d888b0b14d81de9
+source_identity:
+  commit: 762594987fe9fa26d8d7774b7d888b0b14d81de9
+  tree: app
+  units:
+    app/jcl/TRANIDX.jcl: 64a06b44c816ee666a0e82e24fbf040d5ed792d158c93a0ac477db5dfa30dcae

@@ -1,0 +1,224 @@
+# COCRDUPC cannot save a validated card change when the REWRITE of the card
+# record fails with an I/O error.
+#
+# Step 1: USER0001 signs on through CC00 and COSGN00C routes the type 'U' user
+# to the main menu COMEN01 [app/cbl/COSGN00C.cbl:221-237].
+# Step 2: option '5' makes COMEN01C transfer control (XCTL), with CM00 and
+# COMEN01C as the caller and CDEMO-PGM-CONTEXT 0, to COCRDUPC, the 'Credit
+# Card Update' entry of COMEN02Y [app/cbl/COMEN01C.cbl:115-156]
+# [app/cpy/COMEN02Y.cpy:49-53]. Entered from the menu without
+# CDEMO-PGM-REENTER, COCRDUPC initializes the COMMAREA and sends COCRDUP from a
+# cleared output map with the search-key prompt [app/cbl/COCRDUPC.cbl:388-394,
+# 502-511,1052-1060,1084-1085,1140-1142].
+# Step 3: ENTER under CCUP with account 00000000050 and card 0500024453765740.
+# Both filters are numeric and non-zero (1210-EDIT-ACCOUNT, 1220-EDIT-CARD),
+# so 2000-DECIDE-ACTION runs 9000-READ-DATA: CARDDAT is read by the card
+# number, the embossed name is upper-cased, and the account, card, CVV, name,
+# expiry and status are kept as the fetched values [app/cbl/COCRDUPC.cbl:
+# 535-542,641-661,721-800,954-966,1343-1412]. CCUP-SHOW-DETAILS shows them
+# under 'Details of selected card shown above', with the name, status and
+# expiry unprotected and every field's modified-data tag set (DFHBMFSE, or
+# DFHBMPRF for the protected keys), so each comes back on the next RECEIVE MAP
+# [app/cbl/COCRDUPC.cbl:1107-1112,1145-1146,1181-1190].
+# Step 4: ENTER with the name typed over as 'TEST HOLDER'. The new card data
+# differs from the fetched data, the name holds only letters and spaces, the
+# status is Y, the month 03 lies in 1-12 and the year 2023 in 1950-2099, so
+# 1200-EDIT-MAP-INPUTS sets CCUP-CHANGES-OK-NOT-CONFIRMED; 3200 shows the
+# received values under 'Changes validated.Press F5 to save', protects every
+# data field and brightens the dark F5/F12 key label [app/cbl/COCRDUPC.cbl:
+# 667-714,806-944,1006-1007,1113-1123,1149-1150,1191-1199,1315-1317].
+# Step 5: PF5 is valid while the change awaits confirmation. The edits are
+# skipped, and 9200-WRITE-PROCESSING reads CARDDAT for update, finds the record
+# as fetched in step 3 (9300-CHECK-CHANGE-IN-REC), builds CARD-UPDATE-RECORD
+# and REWRITEs it [app/cbl/COCRDUPC.cbl:413-420,685-692,988-991,1420-1483,
+# 1498-1519]. The REWRITE answers other than NORMAL, so LOCKED-BUT-UPDATE-
+# FAILED is set [app/cbl/COCRDUPC.cbl:209-210,1488-1492]; 2000-DECIDE-ACTION
+# turns that into CCUP-CHANGES-OKAYED-BUT-FAILED [app/cbl/COCRDUPC.cbl:992-
+# 1001]. 3200 shows the entered values again (CCUP-CHANGES-MADE covers 'F'),
+# 3250-SETUP-INFOMSG puts INFORM-FAILURE in INFOMSG and the return message in
+# ERRMSG, and 3300 unprotects the search keys and leaves the key label dark
+# [app/cbl/COCRDUPC.cbl:1113-1123,1155-1163,1200-1207,1315-1317]. Nothing was
+# rewritten, so CARDDATA keeps its records. This scenario injects an I/O error
+# on the REWRITE, and the branch takes any REWRITE response other than NORMAL
+# [app/cbl/COCRDUPC.cbl:1488-1492]. A closed or disabled CARDDAT, by contrast,
+# fails the READ UPDATE first and gives 'Could not lock record for update'
+# instead [app/cbl/COCRDUPC.cbl:1441-1449].
+#
+# No adapter can inject an online I/O error, so the scenario raises
+# MissingPrerequisite under GAP-MIS-014 and stays implemented-unexecuted until a
+# mechanism exists. Expected values are derived from the source (no TPE region
+# runs in CI).
+#
+# Card 0500024453765740 is record 1 of the CARDDATA fixture (line 1 of
+# app/data/ASCII/carddata.txt: account 00000000050, CVV 747, embossed name
+# 'Aniya Von', expiry 2023-03-09, status Y). The name step 4 enters passes the
+# alphabets-only test of 1230-EDIT-NAME both as app/ writes it and as the
+# UniKix copy rewrites it (GAP-DOC-023, which affects only the
+# 'Card name can only contain alphabets and spaces' item), so no item this
+# scenario lists depends on that difference.
+#
+# Screen fields are compared at their full BMS length, trailing spaces
+# included. INFOMSG is the 40-byte WS-INFO-MSG, and ERRMSG the 75-byte
+# WS-RETURN-MSG in the 80-byte field. A dark (DRK) key label reads as spaces;
+# EXPDAY, a dark protected field, is not asserted. CURDATE and CURTIME come
+# from the run clock, hence the matchers and clock_mode relative
+# [app/cbl/COCRDUPC.cbl:1062-1074].
+id: CRD-COCRDUPC-recovery-03
+level: e2e
+type: recovery
+description: >-
+  USER0001 signs on, selects main-menu option 5 (Credit Card Update), fetches
+  card 0500024453765740 of account 00000000050 on the COCRDUP screen, changes
+  the embossed name to TEST HOLDER, gets the change validated and presses PF5
+  while the REWRITE of the CARDDAT card record fails with an I/O error.
+  COCRDUPC shows 'Update of record failed' with 'Changes unsuccessful. Please
+  try again' on the same screen, the entered values kept, and the card record
+  is not changed.
+# Primary item first, then the program, the maps asserted, the transaction
+# steps 3 to 5 run under, the CSD file COCRDUPC reads and updates, and the
+# online-only copybooks it copies. Sign-on and the menu (CC00, CM00, COSGN00,
+# USRSEC) are verified by the SEC and MNU scenarios, the information messages
+# by their own CRD scenarios, and the batch record copybooks (CVACT02Y,
+# CVCUS01Y, CSUSR01Y) and the data files at the lowest level that executes
+# them.
+inventory_ids:
+- INV-CRD-069  # COCRDUPC message 'Update of record failed' (recovery)
+- INV-CRD-003  # COCRDUPC program
+- INV-MNU-003  # COMEN01 map, where option 5 is entered
+- INV-CRD-006  # COCRDUP map, the prompt, detail, confirmation and failure screens
+- INV-CFG-015  # CCUP transaction, under which the fetch, the edit and the failing save run
+- INV-CFG-003  # CARDDAT CSD file: card read, read for update, and the failing REWRITE
+- INV-LAY-002  # COCOM01Y: the COMMAREA carrying the context and ids
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COCRDUPC
+- INV-LAY-009  # CSMSG02Y: abend data, copied by COCRDUPC
+- INV-LAY-011  # CSSTRPFY: the AID mapping that selects the ENTER and PF5 paths
+- INV-LAY-019  # CVCRD01Y: CC-ACCT-ID, CC-CARD-NUM and the AID flags
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-006  # CRD end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-MIS-014  # no mechanism to return an I/O error from a region file operation
+preconditions:
+  datasets:
+    CARDDATA: {base: CARDDATA}
+    # The 10 repository users, for the USER0001 sign-on.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  # No `after`: the REWRITE of step 5 is the only CARDDAT rewrite of the
+  # scenario, and the reads before it, the READ UPDATE included, succeed.
+  faults:
+  - target: CARDDAT
+    operation: rewrite
+    condition: io-error
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: USER0001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '5'}
+    '@map': COMEN01
+  - aid: ENTER
+    fields: {ACCTSID: '00000000050', CARDSID: '0500024453765740'}
+    '@map': COCRDUP
+  - aid: ENTER
+    fields: {CRDNAME: 'TEST HOLDER'}
+    '@map': COCRDUP
+  - aid: PF5
+    fields: {}
+    '@map': COCRDUP
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN005: '05. Credit Card Update                  '
+    ERRMSG: '                                                                              '
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    PGMNAME: COCRDUPC
+    ACCTSID: '           '
+    CARDSID: '                '
+    INFOMSG: 'Please enter Account and Card Number    '
+    ERRMSG: '                                                                                '
+    FKEYS: 'ENTER=Process F3=Exit'
+    FKEYSC: '                  '
+  # The fetched card, its name upper-cased by 9000-READ-DATA.
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COCRDUPC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000050'
+    CARDSID: '0500024453765740'
+    CRDNAME: 'ANIYA VON                                         '
+    CRDSTCD: 'Y'
+    EXPMON: '03'
+    EXPYEAR: '2023'
+    INFOMSG: 'Details of selected card shown above    '
+    ERRMSG: '                                                                                '
+    FKEYS: 'ENTER=Process F3=Exit'
+    FKEYSC: '                  '
+  # The change passes every edit and waits for PF5.
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    PGMNAME: COCRDUPC
+    ACCTSID: '00000000050'
+    CARDSID: '0500024453765740'
+    CRDNAME: 'TEST HOLDER                                       '
+    CRDSTCD: 'Y'
+    EXPMON: '03'
+    EXPYEAR: '2023'
+    INFOMSG: 'Changes validated.Press F5 to save      '
+    ERRMSG: '                                                                                '
+    FKEYS: 'ENTER=Process F3=Exit'
+    # PROMPT-FOR-CONFIRMATION shows the dark key label bright
+    # [app/cbl/COCRDUPC.cbl:1315-1317].
+    FKEYSC: 'F5=Save F12=Cancel'
+  # The failed save: the values received with PF5 are shown again, the new
+  # name included, under the failure messages.
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COCRDUPC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000050'
+    CARDSID: '0500024453765740'
+    CRDNAME: 'TEST HOLDER                                       '
+    CRDSTCD: 'Y'
+    EXPMON: '03'
+    EXPYEAR: '2023'
+    INFOMSG: 'Changes unsuccessful. Please try again  '
+    ERRMSG: 'Update of record failed                                                         '
+    FKEYS: 'ENTER=Process F3=Exit'
+    # No confirmation is pending, so the key label keeps its dark map attribute.
+    FKEYSC: '                  '
+  # The ERRMSG value of each step: blank until the failed save.
+  messages:
+  - '                                                                              '
+  - '                                                                                '
+  - '                                                                                '
+  - '                                                                                '
+  - 'Update of record failed                                                         '
+  file_state:
+    # The REWRITE failed: card 0500024453765740 keeps every field as loaded,
+    # its name 'Aniya Von' in its original case rather than the TEST HOLDER
+    # entered, and the 50 cards stay 50.
+    CARDDATA:
+      count: 50
+      contains:
+      - CARD-NUM: '0500024453765740'
+        CARD-ACCT-ID: '50'
+        CARD-CVV-CD: '747'
+        CARD-EMBOSSED-NAME: 'Aniya Von                                         '
+        CARD-EXPIRAION-DATE: '2023-03-09'
+        CARD-ACTIVE-STATUS: 'Y'

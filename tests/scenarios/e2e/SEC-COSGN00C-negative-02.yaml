@@ -1,0 +1,72 @@
+# Sign-on with a user id but a blank password. Entering CC00 with no COMMAREA
+# sends the sign-on screen COSGN00 [app/cbl/COSGN00C.cbl:80-83]; ENTER with
+# USERID USER0001 and PASSWD cleared then reaches PROCESS-ENTER-KEY, whose
+# second test finds PASSWDI SPACES or LOW-VALUES, sets the error flag, moves
+# 'Please enter Password ...' to WS-MESSAGE and re-sends the screen with the
+# cursor on the password [app/cbl/COSGN00C.cbl:117-130]. The error flag skips
+# READ-USER-SEC-FILE [app/cbl/COSGN00C.cbl:138-140], so USRSEC is never read
+# and neither the USRSEC CSD file nor the batch layout CSUSR01Y is listed; the
+# fixture is loaded only so the region holds its normal user file. Nothing is
+# written, so no file_state is asserted.
+#
+# SEND-SIGNON-SCREEN fills the header through POPULATE-HEADER-INFO before the
+# message [app/cbl/COSGN00C.cbl:145-204]: TRNNAME and PGMNAME come from
+# WS-TRANID and WS-PGMNAME, TITLE01 and TITLE02 from COTTL01Y, CURDATE and
+# CURTIME from the CSDAT01Y date and time areas. CURDATE (X(8)) is the run date
+# as mm/dd/yy; CURTIME (X(9)) receives the 8-character hh:mm:ss, so its ninth
+# position is a space. Those two come from the region clock, hence matchers.
+# APPLID and SYSID come from EXEC CICS ASSIGN and are platform values, so they
+# are not asserted.
+#
+# Screen values are the captured field contents and keep their trailing
+# spaces: ERRMSG is the 78-character field the 80-character WS-MESSAGE is
+# moved to, and the adapter copies that same value into messages. The
+# expectation is derived from the source, never observed (no TPE region runs
+# in CI), hence inferred-not-observed.
+id: SEC-COSGN00C-negative-02
+level: e2e
+type: negative
+description: >-
+  USER0001 presses ENTER on the sign-on screen with the password left blank:
+  COSGN00C stays on COSGN00 and shows 'Please enter Password ...' without
+  reading the user security file.
+inventory_ids:
+- INV-SEC-006  # COSGN00C message 'Please enter Password ...' (rule)
+- INV-SEC-001  # COSGN00C program
+- INV-SEC-002  # COSGN00 map
+- INV-CFG-016  # CC00 transaction
+- INV-LAY-002  # COCOM01Y copybook
+- INV-LAY-005  # COTTL01Y copybook: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y copybook: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y copybook
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-002  # the SEC end-to-end baselines are derived, not observed
+- GAP-INF-012  # the online-only copybooks are covered only through derived e2e baselines
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    '@map': COSGN00
+    aid: ENTER
+    fields:
+      USERID: USER0001
+      PASSWD: ''
+expected:
+  screens:
+  - '@map': COSGN00
+    TRNNAME: CC00
+    PGMNAME: COSGN00C
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time, format: '%H:%M:%S '}
+    ERRMSG: 'Please enter Password ...                                                     '
+  messages:
+  - 'Please enter Password ...                                                     '

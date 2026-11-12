@@ -1,0 +1,54 @@
+# Manifest of the derived baseline of ACT-COACTUPC-negative-108: 123 typed over
+# the Phone Number 1 area code of fetched account 00000000001 is refused with
+# 'Phone Number 1: Not valid North America general purpose area code', because
+# 123 is not a VALID-GENERAL-PURP-CODE value [app/cbl/COACTUPC.cbl:1632-1638,
+# 2296-2312] [app/cpy/CSLKPCDY.cpy:521-930]. Only unikix can run the scenario,
+# so expected.yaml is authored from the source and is inferred-not-observed
+# (GAP-INF-005, GAP-INF-012). It names no execution_id or execution_fingerprint
+# and holds no datasets/. A UniKix run never promotes it: the UniKix copy
+# STRINGs the untrimmed WS-EDIT-VARIABLE-NAME into this message (GAP-DOC-022),
+# so it stays derived at 1.0.0 until an app/ build is observed (GAP-MIS-008).
+#
+# source_identity.units are the app/ sources the four steps execute, each
+# program as harness.results computes it for a program run (its COPY closure
+# and the app/cbl units it CALLs), plus the BMS sources of the maps shown:
+# COSGN00C signs USER0001 on, COMEN01C (COMEN01 asserted) XCTLs option 2 to
+# COACTUPC, and COACTUPC's step-4 edits reach CSUTLDTC through the CSUTLDPY
+# date edits of the four valid dates that precede Phone Number 1
+# [app/cpy/CSUTLDPY.cpy:284-296]. CSLKPCDY holds the general-purpose code list
+# the outcome depends on. DFHAID and DFHBMSCA are CICS-supplied, not app/
+# sources.
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: derived
+source_commit: c1e29cb9fd4f0898da0fbcd0cc5c076e6c3c32ca
+source_identity:
+  commit: c1e29cb9fd4f0898da0fbcd0cc5c076e6c3c32ca
+  tree: app
+  units:
+    app/bms/COACTUP.bms: 60b261bd2d0c6c851cd78af963ce6c6e14444a9477ad6eb0f80f0e0d4f1f4f23
+    app/bms/COMEN01.bms: f87af09e6f60ab198d5c05817e3007361a6d29ed957322ef25b11c5420c84b4c
+    app/bms/COSGN00.bms: 6747ba57e45fed7e52af728a1f8688ed8fab90b93e1234ab0a0bcae32fa39056
+    app/cbl/COACTUPC.cbl: e7a097a02870a13529ab846a2ddd3cf398a243263517ded399bd55a25fb9578f
+    app/cbl/COMEN01C.cbl: ad5e376ac9221b21b8ce47597a5ca17fc1f39dc913793c814c6675e9b046fc09
+    app/cbl/COSGN00C.cbl: 4f901ae6b113eebae60ae1d94b30f8cb9906d031a4419770bf56980bdf97e377
+    app/cbl/CSUTLDTC.cbl: 58c165dcfc3927232c02c152c673e3dee551587b85e7fe56ca67325c980eebb6
+    app/cpy-bms/COACTUP.CPY: 2ae13a55cb35c63988c17e96744ce77dfda9663896e65061b818f47d9be983dc
+    app/cpy-bms/COMEN01.CPY: 21275363519e57f47c5c7842178344208f3ad773a551e74e5eeff285c775ad5c
+    app/cpy-bms/COSGN00.CPY: e2a2f8f6e76e1613cbd8f0baaca87d571a49a7bc219d16a732e4e4ecd7485407
+    app/cpy/COCOM01Y.cpy: 77097557ee4c365f62138328d3e280ce7aba5f81d418c6f16434f0fbb2aafa6c
+    app/cpy/COMEN02Y.cpy: 22b1be06734c9ae91a25c4b544f9a9c4c85ab3f281a3d3bcc0765fb17e585d85
+    app/cpy/COTTL01Y.cpy: 5032bfa9428354bb4a62e8c82ba1efa7dcf6b80f27544ad99a81c8a8df8ed41b
+    app/cpy/CSDAT01Y.cpy: 61dd7b01d974c13cd47f71774c613dd67996418a22fae730d09b246c0b710ad7
+    app/cpy/CSLKPCDY.cpy: 098d384b9580abd5b4b77ae9c33b8cb65b28be45390130b22c48c3714200cca2
+    app/cpy/CSMSG01Y.cpy: ef8ce44572885d63e46a02516f992cabbbc57ea94235000fd376325750e26eda
+    app/cpy/CSMSG02Y.cpy: 0238a3a75e723272e0c287b46a52d365de8549dada1a73d15df75660ad7bd2ea
+    app/cpy/CSSETATY.cpy: 45000f93a9be6e8132262e53faa1db03ab1f20fbee4063272b890837216d1fcb
+    app/cpy/CSSTRPFY.cpy: 751bc1a625114a8660ee2172b70cdea135c259652d2305a2bfda25ff4cf34853
+    app/cpy/CSUSR01Y.cpy: 37c34094dc4124bc6255e0b06a0387442f4f0dd9d51dd6623b559d370aa0d2cb
+    app/cpy/CSUTLDPY.cpy: 80f83e3d55ff84c0d9088e68399f30ebad4db763280d47bdec220eadc45ba2af
+    app/cpy/CSUTLDWY.cpy: ecba6f07ea9db7c6f58f7fc1c5227179e8b80299f79a04743c6adb9f08190a1a
+    app/cpy/CVACT01Y.cpy: 81a08bad15af5664326a6f0af3650f570821c4857ffdec3a6a39f91f07dca728
+    app/cpy/CVACT03Y.cpy: ffc6079e09b28739e154bf6c1e1c36d408209faa91f6cf7008078dc596a1c370
+    app/cpy/CVCRD01Y.cpy: 52b6dbe09f7648f3fdbd7c00f4683d434fe6b631f6c8854466a24f42c1c92445
+    app/cpy/CVCUS01Y.cpy: 944fd9a8eb10a683d0db97b9a87f2151982f649970287eb74358826056af25f8

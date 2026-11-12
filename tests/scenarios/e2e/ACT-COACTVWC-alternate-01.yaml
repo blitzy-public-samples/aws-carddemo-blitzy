@@ -1,0 +1,116 @@
+# COACTVWC's account-id prompt on first entry from the main menu. USER0001
+# (type U in the USRSEC fixture) signs on through CC00 and COSGN00C XCTLs to
+# COMEN01C [app/cbl/COSGN00C.cbl:221-240]. Option '1' of the main menu is
+# 'Account View', so COMEN01C sets CDEMO-FROM-PROGRAM to COMEN01C and
+# CDEMO-PGM-CONTEXT to 0 and XCTLs to COACTVWC with the COMMAREA
+# [app/cbl/COMEN01C.cbl:145-155] [app/cpy/COMEN02Y.cpy:25-29].
+# COACTVWC initializes WS-MISC-STORAGE, which leaves the account filter flag and
+# the read flags blank and WS-INFO-MSG spaces [app/cbl/COACTVWC.cbl:268-270].
+# The ENTER key and context 0 take the CDEMO-PGM-ENTER path to 1000-SEND-MAP
+# [app/cbl/COACTVWC.cbl:299-360]: 1100-SCREEN-INIT clears CACTVWAO and fills
+# the header [app/cbl/COACTVWC.cbl:431-453]; 1200-SETUP-SCREEN-VARS, with a
+# COMMAREA present, moves LOW-VALUES to ACCTSID because the filter is blank,
+# moves no account or customer field because neither FOUND flag is set, then
+# sets WS-PROMPT-FOR-INPUT because no info message is pending and moves the
+# blank WS-RETURN-MSG to ERRMSG and WS-INFO-MSG to INFOMSG
+# [app/cbl/COACTVWC.cbl:460-535]. The map is sent with ERASE and the task
+# returns with TRANSID CAVW [app/cbl/COACTVWC.cbl:394-406,577-591]. No file is
+# read on this path, so CXACAIX, ACCTDAT and CUSTDAT are not listed.
+# Screen fields compare at their full BMS length, trailing spaces kept: the
+# 40-byte prompt fills INFOMSG (45) with 5 trailing spaces, and every field the
+# program leaves at LOW-VALUES, none of which has an INITIAL value, shows as
+# spaces [app/bms/COACTVW.bms:84-368]. CURDATE and CURTIME come from the region
+# clock, so they are matchers and the clock is relative.
+# The UniKix copy of COACTVW.bms lacks the unnamed field at row 1, columns 1-9
+# (GAP-DOC-025). The baseline is derived from the source: no TPE region runs
+# in CI.
+id: ACT-COACTVWC-alternate-01
+level: e2e
+type: alternate
+description: >-
+  USER0001 signs on, selects main menu option 1 'Account View', and lands on
+  the COACTVWC account view screen COACTVW (transaction CAVW) with the prompt
+  'Enter or update id of account to display' in INFOMSG, an empty account
+  number, every account and customer field blank and no error message.
+inventory_ids:
+- INV-ACT-005  # COACTVWC message 'Enter or update id of account to display' (WS-PROMPT-FOR-INPUT)
+- INV-ACT-001  # COACTVWC program
+- INV-ACT-003  # COACTVW map, the screen the prompt is shown on
+- INV-MNU-003  # COMEN01 map, the screen option 1 is entered on
+# The transaction COACTVWC names in TRNNAME and returns with (RETURN TRANSID).
+- INV-CFG-010  # CAVW transaction
+- INV-LAY-002  # COCOM01Y: the COMMAREA COMEN01C passes on the XCTL
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COACTVWC
+- INV-LAY-009  # CSMSG02Y, the abend data COACTVWC copies
+- INV-LAY-011  # CSSTRPFY: maps EIBAID ENTER to CCARD-AID-ENTER
+- INV-LAY-019  # CVCRD01Y: CC-WORK-AREA, the AID flags and CC-ACCT-ID
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-005  # ACT end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-DOC-025  # the UniKix COACTVW.bms differs from app/ at row 1, columns 1-9
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user USER0001 from USRSEC.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '1'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+  - '@map': COACTVW
+    TRNNAME: CAVW
+    PGMNAME: COACTVWC
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    ACCTSID: '           '
+    ACSTTUS: ' '
+    ADTOPEN: '          '
+    ACRDLIM: '               '
+    AEXPDT: '          '
+    ACSHLIM: '               '
+    AREISDT: '          '
+    ACURBAL: '               '
+    ACRCYCR: '               '
+    AADDGRP: '          '
+    ACRCYDB: '               '
+    ACSTNUM: '         '
+    ACSTSSN: '            '
+    ACSTDOB: '          '
+    ACSTFCO: '   '
+    ACSFNAM: '                         '
+    ACSMNAM: '                         '
+    ACSLNAM: '                         '
+    ACSADL1: '                                                  '
+    ACSSTTE: '  '
+    ACSADL2: '                                                  '
+    ACSZIPC: '     '
+    ACSCITY: '                                                  '
+    ACSCTRY: '   '
+    ACSPHN1: '             '
+    ACSGOVT: '                    '
+    ACSPHN2: '             '
+    ACSEFTC: '          '
+    ACSPFLG: ' '
+    INFOMSG: 'Enter or update id of account to display     '
+    ERRMSG: '                                                                              '

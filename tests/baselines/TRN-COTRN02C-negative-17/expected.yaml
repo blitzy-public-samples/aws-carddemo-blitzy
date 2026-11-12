@@ -1,0 +1,66 @@
+# Derived baseline of TRN-COTRN02C-negative-17: the add screen submitted with
+# every field supplied except Merchant Zip. Not observed; authored from
+# app/cbl/COTRN02C.cbl:36-38 (CT02, COTRN02C, WS-MESSAGE X(80)), 112-130
+# (first entry: COTRN2AO cleared, blank ERRMSG), 131-135 and 164-167 (ENTER
+# under CT02 performs PROCESS-ENTER-KEY), 210-223 and 609-637 (card branch:
+# ACTIDIN blank, the card comes back through PIC 9(16) unchanged, READ CCXREF
+# NORMAL, XREF-ACCT-ID 00000000050 of record 1 of app/data/ASCII/cardxref.txt
+# into ACTIDINI), 235-249 (error flag off, so the entered fields are kept),
+# 251-317 (Type CD through Merchant City supplied; MZIPI SPACES or LOW-VALUES
+# sets 'Merchant Zip can NOT be empty...' and sends the screen), 516-534
+# (SEND-TRNADD-SCREEN with ERASE, then RETURN TRANSID CT02: no numeric,
+# amount, date or CONFIRM check, no CSUTLDTC call, no TRANSACT access) and
+# 552-571 (header), with app/cbl/COSGN00C.cbl:230-237 (USER0001, type U, to
+# COMEN01C), app/cbl/COMEN01C.cbl:241-264 and app/cpy/COMEN02Y.cpy:67-72
+# (OPTN008), app/cpy/COTTL01Y.cpy (titles), app/bms/COTRN02.bms and
+# app/cpy-bms/COTRN02.CPY (COTRN2AO redefines COTRN2AI, so the received values
+# are sent back; the cleared MZIP and the untouched CONFIRM show blank).
+# Screens are whole fields at their BMS length, trailing spaces kept; ERRMSG is
+# WS-MESSAGE cut to the 78-byte ERRMSGO, and messages holds the ERRMSG of each
+# step in step order. CURDATE and CURTIME come from the region clock and are
+# matchers. TRANSACT keeps its 300 fixture records.
+# Only report.py --import-unikix replaces it with an observed outcome:
+# GAP-INF-007 (derived TRN end-to-end baselines) and GAP-INF-012 (online-only
+# copybooks). Canonical harness.dump_yaml layout.
+file_state:
+  TRANSACT:
+    count: 300
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'Merchant Zip can NOT be empty...                                              '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  OPTN008: '08. Transaction Add                     '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COTRN02
+  ERRMSG: '                                                                              '
+  PGMNAME: COTRN02C
+  TRNNAME: CT02
+- '@map': COTRN02
+  ACTIDIN: '00000000050'
+  CARDNIN: '0500024453765740'
+  CONFIRM: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Merchant Zip can NOT be empty...                                              '
+  MCITY: 'Testville                '
+  MID: '800000001'
+  MNAME: 'Test Merchant                 '
+  MZIP: '          '
+  PGMNAME: COTRN02C
+  TCATCD: '0001'
+  TDESC: 'Test purchase                                               '
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TORIGDT: '2022-07-01'
+  TPROCDT: '2022-07-01'
+  TRNAMT: '+00000012.34'
+  TRNNAME: CT02
+  TRNSRC: 'POS TERM  '
+  TTYPCD: '01'

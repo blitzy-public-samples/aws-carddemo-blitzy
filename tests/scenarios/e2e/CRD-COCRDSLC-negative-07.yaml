@@ -1,0 +1,113 @@
+# The card view refuses an account filter that is not numeric. USER0001 (type U
+# in the USRSEC fixture) signs on through CC00 and reaches the main menu, whose
+# option 4 'Credit Card View' makes COMEN01C XCTL to COCRDSLC with
+# CDEMO-PGM-CONTEXT 0 [app/cbl/COMEN01C.cbl:146-155] [app/cpy/COMEN02Y.cpy:43-47].
+# That first entry takes the CDEMO-PGM-ENTER path and sends COCRDSL: CC-ACCT-ID
+# and CC-CARD-NUM start as spaces on every task (INITIALIZE CC-WORK-AREA), so
+# ACCTSID and CARDSID are blank whichever branch the COMMAREA test at lines
+# 268-279 takes; WS-INFO-MSG is blank, so INFOMSG shows the prompt 'Please
+# enter Account and Card Number', and ERRMSG is blank. 1400-SEND-SCREEN sets
+# CDEMO-PGM-REENTER and the task returns TRANSID CCDL
+# [app/cbl/COCRDSLC.cbl:254-264,349-356,394-406,457-497,563-576].
+#
+# ENTER with ACCTSID 'ABCDEFGHIJK' and the repository card 0500024453765740 (the
+# first record of carddata.txt) re-enters CCDL on the CDEMO-PGM-REENTER path
+# [app/cbl/COCRDSLC.cbl:357-363]. 2200-EDIT-MAP-INPUTS moves both inputs to
+# CC-ACCT-ID and CC-CARD-NUM [app/cbl/COCRDSLC.cbl:615-627]. In
+# 2210-EDIT-ACCOUNT the filter is neither blank nor zero, but it IS NOT
+# NUMERIC, so INPUT-ERROR and FLG-ACCTFILTER-NOT-OK are set, WS-RETURN-MSG
+# (still off from the start of the task) receives 'ACCOUNT FILTER,IF SUPPLIED
+# MUST BE A 11 DIGIT NUMBER' and CDEMO-ACCT-ID is zeroed
+# [app/cbl/COCRDSLC.cbl:647-674]. 2220-EDIT-CARD accepts the 16 numeric digits
+# and moves them to CDEMO-CARD-NUM [app/cbl/COCRDSLC.cbl:685-719]; the
+# cross-field edit does not fire because the filters are not both blank, so the
+# account message stands [app/cbl/COCRDSLC.cbl:637-640].
+#
+# INPUT-ERROR skips 9000-READ-DATA, so CARDDAT is never read although the
+# CARDDATA fixture holds the card; no CSD file is touched by COCRDSLC here, and
+# none is listed. 1200-SETUP-SCREEN-VARS moves LOW-VALUES to ACCTSIDO because
+# CDEMO-ACCT-ID is zero: the typed 'ABCDEFGHIJK' is not redisplayed and ACCTSID
+# reads back blank. It carries no '*' either, since the flag is NOT-OK, not
+# BLANK [app/cbl/COCRDSLC.cbl:462-466,541-545]. CARDSIDO receives CC-CARD-NUM,
+# so the card number is shown again [app/cbl/COCRDSLC.cbl:468-472].
+# FOUND-CARDS-FOR-ACCOUNT is false, so the name, status and expiry fields stay
+# blank, and INFOMSG keeps the prompt [app/cbl/COCRDSLC.cbl:474-496].
+#
+# Screen fields are compared at their full BMS length, trailing spaces
+# included; positions the program leaves as LOW-VALUES read back as spaces.
+# ERRMSG is the 75-byte WS-RETURN-MSG in the 80-byte ERRMSGO: its data starts at
+# row 23, column 2 and its last position, row 24 column 1, is the attribute
+# byte of FKEYS, shown as a space [app/bms/COCRDSL.bms:144-152]. INFOMSG is the
+# 40-byte WS-INFO-MSG. CURDATE and CURTIME come from the region clock, so they
+# are matchers. The UniKix copy of COCRDSLC and COCRDSL.bms matches app/, so no
+# doc-conflict entry applies. The baseline is derived from the source: no TPE
+# region runs in CI.
+id: CRD-COCRDSLC-negative-07
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, selects option 4 'Credit Card View' on the main menu and,
+  on the COCRDSLC card view screen (CCDL), presses ENTER with the account
+  number 'ABCDEFGHIJK' and the card number 0500024453765740. 2210-EDIT-ACCOUNT
+  finds the account filter not numeric, so COCRDSLC reads no card and sends
+  COCRDSL again with 'ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER' in
+  the message line, the account number field blank, the card number kept, no
+  card details and the prompt 'Please enter Account and Card Number'.
+inventory_ids:
+- INV-CRD-039  # COCRDSLC message 'ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER' (rule)
+- INV-CRD-002  # COCRDSLC program
+- INV-MNU-003  # COMEN01 map, the main menu option 4 is entered on
+- INV-CRD-005  # COCRDSL map, sent on entry and again with the refusal
+- INV-CFG-013  # CCDL transaction, the TRANSID COCRDSLC returns with and the ENTER runs under
+- INV-LAY-002  # COCOM01Y: the COMMAREA whose CDEMO-PGM-REENTER routes the ENTER to the edits
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COCRDSLC
+- INV-LAY-009  # CSMSG02Y, copied by COCRDSLC (abend data area)
+- INV-LAY-011  # CSSTRPFY: YYYY-STORE-PFKEY maps ENTER to CCARD-AID-ENTER
+- INV-LAY-019  # CVCRD01Y: CCARD-AID and the CC-ACCT-ID and CC-CARD-NUM filters
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-006  # CRD end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+    CARDDATA: {base: CARDDATA}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - {transid: CC00, aid: ENTER, fields: {USERID: USER0001, PASSWD: PASSWORD}, '@map': COSGN00}
+  - {aid: ENTER, fields: {OPTION: '4'}, '@map': COMEN01}
+  - {aid: ENTER, fields: {ACCTSID: 'ABCDEFGHIJK', CARDSID: '0500024453765740'}, '@map': COCRDSL}
+expected:
+  screens:
+  # One entry per step, each the screen the step ends on.
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+  - '@map': COCRDSL
+    TRNNAME: CCDL
+    PGMNAME: COCRDSLC
+    ACCTSID: '           '
+    CARDSID: '                '
+    INFOMSG: 'Please enter Account and Card Number    '
+    ERRMSG: '                                                                                '
+  - '@map': COCRDSL
+    TRNNAME: CCDL
+    PGMNAME: COCRDSLC
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time, format: '%H:%M:%S'}
+    ACCTSID: '           '
+    CARDSID: '0500024453765740'
+    CRDNAME: '                                                  '
+    CRDSTCD: ' '
+    EXPMON: '  '
+    EXPYEAR: '    '
+    INFOMSG: 'Please enter Account and Card Number    '
+    ERRMSG: 'ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER                            '

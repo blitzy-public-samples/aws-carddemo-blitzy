@@ -1,0 +1,139 @@
+# ADMIN001 adds the user TESTU001 through the admin menu option 2, User Add
+# (tech-spec seed "Scenario 1: New User Onboarding"). TESTU001 is invented data:
+# it is written to USRSEC and never signs on.
+#
+# Step 1 signs on as ADMIN001 on COSGN00 (transaction CC00); the type-A user is
+# routed to COADM01C, which sends the admin menu COADM01 headed CA00/COADM01C
+# [app/cbl/COSGN00C.cbl:230-237] [app/cbl/COADM01C.cbl:82-90].
+# Step 2 enters option 2 on COADM01. COADM01C right-justifies it to 02, takes the
+# COADM02Y entry 'User Add (Security)', program COUSR01C, sets the program
+# context to 0 and transfers control [app/cbl/COADM01C.cbl:115-146]
+# [app/cpy/COADM02Y.cpy:29-32]. Entered with context 0, COUSR01C sets the
+# re-enter flag, moves LOW-VALUES to COUSR1AO and sends COUSR01 with the cursor
+# on FNAME [app/cbl/COUSR01C.cbl:82-87,184-196]:
+# - TRNNAME and PGMNAME are its own CU01 and COUSR01C, TITLE01 and TITLE02 the
+#   COTTL01Y titles, CURDATE mm/dd/yy and CURTIME hh:mm:ss from the run clock
+#   through CSDAT01Y [app/cbl/COUSR01C.cbl:214-233] [app/cpy/COTTL01Y.cpy:17-22];
+# - the five input fields hold LOW-VALUES, which the screen shows as blanks, and
+#   ERRMSG is blank because WS-MESSAGE stays spaces [app/cbl/COUSR01C.cbl:75-76,188].
+# Step 3 fills the five fields on COUSR01 and presses ENTER. Every field is
+# supplied, so PROCESS-ENTER-KEY sets no message and moves the fields into
+# SEC-USER-DATA unchanged: COUSR01C neither upper-cases nor checks the values
+# [app/cbl/COUSR01C.cbl:115-160]. BMS pads each received field with blanks to
+# its length, so the names reach the record padded to 20. The WRITE to USRSEC
+# keyed by SEC-USR-ID succeeds [app/cbl/COUSR01C.cbl:238-252], and then:
+# - INITIALIZE-ALL-FIELDS moves spaces to USERID, FNAME, LNAME, PASSWD, USRTYPE
+#   and WS-MESSAGE [app/cbl/COUSR01C.cbl:287-295], so the input fields are sent
+#   back blank;
+# - STRING builds 'User ' + SEC-USR-ID (up to its first space) + ' has been added
+#   ...' in WS-MESSAGE, ERRMSG is set green and COUSR01 is sent again with ERASE
+#   [app/cbl/COUSR01C.cbl:253-259].
+# USRSEC then holds the 10 fixture users unchanged plus TESTU001, in key order.
+# SEC-USR-FILLER is not asserted: COUSR01C never sets it, and its working-storage
+# content depends on the platform's initialization of items without VALUE.
+# Expected text values are full field width with their trailing spaces. The
+# clock-derived CURDATE and CURTIME are matchers, so the clock is relative.
+id: USR-COUSR01C-normal-01
+level: e2e
+type: normal
+description: >-
+  ADMIN001 signs on, chooses option 2 on the admin menu and adds user TESTU001
+  (TESTFIRST TESTLAST, password TESTPWD1, type U) on COUSR01. COUSR01C writes the
+  USRSEC record, blanks the input fields and shows 'User TESTU001 has been added
+  ...'; USRSEC holds the 10 fixture users plus TESTU001.
+inventory_ids:
+- INV-USR-028  # COUSR01C message 'User <SEC-USR-ID> has been added ...' (rule)
+- INV-USR-002  # COUSR01C program
+- INV-USR-006  # COUSR01 map, the screen of steps 2 and 3
+- INV-USR-033  # COUSR01C USRSEC WRITE (interface), observed in file_state
+- INV-MNU-004  # COADM01 map, the screen the sign-on lands on and option 2 is entered on
+- INV-CFG-024  # CU01 transaction, under which COUSR01C receives the add
+- INV-CFG-008  # USRSEC CSD file, written by user id
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carrying the program context
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the screen date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COUSR01C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-004  # derived USR end-to-end baselines, never observed on a TPE region
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    USRSEC:
+      base: USRSEC
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    '@map': COSGN00
+    fields:
+      USERID: ADMIN001
+      PASSWD: PASSWORD
+    aid: ENTER
+  - '@map': COADM01
+    fields:
+      OPTION: '2'
+    aid: ENTER
+  # USERID and PASSWD here are the fields of the user record being added, not
+  # credentials: TESTU001 is data only.
+  - '@map': COUSR01
+    fields:
+      FNAME: TESTFIRST
+      LNAME: TESTLAST
+      USERID: TESTU001
+      PASSWD: TESTPWD1
+      USRTYPE: U
+    aid: ENTER
+expected:
+  screens:
+  - '@map': COADM01
+    TRNNAME: 'CA00'
+    PGMNAME: 'COADM01C'
+  - '@map': COUSR01
+    TRNNAME: 'CU01'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COUSR01C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    FNAME: '                    '
+    LNAME: '                    '
+    USERID: '        '
+    PASSWD: '        '
+    USRTYPE: ' '
+    ERRMSG: '                                                                              '
+  - '@map': COUSR01
+    TRNNAME: 'CU01'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COUSR01C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    FNAME: '                    '
+    LNAME: '                    '
+    USERID: '        '
+    PASSWD: '        '
+    USRTYPE: ' '
+    ERRMSG: 'User TESTU001 has been added ...                                              '
+  # The ERRMSG of each step: the admin menu and the empty add screen carry none.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'User TESTU001 has been added ...                                              '
+  file_state:
+    USRSEC:
+      records:
+      - {SEC-USR-ID: ADMIN001, SEC-USR-FNAME: 'MARGARET            ', SEC-USR-LNAME: 'GOLD                ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: 'A'}
+      - {SEC-USR-ID: ADMIN002, SEC-USR-FNAME: 'RUSSELL             ', SEC-USR-LNAME: 'RUSSELL             ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: 'A'}
+      - {SEC-USR-ID: ADMIN003, SEC-USR-FNAME: 'RAYMOND             ', SEC-USR-LNAME: 'WHITMORE            ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: 'A'}
+      - {SEC-USR-ID: ADMIN004, SEC-USR-FNAME: 'EMMANUEL            ', SEC-USR-LNAME: 'CASGRAIN            ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: 'A'}
+      - {SEC-USR-ID: ADMIN005, SEC-USR-FNAME: 'GRANVILLE           ', SEC-USR-LNAME: 'LACHAPELLE          ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: 'A'}
+      - {SEC-USR-ID: TESTU001, SEC-USR-FNAME: 'TESTFIRST           ', SEC-USR-LNAME: 'TESTLAST            ', SEC-USR-PWD: TESTPWD1, SEC-USR-TYPE: 'U'}
+      - {SEC-USR-ID: USER0001, SEC-USR-FNAME: 'LAWRENCE            ', SEC-USR-LNAME: 'THOMAS              ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: 'U'}
+      - {SEC-USR-ID: USER0002, SEC-USR-FNAME: 'AJITH               ', SEC-USR-LNAME: 'KUMAR               ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: 'U'}
+      - {SEC-USR-ID: USER0003, SEC-USR-FNAME: 'LAURITZ             ', SEC-USR-LNAME: 'ALME                ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: 'U'}
+      - {SEC-USR-ID: USER0004, SEC-USR-FNAME: 'AVERARDO            ', SEC-USR-LNAME: 'MAZZI               ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: 'U'}
+      - {SEC-USR-ID: USER0005, SEC-USR-FNAME: 'LEE                 ', SEC-USR-LNAME: 'TING                ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: 'U'}

@@ -1,0 +1,148 @@
+# COTRN02C refuses an amount that lacks the sign, the eight integer digits and
+# the point of the form -99999999.99. The amount edges are pinned by
+# TRN-COTRN02C-boundary-01..03; this case enters the short free-form value
+# 12.34 with every other field of the valid TRN-COTRN02C set.
+#
+# Steps 1-2 reach the empty Add Transaction screen as TRN-COTRN02C-normal-01
+# does: USER0001 (type U) is routed to COMEN01C, and option 8 transfers control
+# to COTRN02C, which sets the re-enter flag, finds no transaction selected and
+# sends COTRN02 with a blank ERRMSG [app/cbl/COSGN00C.cbl:230-237]
+# [app/cbl/COMEN01C.cbl:115-156] [app/cbl/COTRN02C.cbl:115-130,516-534].
+# Step 3 presses ENTER under CT02 with the valid set but TRNAMT 12.34:
+# - VALIDATE-INPUT-KEY-FIELDS takes the card branch (ACTIDIN blank): the card
+#   is numeric, NUMVAL moves it back through WS-CARD-NUM-N PIC 9(16) unchanged,
+#   READ CCXREF by card is NORMAL, and XREF-ACCT-ID 00000000050 (record 1 of
+#   the CARDXREF fixture) is moved to ACTIDIN [app/cbl/COTRN02C.cbl:210-223,
+#   609-623].
+# - VALIDATE-INPUT-DATA-FIELDS finds every field supplied and Type CD 01 and
+#   Category CD 0001 numeric [app/cbl/COTRN02C.cbl:235-337].
+# - The amount check tests position 1 for '-' or '+', positions 2-9 numeric,
+#   position 10 '.', positions 11-12 numeric. BMS pads the received 12.34 with
+#   blanks to the 12-byte field, so position 1 is '1' and the first WHEN
+#   already holds: WS-MESSAGE gets 'Amount should be in format
+#   -99999999.99', the cursor goes to TRNAMT, and SEND-TRNADD-SCREEN sends
+#   COTRN02 with ERASE and ends the task with RETURN TRANSID CT02
+#   [app/cbl/COTRN02C.cbl:339-351,516-534].
+# The task ends before the date checks, the NUMVAL-C reformatting of the
+# amount and ADD-TRANSACTION, so TRANSACT is neither browsed nor written.
+# COTRN2AO redefines COTRN2AI, so the screen sent back shows the fields as
+# received, the refused amount unchanged and the account id the cross-reference
+# read filled in; CONFIRM was left empty and shows blank.
+#
+# Expected text values are whole fields at their BMS length, trailing spaces
+# included; ERRMSG is 78 bytes. CURDATE and CURTIME come from the region clock,
+# so they are matchers and the clock is relative. The baseline is derived from
+# the source: no TPE region runs in CI.
+id: TRN-COTRN02C-negative-20
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, chooses main-menu option 8 (Transaction Add) and enters a
+  transaction for repository card 0500024453765740 whose amount is 12.34,
+  without the sign, the eight integer digits and the point the form
+  -99999999.99 needs. COTRN02C sends COTRN02 back with the fields as entered,
+  account 00000000050 from the cross-reference, and 'Amount should be in
+  format -99999999.99'; no transaction is written.
+# Primary item first, then the program, the maps asserted, the transaction step
+# 3 runs under, the CSD file COTRN02C reads, and the online-only copybooks it
+# copies. TRANSACT is not read on this path; sign-on and the menu (CC00, CM00,
+# COSGN00, USRSEC) are verified by the SEC and MNU scenarios, and the batch
+# record copybooks and data files at the lowest level that executes them.
+inventory_ids:
+- INV-TRN-049  # COTRN02C message 'Amount should be in format -99999999.99' (rule)
+- INV-TRN-003  # COTRN02C program
+- INV-MNU-003  # COMEN01 map, where option 8 is entered
+- INV-TRN-006  # COTRN02 map, the add screen of steps 2 and 3
+- INV-CFG-022  # CT02 transaction, under which COTRN02C receives the add
+- INV-CFG-004  # CCXREF CSD file, read by card number before the amount check
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carrying the program context
+- INV-LAY-005  # COTTL01Y copybook, TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y copybook, CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y copybook, copied by COTRN02C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-007  # TRN end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+    CARDXREF: {base: CARDXREF}
+    # TRANSACT holds no repository data of its own (its fixture source is
+    # built), so it is built from the 300 daily transactions, as in
+    # TRN-COTRN02C-normal-01; its unchanged count shows nothing was written.
+    TRANSACT: {base: DALYTRAN}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '8'
+  # ACTIDIN is left blank, so the card number selects the cross-reference.
+  - aid: ENTER
+    '@map': COTRN02
+    fields:
+      CARDNIN: '0500024453765740'
+      TTYPCD: '01'
+      TCATCD: '0001'
+      TRNSRC: 'POS TERM'
+      TDESC: 'Test purchase'
+      TRNAMT: '12.34'
+      TORIGDT: '2022-07-01'
+      TPROCDT: '2022-07-01'
+      MID: '800000001'
+      MNAME: 'Test Merchant'
+      MCITY: 'Testville'
+      MZIP: '27601'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: 'CM00'
+    PGMNAME: 'COMEN01C'
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: 'CT02'
+    PGMNAME: 'COTRN02C'
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: 'CT02'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COTRN02C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACTIDIN: '00000000050'
+    CARDNIN: '0500024453765740'
+    TTYPCD: '01'
+    TCATCD: '0001'
+    TRNSRC: 'POS TERM  '
+    TDESC: 'Test purchase                                               '
+    TRNAMT: '12.34       '
+    TORIGDT: '2022-07-01'
+    TPROCDT: '2022-07-01'
+    MID: '800000001'
+    MNAME: 'Test Merchant                 '
+    MCITY: 'Testville                '
+    MZIP: '27601     '
+    CONFIRM: ' '
+    ERRMSG: 'Amount should be in format -99999999.99                                       '
+  # One ERRMSG value per step: blank on the menu and on the empty add screen,
+  # the amount-format message after step 3.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Amount should be in format -99999999.99                                       '
+  file_state:
+    # COTRN02C only ever WRITEs TRANSACT, so the 300 fixture records and no
+    # new one show the file unchanged.
+    TRANSACT:
+      count: 300

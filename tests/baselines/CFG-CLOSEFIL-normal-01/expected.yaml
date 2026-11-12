@@ -1,0 +1,62 @@
+# Derived baseline (capture_platform: derived in manifest.yaml) for
+# CFG-CLOSEFIL-normal-01, authored from app/jcl/CLOSEFIL.jcl:22-30, the CSD FILE
+# definitions [app/csd/CARDDEMO.CSD:1-99] and the zip's fct.lst; tagged
+# inferred-not-observed (GAP-INF-010). Only unikix can run the job, and only
+# with BPE submission (GAP-MIS-006) and region file inquiry (GAP-MIS-011).
+#
+# The single step CLCIFIL runs SDSF, which passes the five ISFIN operator
+# commands CEMT SET FIL(...) CLO for TRANSACT, CCXREF, ACCTDAT, CXACAIX and
+# USRSEC to the region and writes their replies to ISFOUT and CMDOUT. The step
+# has no //SYSOUT DD, so no DISPLAY line follows its STEP line, and the
+# adapter's messages carry no job line. The README batch table names IEFBR14
+# instead [README.md:247]; the SDSF step is pinned (GAP-DOC-009).
+#
+# Before the job the unikix reset leaves all 14 fct.lst files open and enabled
+# (the CSD defines its 8 as ENABLED), which @BEFORE:CLOSEFIL:@REGION-FILES, the
+# inquiry just before the job is submitted, asserts. After it, the five files
+# are closed and, as CEMT SET FILE CLOSED leaves them, unenabled, which the
+# inquiry reports as disabled; the other nine are untouched. Both inquiries
+# are one line per file, sorted by name, as adapters.base.format_region_files
+# writes them.
+#
+# This is the app/ job's outcome, not the UniKix copy's: there SDSF.cbl only
+# displays 'DUMMY PROGRAM FOR SDSF' and leaves all 14 files open
+# (GAP-DOC-031). That record is reported as UniKix-copy behaviour, never
+# verifies this job's items and never replaces this baseline, so the values
+# here agree with the scenario's inline expectation, which compare checks too.
+file_state:
+  '@BEFORE:CLOSEFIL:@REGION-FILES':
+    records:
+    - ACCTDAT open enabled
+    - CARDAIX open enabled
+    - CARDDAT open enabled
+    - CCXREF open enabled
+    - CUSTDAT open enabled
+    - CXACAIX open enabled
+    - DISCGRP open enabled
+    - TCATBALF open enabled
+    - TRANCATG open enabled
+    - TRANSACT open enabled
+    - TRANSAIX open enabled
+    - TRANTYPE open enabled
+    - TRXFL open enabled
+    - USRSEC open enabled
+  '@REGION-FILES':
+    records:
+    - ACCTDAT closed disabled
+    - CARDAIX open enabled
+    - CARDDAT open enabled
+    - CCXREF closed disabled
+    - CUSTDAT open enabled
+    - CXACAIX closed disabled
+    - DISCGRP open enabled
+    - TCATBALF open enabled
+    - TRANCATG open enabled
+    - TRANSACT closed disabled
+    - TRANSAIX open enabled
+    - TRANTYPE open enabled
+    - TRXFL open enabled
+    - USRSEC closed disabled
+messages:
+- STEP CLCIFIL RC 0000
+return_code: 0

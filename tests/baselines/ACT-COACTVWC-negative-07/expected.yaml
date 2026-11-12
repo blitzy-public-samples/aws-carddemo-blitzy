@@ -1,0 +1,42 @@
+# Derived from the source, not observed (GAP-INF-005; the online-only
+# copybooks behind it, GAP-INF-012): USER0001 reaches COACTVW through main
+# menu option 1, whose first display shows the prompt and a blank ERRMSG
+# [app/cbl/COACTVWC.cbl:353-360,527-534], then enters account 00000000002.
+# CXACAIX holds its cross-reference, but ACCTDAT answers NOTFND and the
+# STRING composes the message into the 75-byte WS-RETURN-MSG: the literal
+# parts and ERROR-RESP ('000000013 ', RESP 13 as 9 digits and a blank) take 71
+# bytes, so only '0000' of ERROR-RESP2 fits, and ERRMSGO (78) adds 3 blanks
+# [app/cbl/COACTVWC.cbl:776-810]. The SET DID-NOT-FIND-ACCT-IN-ACCTDAT is
+# commented out, so the customer read still runs and the screen shows customer
+# 000000002 (GAP-DEF-020) [app/cbl/COACTVWC.cbl:687-718,493-523]. The account
+# fields come from an ACCOUNT-RECORD no READ filled, so neither the scenario
+# nor this file asserts them. Holds exactly the keys and values the scenario's
+# expected names, as whole BMS fields with trailing spaces kept; CURDATE and
+# CURTIME come from the region clock, so they are matchers judged against the
+# run date.
+screens:
+- '@map': COMEN01
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COACTVW
+  ERRMSG: '                                                                              '
+  INFOMSG: 'Enter or update id of account to display     '
+  PGMNAME: COACTVWC
+  TRNNAME: CAVW
+- '@map': COACTVW
+  ACCTSID: '00000000002'
+  ACSFNAM: 'Enrico                   '
+  ACSLNAM: 'Rosenbaum                '
+  ACSMNAM: 'April                    '
+  ACSTNUM: '000000002'
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Account:00000000002 not found in Acct Master file.Resp:000000013  Reas:0000   '
+  INFOMSG: 'Enter or update id of account to display     '
+  PGMNAME: COACTVWC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CAVW

@@ -1,0 +1,160 @@
+# How a job scheduler resolves '//STEP10 EXEC PROC=TRANREPT' in TRNRPT00, the job
+# CORPT00C writes to the JOBS queue for a report request, after a JCLLIB ORDER
+# naming the procedure library [app/cbl/CORPT00C.cbl:84-127]. The member that
+# holds the procedure, app/proc/TRANREPT.prc, begins '//REPROC PROC', the name of
+# the other procedure [app/proc/TRANREPT.prc:1] [app/proc/REPROC.prc:1], and its
+# STEP01R calls 'EXEC PROC=REPROC' [app/proc/TRANREPT.prc:21-22]. The mismatch is
+# pinned, never fixed (GAP-DEF-008).
+#
+# The expectation is derived from z/OS JCL semantics, not observed: a cataloged
+# procedure is found by its member name in the JCLLIB ORDER library, and the name
+# on its PROC statement plays no part in the lookup. So EXEC PROC=TRANREPT runs
+# member TRANREPT despite its label, the nested EXEC PROC=REPROC runs member
+# REPROC, and the in-stream overrides STEP05R.SYMNAMES and STEP10R.DATEPARM name
+# steps the procedure has, in its step order. All three procedure steps then run
+# [app/proc/TRANREPT.prc:21-78]:
+# - STEP01R, procedure REPROC: IDCAMS REPRO with the REPROCT control card unloads
+#   the TRANSACT KSDS into a new TRANSACT-BKUP generation [app/proc/REPROC.prc:21-28]
+#   [app/ctl/REPROCT.ctl:15];
+# - STEP05R: SORT, under the overriding SYMNAMES window, into a new TRANSACT-DALY
+#   generation;
+# - STEP10R: CBTRN03C, reading the overriding DATEPARM record, writes a new
+#   TRANREPT generation.
+# The STEP names carry the job step and every procedure step above them, as
+# resources.yaml and the gnucobol-batch jobs.yaml name them. CBTRN03C's
+# 'Reporting from' line [app/cbl/CBTRN03C.cbl:232-233] can only show the window
+# the job wrote in-stream if STEP10R.DATEPARM was resolved against the
+# procedure's STEP10R. The catalog lines show the three new generations that the
+# DISP=(NEW,CATLG,DELETE) outputs catalogue at normal end.
+#
+# Only unikix runs this scenario: INV-RPT-054 is a JCL-semantics item, which the
+# gnucobol-batch job driver never evaluates because its TRNRPT00 step table is
+# already expanded (harness.scenarios.jcl_semantics_items). The UniKix copy of the
+# procedure begins '//TRANREPT PROC' and calls 'EXEC REPROC' (GAP-DOC-028), so a
+# UniKix record shows the copy's behaviour and never verifies this app/ item; the
+# baseline stays derived (GAP-INF-011). The procedure item itself, INV-RPT-009, is
+# listed by RPT-TRNRPT00-normal-01.
+#
+# TRANSACT holds four invented posted transactions for repository card
+# 9680294154603697 (account 00000000001) [app/data/ASCII/cardxref.txt:49], all
+# processed inside the window, so CBTRN03C reports every one and its
+# out-of-window stop is not reached. Each type and category pair is a key of
+# trancatg.txt, because CBTRN03C abends on an unknown one. Nothing asserted
+# depends on the run date.
+id: RPT-TRNRPT00-alternate-01
+level: integration
+type: alternate
+description: >-
+  TRNRPT00 runs '//STEP10 EXEC PROC=TRANREPT' for the report window 2022-06-01 to
+  2022-06-30. The derived expectation, taken from z/OS JCL semantics, is that the
+  scheduler finds the procedure by its member name, TRANREPT, although the member
+  begins '//REPROC PROC', and resolves the nested 'EXEC PROC=REPROC' to member
+  REPROC. The in-stream STEP05R.SYMNAMES and STEP10R.DATEPARM overrides then name
+  steps of that procedure, all three procedure steps (STEP01R through REPROC,
+  STEP05R SORT and STEP10R CBTRN03C) end with RC 0, CBTRN03C reports from the
+  overriding window, and the catalog gains the first TRANSACT.BKUP, TRANSACT.DALY
+  and TRANREPT generations.
+inventory_ids:
+- INV-RPT-054  # resolution of EXEC PROC=TRANREPT against '//REPROC PROC'
+tags:
+- inferred-not-observed
+- suspected-defect
+gap_ids:
+- GAP-DEF-008  # the TRANREPT member begins '//REPROC PROC'
+- GAP-INF-011  # the JCL-semantics baseline is derived, never observed
+- GAP-DOC-028  # the UniKix copy's procedure header and REPROC call differ, so its records never verify this item
+- GAP-MIS-006  # BPE job submission, completion and step return codes
+- GAP-MIS-007  # catalog listing on UniKix, which @CATALOG needs
+preconditions:
+  datasets:
+    CARDXREF: {base: CARDXREF}
+    TRANTYPE: {base: TRANTYPE}
+    TRANCATG: {base: TRANCATG}
+    # Four invented posted transactions; ids, descriptions and merchants match no
+    # repository transaction.
+    TRANSACT:
+      records:
+      - TRAN-ID: '9900000000000801'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '0001'
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic purchase on the start date
+        TRAN-AMT: '31.40'
+        TRAN-MERCHANT-ID: '900000801'
+        TRAN-MERCHANT-NAME: Synthetic Store Four
+        TRAN-MERCHANT-CITY: Testville
+        TRAN-MERCHANT-ZIP: '00000'
+        TRAN-CARD-NUM: '9680294154603697'
+        TRAN-ORIG-TS: '2022-06-01 08:30:00.000000'
+        TRAN-PROC-TS: '2022-06-01-09.15.00.000000'
+      - TRAN-ID: '9900000000000802'
+        TRAN-TYPE-CD: '02'
+        TRAN-CAT-CD: '0002'
+        TRAN-SOURCE: OPERATOR
+        TRAN-DESC: Synthetic electronic payment
+        TRAN-AMT: '-50.00'
+        TRAN-MERCHANT-ID: '900000802'
+        TRAN-MERCHANT-NAME: Synthetic Payment Desk
+        TRAN-MERCHANT-CITY: Testville
+        TRAN-MERCHANT-ZIP: '00000'
+        TRAN-CARD-NUM: '9680294154603697'
+        TRAN-ORIG-TS: '2022-06-10 11:00:00.000000'
+        TRAN-PROC-TS: '2022-06-10-12.00.00.000000'
+      - TRAN-ID: '9900000000000803'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '0004'
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic ATM withdrawal
+        TRAN-AMT: '80.00'
+        TRAN-MERCHANT-ID: '900000803'
+        TRAN-MERCHANT-NAME: Synthetic ATM
+        TRAN-MERCHANT-CITY: Testville
+        TRAN-MERCHANT-ZIP: '00000'
+        TRAN-CARD-NUM: '9680294154603697'
+        TRAN-ORIG-TS: '2022-06-20 16:00:00.000000'
+        TRAN-PROC-TS: '2022-06-20-16.45.00.000000'
+      - TRAN-ID: '9900000000000804'
+        TRAN-TYPE-CD: '05'
+        TRAN-CAT-CD: '0001'
+        TRAN-SOURCE: OPERATOR
+        TRAN-DESC: Synthetic refund credit on the end date
+        TRAN-AMT: '-12.60'
+        TRAN-MERCHANT-ID: '900000804'
+        TRAN-MERCHANT-NAME: Synthetic Store Four
+        TRAN-MERCHANT-CITY: Testville
+        TRAN-MERCHANT-ZIP: '00000'
+        TRAN-CARD-NUM: '9680294154603697'
+        TRAN-ORIG-TS: '2022-06-29 10:00:00.000000'
+        TRAN-PROC-TS: '2022-06-30-18.30.00.000000'
+  parameters:
+    # Nothing asserted depends on the run date, so unikix can run the scenario
+    # without clock control (GAP-MIS-015).
+    clock_mode: relative
+    # The report window the job writes into both in-stream overrides.
+    DATEPARM: '2022-06-01 2022-06-30'
+  faults: []
+inputs:
+  job: TRNRPT00
+expected:
+  return_code: 0
+  # An ordered subsequence of the job's lines: the three procedure steps in
+  # procedure order, then the CBTRN03C DISPLAY lines that show the overriding
+  # DATEPARM reached STEP10R [app/cbl/CBTRN03C.cbl:160,215,232-233].
+  messages:
+  - 'STEP STEP10.STEP01R.PRC001 RC 0000'
+  - 'STEP STEP10.STEP05R RC 0000'
+  - 'STEP STEP10.STEP10R RC 0000'
+  - 'START OF EXECUTION OF PROGRAM CBTRN03C'
+  - 'Reporting from 2022-06-01 to 2022-06-30'
+  - 'END OF EXECUTION OF PROGRAM CBTRN03C'
+  file_state:
+    # The GDG bases and the first generation each of the three procedure steps
+    # catalogues at normal end, in the observation's sorted line order.
+    '@CATALOG':
+      contains:
+      - 'AWS.M2.CARDDEMO.TRANREPT GDG -'
+      - 'AWS.M2.CARDDEMO.TRANREPT GENERATION G0001V00'
+      - 'AWS.M2.CARDDEMO.TRANSACT.BKUP GDG -'
+      - 'AWS.M2.CARDDEMO.TRANSACT.BKUP GENERATION G0001V00'
+      - 'AWS.M2.CARDDEMO.TRANSACT.DALY GDG -'
+      - 'AWS.M2.CARDDEMO.TRANSACT.DALY GENERATION G0001V00'

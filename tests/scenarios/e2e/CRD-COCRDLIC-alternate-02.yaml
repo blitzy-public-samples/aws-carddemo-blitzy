@@ -1,0 +1,104 @@
+# The 'PF03 PRESSED.EXITING' message of COCRDLIC never reaches a screen.
+#
+# Step 1: USER0001 (type U in the USRSEC fixture) signs on through CC00 and
+# COSGN00C XCTLs to COMEN01C, which sends the main menu COMEN01 and returns
+# TRANSID CM00 [app/cbl/COSGN00C.cbl:221-240] [app/cbl/COMEN01C.cbl:82-110].
+# Step 2: option '3' 'Credit Card List' makes COMEN01C set CDEMO-FROM-PROGRAM
+# COMEN01C and CDEMO-PGM-CONTEXT 0 and XCTL to COCRDLIC with the COMMAREA
+# [app/cbl/COMEN01C.cbl:145-155] [app/cpy/COMEN02Y.cpy:37-41]. Entered from the
+# menu, COCRDLIC clears WS-ERROR-MSG, starts afresh on the first page, reads
+# forward on CARDDAT with blank filters and sends COCRDLI headed CCLI/COCRDLIC.
+# The repository CARDDATA holds 50 cards, so the eighth READNEXT finds a next
+# page and no 'NO MORE RECORDS TO SHOW' is set: ERRMSG is blank. COMMON-RETURN
+# records COCRDLIC as CDEMO-FROM-PROGRAM and returns TRANSID CCLI
+# [app/cbl/COCRDLIC.cbl:311,334-343,572-582,604-619,642-650,1122-1260].
+# Step 3: PF3 with nothing typed. YYYY-STORE-PFKEY maps DFHPF3 to
+# CCARD-AID-PFK03 [app/cpy/CSSTRPFY.cpy:34-35]. CDEMO-FROM-PROGRAM is
+# COCRDLIC, so the map is received and edited, then the PF3 branch sets
+# CDEMO-PGM-ENTER, SETs WS-EXIT-MESSAGE ('PF03 PRESSED.EXITING' into
+# WS-ERROR-MSG) and XCTLs to LIT-MENUPGM COMEN01C with CARDDEMO-COMMAREA only
+# [app/cbl/COCRDLIC.cbl:119-120,187-188,357-361,384-405]. WS-ERROR-MSG lives in
+# COCRDLIC's working storage, and neither COCOM01Y's COMMAREA nor any SEND
+# carries it [app/cpy/COCOM01Y.cpy:19-44]. COMEN01C moves SPACES to WS-MESSAGE
+# and ERRMSGO, finds the COMMAREA not in re-enter state, and sends the menu
+# afresh with the blank message [app/cbl/COMEN01C.cbl:78-90,182-195].
+#
+# The message is set and then discarded, so its only observable outcome is its
+# absence: the menu's ERRMSG is blank. That purpose is doubtful, so the outcome
+# is pinned as observed (observed-only) under GAP-UNC-014, the open question of
+# online message texts that are set or tested but never reach the screen.
+#
+# Expected values are derived from the source (no TPE region runs in CI).
+# ERRMSG compares at its BMS length of 78 with every space kept
+# [app/bms/COCRDLI.bms:331] [app/bms/COMEN01.bms:154].
+id: CRD-COCRDLIC-alternate-02
+level: e2e
+type: alternate
+description: >-
+  USER0001 signs on, chooses main menu option 3 'Credit Card List' and lands on
+  the COCRDLIC card list (CCLI), then presses PF3. COCRDLIC sets its
+  'PF03 PRESSED.EXITING' message and transfers control to COMEN01C, which shows
+  the main menu (CM00) with a blank ERRMSG: the message never reaches a screen.
+inventory_ids:
+- INV-CRD-008  # COCRDLIC message 'PF03 PRESSED.EXITING' (88 WS-EXIT-MESSAGE)
+- INV-CRD-001  # COCRDLIC program
+- INV-CRD-004  # COCRDLI map, the screen PF3 is pressed on
+- INV-MNU-003  # COMEN01 map, the screen the XCTL lands on
+- INV-CFG-014  # CCLI transaction, under which the PF3 runs
+- INV-CFG-003  # CARDDAT CSD file, browsed to build the list PF3 is pressed on
+- INV-LAY-002  # COCOM01Y: the COMMAREA the XCTL passes, which holds no message
+- INV-LAY-005  # COTTL01Y, copied by COCRDLIC
+- INV-LAY-006  # CSDAT01Y, copied by COCRDLIC
+- INV-LAY-008  # CSMSG01Y, copied by COCRDLIC
+- INV-LAY-011  # CSSTRPFY: YYYY-STORE-PFKEY maps DFHPF3 to CCARD-AID-PFK03
+- INV-LAY-019  # CVCRD01Y: CCARD-AID-PFK03 and the work area COCRDLIC initializes
+tags:
+- inferred-not-observed
+- observed-only
+gap_ids:
+- GAP-INF-006  # CRD end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+# The pinned outcome is that a message COCRDLIC sets is never shown. GAP-UNC-014
+# is the open uncertain-purpose entry for online message texts that are set or
+# tested but never reach the screen, and it lists INV-CRD-008. GAP-UNC-013 is
+# not cited: its 34 items are 3 COACTUPC edit predicates no field edit performs
+# and 31 message conditions of COACTUPC, COACTVWC, COCRDSLC and COCRDUPC that
+# no statement sets or tests, and this condition is set.
+- GAP-UNC-014
+preconditions:
+  datasets:
+    # COCRDLIC browses CARDDAT on entry from the menu.
+    CARDDATA: {base: CARDDATA}
+    # COSGN00C reads the sign-on user USER0001 from USRSEC.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '3'
+  - aid: PF3
+    '@map': COCRDLI
+    fields: {}
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+  - '@map': COCRDLI
+    TRNNAME: CCLI
+    PGMNAME: COCRDLIC
+    ERRMSG: '                                                                              '
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    ERRMSG: '                                                                              '

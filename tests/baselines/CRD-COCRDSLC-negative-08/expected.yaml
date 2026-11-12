@@ -1,0 +1,69 @@
+# Derived baseline (capture_platform: derived in manifest.yaml) for
+# CRD-COCRDSLC-negative-08, authored from the source because only unikix can
+# run the scenario: inferred-not-observed under GAP-INF-006 and GAP-INF-012,
+# and replaced only by `report.py --import-unikix <execution_id>`.
+#
+# Step 1: USER0001 signs on through CC00 and COSGN00C routes it to COMEN01C,
+# which on first entry sends COMEN01 with ERRMSGO spaces under TRANSID CM00
+# [app/cbl/COSGN00C.cbl:221-240] [app/cbl/COMEN01C.cbl:75-92,182-194,212-231].
+# Step 2: option 4 'Credit Card View' XCTLs to COCRDSLC with
+# CDEMO-FROM-PROGRAM COMEN01C and CDEMO-PGM-CONTEXT 0
+# [app/cpy/COMEN02Y.cpy:43-47] [app/cbl/COMEN01C.cbl:117-155]. COCRDSLC
+# initializes the COMMAREA, takes CDEMO-PGM-ENTER and sends COCRDSL with both
+# filters LOW-VALUES (ids zero), the WS-INFO-MSG prompt and WS-RETURN-MSG off,
+# then sets CDEMO-PGM-REENTER [app/cbl/COCRDSLC.cbl:254-279,349-356,457-497,
+# 563-576].
+# Step 3: on re-entry 2210-EDIT-ACCOUNT accepts 00000000050 into
+# CDEMO-ACCT-ID; 2220-EDIT-CARD finds ABCDEFGHIJKLMNOP neither blank nor zero
+# but NOT NUMERIC, sets INPUT-ERROR and FLG-CARDFILTER-NOT-OK, moves
+# 'CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER' to WS-RETURN-MSG and
+# zeroes CDEMO-CARD-NUM [app/cbl/COCRDSLC.cbl:357-363,582-720]
+# [app/cpy/CVCRD01Y.cpy:34-39]. INPUT-ERROR skips 9000-READ-DATA, so no file
+# is read; COCRDSL is sent again with ERASE: the account echoed from
+# CC-ACCT-ID, CARDSIDO LOW-VALUES (the refused card id is not shown back), no
+# card details because FOUND-CARDS-FOR-ACCOUNT is off, and the prompt again
+# [app/cbl/COCRDSLC.cbl:457-497].
+#
+# Keys are exactly those the scenario's expected names. Values are whole BMS
+# fields, trailing spaces kept; LOW-VALUES show as spaces. ERRMSG of COCRDSL
+# is the 75-byte WS-RETURN-MSG in the 80-byte field at POS=(23,1), read as
+# tpe.py reads it, from row 23 column 2 through row 24 column 1
+# [app/cbl/COCRDSLC.cbl:134] [app/bms/COCRDSL.bms:84-147]; ERRMSG of COMEN01
+# is 78 bytes. TITLE01 and TITLE02 come from COTTL01Y
+# [app/cpy/COTTL01Y.cpy:17-22]. CURDATE and CURTIME, built from the clock as
+# mm/dd/yy and hh:mm:ss [app/cpy/CSDAT01Y.cpy:30-41], are the only matcher
+# fields. messages holds each step's ERRMSG, in step order.
+messages:
+- '                                                                              '
+- '                                                                                '
+- 'CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER                            '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COCRDSL
+  ACCTSID: '           '
+  CARDSID: '                '
+  ERRMSG: '                                                                                '
+  INFOMSG: 'Please enter Account and Card Number    '
+  PGMNAME: COCRDSLC
+  TRNNAME: CCDL
+- '@map': COCRDSL
+  ACCTSID: '00000000050'
+  CARDSID: '                '
+  CRDNAME: '                                                  '
+  CRDSTCD: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER                            '
+  EXPMON: '  '
+  EXPYEAR: '    '
+  INFOMSG: 'Please enter Account and Card Number    '
+  PGMNAME: COCRDSLC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CCDL

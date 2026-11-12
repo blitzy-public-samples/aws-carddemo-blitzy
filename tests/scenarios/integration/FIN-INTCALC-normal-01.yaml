@@ -1,0 +1,1005 @@
+# INTCALC on the repository data, run through its job step table: STEP15
+# executes CBACT04C with the step's own PARM '2022071800' [app/jcl/INTCALC.jcl:22],
+# so the scenario sets no parm. The job also allocates the CARDXREF
+# alternate-index path, which CBACT04C never opens: the program has no SELECT for
+# it and reads each account's card through the alternate key of the CARDXREF
+# cluster itself [app/cbl/CBACT04C.cbl:28-56]. The interest transactions go to the new SYSTRAN
+# generation [app/jcl/INTCALC.jcl:37-41].
+#
+# The 50 repository TCATBALF records (accounts 1-50, type 01, category 0001,
+# balance 0.00) are each displayed [app/cbl/CBACT04C.cbl:193]. Every account
+# carries its disclosure group id in ACCT-ADDR-ZIP and leaves ACCT-GROUP-ID
+# blank, so each DISCGRP lookup misses and displays 'DISCLOSURE GROUP RECORD
+# MISSING' and 'TRY WITH DEFAULT GROUP CODE' before the DEFAULT 01/0001 rate of
+# 15.00 is read [app/cbl/CBACT04C.cbl:414-460] (GAP-DEF-005). The pair appears 50
+# times, once per TCATBALF record; the 100 of the job-chain proof come from
+# POSTTRAN's 50 newly created TCATBAL records, which this run does not have.
+#
+# The rate is not zero, so each record writes one SYSTRAN record
+# [app/cbl/CBACT04C.cbl:214-217,462-500]: TRAN-ID is the PARM followed by the
+# 6-digit counter, type '01', category '05' (decoded from its PIC 9(04) as 5),
+# source 'System', the card read by account, and the amount 0.00 * 15.00 / 1200,
+# truncated without ROUNDED (GAP-UNC-008). No fee is ever added (GAP-UNC-007).
+# TRAN-DESC is never initialized, so the 76 bytes after 'Int. for a/c <account>'
+# hold x'00' on gnucobol-batch, written "\0" below (GAP-UNC-009, GAP-STB-011).
+# unikix runs this job too and cannot fix its clock (GAP-MIS-015), so the
+# timestamps are run-timestamp matchers; under the gnucobol-batch fixed clock
+# they resolve to 2022-07-06-10.00.00.000000.
+#
+# Accounts 1-49 are rewritten when the next account's first TCATBALF record
+# arrives; account 50 never is, because the end-of-file ELSE is unreachable
+# [app/cbl/CBACT04C.cbl:188-222] (GAP-DEF-003). With zero interest and cycle
+# fields already 0.00, the rewrites change no byte, so ACCTDATA ends equal to the
+# fixture and the skipped last rewrite shows only in the unit scenarios with
+# synthetic balances. TCATBALF is opened INPUT and stays as loaded, although the
+# tech spec says the job updates the category balances (GAP-DOC-005).
+#
+# Only the job item is listed: the CBACT04C behaviour items are verified by the
+# FIN-CBACT04C-* unit scenarios. The baseline, captured on gnucobol-batch, holds
+# every field; the inline values pin the business outcomes. @CATALOG lines are
+# catalog text and name DSNs by nature; contains is used because unikix lists its
+# whole catalog, not only this job's datasets.
+id: FIN-INTCALC-normal-01
+level: integration
+type: normal
+description: >-
+  INTCALC STEP15 runs CBACT04C with PARM 2022071800 on the repository TCATBALF,
+  CARDXREF, ACCTDATA and DISCGRP. Every disclosure group lookup misses because
+  ACCT-GROUP-ID is blank, so each of the 50 category balance records is followed
+  by 'DISCLOSURE GROUP RECORD MISSING' and 'TRY WITH DEFAULT GROUP CODE' and takes
+  the DEFAULT rate of 15.00. The step ends RC 0, the new SYSTRAN generation holds
+  50 interest transactions of 0.00, 2022071800000001 to 2022071800000050, and the
+  account and category balance files keep their content.
+inventory_ids:
+- INV-FIN-002  # INTCALC job
+tags:
+- suspected-defect
+- observed-only
+gap_ids:
+- GAP-DEF-003  # the last account is never rewritten
+- GAP-DEF-005  # the group id sits in ACCT-ADDR-ZIP; ACCT-GROUP-ID is blank
+- GAP-UNC-007  # 1400-COMPUTE-FEES is empty, so no fee is charged
+- GAP-UNC-008  # interest truncated, no ROUNDED
+- GAP-UNC-009  # TRAN-DESC filled from uninitialized working storage
+- GAP-STB-004  # PARMDRV in place of the z/OS EXEC PARM linkage
+- GAP-STB-007  # normal-end CATLG of the new SYSTRAN generation applied; its abnormal-termination DELETE recorded, not evaluated
+- GAP-STB-009  # catalog and GDG emulation: the new SYSTRAN generation
+- GAP-STB-010  # Berkeley DB indexed files in place of the VSAM KSDS
+- GAP-STB-011  # GnuCOBOL compile and runtime options; the x'00' description fill
+- GAP-DOC-005  # the tech spec says CBACT04C updates the category balances
+preconditions:
+  datasets:
+    TCATBALF: {base: TCATBALF}
+    CARDXREF: {base: CARDXREF}
+    ACCTDATA: {base: ACCTDATA}
+    # The ASCII DISCGRP; its registered record-34 mismatch (GAP-DOC-013) is not a
+    # key this run reads.
+    DISCGRP: {base: DISCGRP}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  job: INTCALC
+expected:
+  return_code: 0
+  messages:
+  - 'STEP STEP15 RC 0000'
+  - 'START OF EXECUTION OF PROGRAM CBACT04C'
+  - '000000000010100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000020100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000030100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000040100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000050100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000060100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000070100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000080100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000090100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000100100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000110100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000120100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000130100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000140100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000150100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000160100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000170100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000180100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000190100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000200100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000210100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000220100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000230100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000240100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000250100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000260100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000270100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000280100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000290100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000300100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000310100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000320100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000330100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000340100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000350100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000360100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000370100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000380100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000390100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000400100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000410100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000420100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000430100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000440100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000450100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000460100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000470100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000480100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000490100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - '000000000500100010000000000{0000000000000000000000'
+  - 'DISCLOSURE GROUP RECORD MISSING'
+  - 'TRY WITH DEFAULT GROUP CODE'
+  - 'END OF EXECUTION OF PROGRAM CBACT04C'
+  datasets:
+    SYSTRAN:
+      records:
+      - TRAN-ID: '2022071800000001'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000001\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '9680294154603697'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000002'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000002\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '0923877193247330'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000003'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000003\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '3999169246375885'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000004'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000004\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '2988091353094312'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000005'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000005\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '6009619150674526'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000006'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000006\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '2871968252812490'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000007'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000007\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '4859452612877065'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000008'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000008\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '8931369351894783'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000009'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000009\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '9501733721429893'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000010'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000010\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '3260763612337560'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000011'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000011\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '7427684863423209'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000012'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000012\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '0982496213629795'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000013'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000013\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '4011500891777367'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000014'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000014\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '8517866958206008'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000015'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000015\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '6349250331648509'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000016'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000016\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '6727055190616014'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000017'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000017\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '9349107475869214'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000018'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000018\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '5671184478505844'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000019'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000019\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '3940246016141489'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000020'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000020\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '0927987108636232'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000021'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000021\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '5407099850479866'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000022'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000022\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '2940139362300449'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000023'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000023\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '8112545834239735'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000024'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000024\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '2760836797107565'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000025'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000025\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '9056297931664011'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000026'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000026\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '8040580410348680'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000027'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000027\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '0683586198171516'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000028'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000028\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '6723000463207764'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000029'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000029\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '7251508149188883'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000030'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000030\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '6509230362553816'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000031'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000031\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '7026637615032277'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000032'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000032\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '7094142751055551'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000033'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000033\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '6832676047698087'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000034'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000034\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '4385271476627819'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000035'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000035\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '1561409106491600'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000036'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000036\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '4534784102713951'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000037'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000037\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '1142167692878931'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000038'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000038\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '7443870988897530'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000039'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000039\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '2745303720002090'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000040'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000040\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '9805583408996588'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000041'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000041\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '3766281984155154'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000042'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000042\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '5975117516616077'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000043'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000043\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '7058267261837752'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000044'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000044\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '1014086565224350'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000045'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000045\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '7379335634661142'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000046'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000046\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '5656830544981216'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000047'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000047\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '5787351228879339'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000048'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000048\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '6503535181795992'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000049'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000049\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '8262593602473076'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+      - TRAN-ID: '2022071800000050'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '5'
+        TRAN-SOURCE: 'System    '
+        TRAN-DESC: "Int. for a/c 00000000050\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        TRAN-AMT: '0.00'
+        TRAN-MERCHANT-ID: '0'
+        TRAN-MERCHANT-NAME: '                                                  '
+        TRAN-MERCHANT-CITY: '                                                  '
+        TRAN-MERCHANT-ZIP: '          '
+        TRAN-CARD-NUM: '0500024453765740'
+        TRAN-ORIG-TS: {match: run-timestamp}
+        TRAN-PROC-TS: {match: run-timestamp}
+  file_state:
+    # Every account in key order, as the fixture holds it: accounts 1-49 are
+    # rewritten with 0.00 interest added and both cycle fields set to 0.00, and
+    # account 50 is left alone (GAP-DEF-003).
+    ACCTDATA:
+      records:
+      - {ACCT-ID: '1', ACCT-CURR-BAL: '194.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '2', ACCT-CURR-BAL: '158.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '3', ACCT-CURR-BAL: '147.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '4', ACCT-CURR-BAL: '40.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '5', ACCT-CURR-BAL: '345.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '6', ACCT-CURR-BAL: '218.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '7', ACCT-CURR-BAL: '193.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '8', ACCT-CURR-BAL: '605.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '9', ACCT-CURR-BAL: '560.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '10', ACCT-CURR-BAL: '159.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '11', ACCT-CURR-BAL: '212.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '12', ACCT-CURR-BAL: '176.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '13', ACCT-CURR-BAL: '41.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '14', ACCT-CURR-BAL: '15.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '15', ACCT-CURR-BAL: '489.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '16', ACCT-CURR-BAL: '733.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '17', ACCT-CURR-BAL: '33.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '18', ACCT-CURR-BAL: '144.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '19', ACCT-CURR-BAL: '480.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '20', ACCT-CURR-BAL: '369.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '21', ACCT-CURR-BAL: '112.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '22', ACCT-CURR-BAL: '55.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '23', ACCT-CURR-BAL: '104.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '24', ACCT-CURR-BAL: '400.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '25', ACCT-CURR-BAL: '61.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '26', ACCT-CURR-BAL: '46.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '27', ACCT-CURR-BAL: '284.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '28', ACCT-CURR-BAL: '68.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '29', ACCT-CURR-BAL: '339.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '30', ACCT-CURR-BAL: '2.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '31', ACCT-CURR-BAL: '31.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '32', ACCT-CURR-BAL: '30.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '33', ACCT-CURR-BAL: '410.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '34', ACCT-CURR-BAL: '253.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '35', ACCT-CURR-BAL: '166.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '36', ACCT-CURR-BAL: '110.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '37', ACCT-CURR-BAL: '7.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '38', ACCT-CURR-BAL: '612.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '39', ACCT-CURR-BAL: '843.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '40', ACCT-CURR-BAL: '43.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '41', ACCT-CURR-BAL: '375.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '42', ACCT-CURR-BAL: '302.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '43', ACCT-CURR-BAL: '610.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '44', ACCT-CURR-BAL: '263.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '45', ACCT-CURR-BAL: '186.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '46', ACCT-CURR-BAL: '396.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '47', ACCT-CURR-BAL: '32.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '48', ACCT-CURR-BAL: '226.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '49', ACCT-CURR-BAL: '100.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '50', ACCT-CURR-BAL: '492.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+    # Opened INPUT only: every category balance stays as loaded (GAP-DOC-005).
+    TCATBALF:
+      records:
+      - {TRANCAT-ACCT-ID: '1', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '2', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '3', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '4', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '5', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '6', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '7', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '8', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '9', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '10', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '11', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '12', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '13', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '14', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '15', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '16', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '17', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '18', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '19', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '20', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '21', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '22', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '23', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '24', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '25', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '26', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '27', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '28', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '29', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '30', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '31', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '32', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '33', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '34', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '35', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '36', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '37', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '38', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '39', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '40', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '41', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '42', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '43', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '44', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '45', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '46', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '47', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '48', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '49', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+      - {TRANCAT-ACCT-ID: '50', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '0.00'}
+    # The SYSTRAN GDG base and the generation this run catalogued.
+    '@CATALOG':
+      contains:
+      - AWS.M2.CARDDEMO.SYSTRAN GDG -
+      - AWS.M2.CARDDEMO.SYSTRAN GENERATION G0001V00

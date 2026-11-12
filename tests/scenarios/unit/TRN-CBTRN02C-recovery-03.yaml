@@ -1,0 +1,77 @@
+id: TRN-CBTRN02C-recovery-03
+level: unit
+type: recovery
+description: >-
+  CBTRN02C opens all six files, reads its single daily transaction and rejects it
+  with reason 100, because the invented card is absent from the cross-reference
+  file. 2500-WRITE-REJECT-REC then fails to write the reject record to DALYREJS
+  with an I/O error: the program displays 'ERROR WRITING TO REJECTS FILE', the
+  status through 9910-DISPLAY-IO-STATUS and 'ABENDING PROGRAM', then calls
+  CEE3ABD without parameters; the close paragraphs, the processed and rejected
+  counts and the end-of-execution line are never reached
+  [app/cbl/CBTRN02C.cbl:193-219,380-392,446-465,707-727]. No adapter injects a
+  write failure after a successful open (GAP-MIS-013), so the scenario stays
+  implemented-unexecuted and its baseline is derived from the source
+  (GAP-INF-013).
+# Only the I/O-failure-after-open item: this case never executes, so listing the
+# program, reject 100, the DALYREJS record, a layout or a data file here would
+# block items that other CBTRN02C scenarios verify (a scenario lists an item only
+# when the item's verification depends on it).
+inventory_ids:
+- INV-TRN-088
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-MIS-013
+- GAP-INF-013
+- GAP-STB-001
+- GAP-DEF-001
+# CBTRN02C runs on Berkeley DB indexed files and is compiled with the mapped
+# options on gnucobol-batch, so the case cites those two stub limitations, as
+# every scenario whose program uses a seam does.
+- GAP-STB-010  # Berkeley DB indexed files in place of the VSAM KSDS; TRANFILE is recreated by OPEN OUTPUT
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
+preconditions:
+  datasets:
+    # One synthetic transaction; card 9999000011110001 is invented and is in no
+    # repository CARDXREF record, so 1500-A-LOOKUP-XREF rejects it with 100 and
+    # the first DALYREJS write is the one that fails.
+    DALYTRAN:
+      records:
+      - DALYTRAN-ID: '9900000000000411'
+        DALYTRAN-TYPE-CD: '01'
+        DALYTRAN-CAT-CD: '0001'
+        DALYTRAN-AMT: '10.00'
+        DALYTRAN-CARD-NUM: '9999000011110001'
+        DALYTRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+    CARDXREF:
+      base: CARDXREF
+    ACCTDATA:
+      base: ACCTDATA
+    TCATBALF:
+      base: TCATBALF
+  parameters:
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults:
+  # No `after`: the first WRITE to DALYREJS, the reject of record 1, fails.
+  - target: DALYREJS
+    operation: write
+    condition: io-error
+inputs:
+  program: CBTRN02C
+expected:
+  return_code: null
+  messages:
+  - 'START OF EXECUTION OF PROGRAM CBTRN02C'
+  - 'ERROR WRITING TO REJECTS FILE'
+  # An io-error is taken as IBM file status 30 (inferred, GAP-INF-013): numeric
+  # and not 9x, so 9910-DISPLAY-IO-STATUS shows it as NNNN0030. A full device is
+  # another condition: GnuCOBOL reports its failed WRITE as status 34.
+  - 'FILE STATUS IS: NNNN0030'
+  - 'ABENDING PROGRAM'
+  - 'CARDDEMO-ABEND CEE3ABD'
+  datasets:
+    # The failed WRITE leaves the rejects file without a record.
+    DALYREJS:
+      count: 0

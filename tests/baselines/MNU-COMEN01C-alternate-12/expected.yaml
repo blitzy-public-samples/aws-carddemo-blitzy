@@ -1,0 +1,26 @@
+# Derived baseline (capture_platform: derived in manifest.yaml) for
+# MNU-COMEN01C-alternate-12, authored from the source because only unikix can
+# run the scenario. The scenario is tagged inferred-not-observed (GAP-INF-003,
+# GAP-INF-012); `report.py --import-unikix <execution_id>` replaces this file
+# on eligible evidence. No GAP-DOC-020..032 difference touches the UniKix
+# copy's COMEN01C or COSGN00C, so a UniKix record can verify the app/ items.
+#
+# CM00 entered with no COMMAREA: COMEN01C sends no menu and XCTLs, without a
+# COMMAREA, to COSGN00C [app/cbl/COMEN01C.cbl:75-84,170-177]. This assumes
+# CDEMO-TO-PROGRAM, which has no VALUE clause [app/cpy/COCOM01Y.cpy], starts
+# as LOW-VALUES or SPACES; that inference is part of GAP-INF-003. COSGN00C
+# sends COSGN00 and returns with transaction CC00
+# [app/cbl/COSGN00C.cbl:80-83,98-102,145-200]. The step's ENTER is pressed on
+# that sign-on screen with the user id empty, so the screen comes back with
+# 'Please enter User ID ...' [app/cbl/COSGN00C.cbl:108-122].
+#
+# Keys are exactly those the scenario's expected asserts, so TITLE01, TITLE02,
+# CURDATE, CURTIME and messages are not pinned here, and ERRMSG holds the
+# user-id prompt rather than blanks: the ENTER makes this the second COSGN00
+# send, not the first. Values are full BMS width, trailing spaces kept:
+# TRNNAME 4, PGMNAME 8, ERRMSG 78 [app/bms/COSGN00.bms].
+screens:
+- '@map': COSGN00
+  ERRMSG: 'Please enter User ID ...                                                      '
+  PGMNAME: COSGN00C
+  TRNNAME: CC00

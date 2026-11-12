@@ -1,0 +1,183 @@
+# COTRN02C refuses an impossible processing date that has the YYYY-MM-DD form:
+# 'Proc Date - Not a valid date...'. The refusal comes from CSUTLDTC, called
+# with the mask YYYY-MM-DD, so the scenario also verifies CSUTLDTC's date
+# acceptance for the mask COTRN02C passes.
+#
+# Step 1 signs on as USER0001 on COSGN00 (transaction CC00); the type-U user is
+# routed to COMEN01C, which sends the main menu COMEN01 headed CM00/COMEN01C
+# with a blank message [app/cbl/COSGN00C.cbl:230-237] [app/cbl/COMEN01C.cbl:82-90].
+# Step 2 enters option 8 on COMEN01: 'Transaction Add', user type U, program
+# COTRN02C [app/cpy/COMEN02Y.cpy:67-72] [app/cbl/COMEN01C.cbl:115-156].
+# Entered without CDEMO-PGM-REENTER and with no transaction selected, COTRN02C
+# sets the re-enter flag, moves LOW-VALUES to COTRN2AO and sends COTRN02 with
+# its CT02/COTRN02C header and a blank ERRMSG [app/cbl/COTRN02C.cbl:115-130,516-571].
+# Step 3 fills COTRN02 by card number (Acct # left blank) with the valid field
+# set of TRN-COTRN02C-normal-01, except Proc Date 2022-02-30, and presses ENTER
+# under CT02 with CONFIRM left empty:
+# - VALIDATE-INPUT-KEY-FIELDS takes the card branch: the card is numeric, is
+#   moved back through WS-CARD-NUM-N unchanged, READ CCXREF by card is NORMAL,
+#   and XREF-ACCT-ID 00000000050 is moved to ACTIDINI
+#   [app/cbl/COTRN02C.cbl:210-223,609-637].
+# - VALIDATE-INPUT-DATA-FIELDS finds every field supplied, Type CD and
+#   Category CD numeric, the amount in the form +99999999.99, and both dates in
+#   the form YYYY-MM-DD: 2022-02-30 passes the character checks. NUMVAL-C turns
+#   +00000012.34 into 12.34 and edits it back to +00000012.34
+#   [app/cbl/COTRN02C.cbl:235-387].
+# - CALL 'CSUTLDTC' with Orig Date 2022-07-01 and 'YYYY-MM-DD': CEEDAYS accepts
+#   it, the result severity is '0000' and validation continues
+#   [app/cbl/COTRN02C.cbl:389-407].
+# - CALL 'CSUTLDTC' with Proc Date 2022-02-30 and 'YYYY-MM-DD': February has no
+#   30th, so CEEDAYS answers the severity-3 token 09CC, which CSUTLDTC returns
+#   as severity '0003' and message number '2508' ('Datevalue error')
+#   [app/cbl/CSUTLDTC.cbl:61-70,103-131]. The severity is not '0000' and the
+#   message number is not '2513' (the unsupported-range token COTRN02C
+#   tolerates), so COTRN02C moves 'Proc Date - Not a valid date...' to
+#   WS-MESSAGE, sets the error flag and the cursor on TPROCDT, and performs
+#   SEND-TRNADD-SCREEN [app/cbl/COTRN02C.cbl:409-427].
+# - SEND-TRNADD-SCREEN sends COTRN02 with ERASE and then RETURNs TRANSID CT02,
+#   so the task ends there: the Merchant ID check, the CONFIRM evaluation and
+#   ADD-TRANSACTION never run, and TRANSACT is neither browsed nor written
+#   [app/cbl/COTRN02C.cbl:164-188,430-436,442,516-534].
+#
+# Expected values are derived from the source (no TPE region runs in CI):
+# - Which dates CEEDAYS refuses is known only through the stub and the IBM
+#   CEEDAYS semantics, never observed (GAP-INF-001), and whether UniKix
+#   supplies CEEDAYS is open (GAP-MIS-010). A unikix run executes the UniKix
+#   copy, whose COTRN02C and COTRN02 map equal app/'s but whose CSUTLDTC
+#   passes trimmed Vstring lengths to CEEDAYS (GAP-DOC-021). The 10-character
+#   date and mask carry no trailing spaces, so the outcome is expected to be
+#   the same, but that record cannot verify the app/ items the entry lists.
+# - COTRN2AO redefines COTRN2AI, so the screen sent back shows the received
+#   values as COTRN02C left them: Acct # now holds the account from CCXREF and
+#   the amount its NUMVAL-C re-edit. Text values are whole fields at their BMS
+#   length with trailing spaces kept; ERRMSG is the 80-byte WS-MESSAGE in the
+#   78-byte ERRMSGO. CONFIRM is not entered and shows blank.
+# - CURDATE (mm/dd/yy) and CURTIME come from the region clock through
+#   CSDAT01Y, hence the matchers and clock_mode relative.
+# - The adapter copies the ERRMSG of every step's screen into the message list.
+id: TRN-COTRN02C-negative-24
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, chooses main-menu option 8 (Transaction Add) and, on
+  COTRN02, enters a transaction for repository card 0500024453765740 (type 01,
+  category 0001, POS TERM, 'Test purchase', +00000012.34, Orig Date 2022-07-01,
+  merchant 800000001 'Test Merchant', Testville 27601) with the processing date
+  2022-02-30, which has the YYYY-MM-DD form but is no calendar date. The Orig
+  Date passes CSUTLDTC; the Proc Date is refused by CSUTLDTC with the mask
+  YYYY-MM-DD, and COTRN02C shows 'Proc Date - Not a valid date...' with the
+  entered values and the card's account 00000000050. No transaction is written.
+# Primary item first, then the CSUTLDTC date acceptance whose refusal of the
+# date this outcome rests on, the program, the maps asserted, the transaction
+# step 3 runs under, the CSD file COTRN02C reads, and the online-only
+# copybooks it copies. CXACAIX is not read on the card branch and TRANSACT is
+# never reached, so neither CSD file is listed. Sign-on and the menu option
+# (CC00, CM00, COSGN00, USRSEC) are verified by the SEC and MNU scenarios; the
+# batch record copybooks and the data files are verified at the lowest level
+# that executes them.
+inventory_ids:
+- INV-TRN-053  # COTRN02C message 'Proc Date - Not a valid date...'
+- INV-UTL-003  # CSUTLDTC date acceptance for masks YYYY-MM-DD and YYYYMMDD: 2022-02-30 refused
+- INV-TRN-003  # COTRN02C program
+- INV-MNU-003  # COMEN01 map, where option 8 is entered
+- INV-TRN-006  # COTRN02 map, the add screen of steps 2 and 3
+- INV-CFG-022  # CT02 transaction, under which COTRN02C receives the entry
+- INV-CFG-004  # CCXREF CSD file: card cross-reference read by card number
+- INV-LAY-002  # COCOM01Y: the COMMAREA carrying the program context
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COTRN02C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-007  # TRN end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-INF-001  # which dates CEEDAYS accepts is known only through the stub
+- GAP-MIS-010  # whether UniKix supplies CEEDAYS
+- GAP-DOC-021  # the UniKix CSUTLDTC passes trimmed Vstring lengths to CEEDAYS
+# TRANSACT is built from the repository's 300 daily transactions (the same
+# 350-byte shape as TRAN-RECORD), so its unchanged state is observable after
+# the refusal. CARDXREF is the region's CCXREF file; USRSEC holds the demo
+# users.
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+    CARDXREF: {base: CARDXREF}
+    TRANSACT: {base: DALYTRAN}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '8'
+  # ACTIDIN is left blank, so the card number selects the cross-reference.
+  - aid: ENTER
+    '@map': COTRN02
+    fields:
+      CARDNIN: '0500024453765740'
+      TTYPCD: '01'
+      TCATCD: '0001'
+      TRNSRC: 'POS TERM'
+      TDESC: 'Test purchase'
+      TRNAMT: '+00000012.34'
+      TORIGDT: '2022-07-01'
+      TPROCDT: '2022-02-30'
+      MID: '800000001'
+      MNAME: 'Test Merchant'
+      MCITY: 'Testville'
+      MZIP: '27601'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: 'CM00'
+    PGMNAME: 'COMEN01C'
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: 'CT02'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COTRN02C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: 'CT02'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COTRN02C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACTIDIN: '00000000050'
+    CARDNIN: '0500024453765740'
+    TTYPCD: '01'
+    TCATCD: '0001'
+    TRNSRC: 'POS TERM  '
+    TDESC: 'Test purchase                                               '
+    TRNAMT: '+00000012.34'
+    TORIGDT: '2022-07-01'
+    TPROCDT: '2022-02-30'
+    MID: '800000001'
+    MNAME: 'Test Merchant                 '
+    MCITY: 'Testville                '
+    MZIP: '27601     '
+    CONFIRM: ' '
+    ERRMSG: 'Proc Date - Not a valid date...                                               '
+  # The ERRMSG of each step: the menu and the empty add screen carry none.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Proc Date - Not a valid date...                                               '
+  file_state:
+    # The refusal ends the task before ADD-TRANSACTION, and COTRN02C has no
+    # other TRANSACT update, so the 300 fixture records stand and none is added.
+    TRANSACT:
+      count: 300

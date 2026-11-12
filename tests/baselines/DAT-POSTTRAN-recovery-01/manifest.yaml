@@ -1,0 +1,25 @@
+# Derived baseline of DAT-POSTTRAN-recovery-01. Only unikix evaluates the
+# DISP=(NEW,CATLG,DELETE) of POSTTRAN STEP15, so expected.yaml was authored
+# from app/jcl/POSTTRAN.jcl and app/cbl/CBTRN02C.cbl (derived_from: source),
+# not captured, and is inferred-not-observed (GAP-INF-011). It names no
+# execution_id or execution_fingerprint and holds no datasets/ until
+# report.py --import-unikix promotes an eligible UniKix run (MINOR if the
+# decoded outcome is equal, MAJOR if it differs). source_identity is what
+# harness.results.source_identity gives for the job on the app tree: the job
+# source, CBTRN02C and its COPY closure, at the commit the derivation read.
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: derived
+derived_from: source
+source_commit: 1cb86ff9135b33aa50b652ee9dee065d47e913bd
+source_identity:
+  commit: 1cb86ff9135b33aa50b652ee9dee065d47e913bd
+  tree: app
+  units:
+    app/cbl/CBTRN02C.cbl: 136ab808a10d01814269a4a29bd6c249b1b86952d0abded98419458db43f2aef
+    app/cpy/CVACT01Y.cpy: 81a08bad15af5664326a6f0af3650f570821c4857ffdec3a6a39f91f07dca728
+    app/cpy/CVACT03Y.cpy: ffc6079e09b28739e154bf6c1e1c36d408209faa91f6cf7008078dc596a1c370
+    app/cpy/CVTRA01Y.cpy: 50637f13692c89b17a2fc60d249dc54e9eb3569d933afca3cdcf65b491a9d5ba
+    app/cpy/CVTRA05Y.cpy: d7bde0e78ff608497087b9909c889ed39e347269f964bda767b92b547fbb5fec
+    app/cpy/CVTRA06Y.cpy: c5c69f1b86c5a10156d3c5881d7cf387e6b925aae32825360f85bf4056a554a1
+    app/jcl/POSTTRAN.jcl: ecff62c691e6ce101de08690e72ec065bc98bd845744ddf914899097d37c9191

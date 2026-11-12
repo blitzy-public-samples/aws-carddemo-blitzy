@@ -1,0 +1,59 @@
+id: MNU-COMEN01C-alternate-08
+level: e2e
+type: alternate
+description: >-
+  USER0001 signs on through CC00 and reaches the main menu COMEN01, then enters
+  option 8 'Transaction Add' (user type U, program COTRN02C in the COMEN02Y
+  table) [app/cpy/COMEN02Y.cpy:67-72]. COMEN01C right-justifies the option and
+  zero-fills it to 08, finds it numeric, within CDEMO-MENU-OPT-COUNT and not
+  admin-only, sets CDEMO-PGM-CONTEXT to zero and transfers control (XCTL) to
+  COTRN02C with the COMMAREA [app/cbl/COMEN01C.cbl:115-156]. COTRN02C, entered
+  for the first time with no transaction selected, sends its Add Transaction
+  map COTRN02 headed with its own transaction CT02 and program COTRN02C
+  [app/cbl/COTRN02C.cbl:36-37,119-130,516-570].
+# Primary item first, then the program, the maps the scenario enters on and
+# lands on, the transaction the option is entered under, and the online-only
+# copybooks COMEN01C copies. Sign-on itself (CC00, USRSEC, COSGN00) is verified
+# by the SEC scenarios, and COTRN02C's own items by the TRN scenarios.
+inventory_ids:
+- INV-MNU-016
+- INV-MNU-001
+- INV-MNU-003
+- INV-TRN-006
+- INV-CFG-018
+- INV-LAY-002
+- INV-LAY-003
+- INV-LAY-005
+- INV-LAY-006
+- INV-LAY-008
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-003
+- GAP-INF-012
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '8'
+# Screen values are whole fields at their BMS length: TRNNAME is 4 and PGMNAME
+# 8 characters on COTRN02, so CT02 and COTRN02C fill them exactly.
+expected:
+  screens:
+  - '@map': COMEN01
+  - '@map': COTRN02
+    TRNNAME: CT02
+    PGMNAME: COTRN02C

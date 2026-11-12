@@ -1,0 +1,70 @@
+# The leap-day boundary of CSUTLDTC's date acceptance with the YYYY-MM-DD mask
+# that CORPT00C and COTRN02C pass. DTCDRV calls CSUTLDTC once per DTCIN record,
+# in file order, and CSUTLDTC hands date and mask to CEEDAYS
+# [app/cbl/CSUTLDTC.cbl:103-121]. 29 February exists in the leap year 2024 and
+# not in the common year 2023: the first call returns the all-zero feedback
+# token ('Date is valid'), the second the bad-date-value token x'09CC', which
+# CSUTLDTC maps to message 2508 'Datevalue error' and severity 3
+# [app/cbl/CSUTLDTC.cbl:61-70,122-149]. RETURN-CODE is set to the severity, so
+# RC reads 0000 and then 0003 [app/cbl/CSUTLDTC.cbl:98].
+#
+# Which dates are accepted is decided here by the CEEDAYS stub, which checks the
+# day against the proleptic Gregorian month length (29 days in February of a year
+# divisible by 4 and not by 100, or by 400) and returns x'09CC' for a day outside
+# the month, in its is_leap_year and days_in_month and in evaluate's day test
+# [tests/stubs/ceedays.c:161-175,276-278]. That a real CEEDAYS answers
+# the same way is inferred, not observed (GAP-INF-001), hence the tag.
+#
+# DTCIN records are the 80-byte call list DTCDRV reads: date X(10), mask X(10)
+# and 60 spaces, the DTC-REC record of FD DTC-FILE
+# [tests/stubs/DTCDRV.cbl:95-100]. They are written at full length
+# so that every record is whole whatever padding the builder applies.
+#
+# Each message is the DTCDRV line as captured: the 80-byte result shown with
+# every byte outside x'20'-x'7E' as '.', then as hex. Result bytes 46-47 hold the
+# binary Vstring length x'000A', because MOVE WS-DATE-TO-TEST TO WS-DATE copies
+# the group from its length halfword, so 'TstDate:' shows '..2024-02-' rather
+# than the date [app/cbl/CSUTLDTC.cbl:25-31,52,122]. That byte pair is pinned as
+# observed. CSUTLDTC persists between the calls (EXIT PROGRAM, never cancelled),
+# and the stub writes the whole feedback token on every call, so the second
+# result owes nothing to the first. The return code is DTCDRV's exit status, 0
+# after the last record.
+id: UTL-CSUTLDTC-boundary-02
+level: unit
+type: boundary
+description: >-
+  CSUTLDTC called through DTCDRV with 2024-02-29 and then 2023-02-29, both with
+  the mask YYYY-MM-DD: the leap-year date is valid (severity 0000, message
+  0000, 'Date is valid', RC=0000), and the common-year date is refused with the
+  CEEDAYS bad-date-value token x'09CC' (severity 0003, message 2508,
+  'Datevalue error', RC=0003). DTCDRV ends with return code 0.
+inventory_ids:
+- INV-UTL-003  # CSUTLDTC date acceptance for masks YYYY-MM-DD and YYYYMMDD (rule)
+- INV-UTL-001  # CSUTLDTC program
+- INV-UTL-002  # CSUTLDTC CEEDAYS feedback-token mapping (rule): zero token and x'09CC'
+- INV-UTL-004  # CSUTLDTC result message layout and RETURN-CODE (interface)
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-STB-002  # CEEDAYS stub: Lilian days and feedback tokens for the callers' two pictures
+- GAP-INF-001  # which dates a real CEEDAYS accepts is inferred from the stub
+- GAP-STB-004  # DTCDRV emulates the CALL interface of CSUTLDTC's callers
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
+preconditions:
+  # CSUTLDTC does no file I/O; DTCIN is supplied as a parameter file below.
+  datasets: {}
+  parameters:
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults: []
+inputs:
+  program: CSUTLDTC
+  param_files:
+    DTCIN:
+    - '2024-02-29YYYY-MM-DD                                                            '
+    - '2023-02-29YYYY-MM-DD                                                            '
+expected:
+  return_code: 0
+  messages:
+  - 'DTCDRV DATE=2024-02-29 MASK=YYYY-MM-DD RC=0000 RESULT=0000Mesg Code: 0000 Date is valid   TstDate: ..2024-02- Mask used:YYYY-MM-DD     HEX=303030304D65736720436F64653A203030303020446174652069732076616C6964202020547374446174653A20000A323032342D30322D204D61736B20757365643A595959592D4D4D2D444420202020'
+  - 'DTCDRV DATE=2023-02-29 MASK=YYYY-MM-DD RC=0003 RESULT=0003Mesg Code: 2508 Datevalue error TstDate: ..2023-02- Mask used:YYYY-MM-DD     HEX=303030334D65736720436F64653A2032353038204461746576616C7565206572726F7220547374446174653A20000A323032332D30322D204D61736B20757365643A595959592D4D4D2D444420202020'

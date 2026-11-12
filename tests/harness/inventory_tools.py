@@ -1,0 +1,4795 @@
+"""Functional inventory of AWS CardDemo: extraction, freeze and drift check.
+
+The inventory (``tests/inventory/inventory.yaml``) is the denominator of the
+suite's functional coverage. It holds one item per source item of the
+repository (programs, jobs and procs, configuration, CSD transactions, maps,
+copybooks, data files) and one item per behaviour a like-for-like conversion
+must reproduce (business rules, calculations, reports, interfaces, error and
+recovery paths), each with the fields of the inventory item contract::
+
+    id, kind, name, source, description, activation, level,
+    scenario_ids, status, gap_ids
+
+``scenario_ids``, ``status`` and ``gap_ids`` are rewritten by
+``harness/report.py``; everything else is produced here.
+
+``header.changes`` records every change since the freeze. An addition
+(``append_items``) is ``{date, inventory_id, reason}`` and raises the total.
+A gap-register entry closes only once the inventory holds the additions its
+closing evidence entails and an activation it does not contradict. A closure
+record (``append_closures``) is ``{date, gap_id, reason}``, naming the entry,
+why it closed and its resolving evidence. It records the closing's reason,
+changes neither the items nor the total, and the drift check reads no
+addition from it. If the register write fails, ``withdraw_closures`` removes
+only that transaction's returned records under the inventory lock, preserving
+concurrent additions and unrelated changes rather than restoring a snapshot.
+
+Behaviour items come from two places:
+
+* static tables transcribed from the batch, JCL and cross-job analysis, each
+  row anchored to the paragraph or statement it cites, so the anchor fails
+  loudly when the source moves;
+* four extraction rules applied to the online programs after every ``COPY``
+  is resolved (procedure-division copybooks such as ``CSUTLDPY`` contribute
+  their paragraphs to the copying program): screen messages, navigation
+  paths, the ``COACTUPC`` field edits, and side effects and content.
+
+Command line (run from the repository root)::
+
+    python tests/harness/inventory_tools.py --freeze   # generate or re-header
+    python tests/harness/inventory_tools.py --check    # drift check, exit 1 on drift
+
+The tool only reads ``app/``, ``samples/`` and ``README.md``; the UniKix zip is
+read in memory with ``zipfile``, and a zip or member past its size bound is
+refused before it is read. It makes no network call and writes nothing
+outside ``tests/inventory/``: ``--freeze``, ``append_items`` and
+``append_closures`` resolve the inventory path, symlinks followed, and refuse
+any target outside ``tests/inventory/`` of the repository holding this script,
+a directory, or an existing file that is empty or no inventory.
+``--inventory`` points ``--check`` at any file, read only; to freeze a copy of
+the repository, run that copy's own tool. Writes are atomic and serialized by
+a lock on the inventory's directory, so concurrent writers never lose an
+addition.
+"""
+
+from __future__ import annotations
+
+import argparse
+import bisect
+import contextlib
+import datetime
+import fcntl
+import itertools
+import os
+import re
+import reprlib
+import sys
+import zipfile
+import zlib
+from collections import Counter
+from dataclasses import dataclass, field
+from pathlib import Path, PurePosixPath
+from typing import Any, Callable, Iterable, Iterator, Sequence
+
+_TESTS_ROOT = str(Path(__file__).resolve().parents[1])
+if _TESTS_ROOT not in sys.path:
+    sys.path.insert(0, _TESTS_ROOT)
+
+from harness import (  # noqa: E402
+    INVENTORY_DIR,
+    PROTECTED_BASE,
+    REPO_ROOT,
+    HarnessError,
+    YAMLLoadError,
+    dump_yaml,
+    git_head,
+    load_yaml,
+    write_text,
+)
+from harness.layouts import (  # noqa: E402
+    SourceLine,
+    Token,
+    fixed_format_lines,
+    join_continuations,
+    mask_literals,
+    read_source_lines,
+)
+from harness.layouts import tokenize as _tokenize_lines  # noqa: E402
+
+__all__ = [
+    "ACTIVATIONS",
+    "AREAS",
+    "INTERFACE_PATTERNS",
+    "INVENTORY_FILE",
+    "InventoryError",
+    "ITEM_FIELDS",
+    "KINDS",
+    "LEVELS",
+    "PROTECTED_BASE",
+    "REPORT_FIELDS",
+    "SOURCE_KINDS",
+    "STATUSES",
+    "SourceLine",
+    "append_closures",
+    "append_items",
+    "by_id",
+    "check",
+    "copy_closure",
+    "freeze",
+    "generate_items",
+    "header_from_items",
+    "is_source_item",
+    "item_area",
+    "item_ids",
+    "items",
+    "load",
+    "main",
+    "next_id",
+    "resolve_copies",
+    "withdraw_closures",
+    "write",
+]
+
+# --------------------------------------------------------------------------
+# Contract
+# --------------------------------------------------------------------------
+
+INVENTORY_FILE = INVENTORY_DIR / "inventory.yaml"
+
+AREAS = (
+    "SEC", "MNU", "USR", "ACT", "CRD", "TRN", "BIL", "RPT",
+    "FIN", "DAT", "UTL", "CFG", "LAY", "DTA", "BAT",
+)
+KINDS = (
+    "program", "job", "transaction", "map", "rule", "calculation",
+    "report", "interface", "layout", "recovery", "config",
+)
+SOURCE_KINDS = ("program", "job", "config", "transaction", "map", "layout", "interface")
+ACTIVATIONS = ("always", "conditional", "unreachable", "unused")
+LEVELS = ("unit", "integration", "e2e")
+STATUSES = ("verified", "failing", "blocked", "implemented-unexecuted", "not-covered")
+ITEM_FIELDS = (
+    "id", "kind", "name", "source", "description", "activation", "level",
+    "scenario_ids", "status", "gap_ids",
+)
+# Rewritten by harness/report.py from scenarios, results and gaps.yaml; the
+# drift check ignores them.
+REPORT_FIELDS = ("scenario_ids", "status", "gap_ids")
+
+ID_RE = re.compile(r"^INV-(" + "|".join(AREAS) + r")-(\d{3})$")
+_GAP_RE = re.compile(r"^GAP-(DOC|DEF|STB|MIS|INF|UNC)-\d{3}$")
+
+# Searches for external interfaces (Db2, IMS, MQ). None occurs at the
+# protected base; a hit that no inventory item cites fails the drift check.
+INTERFACE_PATTERNS = (
+    r"EXEC\s+SQL",
+    r"EXEC\s+DLI",
+    r"CBLTDLI",
+    r"AIBTDLI",
+    r"MQPUT",
+    r"MQGET",
+    r"MQOPEN",
+    r"\bCSQ\w*",
+)
+INTERFACE_SEARCH_DIRS = ("app/cbl", "app/cpy", "app/jcl", "app/proc", "app/csd")
+# The fixed-format COBOL among them, searched as code as well.
+INTERFACE_CODE_DIRS = ("app/cbl", "app/cpy")
+
+UNIKIX_ZIP = "samples/m2/unikix/UniKix_CardDemo_runtime_v1.zip"
+FCT_MEMBER = "migrated_app/catlg/tpe/fct.lst"
+CSD_PATH = "app/csd/CARDDEMO.CSD"
+README_PATH = "README.md"
+
+# CICS-supplied copybooks: not in the repository and not inventoried.
+CICS_SUPPLIED_COPYBOOKS = frozenset({"DFHAID", "DFHBMSCA"})
+COPYBOOK_DIRS = ("app/cpy", "app/cpy-bms")
+
+
+class InventoryError(HarnessError):
+    """The repository, the inventory file or an extraction anchor does not
+    have the shape the inventory rules expect."""
+
+
+# Values from the inventory file are shown abbreviated: YAML aliases can make
+# a small file hold a structure whose full repr would never finish.
+_REPR = reprlib.Repr()
+_REPR.maxlevel = 3
+_REPR.maxlist = _REPR.maxtuple = _REPR.maxdict = _REPR.maxset = 4
+_REPR.maxstring = 200
+_REPR.maxother = 80
+
+
+def _shown(value: Any) -> str:
+    return _REPR.repr(value)
+
+
+# --------------------------------------------------------------------------
+# Areas and owners of the source items
+# --------------------------------------------------------------------------
+
+# Programs per area, in inventory order. Batch units are unit level, the
+# online programs (all CO*) end to end.
+PROGRAM_AREAS: dict[str, tuple[str, ...]] = {
+    "SEC": ("COSGN00C",),
+    "MNU": ("COMEN01C", "COADM01C"),
+    "USR": ("COUSR00C", "COUSR01C", "COUSR02C", "COUSR03C"),
+    "ACT": ("COACTVWC", "COACTUPC"),
+    "CRD": ("COCRDLIC", "COCRDSLC", "COCRDUPC"),
+    "TRN": ("COTRN00C", "COTRN01C", "COTRN02C", "CBTRN01C", "CBTRN02C"),
+    "BIL": ("COBIL00C",),
+    "RPT": ("CORPT00C", "CBTRN03C", "CBSTM03A", "CBSTM03B"),
+    "FIN": ("CBACT04C",),
+    "DAT": ("CBACT01C", "CBACT02C", "CBACT03C", "CBCUS01C"),
+    "UTL": ("CSUTLDTC",),
+}
+ONLINE_PROGRAMS = tuple(
+    name for names in PROGRAM_AREAS.values() for name in names if name.startswith("CO")
+)
+SIGNON_PROGRAM = "COSGN00C"
+
+# Jobs (app/jcl) and procs (app/proc) per area, in inventory order.
+JOB_AREAS: dict[str, tuple[str, ...]] = {
+    "TRN": ("POSTTRAN",),
+    "RPT": ("TRANREPT", "CREASTMT", "PRTCATBL"),
+    "FIN": ("INTCALC",),
+    "DAT": (
+        "ACCTFILE", "CARDFILE", "COMBTRAN", "CUSTFILE", "DALYREJS", "DEFCUST",
+        "DEFGDGB", "DISCGRP", "DUSRSECJ", "READACCT", "READCARD", "READCUST",
+        "READXREF", "REPTFILE", "TCATBALF", "TRANBKP", "TRANCATG", "TRANFILE",
+        "TRANIDX", "TRANTYPE", "XREFFILE",
+    ),
+    "CFG": ("CBADMCDJ", "OPENFIL", "CLOSEFIL"),
+}
+PROC_AREAS: dict[str, tuple[str, ...]] = {"RPT": ("TRANREPT",), "DAT": ("REPROC",)}
+CONTROL_CARD_AREAS: dict[str, tuple[str, ...]] = {"DAT": ("REPROCT",)}
+
+# Copybooks whose lowest executing level is not the one their copy graph
+# gives. CSUSR01Y is copied only by online programs, but its records are
+# decoded in the DUSRSECJ job scenario, so integration executes it first.
+LAYOUT_LEVEL_OVERRIDES = {"CSUSR01Y": "integration"}
+LAYOUT_LEVEL_REASONS = {
+    "CSUSR01Y": "Its USRSEC records are first decoded in the DUSRSECJ job scenario, the lowest level that executes it.",
+}
+
+# Fixed record lengths of the binary EBCDIC data files, from the copybooks
+# and LISTCAT; the source range of these items is in records.
+EBCDIC_RECORD_LENGTHS = {
+    "AWS.M2.CARDDEMO.ACCDATA.PS": 300,
+    "AWS.M2.CARDDEMO.ACCTDATA.PS": 300,
+    "AWS.M2.CARDDEMO.CARDDATA.PS": 150,
+    "AWS.M2.CARDDEMO.CARDXREF.PS": 50,
+    "AWS.M2.CARDDEMO.CUSTDATA.PS": 500,
+    "AWS.M2.CARDDEMO.DALYTRAN.PS": 350,
+    "AWS.M2.CARDDEMO.DALYTRAN.PS.INIT": 350,
+    "AWS.M2.CARDDEMO.DISCGRP.PS": 50,
+    "AWS.M2.CARDDEMO.TCATBALF.PS": 50,
+    "AWS.M2.CARDDEMO.TRANCATG.PS": 60,
+    "AWS.M2.CARDDEMO.TRANTYPE.PS": 60,
+    "AWS.M2.CARDDEMO.USRSEC.PS": 80,
+}
+# EBCDIC files whose fixtures only job scenarios load: USRSEC.PS is the
+# cross-checked source of the DUSRSECJ users, DALYTRAN.PS.INIT the
+# TRANSACT-INIT of the TRANFILE job and the job chain.
+DATA_LEVEL_OVERRIDES = {
+    "AWS.M2.CARDDEMO.USRSEC.PS": "integration",
+    "AWS.M2.CARDDEMO.DALYTRAN.PS.INIT": "integration",
+}
+
+
+# --------------------------------------------------------------------------
+# Source reading and COPY resolution
+# --------------------------------------------------------------------------
+#
+# Fixed-format COBOL is read by the shared layer in harness/layouts.py
+# (SourceLine, fixed_format_lines, join_continuations, mask_literals,
+# tokenize); its HarnessError reaches the callers of this module as the
+# InventoryError they handle.
+
+
+@contextlib.contextmanager
+def _inventory_errors() -> Iterator[None]:
+    """Raise a HarnessError of the shared layer as an InventoryError."""
+    try:
+        yield
+    except InventoryError:
+        raise
+    except HarnessError as exc:
+        raise InventoryError(str(exc)) from exc
+
+
+def _relative(path: Path, root: Path) -> str:
+    try:
+        return path.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError:
+        raise InventoryError(f"{path} lies outside the repository {root}") from None
+
+
+def _os_reason(exc: OSError) -> str:
+    return exc.strerror or str(exc)
+
+
+def read_lines(path: Path) -> list[str]:
+    """The lines of a text file read as latin-1, without line terminators or
+    ``\\r``, with tabs expanded to the cobc tab width. A missing or unreadable
+    file raises InventoryError."""
+    try:
+        with _inventory_errors():
+            return read_source_lines(path)
+    except OSError as exc:
+        raise InventoryError(f"cannot read {path}: {_os_reason(exc)}") from exc
+
+
+def _directory_entries(folder: Path) -> list[Path]:
+    """The entries of ``folder``, sorted; a missing or unreadable directory
+    raises InventoryError."""
+    try:
+        return sorted(folder.iterdir())
+    except OSError as exc:
+        raise InventoryError(f"cannot list {folder}: {_os_reason(exc)}") from exc
+
+
+def _regular_files(folder: Path) -> list[Path]:
+    """The regular files directly in ``folder``, sorted."""
+    entries = _directory_entries(folder)
+    try:
+        return [path for path in entries if path.is_file()]
+    except OSError as exc:
+        raise InventoryError(f"cannot read an entry of {folder}: {_os_reason(exc)}") from exc
+
+
+# What zipfile raises for a missing, truncated or damaged archive or member:
+# a bad header or CRC, a corrupt deflate stream, a damaged compression method
+# or encryption flag, or a corrupt end-of-central-directory record.
+_ZIP_ERRORS = (
+    OSError, EOFError, zipfile.BadZipFile, zlib.error, NotImplementedError, RuntimeError, ValueError,
+)
+
+
+# The UniKix zip is 434,174 bytes, and fct.lst, the member the inventory
+# cites, 938 (its largest member is 186,302). Both bounds lie far above these
+# and far below what reading a zip, or one member, into memory would exhaust.
+_ZIP_MAX_ARCHIVE_BYTES = 16 * 1024 * 1024
+_ZIP_MAX_MEMBER_BYTES = 16 * 1024 * 1024
+
+
+def _zip_member(archive_path: Path, shown: str, member: str) -> bytes:
+    """The bytes of ``member`` of the zip at ``archive_path`` (``shown`` in
+    messages), read in memory. ``__MACOSX/`` AppleDouble entries and
+    directories are no members. A zip larger than ``_ZIP_MAX_ARCHIVE_BYTES``
+    is refused before ``zipfile`` parses it, and a member the central
+    directory gives as larger than ``_ZIP_MAX_MEMBER_BYTES`` before any of it
+    is read; ``zipfile`` yields no more of a member than that size. A missing
+    or oversized member, or a missing, unreadable, oversized or damaged zip,
+    raises InventoryError."""
+    if not member or member.startswith("__MACOSX/") or member.endswith("/"):
+        raise InventoryError(f"{shown}:{member} is not a member file of the zip")
+    try:
+        with open(archive_path, "rb") as handle:
+            size = os.fstat(handle.fileno()).st_size
+            if size > _ZIP_MAX_ARCHIVE_BYTES:
+                raise InventoryError(
+                    f"{shown} is {size} bytes, more than {_ZIP_MAX_ARCHIVE_BYTES}, the most the zip may hold"
+                )
+            with zipfile.ZipFile(handle) as archive:
+                if member not in archive.namelist():
+                    raise InventoryError(f"{shown} holds no {member}")
+                info = archive.getinfo(member)
+                if info.file_size > _ZIP_MAX_MEMBER_BYTES:
+                    raise InventoryError(
+                        f"{shown}:{member} is {info.file_size} bytes, more than {_ZIP_MAX_MEMBER_BYTES},"
+                        " the most a member may hold"
+                    )
+                return archive.read(info)
+    except _ZIP_ERRORS as exc:
+        reason = _os_reason(exc) if isinstance(exc, OSError) else str(exc) or type(exc).__name__
+        raise InventoryError(f"cannot read {member} from {shown}: {reason}") from exc
+
+
+def code_lines(path: Path, repo_root: Path = REPO_ROOT) -> list[SourceLine]:
+    """The code lines of a fixed-format COBOL file: comment lines (``*``,
+    ``/``, debugging ``D`` in column 7) and blank code areas are dropped, and
+    any other indicator than a blank or ``-`` raises InventoryError."""
+    rel = _relative(path, repo_root)
+    with _inventory_errors():
+        return fixed_format_lines(read_lines(path), rel)
+
+
+def comment_lines(path: Path, repo_root: Path = REPO_ROOT) -> list[SourceLine]:
+    """The comment lines of a fixed-format COBOL file, those with ``*`` or
+    ``/`` in column 7, each with its columns 8-72 as ``text``: what
+    ``code_lines`` drops, such as a statement that was commented out."""
+    rel = _relative(path, repo_root)
+    return [
+        SourceLine(rel, number, raw[7:72], bool(raw[7:11].strip()), False)
+        for number, raw in enumerate(read_lines(path), start=1)
+        if len(raw) > 7 and raw[6] in "*/"
+    ]
+
+
+_COPY_RE = re.compile(r"(?<![A-Za-z0-9-])COPY\s+(['\"]?)([A-Za-z0-9][A-Za-z0-9-]*)\1", re.I)
+_PERIOD_RE = re.compile(r"\.(?=\s|$)")
+_PSEUDO_PAIR_RE = re.compile(r"==(.*?)==\s+BY\s+==(.*?)==", re.S | re.I)
+
+
+def find_copybook(name: str, repo_root: Path = REPO_ROOT) -> Path:
+    """The copybook ``name`` in ``app/cpy`` or ``app/cpy-bms``, matched
+    without regard to case, with extension ``.cpy`` in any case."""
+    wanted = name.upper()
+    for directory in COPYBOOK_DIRS:
+        folder = repo_root / directory
+        if not folder.is_dir():
+            continue
+        for candidate in _directory_entries(folder):
+            if candidate.suffix.lower() == ".cpy" and candidate.stem.upper() == wanted:
+                return candidate
+    raise InventoryError(f"copybook {name} not found in {', '.join(COPYBOOK_DIRS)}")
+
+
+def _normalise_pseudo_text(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _apply_replacing(text: str, replacing: Sequence[tuple[str, str]]) -> str:
+    # The pseudo-texts the repository uses (CSSETATY's "(TESTVAR1)" and
+    # friends) are single text words replaced inside data names, which a plain
+    # substring replacement reproduces.
+    for old, new in replacing:
+        text = text.replace(old, new)
+    return text
+
+
+def _resolve(
+    path: Path,
+    repo_root: Path,
+    replacing: Sequence[tuple[str, str]],
+    stack: tuple[str, ...],
+    reached: set[Path],
+) -> list[SourceLine]:
+    lines = code_lines(path, repo_root)
+    if replacing:
+        lines = [
+            SourceLine(ln.path, ln.line, _apply_replacing(ln.text, replacing), ln.area_a, ln.continued)
+            for ln in lines
+        ]
+    with _inventory_errors():
+        masked = mask_literals(lines)
+    result: list[SourceLine] = []
+    index = 0
+    while index < len(lines):
+        source_line, mask = lines[index], masked[index]
+        match = _COPY_RE.search(mask)
+        if match is None:
+            result.append(source_line)
+            index += 1
+            continue
+        name = source_line.text[match.start(2):match.end(2)].upper()
+        # The COPY statement runs to the first separator period, possibly on a
+        # later line (REPLACING clauses, or a period written on its own line).
+        statement = [source_line.text[match.end():]]
+        statement_mask = [mask[match.end():]]
+        last = index
+        while _PERIOD_RE.search(statement_mask[-1]) is None:
+            last += 1
+            if last >= len(lines):
+                raise InventoryError(
+                    f"{source_line.path}:{source_line.line}: COPY {name} has no ending period"
+                )
+            statement.append(lines[last].text)
+            statement_mask.append(masked[last])
+        period = _PERIOD_RE.search(statement_mask[-1]).start()
+        clause = " ".join(statement[:-1] + [statement[-1][:period]])
+        trailing = statement[-1][period + 1:]
+        if last == index:
+            trailing = source_line.text[match.end() + period + 1:]
+        pairs: list[tuple[str, str]] = []
+        clause_words = clause.split()
+        if clause_words and clause_words[0].upper() == "REPLACING":
+            pairs = [
+                (_normalise_pseudo_text(old), _normalise_pseudo_text(new))
+                for old, new in _PSEUDO_PAIR_RE.findall(clause)
+            ]
+            if not pairs:
+                raise InventoryError(
+                    f"{source_line.path}:{source_line.line}: COPY {name} REPLACING "
+                    f"holds no ==pseudo-text== BY ==pseudo-text== pair"
+                )
+        elif clause.strip():
+            raise InventoryError(
+                f"{source_line.path}:{source_line.line}: unexpected text after COPY {name}: {clause.strip()!r}"
+            )
+        leading = source_line.text[:match.start()]
+        if leading.strip():
+            result.append(SourceLine(source_line.path, source_line.line, leading, source_line.area_a, False))
+        if name not in CICS_SUPPLIED_COPYBOOKS:
+            if name in stack:
+                raise InventoryError(f"COPY cycle: {' -> '.join(stack + (name,))}")
+            copybook = find_copybook(name, repo_root)
+            reached.add(copybook.resolve())
+            result.extend(_resolve(copybook, repo_root, pairs, stack + (name,), reached))
+        if trailing.strip():
+            end_line = lines[last]
+            result.append(SourceLine(end_line.path, end_line.line, trailing, False, False))
+        index = last + 1
+    return result
+
+
+def resolve_copies(program_path: str | Path, repo_root: Path = REPO_ROOT) -> list[SourceLine]:
+    """The code lines of ``program_path`` with every ``COPY`` statement
+    replaced, recursively, by the copybook it names (``REPLACING`` applied).
+
+    Each line keeps the file and line it came from, so behaviour carried by a
+    procedure-division copybook (``CSUTLDPY``, ``CSSTRPFY``, ``CSSETATY``) is
+    owned by the copying program but cited at the copybook. ``DFHAID`` and
+    ``DFHBMSCA`` are CICS-supplied and skipped.
+    """
+    path = Path(program_path)
+    if not path.is_absolute():
+        path = repo_root / path
+    stem = path.stem.upper()
+    return _resolve(path, repo_root, (), (stem,), set())
+
+
+def copy_closure(path: str | Path, repo_root: Path = REPO_ROOT) -> list[Path]:
+    """The program (or copybook) at ``path`` and every copybook its COPY
+    statements reach, as absolute paths, sorted."""
+    source = Path(path)
+    if not source.is_absolute():
+        source = repo_root / source
+    reached: set[Path] = {source.resolve()}
+    _resolve(source, repo_root, (), (source.stem.upper(),), reached)
+    return sorted(reached)
+
+
+# --------------------------------------------------------------------------
+# Tokens and the program model
+# --------------------------------------------------------------------------
+
+
+def tokenize(lines: Sequence[SourceLine]) -> list[Token]:
+    """Split resolved code lines into COBOL tokens: literals (continuations
+    joined, value unescaped), words, decimal numbers, picture strings and
+    punctuation."""
+    with _inventory_errors():
+        return _tokenize_lines(lines)
+
+
+# Words that begin or end a statement. A MOVE target list or a STRING
+# element list stops at the first of them.
+STATEMENT_WORDS = frozenset(
+    """
+    ACCEPT ADD ALTER CALL CANCEL CLOSE COMPUTE CONTINUE DELETE DISPLAY DIVIDE
+    ELSE EVALUATE EXEC EXIT GO GOBACK IF INITIALIZE INSPECT MERGE MOVE
+    MULTIPLY NEXT OPEN PERFORM READ RELEASE RETURN REWRITE SEARCH SET SORT
+    START STOP STRING SUBTRACT UNSTRING WHEN WRITE
+    END-ADD END-CALL END-COMPUTE END-DELETE END-DIVIDE END-EVALUATE END-EXEC
+    END-IF END-MULTIPLY END-PERFORM END-READ END-RETURN END-REWRITE
+    END-SEARCH END-START END-STRING END-SUBTRACT END-UNSTRING END-WRITE
+    """.split()
+)
+
+
+@dataclass(frozen=True)
+class Paragraph:
+    name: str
+    start: int  # index of the name token
+    end: int  # index one past the paragraph's last token
+    path: str
+    line: int
+
+
+@dataclass(frozen=True)
+class DataEntry:
+    level: int
+    name: str
+    start: int  # index of the level-number token
+    end: int  # index of the entry's closing period
+    values: tuple[Token, ...]  # VALUE/VALUES literals, in order
+    number: str | None  # a numeric VALUE, as written
+    parent: str | None  # nearest enclosing entry of a lower level
+
+
+@dataclass(frozen=True)
+class StringStatement:
+    start: int
+    end: int  # last token of the statement
+    target: str
+    parts: tuple[str, ...]  # literal text, or <NAME> for an identifier
+    names: tuple[str, ...]  # identifiers the statement concatenates
+
+
+class CobolProgram:
+    """A program after COPY resolution, tokenized, with its data entries and
+    procedure-division paragraphs, and the comment lines of its own file
+    (``comment_lines``) for the anchors that cite a commented-out
+    statement."""
+
+    def __init__(self, name: str, path: str, lines: list[SourceLine], comments: Sequence[SourceLine] = ()):
+        stray = [f"{line.path}:{line.line}" for line in comments if line.path != path]
+        if stray:
+            raise InventoryError(f"{path}: comment lines must come from the program's own file, not {stray[0]}")
+        self.name = name
+        self.path = path
+        self.lines = lines
+        self.comments = list(comments)
+        self.tokens = tokenize(lines)
+        self.words = [token.word for token in self.tokens]
+        self.proc_start = self._procedure_start()
+        self.data = self._data_entries()
+        self.data_by_name: dict[str, list[DataEntry]] = {}
+        for entry in self.data:
+            self.data_by_name.setdefault(entry.name, []).append(entry)
+        self.paragraphs = self._paragraphs()
+        self.paragraph_index = {para.name: number for number, para in enumerate(self.paragraphs)}
+        self._paragraph_starts = [para.start for para in self.paragraphs]
+        self.word_counts = Counter(word for word in self.words if word)
+
+    # -- structure ---------------------------------------------------------
+
+    def find_words(self, *words: str, start: int = 0, stop: int | None = None) -> int:
+        stop = len(self.tokens) if stop is None else stop
+        width = len(words)
+        for index in range(start, stop - width + 1):
+            if all(self.words[index + k] == words[k] for k in range(width)):
+                return index
+        return -1
+
+    def _procedure_start(self) -> int:
+        index = self.find_words("PROCEDURE", "DIVISION")
+        if index < 0:
+            raise InventoryError(f"{self.path}: no PROCEDURE DIVISION")
+        while index < len(self.tokens) and self.words[index] != ".":
+            index += 1
+        return index + 1
+
+    def _data_entries(self) -> list[DataEntry]:
+        begin = self.find_words("DATA", "DIVISION", stop=self.proc_start)
+        if begin < 0:
+            return []
+        entries: list[DataEntry] = []
+        open_levels: list[tuple[int, str]] = []
+        index = begin
+        while index < self.proc_start:
+            token = self.tokens[index]
+            starts_entry = token.word.isdigit() and self.words[index - 1] == "."
+            if not starts_entry or index + 1 >= self.proc_start:
+                index += 1
+                continue
+            level = int(token.word)
+            name = self.words[index + 1] or "FILLER"
+            end = index + 1
+            while end < self.proc_start and self.words[end] != ".":
+                end += 1
+            values: list[Token] = []
+            number: str | None = None
+            for position in range(index + 2, end):
+                if self.words[position] in ("VALUE", "VALUES"):
+                    if position + 1 < end and self.words[position + 1].isdigit():
+                        number = self.words[position + 1]
+                    for candidate in self.tokens[position + 1:end]:
+                        if candidate.literal:
+                            values.append(candidate)
+                        elif candidate.word not in (",", "IS", "ARE", "THRU", "THROUGH"):
+                            # A figurative constant, a number or the next
+                            # clause ends the list of literals.
+                            break
+                    break
+            if level in (66, 77) or level == 1:
+                open_levels = []
+            while open_levels and level != 88 and open_levels[-1][0] >= level:
+                open_levels.pop()
+            parent = open_levels[-1][1] if open_levels else None
+            entries.append(DataEntry(level, name, index, end, tuple(values), number, parent))
+            if level not in (66, 77, 88):
+                open_levels.append((level, name))
+            index = end + 1
+        return entries
+
+    def _paragraphs(self) -> list[Paragraph]:
+        starts: list[tuple[int, str]] = []
+        for index in range(self.proc_start, len(self.tokens) - 1):
+            token = self.tokens[index]
+            if not (token.first and token.area_a and token.word) or token.word in STATEMENT_WORDS:
+                continue
+            following = self.words[index + 1]
+            if following == "." or (following == "SECTION" and self.words[index + 2:index + 3] == ["."]):
+                starts.append((index, token.word))
+        paragraphs = []
+        for number, (start, name) in enumerate(starts):
+            end = starts[number + 1][0] if number + 1 < len(starts) else len(self.tokens)
+            token = self.tokens[start]
+            paragraphs.append(Paragraph(name, start, end, token.path, token.line))
+        return paragraphs
+
+    def paragraph_at(self, index: int) -> Paragraph | None:
+        number = bisect.bisect_right(self._paragraph_starts, index) - 1
+        return self.paragraphs[number] if number >= 0 else None
+
+    def paragraph(self, name: str) -> Paragraph:
+        try:
+            return self.paragraphs[self.paragraph_index[name.upper()]]
+        except KeyError:
+            raise InventoryError(f"{self.path}: paragraph {name} not found") from None
+
+    def constant(self, name: str) -> str | None:
+        """The first VALUE literal of the data item ``name``, if it has one."""
+        for entry in self.data_by_name.get(name.upper(), ()):
+            if entry.values:
+                return entry.values[0].value
+        return None
+
+    # -- statements --------------------------------------------------------
+
+    def statement_end(self, index: int) -> int:
+        """Index of the last token of the statement that starts at ``index``:
+        the token before the next statement word or separator period, or the
+        END-EXEC of an EXEC block."""
+        if self.words[index] == "EXEC":
+            end = self.find_words("END-EXEC", start=index)
+            if end < 0:
+                raise InventoryError(f"{self.path}: EXEC at line {self.tokens[index].line} has no END-EXEC")
+            return end
+        position = index + 1
+        while position < len(self.tokens):
+            word = self.words[position]
+            if word == "." or word in STATEMENT_WORDS:
+                return position - 1
+            position += 1
+        return len(self.tokens) - 1
+
+    def operands(self, start: int, stop: int) -> tuple[list[str], int]:
+        """Data names from ``start`` up to ``stop`` or the next statement word
+        or literal, skipping ``OF``/``IN`` qualifiers and parenthesised
+        subscripts and reference modifiers. Returns the names and the index
+        after the last one consumed."""
+        names: list[str] = []
+        position = start
+        while position < stop:
+            token = self.tokens[position]
+            word = token.word
+            if token.literal or word in STATEMENT_WORDS or word in (".", "DELIMITED", "INTO"):
+                break
+            if word in ("OF", "IN"):
+                position += 2
+                continue
+            if word == "(":
+                position = self.close_paren(position) + 1
+                continue
+            if word != ",":
+                names.append(word)
+            position += 1
+        return names, position
+
+    def close_paren(self, index: int) -> int:
+        depth = 0
+        for position in range(index, len(self.tokens)):
+            if self.words[position] == "(":
+                depth += 1
+            elif self.words[position] == ")":
+                depth -= 1
+                if depth == 0:
+                    return position
+        raise InventoryError(f"{self.path}: unbalanced parenthesis at line {self.tokens[index].line}")
+
+    def moves(self) -> list[tuple[int, int, Token, list[str]]]:
+        """Every ``MOVE`` of the procedure division as (start, end, sending
+        token, receiving data names)."""
+        result = []
+        for index in range(self.proc_start, len(self.tokens) - 2):
+            if self.words[index] != "MOVE":
+                continue
+            to_index = index + 1
+            while to_index < len(self.tokens) and self.words[to_index] != "TO":
+                if self.words[to_index] in STATEMENT_WORDS or self.words[to_index] == ".":
+                    to_index = -1
+                    break
+                to_index += 1
+            if to_index < 0 or to_index >= len(self.tokens):
+                continue
+            targets, after = self.operands(to_index + 1, len(self.tokens))
+            result.append((index, max(after - 1, to_index), self.tokens[index + 1], targets))
+        return result
+
+    def strings(self) -> list[StringStatement]:
+        """Every ``STRING`` statement of the procedure division."""
+        result = []
+        for index in range(self.proc_start, len(self.tokens)):
+            if self.words[index] != "STRING":
+                continue
+            parts: list[str] = []
+            names: list[str] = []
+            position = index + 1
+            while position < len(self.tokens) and self.words[position] != "INTO":
+                token = self.tokens[position]
+                word = token.word
+                if word == "." or (word in STATEMENT_WORDS and word != "STRING"):
+                    raise InventoryError(f"{self.path}:{token.line}: STRING without INTO")
+                if word == "DELIMITED":
+                    position += 2 if self.words[position + 1] == "BY" else 1
+                    if self.words[position] in ("ALL",):
+                        position += 1
+                    position += 1
+                    continue
+                if token.literal:
+                    parts.append(token.value)
+                    position += 1
+                    continue
+                if word == "FUNCTION":
+                    position += 2
+                    if self.words[position] == "(":
+                        inner = [w for w in self.words[position + 1:self.close_paren(position)] if w and w[0].isalpha()]
+                        name = inner[0] if inner else self.words[position - 1]
+                        parts.append(f"<{name}>")
+                        names.append(name)
+                        position = self.close_paren(position) + 1
+                    continue
+                if word in ("OF", "IN"):
+                    position += 2
+                    continue
+                if word == "(":
+                    position = self.close_paren(position) + 1
+                    continue
+                if word != ",":
+                    parts.append(f"<{word}>")
+                    names.append(word)
+                position += 1
+            if position >= len(self.tokens):
+                raise InventoryError(f"{self.path}: STRING at line {self.tokens[index].line} has no INTO")
+            targets, after = self.operands(position + 1, len(self.tokens))
+            end = after - 1
+            if after < len(self.tokens) and self.words[after] == "END-STRING":
+                end = after
+            result.append(StringStatement(index, end, targets[0] if targets else "", tuple(parts), tuple(names)))
+        return result
+
+    def exec_blocks(self) -> list[tuple[int, int]]:
+        """(start, end) token indexes of every ``EXEC ... END-EXEC`` block."""
+        blocks = []
+        index = self.proc_start
+        while index < len(self.tokens):
+            if self.words[index] == "EXEC":
+                end = self.statement_end(index)
+                blocks.append((index, end))
+                index = end + 1
+            else:
+                index += 1
+        return blocks
+
+    def span(self, start: int, end: int) -> tuple[str, int, int]:
+        """(path, first line, last line) of tokens ``start``..``end``, in the
+        file of the first token."""
+        path = self.tokens[start].path
+        lines = [token.line for token in self.tokens[start:end + 1] if token.path == path]
+        return path, min(lines), max(lines)
+
+    def paragraph_span(self, name: str) -> tuple[str, int, int]:
+        para = self.paragraph(name)
+        return self.span(para.start, para.end - 1)
+
+    def own_lines(self) -> list[SourceLine]:
+        """The program's lines that come from its own file, not a copybook."""
+        return [line for line in self.lines if line.path == self.path]
+
+
+def cite(path: str, ranges: Iterable[tuple[int, int]]) -> str:
+    """``path:lines`` with the line ranges sorted and merged, a single line
+    written as ``n`` and a range as ``first-last``."""
+    merged: list[list[int]] = []
+    for first, last in sorted(ranges):
+        if merged and first <= merged[-1][1] + 1:
+            merged[-1][1] = max(merged[-1][1], last)
+        else:
+            merged.append([first, last])
+    if not merged:
+        raise InventoryError(f"no line range to cite in {path}")
+    text = ",".join(f"{a}" if a == b else f"{a}-{b}" for a, b in merged)
+    return f"{path}:{text}"
+
+
+def cite_span(span: tuple[str, int, int]) -> str:
+    path, first, last = span
+    return cite(path, [(first, last)])
+
+
+def _line_list(lines: Iterable[int]) -> str:
+    ordered = sorted(set(lines))
+    return ", ".join(str(n) for n in ordered)
+
+
+# --------------------------------------------------------------------------
+# Online rule 3: COACTUPC field edits
+# --------------------------------------------------------------------------
+
+FIELD_NAME_VARIABLE = "WS-EDIT-VARIABLE-NAME"
+FIELD_EDIT_MESSAGE = "WS-RETURN-MSG"
+
+# Predicate labels of each field-edit routine, in the textual order of the
+# routine's STRING INTO WS-RETURN-MSG statements (one per predicate). The
+# extraction finds the statements; the table only names them. A routine
+# holding more statements than labels falls back to the message text.
+PREDICATE_LABELS: dict[str, tuple[str, ...]] = {
+    "1215-EDIT-MANDATORY": ("supplied",),
+    "1220-EDIT-YESNO": ("supplied", "Y or N"),
+    "1225-EDIT-ALPHA-REQD": ("supplied", "alphabets only"),
+    "1230-EDIT-ALPHANUM-REQD": ("supplied", "numbers or alphabets only"),
+    "1235-EDIT-ALPHA-OPT": ("alphabets only",),
+    "1240-EDIT-ALPHANUM-OPT": ("numbers or alphabets only",),
+    "1245-EDIT-NUM-REQD": ("supplied", "all numeric", "not zero"),
+    "1250-EDIT-SIGNED-9V2": ("supplied", "valid signed amount"),
+    "EDIT-AREA-CODE": (
+        "area code supplied",
+        "area code a 3-digit number",
+        "area code not zero",
+        "area code a North America general-purpose code",
+    ),
+    "EDIT-US-PHONE-PREFIX": ("prefix supplied", "prefix a 3-digit number", "prefix not zero"),
+    "EDIT-US-PHONE-LINENUM": (
+        "line number supplied",
+        "line number a 4-digit number",
+        "line number not zero",
+    ),
+    "1265-EDIT-US-SSN": ("not 000, 666 or 900-999",),
+    "1270-EDIT-US-STATE-CD": ("a valid state code",),
+    "1275-EDIT-FICO-SCORE": ("300 to 850",),
+    "1280-EDIT-US-STATE-ZIP-CD": ("zip code valid for the state",),
+    "EDIT-YEAR-CCYY": ("year supplied", "year a 4-digit number", "century 19 or 20"),
+    "EDIT-MONTH": ("month supplied", "month 1-12", "month numeric"),
+    "EDIT-DAY": ("day supplied", "day numeric", "day 1-31"),
+    "EDIT-DAY-MONTH-YEAR": (
+        "no 31st in a 30-day month",
+        "no 30th of February",
+        "no 29th of February outside a leap year",
+    ),
+    "EDIT-DATE-LE": ("CSUTLDTC severity 0 for mask YYYYMMDD",),
+    "EDIT-DATE-OF-BIRTH": ("earlier than the run date",),
+}
+# Cross-field edits compose their message without the field name.
+CROSS_FIELD_LABELS = {"1280-EDIT-US-STATE-ZIP-CD": "State with Zip"}
+# Inputs a PERFORM range accepts before its edit routines run: (head
+# paragraph, exit paragraph, the words by which an IF of the head paragraph
+# accepts the input and leaves the range, the condition under which the
+# routines' predicates apply, the acceptance, {field} naming the field).
+# The predicates of the paragraphs after the head, up to the exit, carry
+# both while the words remain.
+PREDICATE_GUARDS: tuple[tuple[str, str, tuple[str, ...], str, str], ...] = (
+    (
+        "1260-EDIT-US-PHONE-NUM", "1260-EDIT-US-PHONE-NUM-EXIT",
+        ("SET", "WS-EDIT-US-PHONE-IS-VALID", "TO", "TRUE", "GO", "TO", "EDIT-US-PHONE-EXIT"),
+        "once any part of it is entered",
+        "A wholly blank {field} (area code, prefix and line number all blank) is accepted without these edits",
+    ),
+)
+
+
+@dataclass(frozen=True)
+class Predicate:
+    field: str | None  # None: the routine is performed for no field
+    # The field name as the message shows it: the MOVE into
+    # WS-EDIT-VARIABLE-NAME cuts the literal to that item's width.
+    shown_field: str | None
+    routine: str  # paragraph holding the STRING statement
+    ordinal: int  # position among that paragraph's predicates
+    label: str
+    message: str  # the composed text, field name included when used
+    names_field: bool
+    span: tuple[str, int, int]
+
+
+def _message_strings(program: CobolProgram, target: str) -> dict[str, list[StringStatement]]:
+    by_paragraph: dict[str, list[StringStatement]] = {}
+    for statement in program.strings():
+        if statement.target == target:
+            para = program.paragraph_at(statement.start)
+            if para is not None:
+                by_paragraph.setdefault(para.name, []).append(statement)
+    return by_paragraph
+
+
+def _predicate_label(routine: str, ordinal: int, statement: StringStatement) -> str:
+    labels = PREDICATE_LABELS.get(routine, ())
+    if ordinal < len(labels):
+        return labels[ordinal]
+    return "".join(p for p in statement.parts if not p.startswith("<")).strip(" :")
+
+
+_ALPHANUMERIC_PICTURE_RE = re.compile(r"(?:[XA](?:\(\d+\))?)+")
+_PICTURE_SYMBOL_RE = re.compile(r"([XA])(?:\((\d+)\))?")
+
+
+def _alphanumeric_width(program: CobolProgram, name: str) -> tuple[int, bool] | None:
+    """(character width, JUSTIFIED RIGHT) of the alphanumeric or alphabetic
+    data item ``name``, read from its PICTURE (``X(25)``, ``XXX``,
+    ``A(2)X``); None when the item has no such single definition, so a MOVE
+    into it is not cut."""
+    found: set[tuple[int, bool]] = set()
+    for entry in program.data_by_name.get(name.upper(), ()):
+        clauses = program.words[entry.start + 2:entry.end]
+        pictures = [clauses[k + 1] for k in range(len(clauses) - 1) if clauses[k] in ("PIC", "PICTURE")]
+        if not pictures or not _ALPHANUMERIC_PICTURE_RE.fullmatch(pictures[0]):
+            return None
+        width = sum(int(count or 1) for _symbol, count in _PICTURE_SYMBOL_RE.findall(pictures[0]))
+        found.add((width, any(word in ("JUST", "JUSTIFIED") for word in clauses)))
+    return found.pop() if len(found) == 1 else None
+
+
+def _predicate_guard(program: CobolProgram, routine: str) -> tuple[str, str] | None:
+    """The condition and the acceptance sentence, ``{field}`` still in it and
+    the guard's paragraph and lines at its end, of the PREDICATE_GUARDS entry
+    whose PERFORM range holds ``routine`` after its head paragraph; None when
+    no entry does or the head paragraph no longer accepts the input under an
+    IF."""
+    index = program.paragraph_index.get(routine)
+    if index is None:
+        return None
+    for head_name, exit_name, words, condition, acceptance in PREDICATE_GUARDS:
+        head_index = program.paragraph_index.get(head_name)
+        exit_index = program.paragraph_index.get(exit_name)
+        if head_index is None or exit_index is None or not head_index < index <= exit_index:
+            continue
+        head = program.paragraphs[head_index]
+        found = program.find_words(*words, start=head.start, stop=head.end)
+        if found < 0:
+            continue
+        # The innermost IF still open at the words, within their sentence.
+        guard, depth = -1, 0
+        for position in range(found - 1, head.start, -1):
+            word = program.words[position]
+            if word == ".":
+                break
+            if word == "END-IF":
+                depth += 1
+            elif word == "IF":
+                if depth == 0:
+                    guard = position
+                    break
+                depth -= 1
+        if guard < 0:
+            continue
+        _path, first, last = program.span(guard, found + len(words) - 1)
+        lines = f"line {first}" if first == last else f"lines {first}-{last}"
+        return condition, f"{acceptance} ({head_name}, {lines})."
+    return None
+
+
+def field_edit_predicates(program: CobolProgram) -> tuple[list[Predicate], set[str]]:
+    """The (field, predicate) pairs of a program whose edit routines take the
+    field name in ``WS-EDIT-VARIABLE-NAME``, and the paragraphs that compose
+    those messages.
+
+    The walk starts at the paragraph holding the first ``MOVE '<field>' TO
+    WS-EDIT-VARIABLE-NAME`` and follows ``PERFORM x [THRU y]`` (a range of
+    paragraphs in source order) in textual order. Every ``STRING ... INTO
+    WS-RETURN-MSG`` met while a field name is set is one predicate of that
+    field; a ``MOVE`` inside a routine renames the field (the SSN parts).
+    The field keeps the full literal, while the message shows what the
+    routines' ``FUNCTION TRIM`` finds in ``WS-EDIT-VARIABLE-NAME``: the
+    literal cut to that item's PICTURE width. Routines composing such
+    messages that nothing performs yield predicates with no field.
+    """
+    label_moves = [
+        index for index, _end, sending, targets in program.moves()
+        if sending.literal and targets[:1] == [FIELD_NAME_VARIABLE]
+    ]
+    if not label_moves:
+        return [], set()
+    strings = _message_strings(program, FIELD_EDIT_MESSAGE)
+    ordinal_of = {
+        statement.start: (para, number)
+        for para, statements in strings.items()
+        for number, statement in enumerate(statements)
+    }
+    string_at = {statement.start: statement for statements in strings.values() for statement in statements}
+    predicates: list[Predicate] = []
+    seen: set[tuple[str | None, int]] = set()
+    composing: set[str] = set()
+    state: dict[str, str | None] = {"field": None, "shown": None}
+    receiver = _alphanumeric_width(program, FIELD_NAME_VARIABLE)
+
+    def walk_range(first: int, last: int, stack: tuple[str, ...]) -> None:
+        for para in program.paragraphs[first:last + 1]:
+            walk(para, stack)
+
+    def walk(para: Paragraph, stack: tuple[str, ...]) -> None:
+        if para.name in stack:
+            return
+        position = para.start + 2
+        while position < para.end:
+            word = program.words[position]
+            if (
+                word == "MOVE"
+                and program.tokens[position + 1].literal
+                and program.words[position + 2] == "TO"
+                and program.words[position + 3] == FIELD_NAME_VARIABLE
+            ):
+                literal = program.tokens[position + 1].value
+                state["field"] = literal.strip()
+                if receiver is not None:
+                    width, right = receiver
+                    literal = literal[-width:] if right else literal[:width]
+                state["shown"] = literal.strip()
+                position += 4
+                continue
+            if word == "PERFORM" and program.words[position + 1] in program.paragraph_index:
+                first = program.paragraph_index[program.words[position + 1]]
+                last = first
+                position += 2
+                if program.words[position] in ("THRU", "THROUGH"):
+                    last = program.paragraph_index.get(program.words[position + 1], first)
+                    position += 2
+                walk_range(first, last, stack + (para.name,))
+                continue
+            if word == "STRING" and position in string_at and state["field"] is not None:
+                statement = string_at[position]
+                routine, ordinal = ordinal_of[position]
+                names_field = FIELD_NAME_VARIABLE in statement.names
+                field_name = state["field"] if names_field else CROSS_FIELD_LABELS.get(routine, routine)
+                shown_name = state["shown"] if names_field else field_name
+                key = (field_name, statement.start)
+                if key not in seen:
+                    seen.add(key)
+                    composing.add(routine)
+                    template = "".join(p for p in statement.parts if p != f"<{FIELD_NAME_VARIABLE}>")
+                    message = f"{shown_name}{template}" if names_field else template
+                    predicates.append(
+                        Predicate(
+                            field_name, shown_name, routine, ordinal, _predicate_label(routine, ordinal, statement),
+                            message, names_field, program.span(statement.start, statement.end),
+                        )
+                    )
+                position = statement.end + 1
+                continue
+            position += 1
+
+    walk(program.paragraph_at(label_moves[0]), ())
+    performed = {
+        program.words[index + 1]
+        for index in range(program.proc_start, len(program.tokens) - 1)
+        if program.words[index] == "PERFORM"
+    }
+    for para_name, statements in strings.items():
+        if para_name in composing or para_name in performed:
+            continue
+        if not any(FIELD_NAME_VARIABLE in statement.names for statement in statements):
+            continue
+        composing.add(para_name)
+        for ordinal, statement in enumerate(statements):
+            template = "".join(p for p in statement.parts if p != f"<{FIELD_NAME_VARIABLE}>")
+            predicates.append(
+                Predicate(
+                    None, None, para_name, ordinal, _predicate_label(para_name, ordinal, statement),
+                    template, True, program.span(statement.start, statement.end),
+                )
+            )
+    return predicates, composing
+
+
+# --------------------------------------------------------------------------
+# Online rule 1: screen messages
+# --------------------------------------------------------------------------
+
+MESSAGE_FIELDS = frozenset(
+    {"WS-MESSAGE", "WS-RETURN-MSG", "ERRMSGO", "WS-ERROR-MSG", "CCARD-ERROR-MSG", "WS-INFO-MSG", "ABEND-MSG"}
+)
+MESSAGE_88_PARENTS = frozenset({"WS-RETURN-MSG", "WS-INFO-MSG", "WS-ERROR-MSG"})
+MIN_MESSAGE_LENGTH = 6
+COMMON_MESSAGE_COPYBOOK = "app/cpy/CSMSG01Y.cpy"
+FILE_ERROR_FIELD = "ERROR-FILE"
+FILE_ERROR_OPERATION = "ERROR-OPNAME"
+FILE_ERROR_MESSAGE = "WS-FILE-ERROR-MESSAGE"
+
+# A message is a recovery item when it reports a record not found, a lookup
+# or I/O failure, a lock or concurrency failure, a failed update, or an
+# abend. A duplicate key on WRITE ('... already exist') and an empty browse
+# for a filter ('NO RECORDS FOUND FOR THIS SEARCH CONDITION.') are business
+# outcomes of the input, so they stay rules.
+_RECOVERY_MESSAGE_RE = re.compile(
+    r"not\s+found|did\s+not\s+find|unable\s+to|error\s+reading|file\s+error"
+    r"|could\s+not\s+lock|changed\s+by\s+some\s*one|failed|unsuccessful|abend|unexpected",
+    re.I,
+)
+
+
+@dataclass
+class Message:
+    text: str
+    origin: str  # literal, condition, common, string, file-error
+    position: int  # token index of the first site, for ordering
+    span: tuple[str, int, int]  # first site
+    sites: list[int] = field(default_factory=list)  # lines in the program's own file
+    targets: set[str] = field(default_factory=set)
+    conditions: list[str] = field(default_factory=list)
+    condition_lines: list[tuple[str, int, int]] = field(default_factory=list)
+    unused: bool = False
+    context: str = ""  # paragraph of a STRING or file-error site
+    constant: str = ""  # CSMSG01Y constant name
+    sinks: set[str] = field(default_factory=set)  # where it is shown: map fields, "@text", "@abend"
+
+
+def classify_message(message: Message) -> str:
+    if message.origin == "file-error" or "ABEND-MSG" in message.targets:
+        return "recovery"
+    return "recovery" if _RECOVERY_MESSAGE_RE.search(message.text) else "rule"
+
+
+def _condition_references(program: CobolProgram, name: str) -> int:
+    definitions = len(program.data_by_name.get(name, ()))
+    return program.word_counts[name] - definitions
+
+
+def _governing_command(program: CobolProgram, index: int, lower: int) -> tuple[str, int] | None:
+    """The CICS command whose RESP the EVALUATE enclosing ``index`` tests:
+    the EXEC block just before that EVALUATE, as (verb, line)."""
+    depth = 0
+    for position in range(index - 1, lower - 1, -1):
+        word = program.words[position]
+        if word == "END-EVALUATE":
+            depth += 1
+        elif word == "EVALUATE":
+            if depth == 0:
+                for back in range(position - 1, lower - 1, -1):
+                    if program.words[back] == "EXEC" and program.words[back + 1] == "CICS":
+                        verb = program.words[back + 2]
+                        return verb, program.tokens[back + 2].line
+                return None
+            depth -= 1
+    return None
+
+
+# Where a message is shown. A BMS output field is a data name ending in 'O'
+# that a symbolic map copybook defines; it is recorded without the 'O', as
+# the map field the screen shows (ERRMSG, INFOMSG). A message sent with EXEC
+# CICS SEND TEXT is an unformatted screen, observed as '@map: TEXT' with its
+# '@text'; a message moved to ABEND-MSG is part of the abend data.
+_SYMBOLIC_MAP_DIR = "app/cpy-bms/"
+_TEXT_SINK = "@text"
+_ABEND_SINK = "@abend"
+_ABEND_MESSAGE_FIELD = "ABEND-MSG"
+# Phrases of the sinks, in the order a description lists them. Any other map
+# field is 'the screen field <NAME>', listed between these two groups.
+_MAP_SINK_PHRASES = {
+    "ERRMSG": "the screen message (ERRMSG)",
+    "INFOMSG": "the information message (INFOMSG)",
+}
+_OTHER_SINK_PHRASES = {
+    _TEXT_SINK: "the unformatted SEND TEXT screen (@map TEXT, @text)",
+    _ABEND_SINK: "the abend data sent to the terminal",
+}
+
+
+def _field_sinks(program: CobolProgram) -> Callable[[str], set[str]]:
+    """A function giving where the value of a message field is shown when no
+    SEND TEXT sends it: the abend data for ABEND-MSG, otherwise the map
+    output fields the value reaches through MOVEs of one identifier to
+    another, each without its trailing 'O'."""
+    edges: dict[str, set[str]] = {}
+    for _start, _end, sending, targets in program.moves():
+        if not sending.literal:
+            edges.setdefault(sending.word, set()).update(targets)
+    reached: dict[str, frozenset[str]] = {}
+
+    def is_map_output(name: str) -> bool:
+        return name.endswith("O") and any(
+            program.tokens[entry.start].path.startswith(_SYMBOLIC_MAP_DIR)
+            for entry in program.data_by_name.get(name, ())
+        )
+
+    def sinks(name: str) -> set[str]:
+        if name == _ABEND_MESSAGE_FIELD:
+            return {_ABEND_SINK}
+        if name not in reached:
+            seen: set[str] = set()
+            found: set[str] = set()
+            pending = [name]
+            while pending:
+                current = pending.pop()
+                if current in seen:
+                    continue
+                seen.add(current)
+                if is_map_output(current):
+                    found.add(current[:-1])
+                else:
+                    pending.extend(edges.get(current, ()))
+            reached[name] = frozenset(found)
+        return set(reached[name])
+
+    return sinks
+
+
+def _text_senders(program: CobolProgram) -> dict[str, set[str]]:
+    """Paragraph name -> the fields that its EXEC CICS SEND TEXT blocks send,
+    as their FROM option names them."""
+    senders: dict[str, set[str]] = {}
+    for start, end in program.exec_blocks():
+        if program.words[start + 1:start + 3] != ["CICS", "SEND"]:
+            continue
+        options: dict[str, int] = {}  # option word -> its index, outside parentheses
+        position = start + 3
+        while position < end:
+            if program.words[position] == "(":
+                position = program.close_paren(position) + 1
+                continue
+            options.setdefault(program.words[position], position)
+            position += 1
+        if "TEXT" not in options:
+            continue
+        line = program.tokens[start].line
+        opening = options.get("FROM", -1) + 1
+        if opening <= 0 or program.words[opening] != "(":
+            raise InventoryError(f"{program.path}: SEND TEXT at line {line} has no FROM data area")
+        names, _after = program.operands(opening + 1, program.close_paren(opening))
+        if not names:
+            raise InventoryError(f"{program.path}: SEND TEXT at line {line} sends no data name")
+        para = program.paragraph_at(start)
+        if para is None:
+            continue  # before the first paragraph, so no PERFORM reaches it
+        senders.setdefault(para.name, set()).add(names[0])
+    return senders
+
+
+def _site_sinks(
+    program: CobolProgram, end: int, fields: set[str],
+    senders: dict[str, set[str]], field_sinks: Callable[[str], set[str]],
+) -> set[str]:
+    """Where a message that the statement ending at token ``end`` places in
+    ``fields`` is shown. When the first PERFORM of a paragraph after the
+    statement, within its paragraph, performs a SEND TEXT of one of the
+    fields, the message is the unformatted text screen; otherwise it is
+    where the fields themselves are shown."""
+    para = program.paragraph_at(end)
+    upper = para.end if para is not None else len(program.tokens)
+    for position in range(end + 1, upper):
+        if program.words[position] != "PERFORM":
+            continue
+        operands = program.words[position + 1:position + 4]
+        if not operands or operands[0] not in program.paragraph_index:
+            continue  # an inline PERFORM
+        first = last = program.paragraph_index[operands[0]]
+        if operands[1:2] in (["THRU"], ["THROUGH"]):
+            through = operands[2] if len(operands) > 2 else ""
+            last = program.paragraph_index[program.paragraph(through).name]
+        sent = {name for performed in program.paragraphs[first:last + 1] for name in senders.get(performed.name, ())}
+        if sent & fields:
+            return {_TEXT_SINK}
+        break
+    shown: set[str] = set()
+    for name in fields:
+        shown |= field_sinks(name)
+    return shown
+
+
+def _sink_phrase(program: CobolProgram, message: Message) -> str:
+    """Where a description says ``message`` appears: its sinks joined by
+    'or', ERRMSG and INFOMSG first, then any other map field by name, then
+    the text screen and the abend data."""
+    if not message.sinks:
+        raise InventoryError(f"{program.path}: nothing shows the {program.name} message '{message.text}'")
+    others = sorted(message.sinks.difference(_MAP_SINK_PHRASES, _OTHER_SINK_PHRASES))
+    phrases = [phrase for sink, phrase in _MAP_SINK_PHRASES.items() if sink in message.sinks]
+    phrases += [f"the screen field {sink}" for sink in others]
+    phrases += [phrase for sink, phrase in _OTHER_SINK_PHRASES.items() if sink in message.sinks]
+    return " or ".join(phrases)
+
+
+def online_messages(program: CobolProgram, field_edit_paragraphs: set[str]) -> list[Message]:
+    """The screen messages of an online program (rule 1), in source order."""
+    keyed: dict[str, Message] = {}
+    per_site: list[Message] = []
+    field_sinks = _field_sinks(program)
+    senders = _text_senders(program)
+
+    def in_field_edit(index: int) -> bool:
+        para = program.paragraph_at(index)
+        return para is not None and para.name in field_edit_paragraphs
+
+    # Literal messages of 88-level conditions under the message fields.
+    for entry in program.data:
+        if entry.level != 88 or entry.parent not in MESSAGE_88_PARENTS:
+            continue
+        for value in entry.values:
+            text = value.value.rstrip()
+            if len(text) < MIN_MESSAGE_LENGTH:
+                continue
+            span = program.span(entry.start, entry.end)
+            message = keyed.get(text)
+            if message is None:
+                message = keyed[text] = Message(text, "condition", entry.start, span)
+            message.conditions.append(entry.name)
+            message.condition_lines.append(span)
+            message.targets.add(entry.parent)
+            message.sinks |= field_sinks(entry.parent)
+
+    common = {
+        entry.name: entry.values[0].value.rstrip()
+        for entry in program.data
+        if entry.values and program.tokens[entry.start].path == COMMON_MESSAGE_COPYBOOK
+    }
+    for start, end, sending, targets in program.moves():
+        if not MESSAGE_FIELDS.intersection(targets) or in_field_edit(start):
+            continue
+        if sending.literal:
+            text, origin, constant = sending.value.rstrip(), "literal", ""
+        elif sending.word in common:
+            text, origin, constant = common[sending.word], "common", sending.word
+        else:
+            continue
+        if len(text) < MIN_MESSAGE_LENGTH:
+            continue
+        span = program.span(start, end)
+        message = keyed.get(text)
+        if message is None:
+            message = keyed[text] = Message(text, origin, start, span, constant=constant)
+        elif message.origin == "condition":
+            # Moved as a literal as well: the text is reachable whatever the
+            # conditions' use.
+            message.origin = origin
+            message.position, message.span = start, span
+            message.constant = constant or message.constant
+        message.sites.append(span[1])
+        receiving = {t for t in targets if t in MESSAGE_FIELDS}
+        message.targets.update(receiving)
+        message.sinks |= _site_sinks(program, end, receiving, senders, field_sinks)
+
+    for message in keyed.values():
+        if message.origin == "condition":
+            message.unused = all(_condition_references(program, name) == 0 for name in message.conditions)
+
+    for statement in program.strings():
+        if statement.target not in MESSAGE_FIELDS or in_field_edit(statement.start):
+            continue
+        para = program.paragraph_at(statement.start)
+        span = program.span(statement.start, statement.end)
+        per_site.append(
+            Message(
+                "".join(statement.parts), "string", statement.start, span,
+                sites=[span[1]], targets={statement.target}, context=para.name if para else "",
+                sinks=_site_sinks(program, statement.end, {statement.target}, senders, field_sinks),
+            )
+        )
+
+    moves = program.moves()
+    for number, (start, end, sending, targets) in enumerate(moves):
+        if targets[:1] != [FILE_ERROR_FIELD]:
+            continue
+        para = program.paragraph_at(start)
+        lower = para.start if para else program.proc_start
+        upper = para.end if para else len(program.tokens)
+        operation, first = "", start
+        for back in reversed(moves[:number]):
+            if back[0] < lower:
+                break
+            if back[3][:1] == [FILE_ERROR_OPERATION] and back[2].literal:
+                operation, first = back[2].value.strip(), back[0]
+                break
+        shown = next(
+            (m for m in moves[number + 1:] if m[0] < upper and m[2].word == FILE_ERROR_MESSAGE
+             and MESSAGE_FIELDS.intersection(m[3])),
+            None,
+        )
+        if shown is None:
+            continue
+        if sending.literal:
+            resource = sending.value.strip()
+        else:
+            resource = (program.constant(sending.word) or sending.word).strip()
+        text = f"File Error: {operation} on {resource} returned RESP <ERROR-RESP>,RESP2 <ERROR-RESP2>"
+        span = program.span(first, shown[1])
+        context = para.name if para else ""
+        command = _governing_command(program, start, lower)
+        if command:
+            context += f", {command[0]} at line {command[1]}"
+        receiving = {t for t in shown[3] if t in MESSAGE_FIELDS}
+        per_site.append(
+            Message(
+                text, "file-error", start, span, sites=[span[1]], targets=receiving, context=context,
+                sinks=_site_sinks(program, shown[1], receiving, senders, field_sinks),
+            )
+        )
+    return sorted(list(keyed.values()) + per_site, key=lambda m: m.position)
+
+
+# --------------------------------------------------------------------------
+# Online rule 2: navigation
+# --------------------------------------------------------------------------
+
+PF3_CONDITIONS = frozenset({"DFHPF3", "CCARD-AID-PFK03"})
+PROGRAM_TARGET_FIELDS = frozenset({"CDEMO-TO-PROGRAM", "CCARD-NEXT-PROG"})
+SIGNON_RETURN_PARAGRAPH = "RETURN-TO-SIGNON-SCREEN"
+
+
+@dataclass(frozen=True)
+class Navigation:
+    label: str
+    description: str
+    span: tuple[str, int, int]
+    gap_ids: tuple[str, ...] = ()
+
+
+def _transfer_end(program: CobolProgram, start: int, stop: int) -> int:
+    """Index of the last token of the first transfer of control (an ``EXEC
+    CICS XCTL`` or a ``PERFORM RETURN-TO-...``) between ``start`` and
+    ``stop``, or ``stop - 1`` when there is none."""
+    for position in range(start, stop):
+        word = program.words[position]
+        if word == "XCTL":
+            return program.find_words("END-EXEC", start=position)
+        if word == "PERFORM" and program.words[position + 1].startswith("RETURN-TO-"):
+            return position + 1
+    return stop - 1
+
+
+def _transfer_targets(program: CobolProgram, start: int, end: int) -> list[str]:
+    """The programs control passes to between ``start`` and ``end``: the
+    values moved to CDEMO-TO-PROGRAM or CCARD-NEXT-PROG, or named in XCTL
+    PROGRAM(...)."""
+    targets: list[str] = []
+
+    def add(token: Token) -> None:
+        if token.literal:
+            name = token.value.strip()
+        else:
+            name = (program.constant(token.word) or "").strip() or (
+                "the calling program" if token.word == "CDEMO-FROM-PROGRAM" else token.word
+            )
+        if name and name not in targets:
+            targets.append(name)
+
+    for move_start, _move_end, sending, receiving in program.moves():
+        if start <= move_start <= end and PROGRAM_TARGET_FIELDS.intersection(receiving):
+            add(sending)
+    for position in range(start, end + 1):
+        if program.words[position] == "XCTL" and program.words[position + 1:position + 3] == ["PROGRAM", "("]:
+            token = program.tokens[position + 3]
+            if token.literal or token.word not in PROGRAM_TARGET_FIELDS:
+                add(token)
+    return targets
+
+
+def _branch_end(program: CobolProgram, if_index: int) -> int:
+    """Index of the ELSE or END-IF closing the true branch of the IF at
+    ``if_index`` (or of the sentence's period)."""
+    depth = 0
+    for position in range(if_index + 1, len(program.tokens)):
+        word = program.words[position]
+        if word == "IF":
+            depth += 1
+        elif word == "END-IF":
+            if depth == 0:
+                return position
+            depth -= 1
+        elif word == "ELSE" and depth == 0:
+            return position
+        elif word == ".":
+            return position
+    return len(program.tokens) - 1
+
+
+def _menu_options(program: CobolProgram) -> list[tuple[str, str, str, str, tuple[str, int, int]]]:
+    """(number, name, program, user type, span) of each option of the menu
+    tables (``*-OPTIONS-DATA``) the program copies."""
+    options: list[list[Any]] = []
+    for entry in program.data:
+        if not (entry.parent or "").endswith("-OPTIONS-DATA"):
+            continue
+        if entry.number is not None:
+            options.append([entry.number.lstrip("0") or "0", [], entry.start, entry.end])
+        elif options and entry.values:
+            options[-1][1].append(entry.values[0].value)
+            options[-1][3] = entry.end
+    result = []
+    for number, values, start, end in options:
+        name = values[0].strip() if values else ""
+        target = values[1].strip() if len(values) > 1 else ""
+        user_type = values[2].strip() if len(values) > 2 else ""
+        result.append((number, name, target, user_type, program.span(start, end)))
+    return result
+
+
+def _pf3_save_description(program: CobolProgram, index: int, end: int, to: str) -> str | None:
+    """The description of a PF3 return that saves before it leaves: the PF3
+    branch (tokens ``index`` to ``end``) PERFORMs, before its transfer of
+    control, a paragraph that reaches an EXEC CICS WRITE, REWRITE or DELETE,
+    directly or through further PERFORMs. None when it reaches none, so the
+    plain PF3 description stands.
+
+    The text is built from what the code shows: the saving paragraphs; the
+    other AID keys whose branch PERFORMs the same paragraphs; each command
+    with its file and, through ``item_ref``, the SIDE_EFFECTS item whose
+    ``("cics", VERB, RESOURCE)`` anchor designates it; whether every command
+    is guarded by an IF or EVALUATE on its path; whether a screen is sent;
+    and whether a performed paragraph can end the task itself (EXEC CICS
+    RETURN, XCTL or ABEND), in which case the transfer is not certain."""
+    words = program.words
+    name = program.name
+
+    def performed(position: int) -> list[str]:
+        # The paragraphs the PERFORM at ``position`` runs: one paragraph, a
+        # THRU range or a SECTION's paragraphs; none for an inline PERFORM.
+        first = program.paragraph_index.get(words[position + 1]) if position + 1 < len(words) else None
+        if first is None:
+            return []
+        last = first
+        after = words[position + 2:position + 4]
+        if len(after) == 2 and after[0] in ("THRU", "THROUGH") and after[1] in program.paragraph_index:
+            last = max(first, program.paragraph_index[after[1]])
+        elif words[program.paragraphs[first].start + 1] == "SECTION":
+            while last + 1 < len(program.paragraphs) and words[program.paragraphs[last + 1].start + 1] != "SECTION":
+                last += 1
+        return [para.name for para in program.paragraphs[first:last + 1]]
+
+    def conditional(para: Paragraph, position: int) -> bool:
+        # Whether the statement at ``position`` lies inside an IF or EVALUATE
+        # of its paragraph; a separator period closes every open one.
+        depth = 0
+        for word in words[para.start:position]:
+            if word in ("IF", "EVALUATE"):
+                depth += 1
+            elif word in ("END-IF", "END-EVALUATE"):
+                depth = max(depth - 1, 0)
+            elif word == ".":
+                depth = 0
+        return depth > 0
+
+    def file_of(start: int, stop: int) -> str:
+        # The DATASET or FILE operand of an EXEC block, its constant resolved.
+        for position in range(start, stop - 1):
+            if words[position] in ("DATASET", "FILE") and words[position + 1] == "(":
+                token = program.tokens[position + 2]
+                if token.literal:
+                    return token.value.strip()
+                return (program.constant(token.word) or "").strip() or token.word
+        return ""
+
+    def item_of(start: int, stop: int, verb: str) -> str:
+        # A reference to the side-effect item of this program whose
+        # ("cics", VERB, RESOURCE) anchor designates the EXEC block; "" when
+        # no row does.
+        block = program.tokens[start:stop + 1]
+        for owner, _kind, label, anchors, _description in SIDE_EFFECTS:
+            if owner != name:
+                continue
+            for anchor in anchors:
+                if anchor[0] == "cics" and anchor[1] == verb and any(
+                    token.word == anchor[2] or (token.literal and token.value.strip() == anchor[2])
+                    for token in block
+                ):
+                    return f" ({item_ref(f'{owner} {label}')})"
+        return ""
+
+    # The paragraphs PF3 performs before it transfers, its RETURN-TO-...
+    # transfer excepted.
+    roots: list[str] = []
+    for position in range(index, end + 1):
+        if words[position] == "PERFORM":
+            for root in performed(position):
+                if not root.startswith("RETURN-TO-") and root not in roots:
+                    roots.append(root)
+
+    # Follow each one's PERFORMs, every paragraph once per guard state.
+    commands: dict[tuple[str, str], list[Any]] = {}  # (verb, file) -> [item reference, guarded]
+    saving: list[str] = []
+    enders: set[str] = set()
+    sends = False
+    for root in roots:
+        pending: list[tuple[str, bool]] = [(root, False)]
+        seen: set[tuple[str, bool]] = set()
+        while pending:
+            state = pending.pop()
+            if state in seen:
+                continue
+            seen.add(state)
+            para_name, guarded = state
+            para = program.paragraph(para_name)
+            position = para.start
+            while position < para.end:
+                word = words[position]
+                if word == "PERFORM":
+                    inner = guarded or conditional(para, position)
+                    pending.extend((target, inner) for target in performed(position))
+                elif word == "EXEC" and words[position + 1] == "CICS":
+                    stop = program.statement_end(position)
+                    verb = words[position + 2]
+                    if verb in ("WRITE", "REWRITE", "DELETE"):
+                        entry = commands.setdefault(
+                            (verb, file_of(position, stop)), [item_of(position, stop, verb), True]
+                        )
+                        entry[1] = entry[1] and (guarded or conditional(para, position))
+                        if root not in saving:
+                            saving.append(root)
+                    elif verb in ("RETURN", "XCTL", "ABEND"):
+                        enders.add(verb)
+                    elif verb == "SEND":
+                        sends = True
+                    position = stop
+                position += 1
+    if not commands:
+        return None
+
+    # The other AID keys whose WHEN or IF branch PERFORMs every saving
+    # paragraph.
+    keys: list[str] = []
+    for position in range(program.proc_start + 1, len(words)):
+        aid = re.fullmatch(r"(?:DFH|CCARD-AID-)(?:ENTER|PFK?(\d+))", words[position])
+        if aid is None or words[position] in PF3_CONDITIONS or program.tokens[position].path != program.path:
+            continue
+        if words[position - 1] == "IF" or words[position - 2:position] == ["IF", "("]:
+            stop = _branch_end(program, position - 1 if words[position - 1] == "IF" else position - 2)
+        elif words[position - 1] == "WHEN":
+            stop, depth, body = len(words) - 1, 0, position + 1
+            for later in range(position + 1, len(words)):
+                word = words[later]
+                if word == "WHEN" and depth == 0 and later == body:
+                    body = later + 2  # WHEN phrases in a row share the branch that follows
+                elif word == "EVALUATE":
+                    depth += 1
+                elif word == "END-EVALUATE" and depth:
+                    depth -= 1
+                elif (word in ("WHEN", "END-EVALUATE") and depth == 0) or word == ".":
+                    stop = later
+                    break
+        else:
+            continue
+        branch: set[str] = set()
+        for later in range(position + 1, stop):
+            if words[later] == "PERFORM":
+                branch.update(performed(later))
+        key = f"PF{int(aid.group(1))}" if aid.group(1) else "ENTER"
+        if branch.issuperset(saving) and key not in keys:
+            keys.append(key)
+
+    guarded = all(entry[1] for entry in commands.values())
+    acts = " or ".join(
+        f"{verb} the {file + ' ' if file else ''}record{reference}"
+        for (verb, file), (reference, _guarded) in commands.items()
+    )
+    sharing = ", ".join(keys[:-1]) + f" and {keys[-1]}" if len(keys) > 1 else "".join(keys)
+    shared = f", the save {sharing} perform{'s' if len(keys) == 1 else ''}" if keys else ""
+    accept = "when it accepts the edited fields it can " if guarded else "it can "
+    refused = "; a refused or unchanged save only sends its message" if guarded and sends else ""
+    if enders:
+        ending = " or ".join(sorted(enders))
+        then = f"Unless a paragraph it performs ends the task itself (EXEC CICS {ending}), PF3 then"
+    else:
+        then = "In every case PF3 then"
+    replaced = f", whose screen replaces {name}'s" if sends else ""
+    return (
+        f"PF3 first performs {' and '.join(saving)}{shared}: {accept}{acts}{refused}. {then} leaves {name} and "
+        f"transfers control to {to}{replaced}, so a PF3 save is observed in file_state."
+    )
+
+
+def online_navigation(program: CobolProgram) -> list[Navigation]:
+    """The navigation paths of an online program (rule 2), in the order:
+    sign-on routing, menu options, PF3 return, list selections, entry
+    without a COMMAREA."""
+    result: list[Navigation] = []
+    own = [i for i in range(program.proc_start, len(program.tokens)) if program.tokens[i].path == program.path]
+    name = program.name
+
+    if name == SIGNON_PROGRAM:
+        for start, end in program.exec_blocks():
+            words = program.words[start:end + 1]
+            if "XCTL" not in words:
+                continue
+            xctl = start + words.index("XCTL")
+            token = program.tokens[xctl + 3]
+            if program.words[xctl + 1:xctl + 3] != ["PROGRAM", "("] or not token.literal:
+                continue
+            target = token.value.strip()
+            back = start - 1
+            while back > program.proc_start and program.words[back] not in ("IF", "ELSE"):
+                back -= 1
+            if program.words[back] == "IF":
+                condition = " ".join(w for w in program.words[back + 1:start] if w)
+                when = f"when {condition}"
+            else:
+                when = "otherwise"
+            result.append(
+                Navigation(
+                    f"sign-on routing to {target}",
+                    f"After a valid user id and password, {name} transfers control (XCTL) to "
+                    f"{target} {when}; the {target} screen appears with the user's COMMAREA.",
+                    program.span(back, end),
+                )
+            )
+
+    options = _menu_options(program)
+    if options:
+        xctl_line = next(
+            (program.tokens[s].line for s, e in program.exec_blocks()
+             if "XCTL" in program.words[s:e + 1] and any(w.endswith("-OPT-PGMNAME") for w in program.words[s:e + 1])),
+            None,
+        )
+        for number, option_name, target, user_type, span in options:
+            typed = f", user type {user_type}" if user_type else ""
+            via = f" through the XCTL at {program.path}:{xctl_line}" if xctl_line else ""
+            result.append(
+                Navigation(
+                    f"option {number} {option_name} to {target}",
+                    f"Option {number} '{option_name}' of the {name} menu table{typed} transfers control "
+                    f"to {target}{via}; the {target} screen appears.",
+                    span,
+                )
+            )
+
+    if name != SIGNON_PROGRAM:
+        for index in own:
+            if program.words[index] in PF3_CONDITIONS and program.words[index - 1] in ("WHEN", "IF", "("):
+                end = _transfer_end(program, index, len(program.tokens))
+                targets = _transfer_targets(program, index, end)
+                to = " or ".join(targets) if targets else "the previous screen"
+                # A PF3 branch that saves before it transfers says so.
+                saves = _pf3_save_description(program, index, end, to)
+                result.append(
+                    Navigation(
+                        "PF3 return",
+                        saves or f"PF3 leaves {name} and transfers control to {to}.",
+                        program.span(index - 1 if program.words[index - 1] != "(" else index - 2, end),
+                    )
+                )
+                break
+
+    # List selections: WHEN '<letter>' of an EVALUATE on a selection flag,
+    # or a one-letter 88-level condition of a selection array.
+    for index in own:
+        if program.words[index] != "EVALUATE" or "SEL" not in program.words[index + 1]:
+            continue
+        depth, position = 0, index + 2
+        whens: list[int] = []
+        while position < len(program.tokens):
+            word = program.words[position]
+            if word == "EVALUATE":
+                depth += 1
+            elif word == "END-EVALUATE":
+                if depth == 0:
+                    break
+                depth -= 1
+            elif word == "WHEN" and depth == 0:
+                whens.append(position)
+            position += 1
+        # Consecutive WHEN phrases ('U' then 'u') share the branch that follows
+        # the last of them.
+        branch_start = {}
+        for number in range(len(whens) - 1, -1, -1):
+            follows = number + 1 < len(whens) and whens[number + 1] == whens[number] + 2
+            branch_start[whens[number]] = branch_start[whens[number + 1]] if follows else whens[number]
+        for when in whens:
+            token = program.tokens[when + 1]
+            if not (token.literal and len(token.value) == 1 and token.value.isupper()):
+                continue
+            later = [w for w in whens if w > branch_start[when]]
+            branch_end = (later[0] if later else position) - 1
+            targets = _transfer_targets(program, when, branch_end)
+            to = f" transfers control to {' or '.join(targets)}" if targets else " is accepted"
+            result.append(
+                Navigation(
+                    f"list selection {token.value}",
+                    f"Selecting a row with '{token.value}' (or '{token.value.lower()}') in {name}{to}.",
+                    program.span(when, branch_end),
+                )
+            )
+    for entry in program.data:
+        if entry.level != 88 or "SELECT" not in (entry.parent or "") or len(entry.values) != 1:
+            continue
+        letter = entry.values[0].value
+        if not (len(letter) == 1 and letter.isupper()):
+            continue
+        uses = [i for i in own if program.words[i] == entry.name]
+        if not uses:
+            continue
+        stop = min(uses[0] + 80, len(program.tokens) - 1)
+        targets = _transfer_targets(program, uses[0], stop)
+        to = f" transfers control to {targets[0]}" if targets else " is accepted"
+        result.append(
+            Navigation(
+                f"list selection {letter}",
+                f"Selecting a row with '{letter}' ({entry.name}) in {name}{to}.",
+                program.span(uses[0], _transfer_end(program, uses[0], stop + 1)),
+            )
+        )
+
+    if name != SIGNON_PROGRAM:
+        for index in own:
+            if program.words[index] != "IF" or program.words[index + 1] != "EIBCALEN":
+                continue
+            end = _branch_end(program, index)
+            branch = program.tokens[index:end]
+            to_signon = any(
+                (t.literal and t.value.strip() == SIGNON_PROGRAM) or t.word == SIGNON_RETURN_PARAGRAPH
+                for t in branch
+            )
+            if to_signon:
+                result.append(
+                    Navigation(
+                        "entry without COMMAREA returns to sign-on",
+                        f"Entered without a COMMAREA (EIBCALEN = 0), {name} returns to the "
+                        f"{SIGNON_PROGRAM} sign-on screen.",
+                        program.span(index, end - 1),
+                    )
+                )
+            else:
+                result.append(
+                    Navigation(
+                        "entry without COMMAREA starts without sign-on",
+                        f"Entered without a COMMAREA (EIBCALEN = 0), {name} initialises a fresh "
+                        f"COMMAREA and shows its own screen with no sign-on check; whether "
+                        f"direct entry is intended is uncertain.",
+                        program.span(index, end - 1),
+                        ("GAP-UNC-010",),
+                    )
+                )
+            break
+    return result
+
+
+# --------------------------------------------------------------------------
+# Anchors: where a table row's behaviour is in the source
+# --------------------------------------------------------------------------
+
+# ("paragraph", NAME) | ("main",) | ("cics", VERB, RESOURCE) | ("regex", PATTERN) | ("comment", PATTERN).
+# A regex is searched in the code lines of the program's own file joined by
+# newlines; a comment PATTERN in each comment line of that file, the first
+# match designating its line.
+Anchor = tuple[str, ...]
+
+
+def _own_text(program: CobolProgram) -> tuple[str, list[int], list[int]]:
+    lines = program.own_lines()
+    offsets, numbers, parts, offset = [], [], [], 0
+    for line in lines:
+        offsets.append(offset)
+        numbers.append(line.line)
+        parts.append(line.text)
+        offset += len(line.text) + 1
+    return "\n".join(parts), offsets, numbers
+
+
+def anchor_span(program: CobolProgram, anchor: Anchor) -> tuple[str, int, int]:
+    """(path, first line, last line) that ``anchor`` designates in
+    ``program``; InventoryError when the source no longer holds it."""
+    kind = anchor[0]
+    if kind == "paragraph":
+        return program.paragraph_span(anchor[1])
+    if kind == "main":
+        # The statements between PROCEDURE DIVISION and the first paragraph.
+        stop = program.paragraphs[0].start if program.paragraphs else len(program.tokens)
+        own = [i for i in range(program.proc_start, stop) if program.tokens[i].path == program.path]
+        if not own:
+            raise InventoryError(f"{program.path}: no statements before the first paragraph")
+        return program.span(own[0], own[-1])
+    if kind == "cics":
+        verb, resource = anchor[1], anchor[2]
+        for start, end in program.exec_blocks():
+            block = program.tokens[start:end + 1]
+            words = [token.word for token in block]
+            if verb in words and (resource in words or any(t.literal and t.value.strip() == resource for t in block)):
+                return program.span(start, end)
+        raise InventoryError(f"{program.path}: no EXEC CICS {verb} on {resource}")
+    if kind == "regex":
+        text, offsets, numbers = _own_text(program)
+        match = re.search(anchor[1], text, re.S)
+        if match is None:
+            raise InventoryError(f"{program.path}: anchor /{anchor[1]}/ not found")
+        first = numbers[bisect.bisect_right(offsets, match.start()) - 1]
+        last = numbers[bisect.bisect_right(offsets, max(match.end() - 1, match.start())) - 1]
+        return program.path, first, last
+    if kind == "comment":
+        for comment in program.comments:
+            if re.search(anchor[1], comment.text):
+                return program.path, comment.line, comment.line
+        raise InventoryError(f"{program.path}: no comment line matches /{anchor[1]}/")
+    raise InventoryError(f"unknown anchor kind {kind!r}")
+
+
+def anchored_source(program: CobolProgram, anchors: Sequence[Anchor]) -> str:
+    spans = [anchor_span(program, anchor) for anchor in anchors]
+    paths = {span[0] for span in spans}
+    if len(paths) != 1:
+        raise InventoryError(f"{program.name}: anchors {anchors} span several files {sorted(paths)}")
+    return cite(spans[0][0], [(first, last) for _path, first, last in spans])
+
+
+# --------------------------------------------------------------------------
+# Online rule 4: side effects and content
+# --------------------------------------------------------------------------
+
+# (program, kind, label, anchors, description)
+SIDE_EFFECTS: tuple[tuple[str, str, str, tuple[Anchor, ...], str], ...] = (
+    ("COUSR00C", "report", "user list content", (("paragraph", "POPULATE-USER-DATA"),),
+     "The user list shows up to 10 USRSEC records per page (user id, first and last name, type) in key "
+     "order, with PF7/PF8 paging."),
+    ("COUSR01C", "interface", "USRSEC WRITE", (("cics", "WRITE", "WS-USRSEC-FILE"),),
+     "Adding a user writes a new 80-byte USRSEC record (CSUSR01Y) keyed by the user id; observed as the "
+     "record in file_state."),
+    ("COUSR02C", "interface", "USRSEC REWRITE", (("cics", "REWRITE", "WS-USRSEC-FILE"),),
+     "Saving changes rewrites the USRSEC record of the selected user id with the edited names, password and "
+     "type when every field is supplied and at least one differs from the record: PF5 saves and stays on the "
+     "screen, and PF3 performs the same save before it returns ({item:COUSR02C PF3 return}); observed as the "
+     "record in file_state."),
+    ("COUSR03C", "interface", "USRSEC DELETE", (("cics", "DELETE", "WS-USRSEC-FILE"),),
+     "Confirming the deletion (PF5) deletes the USRSEC record of the selected user id; observed as its "
+     "absence in file_state."),
+    ("COACTVWC", "report", "account and customer detail content", (("paragraph", "1200-SETUP-SCREEN-VARS"),),
+     "The account view shows the ACCTDAT fields (status, balances, limits, dates, group) and the CUSTDAT "
+     "fields of the account's customer, the SSN formatted as nnn-nn-nnnn."),
+    ("COACTUPC", "interface", "account REWRITE", (("cics", "REWRITE", "LIT-ACCTFILENAME"),),
+     "After the changes are validated and confirmed (PF5), COACTUPC rewrites the ACCTDAT record with the "
+     "edited account fields under the lock taken by READ UPDATE; observed as the record in file_state."),
+    ("COACTUPC", "interface", "customer REWRITE", (("cics", "REWRITE", "LIT-CUSTFILENAME"),),
+     "After the account rewrite, COACTUPC rewrites the CUSTDAT record with the edited customer fields, then "
+     "SYNCPOINTs; observed as the record in file_state."),
+    ("COCRDLIC", "report", "card list content, 7 rows per page", (("paragraph", "1200-SCREEN-ARRAY-INIT"),),
+     "The card list shows up to 7 CARDDAT records per page (account, card number, status), filtered by the "
+     "account and card filters, with PF7/PF8 paging."),
+    ("COCRDSLC", "report", "card detail content", (("paragraph", "1200-SETUP-SCREEN-VARS"),),
+     "The card view shows the CARDDAT record of the account and card entered: embossed name, expiry month "
+     "and year, status."),
+    ("COCRDUPC", "interface", "card REWRITE", (("cics", "REWRITE", "LIT-CARDFILENAME"),),
+     "After the changes are validated and confirmed (PF5), COCRDUPC rewrites the CARDDAT record with the "
+     "edited name, status and expiry under the lock taken by READ UPDATE; observed as the record in "
+     "file_state."),
+    ("COTRN00C", "report", "transaction list content", (("paragraph", "POPULATE-TRAN-DATA"),),
+     "The transaction list shows up to 10 TRANSACT records per page (id, date, description, amount) in key "
+     "order from the entered transaction id, with PF7/PF8 paging."),
+    ("COTRN01C", "report", "transaction detail content", (("paragraph", "PROCESS-ENTER-KEY"),),
+     "The transaction view shows every field of the TRANSACT record of the entered id: card, type, "
+     "category, source, description, amount, timestamps and merchant data."),
+    ("COTRN02C", "interface", "TRANSACT WRITE", (("cics", "WRITE", "WS-TRANSACT-FILE"),),
+     "A confirmed transaction is written to TRANSACT with the entered fields and the generated id; observed "
+     "as the new record in file_state."),
+    ("COTRN02C", "calculation", "next TRAN-ID",
+     (("regex", r"MOVE\s+HIGH-VALUES\s+TO\s+TRAN-ID.*?ADD\s+1\s+TO\s+WS-TRAN-ID-N\b"),),
+     "The new transaction id is the highest TRANSACT key (STARTBR at HIGH-VALUES, READPREV) plus 1."),
+    ("COTRN02C", "rule", "PF5 copy of the last transaction",
+     (("regex", r"WHEN\s+DFHPF5\s+PERFORM\s+COPY-LAST-TRAN-DATA"),),
+     "PF5 validates the account or card number entered, then reads the TRANSACT record with the highest "
+     "TRAN-ID (STARTBR at HIGH-VALUES, READPREV) and copies its type, category, source, amount, description, "
+     "original and processing timestamps and merchant id, name, city and zip into the input fields; a key or "
+     "browse error ends PF5 with its message. The record is not checked against the card or account entered, "
+     "so the copied data may come from another card (GAP-UNC-015). Enter processing then follows: the fields "
+     "are validated and the transaction is added only when Confirm is Y."),
+    ("COBIL00C", "interface", "TRANSACT WRITE", (("cics", "WRITE", "WS-TRANSACT-FILE"),),
+     "A confirmed payment writes a TRANSACT record of type 02, category 2, source 'POS TERM', description "
+     "'BILL PAYMENT - ONLINE', amount equal to the current balance; observed in file_state."),
+    ("COBIL00C", "calculation", "next TRAN-ID",
+     (("regex", r"MOVE\s+HIGH-VALUES\s+TO\s+TRAN-ID.*?ADD\s+1\s+TO\s+WS-TRAN-ID-NUM\b"),),
+     "The payment's transaction id is the highest TRANSACT key (STARTBR at HIGH-VALUES, READPREV) plus 1."),
+    ("COBIL00C", "calculation", "full-balance payment",
+     (("regex", r"MOVE\s+ACCT-CURR-BAL\s+TO\s+WS-CURR-BAL"
+                r".*?COMPUTE\s+ACCT-CURR-BAL\s*=\s*ACCT-CURR-BAL\s*-\s*TRAN-AMT"),),
+     "The payment amount is the whole current balance, and the account is rewritten with ACCT-CURR-BAL "
+     "reduced by it, leaving zero; a balance of zero or less is refused ('You have nothing to pay...')."),
+    ("CORPT00C", "interface", "JOBS TDQ write", (("cics", "WRITEQ", "JOBS"),),
+     "Submitting a report writes the TRNRPT00 job (EXEC PROC=TRANREPT with an in-stream DATEPARM of the "
+     "start and end dates) as 80-byte records to the extrapartition TDQ JOBS; observed through @TDQ:JOBS."),
+    ("CORPT00C", "calculation", "monthly date range",
+     (("regex", r"WHEN\s+MONTHLYI\b.*?PERFORM\s+SUBMIT-JOB-TO-INTRDR"),),
+     "The monthly report runs from the first to the last day of the run month (first day of the next month "
+     "minus one day)."),
+    ("CORPT00C", "calculation", "yearly date range",
+     (("regex", r"WHEN\s+YEARLYI\b.*?PERFORM\s+SUBMIT-JOB-TO-INTRDR"),),
+     "The yearly report runs from 1 January to 31 December of the run year."),
+    ("CORPT00C", "calculation", "custom date range",
+     (("regex", r"WHEN\s+CUSTOMI\b.*?PERFORM\s+SUBMIT-JOB-TO-INTRDR"),),
+     "The custom report runs between the entered start and end dates once each part is supplied, numeric "
+     "and in range and CSUTLDTC accepts both dates."),
+)
+
+
+# --------------------------------------------------------------------------
+# Online behaviour items
+# --------------------------------------------------------------------------
+
+
+def _draft(
+    area: str, kind: str, name: str, source: str, description: str, level: str,
+    activation: str = "always", gap_ids: Iterable[str] = (),
+) -> dict[str, Any]:
+    """An inventory item without its id."""
+    return {
+        "area": area,
+        "kind": kind,
+        "name": name,
+        "source": source,
+        "description": description,
+        "activation": activation,
+        "level": level,
+        "scenario_ids": [],
+        "status": "not-covered",
+        "gap_ids": sorted(set(gap_ids)),
+    }
+
+
+def _menu_user_types(program: CobolProgram) -> set[str]:
+    return {user_type for _n, _name, _pgm, user_type, _span in _menu_options(program)}
+
+
+def _menu_programs(program: CobolProgram) -> set[str]:
+    return {target for _n, _name, target, _type, _span in _menu_options(program)}
+
+
+# Messages no input or configuration can show: (program, text pattern, gap,
+# test that the blocking condition still holds, why).
+UNREACHABLE_MESSAGES: tuple[tuple[str, str, str, Callable[[CobolProgram], bool], str], ...] = (
+    (
+        "COMEN01C", r"No access - Admin Only", "GAP-DOC-019",
+        lambda program: "A" not in _menu_user_types(program),
+        "the guard needs a menu option of user type 'A' and every option of the COMEN02Y table is 'U'",
+    ),
+    (
+        "COMEN01C", r"is coming soon", "GAP-UNC-005",
+        lambda program: not any(p.startswith("DUMMY") for p in _menu_programs(program)),
+        "it is shown only for an option whose program name begins 'DUMMY', and the menu table has none",
+    ),
+    (
+        "COADM01C", r"is coming soon", "GAP-UNC-005",
+        lambda program: not any(p.startswith("DUMMY") for p in _menu_programs(program)),
+        "it is shown only for an option whose program name begins 'DUMMY', and the menu table has none",
+    ),
+)
+
+
+# Message conditions that are set, then replaced in the same message field
+# before any send or left in working storage that the XCTL after the SET
+# does not pass on, so their text never reaches the screen: (program,
+# condition, gap, anchors that prove the loss, why). The first anchor holds
+# the condition's SET; the extraction fails when an anchor is gone or the
+# condition is set anywhere else. The why names other messages by condition
+# only, since report.py reads every quoted description text as the item's
+# message.
+OVERWRITTEN_MESSAGES: tuple[tuple[str, str, str, tuple[Anchor, ...], str], ...] = (
+    (
+        "COACTVWC", "WS-PROMPT-FOR-ACCT", "GAP-UNC-014",
+        (
+            ("regex", r"SET\s+FLG-ACCTFILTER-BLANK\s+TO\s+TRUE\s+IF\s+WS-RETURN-MSG-OFF"
+                      r"\s+SET\s+WS-PROMPT-FOR-ACCT\s+TO\s+TRUE\b"),
+            ("regex", r"PERFORM\s+2210-EDIT-ACCOUNT\s+THRU\s+2210-EDIT-ACCOUNT-EXIT"
+                      r"\s+IF\s+FLG-ACCTFILTER-BLANK\s+SET\s+NO-SEARCH-CRITERIA-RECEIVED\s+TO\s+TRUE\b"),
+        ),
+        "2210-EDIT-ACCOUNT sets the condition only for a blank account id, together with FLG-ACCTFILTER-BLANK, "
+        "and on its return 2200-EDIT-MAP-INPUTS sets NO-SEARCH-CRITERIA-RECEIVED of the same WS-RETURN-MSG for "
+        "that flag before any send",
+    ),
+    (
+        "COACTUPC", "WS-PROMPT-FOR-ACCT", "GAP-UNC-014",
+        (
+            ("regex", r"SET\s+FLG-ACCTFILTER-BLANK\s+TO\s+TRUE\s+IF\s+WS-RETURN-MSG-OFF"
+                      r"\s+SET\s+WS-PROMPT-FOR-ACCT\s+TO\s+TRUE\b"),
+            ("regex", r"PERFORM\s+1210-EDIT-ACCOUNT\s+THRU\s+1210-EDIT-ACCOUNT-EXIT"
+                      r"\s+MOVE\s+LOW-VALUES\s+TO\s+ACUP-OLD-ACCT-DATA"
+                      r"\s+IF\s+FLG-ACCTFILTER-BLANK\s+SET\s+NO-SEARCH-CRITERIA-RECEIVED\s+TO\s+TRUE\b"),
+        ),
+        "1210-EDIT-ACCOUNT sets the condition only for a blank account id, together with FLG-ACCTFILTER-BLANK, "
+        "and on its return 1200-EDIT-MAP-INPUTS sets NO-SEARCH-CRITERIA-RECEIVED of the same WS-RETURN-MSG for "
+        "that flag before any send",
+    ),
+    (
+        "COACTUPC", "FOUND-ACCOUNT-DATA", "GAP-UNC-014",
+        (
+            ("regex", r"GO\s+TO\s+1200-EDIT-MAP-INPUTS-EXIT\s+ELSE\s+CONTINUE\s+END-IF"
+                      r"\s+SET\s+FOUND-ACCOUNT-DATA\s+TO\s+TRUE\b"),
+            ("regex", r"3000-SEND-MAP\.(?:\s+PERFORM\s+[\w-]+\s+THRU\s+[\w-]+)*?"
+                      r"\s+PERFORM\s+3250-SETUP-INFOMSG\s+THRU\s+3250-SETUP-INFOMSG-EXIT"
+                      r"(?:\s+PERFORM\s+[\w-]+\s+THRU\s+[\w-]+)*?\s+PERFORM\s+3400-SEND-SCREEN\b"),
+            ("regex", r"3250-SETUP-INFOMSG\.\s+EVALUATE\s+TRUE"
+                      r"\s+(?:WHEN\s+[\w-]+\s+SET\s+(?!FOUND-ACCOUNT-DATA\b)[\w-]+\s+TO\s+TRUE\s+)+"
+                      r"END-EVALUATE\s+MOVE\s+WS-INFO-MSG\s+TO\s+INFOMSGO\b"),
+        ),
+        "1200-EDIT-MAP-INPUTS sets the condition once the account details are fetched, and before every send of "
+        "the map 3000-SEND-MAP performs 3250-SETUP-INFOMSG, whose EVALUATE sets another WS-INFO-MSG condition for "
+        "every ACUP-CHANGE-ACTION value before it moves WS-INFO-MSG to INFOMSG",
+    ),
+    (
+        "COCRDLIC", "WS-EXIT-MESSAGE", "GAP-UNC-014",
+        (
+            ("regex", r"SET\s+WS-EXIT-MESSAGE\s+TO\s+TRUE\s+SET\s+CDEMO-PGM-ENTER\s+TO\s+TRUE"
+                      r"\s+EXEC\s+CICS\s+XCTL\s+PROGRAM\s*\(\s*LIT-MENUPGM\s*\)"
+                      r"\s+COMMAREA\s*\(\s*CARDDEMO-COMMAREA\s*\)\s+END-EXEC\b"),
+            ("regex", r"\b01\s+WS-MISC-STORAGE\.(?:(?!\s01\s).)*?\s05\s+WS-ERROR-MSG\s+PIC\s+X\(75\)\."),
+            ("regex", r"\b05\s+LIT-MENUPGM\s+PIC\s+X\(8\)\s+VALUE\s+'COMEN01C'\."),
+        ),
+        "The PF3 branch of 0000-MAIN sets the condition and at once XCTLs to COMEN01C, the LIT-MENUPGM, with "
+        "CARDDEMO-COMMAREA alone; WS-ERROR-MSG belongs to WS-MISC-STORAGE, which that COMMAREA does not carry, so "
+        "the text is lost with the working storage of COCRDLIC before any map is sent",
+    ),
+)
+
+
+# Literal messages whose only MOVE into a message field runs under a test
+# that cannot hold, so their text never reaches the screen: (program, text,
+# gap, anchors that prove the test cannot hold, check that the tested field
+# still has the width of the value moved into it, why). The first anchor
+# holds the test and its MOVE, the next the overwrite of the field with
+# nothing naming it, or its other map fields, before the test; the
+# extraction fails when an anchor is gone, the check fails or the text is
+# moved anywhere else. As in OVERWRITTEN_MESSAGES, the why quotes no text.
+UNSENT_MESSAGES: tuple[tuple[str, str, str, tuple[Anchor, ...], Callable[[CobolProgram], bool], str], ...] = (
+    (
+        "CORPT00C", "Start Date - Not a valid Year...", "GAP-UNC-014",
+        (
+            ("regex", r"\bIF\s+SDTYYYYI\s+OF\s+CORPT0AI\s+IS\s+NOT\s+NUMERIC"
+                      r"\s+MOVE\s+'Start Date - Not a valid Year\.\.\.'\s+TO\s+WS-MESSAGE\b"),
+            ("regex", r"COMPUTE\s+WS-NUM-9999\s+=\s+FUNCTION\s+NUMVAL-C\s*\(\s*SDTYYYYI\s+OF\s+CORPT0AI\s*\)"
+                      r"\s+MOVE\s+WS-NUM-9999\s+TO\s+SDTYYYYI\s+OF\s+CORPT0AI\b(?:(?!SDTYYYY).)*?"
+                      r"\bIF\s+SDTYYYYI\s+OF\s+CORPT0AI\s+IS\s+NOT\s+NUMERIC"
+                      r"\s+MOVE\s+'Start Date - Not a valid Year\.\.\.'\s+TO\s+WS-MESSAGE\b"),
+            ("regex", r"\b05\s+WS-NUM-9999\s+PIC\s+9999\s+VALUE\s+0\."),
+        ),
+        lambda program: _alphanumeric_width(program, "SDTYYYYI") == (4, False),
+        "The MOVE runs only when SDTYYYYI OF CORPT0AI IS NOT NUMERIC, and before that test the field is overwritten "
+        "by WS-NUM-9999, an unsigned PIC 9999 into which the COMPUTE stores FUNCTION NUMVAL-C of the field, so the "
+        "4-character field always holds four digits and the test cannot hold",
+    ),
+    (
+        "CORPT00C", "End Date - Not a valid Year...", "GAP-UNC-014",
+        (
+            ("regex", r"\bIF\s+EDTYYYYI\s+OF\s+CORPT0AI\s+IS\s+NOT\s+NUMERIC"
+                      r"\s+MOVE\s+'End Date - Not a valid Year\.\.\.'\s+TO\s+WS-MESSAGE\b"),
+            ("regex", r"COMPUTE\s+WS-NUM-9999\s+=\s+FUNCTION\s+NUMVAL-C\s*\(\s*EDTYYYYI\s+OF\s+CORPT0AI\s*\)"
+                      r"\s+MOVE\s+WS-NUM-9999\s+TO\s+EDTYYYYI\s+OF\s+CORPT0AI\b(?:(?!EDTYYYY).)*?"
+                      r"\bIF\s+EDTYYYYI\s+OF\s+CORPT0AI\s+IS\s+NOT\s+NUMERIC"
+                      r"\s+MOVE\s+'End Date - Not a valid Year\.\.\.'\s+TO\s+WS-MESSAGE\b"),
+            ("regex", r"\b05\s+WS-NUM-9999\s+PIC\s+9999\s+VALUE\s+0\."),
+        ),
+        lambda program: _alphanumeric_width(program, "EDTYYYYI") == (4, False),
+        "The MOVE runs only when EDTYYYYI OF CORPT0AI IS NOT NUMERIC, and before that test the field is overwritten "
+        "by WS-NUM-9999, an unsigned PIC 9999 into which the COMPUTE stores FUNCTION NUMVAL-C of the field, so the "
+        "4-character field always holds four digits and the test cannot hold",
+    ),
+)
+
+
+def _not_found_branch(reader: str) -> Anchor:
+    """The NOTFND branch of the RESP EVALUATE that ends paragraph ``reader``,
+    from its WHEN to the END-IF of the STRING into WS-RETURN-MSG that
+    composes the branch's own not-found message. A lookahead ties it to the
+    WHEN OTHER branch that ends the EVALUATE just before ``reader``-EXIT, so
+    the anchor's span is the branch alone."""
+    return (
+        "regex",
+        r"WHEN\s+DFHRESP\s*\(\s*NOTFND\s*\)(?:(?!\bWHEN\b).)*?\bSTRING\b(?:(?!\bWHEN\b).)*?"
+        r"\bINTO\s+WS-RETURN-MSG\s+END-STRING\s+END-IF"
+        rf"(?=\s+WHEN\s+OTHER\b(?:(?!\bWHEN\b).)*?\bEND-EVALUATE\s+\.\s+{reader}-EXIT\.)",
+    )
+
+
+def _tested_after(tester: str, reader: str, condition: str) -> Anchor:
+    """The test of ``condition`` in paragraph ``tester`` right after it
+    performs ``reader`` THRU its exit, leaving ``tester`` when the condition
+    holds."""
+    return (
+        "regex",
+        rf"\b{tester}\.(?:(?!\.\s).)*?\bPERFORM\s+{reader}\s+THRU\s+{reader}-EXIT"
+        rf"\s+IF\s+{condition}\s+GO\s+TO\s+{tester}-EXIT\b",
+    )
+
+
+# Message conditions that are tested but never set, their only SET being
+# commented out, so their text never reaches the screen: (program,
+# condition, gap, anchors that prove it, why). The first anchor is the
+# commented-out SET, the second the NOTFND branch of the read that holds it,
+# the third the test of the condition after that read; the extraction fails
+# when an anchor is gone, the commented-out SET lies outside the branch, or
+# the condition is set in code anywhere. The why gives the line of the
+# commented-out SET as {line}, taken from the first anchor so that it moves
+# with the source, and, as in OVERWRITTEN_MESSAGES, quotes no text.
+NEVER_SET_MESSAGES: tuple[tuple[str, str, str, tuple[Anchor, ...], str], ...] = (
+    (
+        "COACTVWC", "DID-NOT-FIND-ACCT-IN-ACCTDAT", "GAP-UNC-014",
+        (
+            ("comment", r"\bSET\s+DID-NOT-FIND-ACCT-IN-ACCTDAT\s+TO\s+TRUE\b"),
+            _not_found_branch("9300-GETACCTDATA-BYACCT"),
+            _tested_after("9000-READ-ACCT", "9300-GETACCTDATA-BYACCT", "DID-NOT-FIND-ACCT-IN-ACCTDAT"),
+        ),
+        "9000-READ-ACCT tests the condition after it performs 9300-GETACCTDATA-BYACCT, but the only SET of the "
+        "condition, in the NOTFND branch of the READ in 9300-GETACCTDATA-BYACCT, is commented out at line {line}, "
+        "and that branch composes its own not-found message in WS-RETURN-MSG instead",
+    ),
+    (
+        "COACTVWC", "DID-NOT-FIND-CUST-IN-CUSTDAT", "GAP-UNC-014",
+        (
+            ("comment", r"\bSET\s+DID-NOT-FIND-CUST-IN-CUSTDAT\s+TO\s+TRUE\b"),
+            _not_found_branch("9400-GETCUSTDATA-BYCUST"),
+            _tested_after("9000-READ-ACCT", "9400-GETCUSTDATA-BYCUST", "DID-NOT-FIND-CUST-IN-CUSTDAT"),
+        ),
+        "9000-READ-ACCT tests the condition after it performs 9400-GETCUSTDATA-BYCUST, but the only SET of the "
+        "condition, in the NOTFND branch of the READ in 9400-GETCUSTDATA-BYCUST, is commented out at line {line}, "
+        "and that branch composes its own not-found message in WS-RETURN-MSG instead",
+    ),
+    (
+        "COACTUPC", "DID-NOT-FIND-ACCT-IN-ACCTDAT", "GAP-UNC-014",
+        (
+            ("comment", r"\bSET\s+DID-NOT-FIND-ACCT-IN-ACCTDAT\s+TO\s+TRUE\b"),
+            _not_found_branch("9300-GETACCTDATA-BYACCT"),
+            _tested_after("9000-READ-ACCT", "9300-GETACCTDATA-BYACCT", "DID-NOT-FIND-ACCT-IN-ACCTDAT"),
+        ),
+        "9000-READ-ACCT tests the condition after it performs 9300-GETACCTDATA-BYACCT, but the only SET of the "
+        "condition, in the NOTFND branch of the READ in 9300-GETACCTDATA-BYACCT, is commented out at line {line}, "
+        "and that branch composes its own not-found message in WS-RETURN-MSG instead",
+    ),
+    (
+        "COACTUPC", "DID-NOT-FIND-CUST-IN-CUSTDAT", "GAP-UNC-014",
+        (
+            ("comment", r"\bSET\s+DID-NOT-FIND-CUST-IN-CUSTDAT\s+TO\s+TRUE\b"),
+            _not_found_branch("9400-GETCUSTDATA-BYCUST"),
+            _tested_after("9000-READ-ACCT", "9400-GETCUSTDATA-BYCUST", "DID-NOT-FIND-CUST-IN-CUSTDAT"),
+        ),
+        "9000-READ-ACCT tests the condition after it performs 9400-GETCUSTDATA-BYCUST, but the only SET of the "
+        "condition, in the NOTFND branch of the READ in 9400-GETCUSTDATA-BYCUST, is commented out at line {line}, "
+        "and that branch composes its own not-found message in WS-RETURN-MSG instead",
+    ),
+)
+
+
+# Paragraphs that no statement performs, so the messages only they set or
+# compose never reach the screen: (program, paragraph, gap, anchors that
+# prove it, why). The first anchor is the paragraph itself, the others the
+# path the why states: the paragraph before it, and the PERFORM range that
+# ends there. A message is the row's when every statement that can place it
+# in a message field lies in the paragraph; the extraction then fails when an
+# anchor is gone, or when _check_never_performed finds a path of control into
+# the paragraph from an entry of the program, through PERFORMs, GO TOs and
+# paragraphs that run on into the next one. As in OVERWRITTEN_MESSAGES, the
+# why quotes no text.
+UNPERFORMED_PARAGRAPHS: tuple[tuple[str, str, str, tuple[Anchor, ...], str], ...] = (
+    (
+        "COCRDSLC", "9150-GETCARD-BYACCT", "GAP-UNC-018",
+        (
+            ("paragraph", "9150-GETCARD-BYACCT"),
+            ("regex", r"\b9100-GETCARD-BYACCTCARD-EXIT\.\s+EXIT\s+\.\s+9150-GETCARD-BYACCT\."),
+            ("regex", r"\b9000-READ-DATA\.\s+PERFORM\s+9100-GETCARD-BYACCTCARD"
+                      r"\s+THRU\s+9100-GETCARD-BYACCTCARD-EXIT\s+\.\s+9000-READ-DATA-EXIT\."),
+        ),
+        "No PERFORM or GO TO names 9150-GETCARD-BYACCT or a range that holds it, and the paragraph before it is "
+        "9100-GETCARD-BYACCTCARD-EXIT, the exit of 9100-GETCARD-BYACCTCARD, which 9000-READ-DATA performs only "
+        "through that exit, so control never runs on into 9150-GETCARD-BYACCT",
+    ),
+)
+
+
+def _condition_set_sites(program: CobolProgram, condition: str) -> list[tuple[str, int]]:
+    """(path, line) of each SET statement of ``program`` that names
+    ``condition`` among its receiving operands."""
+    sites = []
+    words = program.words
+    for index in range(program.proc_start, len(words)):
+        if words[index] != "SET":
+            continue
+        position = index + 1
+        while position < len(words) and words[position] not in ("TO", "UP", "DOWN", "SET"):
+            if words[position] == condition:
+                sites.append((program.tokens[position].path, program.tokens[position].line))
+            position += 1
+    return sites
+
+
+def _overwritten_message(program: CobolProgram, message: Message) -> tuple[str, str] | None:
+    """(gap, why) of the OVERWRITTEN_MESSAGES row of ``message``, the
+    message of a single 88-level condition of ``program``; None when no row
+    names it. InventoryError when an anchor of the row is gone from the
+    source, or when the condition is set outside the row's first anchor."""
+    for owner, condition, gap, anchors, why in OVERWRITTEN_MESSAGES:
+        if owner != program.name or message.conditions != [condition]:
+            continue
+        spans = [anchor_span(program, anchor) for anchor in anchors]
+        path, first, last = spans[0]
+        sites = _condition_set_sites(program, condition)
+        if not sites or any(site != path or not first <= line <= last for site, line in sites):
+            raise InventoryError(
+                f"{program.path}: {condition} must be set only at {cite(path, [(first, last)])}, "
+                f"where its text is lost before any send, but is set at "
+                f"{', '.join(f'{site}:{line}' for site, line in sites) or 'no line'}"
+            )
+        return gap, why
+    return None
+
+
+def _literal_move_sites(program: CobolProgram, text: str) -> list[tuple[str, int]]:
+    """(path, line) of each MOVE of ``program`` that sends the literal
+    ``text`` to a message field."""
+    sites = []
+    for start, end, sending, targets in program.moves():
+        if sending.literal and sending.value.rstrip() == text and MESSAGE_FIELDS.intersection(targets):
+            path, line, _last = program.span(start, end)
+            sites.append((path, line))
+    return sites
+
+
+def _unsent_message(program: CobolProgram, message: Message) -> tuple[str, str] | None:
+    """(gap, why) of the UNSENT_MESSAGES row of ``message``, a literal
+    message of ``program``; None when no row names it. InventoryError when
+    an anchor of the row is gone from the source, its width check fails, the
+    text is moved to a message field outside the row's first anchor, or it is
+    also the VALUE of a message condition."""
+    for owner, text, gap, anchors, holds, why in UNSENT_MESSAGES:
+        if owner != program.name or message.text != text:
+            continue
+        spans = [anchor_span(program, anchor) for anchor in anchors]
+        path, first, last = spans[0]
+        if not holds(program):
+            raise InventoryError(
+                f"{program.path}: the field tested before the MOVE of '{text}' no longer has the width of the "
+                f"value moved into it, so the test at {cite(path, [(first, last)])} may hold"
+            )
+        sites = _literal_move_sites(program, text)
+        if not sites or any(site != path or not first <= line <= last for site, line in sites):
+            raise InventoryError(
+                f"{program.path}: '{text}' must be moved only at {cite(path, [(first, last)])}, under a test that "
+                f"cannot hold, but is moved at {', '.join(f'{site}:{line}' for site, line in sites) or 'no line'}"
+            )
+        if message.conditions:
+            raise InventoryError(
+                f"{program.path}: '{text}' must reach its message field only through the MOVE at "
+                f"{cite(path, [(first, last)])}, but is also the VALUE of {', '.join(message.conditions)}"
+            )
+        return gap, why
+    return None
+
+
+def _never_set_message(program: CobolProgram, message: Message) -> tuple[str, str] | None:
+    """(gap, why) of the NEVER_SET_MESSAGES row of ``message``, the message
+    of a single 88-level condition of ``program``, with the line of the
+    commented-out SET in the why; None when no row names it. InventoryError
+    when more than one row names it, an anchor of the row is gone from the
+    source, the commented-out SET no longer lies in the NOTFND branch, or the
+    condition is set anywhere in code."""
+    rows = [row for row in NEVER_SET_MESSAGES if row[0] == program.name and message.conditions == [row[1]]]
+    if len(rows) > 1:
+        raise InventoryError(f"{program.path}: {len(rows)} NEVER_SET_MESSAGES rows name {rows[0][1]}")
+    if not rows:
+        return None
+    _owner, condition, gap, anchors, why = rows[0]
+    spans = [anchor_span(program, anchor) for anchor in anchors]
+    (path, line, _last), (branch_path, first, last) = spans[0], spans[1]
+    if branch_path != path or not first <= line <= last:
+        raise InventoryError(
+            f"{program.path}: the commented-out SET of {condition} at line {line} must lie in the NOTFND branch "
+            f"at {cite(branch_path, [(first, last)])}"
+        )
+    sites = _condition_set_sites(program, condition)
+    if sites:
+        raise InventoryError(
+            f"{program.path}: {condition} must be set nowhere, its only SET being commented out at {path}:{line}, "
+            f"but is set at {', '.join(f'{site}:{number}' for site, number in sites)}"
+        )
+    return gap, why.format(line=line)
+
+
+def _message_sites(program: CobolProgram, message: Message) -> list[tuple[str, int, int]]:
+    """(path, first line, last line) of every statement of ``program`` that
+    can place ``message`` in a message field: each SET of its conditions, and
+    the STRING or file-error statements of a message composed at one site, or
+    each MOVE of its literal or CSMSG01Y constant to a message field."""
+    sites = [
+        (path, line, line) for condition in message.conditions
+        for path, line in _condition_set_sites(program, condition)
+    ]
+    if message.origin in ("string", "file-error"):
+        return sites + [message.span]
+    for start, end, sending, targets in program.moves():
+        if not MESSAGE_FIELDS.intersection(targets):
+            continue
+        if sending.literal:
+            moved = message.origin == "literal" and sending.value.rstrip() == message.text
+        else:
+            moved = message.origin == "common" and sending.word == message.constant
+        if moved:
+            sites.append(program.span(start, end))
+    return sites
+
+
+def _control_transfers(program: CobolProgram) -> list[tuple[str, int, int, int]]:
+    """(verb, index of the verb's token, first, last) of every transfer of
+    control to a paragraph of ``program``, as paragraph numbers: each
+    out-of-line PERFORM with its range, THRU included, a SECTION standing for
+    its paragraphs up to the next SECTION; each paragraph a GO TO names,
+    DEPENDING ON lists included, and each paragraph an ALTER makes a GO TO
+    proceed to, as a range of that paragraph alone."""
+    numbers, words = program.paragraph_index, program.words
+    sections = [number for number, para in enumerate(program.paragraphs) if words[para.start + 1] == "SECTION"]
+
+    def through(number: int) -> int:
+        # The last paragraph that a range ending at paragraph ``number`` runs.
+        if number not in sections:
+            return number
+        later = [section for section in sections if section > number]
+        return (later[0] if later else len(program.paragraphs)) - 1
+
+    transfers: list[tuple[str, int, int, int]] = []
+    for index in range(program.proc_start, len(words) - 1):
+        if words[index] == "PERFORM" and words[index + 1] in numbers:
+            first = numbers[words[index + 1]]
+            last = through(first)
+            if words[index + 2:index + 3] in (["THRU"], ["THROUGH"]):
+                end = words[index + 3] if index + 3 < len(words) else ""
+                last = through(numbers[program.paragraph(end).name])
+            transfers.append(("PERFORM", index, first, last))
+        elif words[index] == "GO":
+            position = index + 2 if words[index + 1] == "TO" else index + 1
+            while position < len(words) and (words[position] in numbers or words[position] == ","):
+                if words[position] != ",":
+                    target = numbers[words[position]]
+                    transfers.append(("GO TO", index, target, target))
+                position += 1
+        elif words[index] == "ALTER":
+            # ALTER p1 TO [PROCEED TO] p2, ...: each TO before a paragraph
+            # name gives the paragraph the altered GO TO now goes to.
+            for position in range(index + 1, program.statement_end(index)):
+                if words[position] == "TO" and words[position + 1] in numbers:
+                    target = numbers[words[position + 1]]
+                    transfers.append(("ALTER", index, target, target))
+    return transfers
+
+
+# Words outside the IF, EVALUATE and inline PERFORM statements of a sentence
+# that open a branch or a conditional phrase (AT END, INVALID KEY, ON SIZE
+# ERROR, ON OVERFLOW, ON EXCEPTION, AT END-OF-PAGE and their NOT forms, whose
+# AT or ON may be left out): a statement after one of them may not run.
+_CONDITIONAL_PHRASE_WORDS = frozenset("ELSE WHEN AT END END-OF-PAGE EOP INVALID NOT ON SIZE OVERFLOW EXCEPTION".split())
+_STATEMENT_VERBS = frozenset(
+    word for word in STATEMENT_WORDS if word not in ("ELSE", "WHEN") and not word.startswith("END-")
+)
+
+
+def _runs_off_end(program: CobolProgram, number: int) -> bool:
+    """Whether control may run off the end of paragraph ``number`` of
+    ``program`` into the next paragraph. It cannot only when the last
+    statement of the paragraph's last sentence, an EXEC block counting as one
+    statement, is a GO TO of one paragraph, GOBACK, STOP RUN, or EXEC CICS
+    RETURN, XCTL or ABEND without RESP, RESP2 or NOHANDLE (with which an error
+    passes control to the next statement); when that statement lies outside
+    the sentence's IF, EVALUATE and inline PERFORM statements and after none
+    of _CONDITIONAL_PHRASE_WORDS outside them; and when the sentence holds no
+    NEXT SENTENCE and the paragraph no EXIT PARAGRAPH. Any other paragraph,
+    an empty one included, is taken to run on, which can only make more
+    paragraphs reachable. EXIT PROGRAM is not taken as an end, since in a
+    program that was not called it passes control to the next statement."""
+    words, para = program.words, program.paragraphs[number]
+    body = para.start + (3 if words[para.start + 1] == "SECTION" else 2)
+    stop = para.end
+    while stop > body and words[stop - 1] == ".":
+        stop -= 1
+    sentence = max((index + 1 for index in range(body, stop) if words[index] == "."), default=body)
+    if (
+        program.find_words("EXIT", "PARAGRAPH", start=body, stop=stop) >= 0
+        or program.find_words("NEXT", "SENTENCE", start=sentence, stop=stop) >= 0
+    ):
+        return True
+    depth, conditional, last = 0, False, -1
+    index = sentence
+    while index < stop:
+        word = words[index]
+        if depth == 0 and word in _STATEMENT_VERBS:
+            last = -1 if conditional else index
+        inline = word == "PERFORM" and "".join(words[index + 1:index + 2]) not in program.paragraph_index
+        if word in ("IF", "EVALUATE") or inline:
+            depth += 1
+        elif word in ("END-IF", "END-EVALUATE", "END-PERFORM"):
+            depth -= 1
+        elif depth == 0 and word in _CONDITIONAL_PHRASE_WORDS:
+            conditional = True
+        index = program.statement_end(index) + 1 if word == "EXEC" else index + 1
+    if last < 0:
+        return True
+    statement = words[last:program.statement_end(last) + 1]
+    if statement[:2] == ["GO", "TO"]:
+        del statement[1]
+    ends = (
+        statement in (["GOBACK"], ["STOP", "RUN"])
+        or (len(statement) == 2 and statement[0] == "GO" and statement[1] in program.paragraph_index)
+        or (
+            statement[:2] == ["EXEC", "CICS"] and statement[2:3] in (["RETURN"], ["XCTL"], ["ABEND"])
+            and not {"RESP", "RESP2", "NOHANDLE"}.intersection(statement)
+        )
+    )
+    return not ends
+
+
+def _check_never_performed(program: CobolProgram, paragraph: str) -> None:
+    """InventoryError, naming the statement through which control gets
+    there, when any path of control can enter paragraph ``paragraph`` of
+    ``program``. The check follows states (paragraph, the paragraph at whose
+    end the innermost active PERFORM returns, or None) from the entries of
+    the program: the first paragraph, which the statements before it run on
+    into, and the targets of their PERFORMs and GO TOs; each paragraph an EXEC
+    block names, such as a HANDLE ABEND label; and each paragraph an ALTER
+    makes a GO TO proceed to. From a state, each PERFORM in its paragraph
+    enters the PERFORM's range, each GO TO its target under the same return,
+    and the paragraph runs on into the next one unless the PERFORM returns at
+    its end or _runs_off_end finds that it cannot. Where it is unsure the
+    check follows more paths, never fewer. EXIT SECTION, DECLARATIVES and
+    ENTRY, which it does not follow, are refused outside EXEC blocks."""
+    number = program.paragraph_index[program.paragraph(paragraph).name]
+    if number == 0:
+        raise InventoryError(
+            f"{program.path}: {paragraph} is the first paragraph, so the statements before it run on into it"
+        )
+    words, numbers, paragraphs = program.words, program.paragraph_index, program.paragraphs
+    inside: set[int] = set()
+    entries: list[tuple[str, int, int, int | None]] = [("", -1, 0, None)]
+    for start, end in program.exec_blocks():
+        inside.update(range(start, end + 1))
+        entries += [("EXEC", start, numbers[words[at]], None) for at in range(start, end + 1) if words[at] in numbers]
+    for index in range(program.proc_start, len(words)):
+        construct = "EXIT SECTION" if words[index:index + 2] == ["EXIT", "SECTION"] else words[index]
+        if construct in ("EXIT SECTION", "DECLARATIVES", "ENTRY") and index not in inside:
+            token = program.tokens[index]
+            raise InventoryError(
+                f"{program.path}: the {construct} at {token.path}:{token.line} passes control in a way the check "
+                f"that no statement reaches {paragraph} does not follow"
+            )
+    starts = [para.start for para in paragraphs]
+    transfers: dict[int, list[tuple[str, int, int, int]]] = {}
+    for verb, index, first, last in _control_transfers(program):
+        owner = bisect.bisect_right(starts, index) - 1
+        if verb == "ALTER" or owner < 0:
+            entries.append((verb, index, first, last if verb == "PERFORM" else None))
+        else:
+            transfers.setdefault(owner, []).append((verb, index, first, last))
+    runs_on = [_runs_off_end(program, current) for current in range(len(paragraphs))]
+    came: dict[tuple[int, int | None], tuple[tuple[int, int | None] | None, str, int]] = {}
+    queue: list[tuple[int, int | None]] = []
+
+    def visit(state: tuple[int, int | None], parent: tuple[int, int | None] | None, verb: str, index: int) -> None:
+        if state not in came:
+            came[state] = (parent, verb, index)
+            queue.append(state)
+
+    for verb, index, first, last in entries:
+        visit((first, last), None, verb, index)
+    for state in queue:
+        current, returns = state
+        # Run-ons first, so that a refusal names a transfer only where no
+        # path as short gets there by running on.
+        if current != returns and current + 1 < len(paragraphs) and runs_on[current]:
+            visit((current + 1, returns), state, "", -1)
+        for verb, index, first, last in transfers.get(current, ()):
+            visit((first, last) if verb == "PERFORM" else (first, returns), state, verb, index)
+    reached = next((state for state in queue if state[0] == number), None)
+    if reached is None:
+        return
+    # Back along the run-ons to the entry or transfer that began them.
+    while not came[reached][1] and came[reached][0] is not None:
+        reached = came[reached][0]
+    (entered, returns), (_parent, verb, index) = reached, came[reached]
+    if not verb:
+        raise InventoryError(
+            f"{program.path}: the statements before the first paragraph run on into {paragraphs[0].name}, from "
+            f"which control runs on into {paragraph}"
+        )
+    where = f"{program.tokens[index].path}:{program.tokens[index].line}"
+    if entered == number or (verb == "PERFORM" and returns is not None and entered <= number <= returns):
+        raise InventoryError(
+            f"{program.path}: no statement may perform or go to {paragraph}, but the {verb} at {where} reaches it"
+        )
+    raise InventoryError(
+        f"{program.path}: the {verb} at {where} enters {paragraphs[entered].name}, from which control runs on "
+        f"into {paragraph}"
+    )
+
+
+def _unperformed_message(program: CobolProgram, message: Message) -> tuple[str, str, str] | None:
+    """(gap, why, paragraph) of the UNPERFORMED_PARAGRAPHS row of
+    ``message``, a message of ``program`` placed in a message field only
+    within the row's paragraph; None when no row holds it. InventoryError
+    when an anchor of a row of ``program`` is gone from the source, more than
+    one row holds the message, or control can reach the paragraph
+    (_check_never_performed)."""
+    covering = []
+    sites: list[tuple[str, int, int]] | None = None
+    for owner, paragraph, gap, anchors, why in UNPERFORMED_PARAGRAPHS:
+        if owner != program.name:
+            continue
+        spans = [anchor_span(program, anchor) for anchor in anchors]
+        path, first, last = spans[0]
+        if sites is None:
+            sites = _message_sites(program, message)
+        if sites and all(site == path and first <= low and high <= last for site, low, high in sites):
+            covering.append((gap, why, paragraph))
+    if len(covering) > 1:
+        raise InventoryError(
+            f"{program.path}: the {program.name} message '{message.text}' lies in each of the paragraphs "
+            f"{', '.join(row[2] for row in covering)} of UNPERFORMED_PARAGRAPHS"
+        )
+    if not covering:
+        return None
+    _check_never_performed(program, covering[0][2])
+    return covering[0]
+
+
+def _message_draft(area: str, program: CobolProgram, message: Message) -> dict[str, Any]:
+    name = program.name
+    shown = _sink_phrase(program, message)
+    fields = ", ".join(sorted(message.targets))
+    lines = _line_list(message.sites)
+    overwritten = _overwritten_message(program, message) if message.origin == "condition" else None
+    unsent = _unsent_message(program, message) if message.origin == "literal" else None
+    never_set = _never_set_message(program, message) if message.origin == "condition" else None
+    unperformed = _unperformed_message(program, message)
+    never_shown = [row for row in (overwritten, unsent, never_set, unperformed) if row is not None]
+    if len(never_shown) > 1:
+        raise InventoryError(
+            f"{program.path}: {len(never_shown)} never-shown message rows hold the {name} message "
+            f"'{message.text}', and at most one may say why its text never reaches the screen"
+        )
+    if message.origin == "condition":
+        conditions = ", ".join(message.conditions)
+        parents = fields
+        if overwritten is not None:
+            gap, why = overwritten
+            description = (
+                f"Message condition {conditions} of {parents} (VALUE '{message.text}'): the text is defined and "
+                f"set, but never reaches {shown}. {why} ({gap})."
+            )
+        elif never_set is not None:
+            gap, why = never_set
+            description = (
+                f"Message condition {conditions} of {parents} (VALUE '{message.text}'): the text is defined and "
+                f"tested, but never set, so it never reaches {shown}. {why} ({gap})."
+            )
+        elif unperformed is not None:
+            gap, why, paragraph = unperformed
+            description = (
+                f"Message condition {conditions} of {parents} (VALUE '{message.text}'): the text is defined and "
+                f"set in {paragraph}, a paragraph no statement performs, so it never reaches {shown}. {why} ({gap})."
+            )
+        else:
+            description = (
+                f"Message condition {conditions} of {parents} (VALUE '{message.text}'): when the condition is set "
+                f"the text appears in {shown}."
+            )
+        if message.unused:
+            description += (
+                f" Unused: {conditions} {'is' if len(message.conditions) == 1 else 'are'} never set or tested "
+                f"outside {'its definition' if len(message.conditions) == 1 else 'their definitions'}, so the "
+                f"message cannot appear."
+            )
+    elif message.origin == "common":
+        if unperformed is not None:
+            gap, why, paragraph = unperformed
+            description = (
+                f"{name} moves {message.constant} ('{message.text}', defined in {COMMON_MESSAGE_COPYBOOK}) to "
+                f"{fields} at line(s) {lines}, but no statement performs {paragraph}, so the text never reaches "
+                f"{shown}. {why} ({gap})."
+            )
+        else:
+            description = (
+                f"{name} moves {message.constant} ('{message.text}', defined in {COMMON_MESSAGE_COPYBOOK}) to "
+                f"{fields} at line(s) {lines}; the text appears in {shown}."
+            )
+    elif message.origin == "literal":
+        if unsent is not None:
+            gap, why = unsent
+            description = (
+                f"{name} has a MOVE of '{message.text}' to {fields} at line(s) {lines}, but the text never reaches "
+                f"{shown}. {why} ({gap})."
+            )
+        elif unperformed is not None:
+            gap, why, paragraph = unperformed
+            description = (
+                f"{name} moves '{message.text}' to {fields} at line(s) {lines}, but no statement performs "
+                f"{paragraph}, so the text never reaches {shown}. {why} ({gap})."
+            )
+        else:
+            description = f"{name} moves '{message.text}' to {fields} at line(s) {lines}; the text appears in {shown}."
+        if message.conditions:
+            description += f" Also the VALUE of condition(s) {', '.join(message.conditions)}."
+    elif message.origin == "string":
+        if unperformed is not None:
+            gap, why, paragraph = unperformed
+            description = (
+                f"{name} composes '{message.text}' with STRING into {fields} in {message.context}; the parts in "
+                f"<> are run-time values. No statement performs {paragraph}, so the text never reaches {shown}. "
+                f"{why} ({gap})."
+            )
+        else:
+            description = (
+                f"{name} composes '{message.text}' with STRING into {fields} in {message.context}; the parts in "
+                f"<> are run-time values. The text appears in {shown}."
+            )
+    elif unperformed is not None:
+        gap, why, paragraph = unperformed
+        description = (
+            f"On an unexpected RESP in {message.context}, {name} composes WS-FILE-ERROR-MESSAGE "
+            f"'{message.text}', but no statement performs {paragraph}, so the text never reaches {shown}. "
+            f"{why} ({gap})."
+        )
+    else:
+        description = (
+            f"On an unexpected RESP in {message.context}, {name} composes WS-FILE-ERROR-MESSAGE "
+            f"'{message.text}' and shows it in {shown}."
+        )
+    activation, gaps = "always", [hidden[0] for hidden in never_shown]
+    if message.unused:
+        activation, gaps = "unused", ["GAP-UNC-013"]
+    for owner, pattern, gap, blocked, why in UNREACHABLE_MESSAGES:
+        if owner == name and re.search(pattern, message.text) and blocked(program):
+            activation, gaps = "unreachable", [gap]
+            description += f" Unreachable: {why}."
+    label = message.text.strip()
+    if message.origin == "file-error":
+        label = f"{label.split(' returned ')[0]}' ({message.context}"
+        title = f"{name} message '{label})"
+    else:
+        title = f"{name} message '{label}'"
+    return _draft(area, classify_message(message), title, cite_span(message.span), description, "e2e", activation, gaps)
+
+
+def online_items(area: str, program: CobolProgram) -> list[dict[str, Any]]:
+    """The behaviour items of one online program: messages, navigation,
+    field edits, then side effects and content."""
+    predicates, field_paragraphs = field_edit_predicates(program)
+    drafts = [_message_draft(area, program, message) for message in online_messages(program, field_paragraphs)]
+    for navigation in online_navigation(program):
+        drafts.append(
+            _draft(area, "rule", f"{program.name} {navigation.label}", cite_span(navigation.span),
+                   navigation.description, "e2e", gap_ids=navigation.gap_ids)
+        )
+    receiver = _alphanumeric_width(program, FIELD_NAME_VARIABLE)
+    for predicate in predicates:
+        if predicate.field is None:
+            drafts.append(
+                _draft(
+                    area, "rule", f"{program.name} {predicate.routine}: {predicate.label}", cite_span(predicate.span),
+                    f"Edit routine {predicate.routine} would refuse a field ({predicate.label}) with "
+                    f"'<field name>{predicate.message}', but no field edit performs the routine.",
+                    "e2e", "unused", ["GAP-UNC-013"],
+                )
+            )
+            continue
+        described = f"'{predicate.message}'" if predicate.names_field else f"'{predicate.message}' (no field name)"
+        if predicate.names_field and predicate.shown_field != predicate.field and receiver is not None:
+            described += (
+                f" (the MOVE cuts the {len(predicate.field)}-character name '{predicate.field}' to the "
+                f"{receiver[0]} characters of {FIELD_NAME_VARIABLE})"
+            )
+        guard = _predicate_guard(program, predicate.routine)
+        condition = f", {guard[0]}," if guard is not None else ""
+        description = (
+            f"{program.name} refuses {predicate.field}{condition} unless {predicate.label}: ERRMSG shows "
+            f"{described} and the field is flagged (edit routine {predicate.routine})."
+        )
+        if guard is not None:
+            description += " " + guard[1].format(field=predicate.field)
+        drafts.append(
+            _draft(
+                area, "rule", f"{program.name} {predicate.field}: {predicate.label}", cite_span(predicate.span),
+                description, "e2e",
+            )
+        )
+    for owner, kind, label, anchors, description in SIDE_EFFECTS:
+        if owner == program.name:
+            drafts.append(_draft(area, kind, f"{owner} {label}", anchored_source(program, anchors), description, "e2e"))
+    return drafts
+
+
+def text_span(path: str, pattern: str, repo_root: Path = REPO_ROOT) -> tuple[str, int, int]:
+    """(path, first line, last line) of the first match of ``pattern``
+    (``re.S``) in a text file such as a JCL member or the README."""
+    lines = read_lines(repo_root / path)
+    text = "\n".join(lines)
+    match = re.search(pattern, text, re.S)
+    if match is None:
+        raise InventoryError(f"{path}: anchor /{pattern}/ not found")
+    first = text.count("\n", 0, match.start()) + 1
+    last = text.count("\n", 0, max(match.end() - 1, match.start())) + 1
+    return path, first, last
+
+
+def text_source(path: str, patterns: Sequence[str], repo_root: Path = REPO_ROOT) -> str:
+    spans = [text_span(path, pattern, repo_root) for pattern in patterns]
+    return cite(path, [(first, last) for _p, first, last in spans])
+
+
+# --------------------------------------------------------------------------
+# Batch behaviour items (static table)
+# --------------------------------------------------------------------------
+
+# (area, program, kind, label, anchors, description, activation, gap_ids)
+BatchRow = tuple[str, str, str, str, tuple[Anchor, ...], str, str, tuple[str, ...]]
+
+
+def _read_program_rows(
+    program: str, ddname: str, noun: str, get_next: str, display: str | None,
+    open_para: str, close_para: str, abend: str, status: str, layout: str,
+) -> list[BatchRow]:
+    listing: tuple[Anchor, ...] = (("main",), ("paragraph", get_next))
+    if display:
+        listing += (("paragraph", display),)
+    return [
+        ("DAT", program, "report", "record listing in key order", listing,
+         f"{program} opens {ddname} INPUT, reads every {noun} record in key order and DISPLAYs it "
+         f"({layout} layout) between the start and end of execution lines; return code 0.",
+         "always", ()),
+        ("DAT", program, "recovery", "abend on open failure",
+         (("paragraph", open_para), ("paragraph", abend), ("paragraph", status)),
+         f"When {ddname} cannot be opened, {program} displays 'ERROR OPENING {ddname}', the file status as "
+         f"'FILE STATUS IS: NNNN<status>' and 'ABENDING PROGRAM', then calls CEE3ABD (the run abends).",
+         "always", ()),
+        ("DAT", program, "recovery", "abend on read or close failure after open",
+         (("paragraph", get_next), ("paragraph", close_para), ("paragraph", status)),
+         f"A read error other than end of file, or a close error, makes {program} display the error line, "
+         f"'FILE STATUS IS: NNNN<status>' and abend through CEE3ABD.",
+         "always", ()),
+    ]
+
+
+BATCH_ROWS: tuple[BatchRow, ...] = tuple(
+    _read_program_rows("CBACT01C", "ACCTFILE", "account", "1000-ACCTFILE-GET-NEXT", "1100-DISPLAY-ACCT-RECORD",
+                       "0000-ACCTFILE-OPEN", "9000-ACCTFILE-CLOSE", "9999-ABEND-PROGRAM",
+                       "9910-DISPLAY-IO-STATUS", "CVACT01Y")
+    + _read_program_rows("CBACT02C", "CARDFILE", "card", "1000-CARDFILE-GET-NEXT", None,
+                         "0000-CARDFILE-OPEN", "9000-CARDFILE-CLOSE", "9999-ABEND-PROGRAM",
+                         "9910-DISPLAY-IO-STATUS", "CVACT02Y")
+    + _read_program_rows("CBACT03C", "XREFFILE", "card cross-reference", "1000-XREFFILE-GET-NEXT", None,
+                         "0000-XREFFILE-OPEN", "9000-XREFFILE-CLOSE", "9999-ABEND-PROGRAM",
+                         "9910-DISPLAY-IO-STATUS", "CVACT03Y")
+    + _read_program_rows("CBCUS01C", "CUSTFILE", "customer", "1000-CUSTFILE-GET-NEXT", None,
+                         "0000-CUSTFILE-OPEN", "9000-CUSTFILE-CLOSE", "Z-ABEND-PROGRAM",
+                         "Z-DISPLAY-IO-STATUS", "CVCUS01Y")
+) + (
+    # CBTRN01C: its items take the program's activation (no job runs it).
+    ("TRN", "CBTRN01C", "report", "per-record XREF and account verification display",
+     (("paragraph", "MAIN-PARA"), ("paragraph", "2000-LOOKUP-XREF"), ("paragraph", "3000-READ-ACCOUNT")),
+     "For each DALYTRAN record CBTRN01C displays the record, looks the card up in XREFFILE and the account in "
+     "ACCTFILE, and displays 'SUCCESSFUL READ OF XREF' with the card, account and customer ids and 'SUCCESSFUL "
+     "READ OF ACCOUNT FILE'. After end of file the last lookup and display are repeated once (GAP-DEF-006).",
+     "always", ()),
+    ("TRN", "CBTRN01C", "rule", "card not verified, transaction skipped",
+     (("regex", r"DISPLAY\s+'CARD NUMBER '.*?DALYTRAN-ID"),),
+     "A card number missing from XREFFILE displays 'INVALID CARD NUMBER FOR XREF' and 'CARD NUMBER <card> "
+     "COULD NOT BE VERIFIED. SKIPPING TRANSACTION ID-<id>'; no account lookup follows.",
+     "always", ()),
+    ("TRN", "CBTRN01C", "rule", "account not found",
+     (("regex", r"IF\s+WS-ACCT-READ-STATUS\s+NOT\s*=\s*0\s+DISPLAY\s+'ACCOUNT '.*?' NOT FOUND'"),),
+     "A cross-reference hit whose account is missing from ACCTFILE displays 'INVALID ACCOUNT NUMBER FOUND' and "
+     "'ACCOUNT <id> NOT FOUND'.",
+     "always", ()),
+    ("TRN", "CBTRN01C", "recovery", "abend on open failure",
+     tuple(("paragraph", p) for p in ("0000-DALYTRAN-OPEN", "0100-CUSTFILE-OPEN", "0200-XREFFILE-OPEN",
+                                      "0300-CARDFILE-OPEN", "0400-ACCTFILE-OPEN", "0500-TRANFILE-OPEN",
+                                      "Z-ABEND-PROGRAM", "Z-DISPLAY-IO-STATUS")),
+     "A file that cannot be opened (for example no TRANFILE) displays 'ERROR OPENING <file>', 'FILE STATUS IS: "
+     "NNNN<status>' and 'ABENDING PROGRAM', then abends through CEE3ABD.",
+     "always", ()),
+    ("TRN", "CBTRN01C", "recovery", "abend on read or close failure after open",
+     tuple(("paragraph", p) for p in ("1000-DALYTRAN-GET-NEXT", "9000-DALYTRAN-CLOSE", "9100-CUSTFILE-CLOSE",
+                                      "9200-XREFFILE-CLOSE", "9300-CARDFILE-CLOSE", "9400-ACCTFILE-CLOSE",
+                                      "9500-TRANFILE-CLOSE")),
+     "A DALYTRAN read error displays 'ERROR READING DAILY TRANSACTION FILE', a close error 'ERROR CLOSING "
+     "<file>', each with the file status display and the CEE3ABD abend.",
+     "always", ()),
+    # CBTRN02C: daily posting (POSTTRAN).
+    ("TRN", "CBTRN02C", "rule", "reject 100 invalid card", (("paragraph", "1500-A-LOOKUP-XREF"),),
+     "A DALYTRAN card number missing from XREFFILE is rejected with reason 0100 'INVALID CARD NUMBER FOUND' "
+     "and written to DALYREJS; the account is not read.",
+     "always", ()),
+    ("TRN", "CBTRN02C", "rule", "reject 101 account not found",
+     (("regex", r"READ\s+ACCOUNT-FILE\s+INTO\s+ACCOUNT-RECORD\s+INVALID\s+KEY\s+MOVE\s+101"
+                r".*?WS-VALIDATION-FAIL-REASON-DESC"),),
+     "A card whose cross-referenced account is missing from ACCTFILE is rejected with reason 0101 'ACCOUNT "
+     "RECORD NOT FOUND'.",
+     "always", ()),
+    ("TRN", "CBTRN02C", "rule", "reject 102 overlimit",
+     (("regex", r"COMPUTE\s+WS-TEMP-BAL.*?'OVERLIMIT TRANSACTION'\s+TO\s+WS-VALIDATION-FAIL-REASON-DESC\s+END-IF"),),
+     "A transaction is rejected with reason 0102 'OVERLIMIT TRANSACTION' when ACCT-CREDIT-LIMIT is less than "
+     "ACCT-CURR-CYC-CREDIT - ACCT-CURR-CYC-DEBIT + DALYTRAN-AMT; an amount reaching the limit exactly posts "
+     "(>= comparison). The cycle fields include the postings earlier in the run.",
+     "always", ()),
+    ("TRN", "CBTRN02C", "rule", "reject 103 expired account",
+     (("regex", r"IF\s+ACCT-EXPIRAION-DATE\s*>=.*?'TRANSACTION RECEIVED AFTER ACCT EXPIRATION'"
+                r"\s+TO\s+WS-VALIDATION-FAIL-REASON-DESC\s+END-IF"),),
+     "A transaction whose origination date (DALYTRAN-ORIG-TS(1:10)) is after ACCT-EXPIRAION-DATE is rejected "
+     "with reason 0103 'TRANSACTION RECEIVED AFTER ACCT EXPIRATION'; the expiration date itself posts.",
+     "always", ()),
+    ("TRN", "CBTRN02C", "rule", "reject 103 takes precedence over 102", (("paragraph", "1500-B-LOOKUP-ACCT"),),
+     "Both the limit and the expiration checks run; a record that is over limit and expired is rejected with "
+     "0103 only, because the later check overwrites the reason.",
+     "always", ()),
+    ("TRN", "CBTRN02C", "rule", "latent reject 109",
+     (("regex", r"MOVE\s+109\s+TO\s+WS-VALIDATION-FAIL-REASON.*?WS-VALIDATION-FAIL-REASON-DESC"),),
+     "Reason 109 'ACCOUNT RECORD NOT FOUND' is set only on REWRITE INVALID KEY of the account record read by "
+     "key in the same run, after the transaction was posted, and is never written to DALYREJS.",
+     "unreachable", ("GAP-UNC-004",)),
+    ("TRN", "CBTRN02C", "rule", "return code 4 when any record is rejected",
+     (("regex", r"IF\s+WS-REJECT-COUNT\s*>\s*0\s+MOVE\s+4\s+TO\s+RETURN-CODE\s+END-IF"),),
+     "The run ends with RETURN-CODE 4 when at least one record was rejected and 0 otherwise; no other return "
+     "code is set.",
+     "always", ()),
+    ("TRN", "CBTRN02C", "calculation", "balance posting", (("paragraph", "2800-UPDATE-ACCOUNT-REC"),),
+     "Each posted amount is added to ACCT-CURR-BAL and to ACCT-CURR-CYC-CREDIT when it is zero or positive, "
+     "else to ACCT-CURR-CYC-DEBIT; the account record is rewritten.",
+     "always", ()),
+    ("TRN", "CBTRN02C", "calculation", "TCATBAL create",
+     (("paragraph", "2700-UPDATE-TCATBAL"), ("paragraph", "2700-A-CREATE-TCATBAL-REC")),
+     "A posting whose account, type and category have no TCATBALF record displays 'TCATBAL record not found "
+     "for key : <key>.. Creating.' and writes a new record whose balance is the amount.",
+     "always", ()),
+    ("TRN", "CBTRN02C", "calculation", "TCATBAL update", (("paragraph", "2700-B-UPDATE-TCATBAL-REC"),),
+     "A posting whose TCATBALF record exists adds the amount to TRAN-CAT-BAL and rewrites it.",
+     "always", ()),
+    ("TRN", "CBTRN02C", "interface", "TRANSACT record with processing timestamp",
+     (("paragraph", "2000-POST-TRANSACTION"), ("paragraph", "2900-WRITE-TRANSACTION-FILE"),
+      ("paragraph", "Z-GET-DB2-FORMAT-TIMESTAMP")),
+     "Each posted transaction is written to TRANFILE (opened OUTPUT, so the file is recreated) as a 350-byte "
+     "CVTRA05Y record copying the DALYTRAN fields, with TRAN-PROC-TS the run clock as "
+     "YYYY-MM-DD-HH.MM.SS.hh0000.",
+     "always", ()),
+    ("TRN", "CBTRN02C", "interface", "DALYREJS 430-byte reject record",
+     (("regex", r"01\s+FD-REJS-RECORD\..*?FD-VALIDATION-TRAILER[^\n]*"), ("paragraph", "2500-WRITE-REJECT-REC")),
+     "Each rejected transaction is written to DALYREJS as 430 bytes: the 350-byte DALYTRAN record followed by "
+     "the 4-digit reason code and its 76-byte description.",
+     "always", ()),
+    ("TRN", "CBTRN02C", "report", "processed and rejected counts",
+     (("regex", r"DISPLAY\s+'TRANSACTIONS PROCESSED :'.*?WS-REJECT-COUNT"),),
+     "At the end of the run CBTRN02C displays 'TRANSACTIONS PROCESSED :<9 digits>' and 'TRANSACTIONS "
+     "REJECTED  :<9 digits>', with no breakdown by reason.",
+     "always", ()),
+    ("TRN", "CBTRN02C", "recovery", "abend on open failure",
+     tuple(("paragraph", p) for p in ("0000-DALYTRAN-OPEN", "0100-TRANFILE-OPEN", "0200-XREFFILE-OPEN",
+                                      "0300-DALYREJS-OPEN", "0400-ACCTFILE-OPEN", "0500-TCATBALF-OPEN",
+                                      "9999-ABEND-PROGRAM", "9910-DISPLAY-IO-STATUS")),
+     "A file that cannot be opened displays 'ERROR OPENING <file>', 'FILE STATUS IS: NNNN<status>' and "
+     "'ABENDING PROGRAM', then abends through CEE3ABD; no return code is set.",
+     "always", ()),
+    ("TRN", "CBTRN02C", "recovery", "abend on read, write, rewrite or close failure after open",
+     tuple(("paragraph", p) for p in ("1000-DALYTRAN-GET-NEXT", "2500-WRITE-REJECT-REC", "2700-UPDATE-TCATBAL",
+                                      "2700-A-CREATE-TCATBAL-REC", "2700-B-UPDATE-TCATBAL-REC",
+                                      "2900-WRITE-TRANSACTION-FILE", "9000-DALYTRAN-CLOSE", "9100-TRANFILE-CLOSE",
+                                      "9200-XREFFILE-CLOSE", "9300-DALYREJS-CLOSE", "9400-ACCTFILE-CLOSE",
+                                      "9500-TCATBALF-CLOSE")),
+     "A read, write, rewrite or close error displays its error line ('ERROR READING DALYTRAN FILE', 'ERROR "
+     "WRITING TO REJECTS FILE', 'ERROR REWRITING TRANSACTION BALANCE FILE', 'ERROR CLOSING ...'), the file "
+     "status and abends through CEE3ABD. The DALYREJS close error displays XREFFILE-STATUS instead of the "
+     "DALYREJS status (GAP-DEF-002).",
+     "always", ()),
+)
+
+BATCH_ROWS += (
+    # CBACT04C: interest calculation (INTCALC, PARM date).
+    ("FIN", "CBACT04C", "calculation", "monthly interest", (("paragraph", "1300-COMPUTE-INTEREST"),),
+     "For each TCATBALF record with a non-zero rate, the monthly interest is TRAN-CAT-BAL * DIS-INT-RATE / 1200, "
+     "truncated to cents (no ROUNDED), and is added to the account's total interest.",
+     "always", ()),
+    ("FIN", "CBACT04C", "calculation", "account update",
+     (("paragraph", "1050-UPDATE-ACCOUNT"), ("regex", r"ELSE\s+PERFORM\s+1050-UPDATE-ACCOUNT")),
+     "When the TCATBALF account changes, the previous account is rewritten with the total interest added to "
+     "ACCT-CURR-BAL and both cycle fields set to zero. The end-of-file ELSE that would update the last account "
+     "is unreachable, so the last account is never rewritten (GAP-DEF-003).",
+     "always", ()),
+    ("FIN", "CBACT04C", "calculation", "fees computation", (("paragraph", "1400-COMPUTE-FEES"),),
+     "1400-COMPUTE-FEES is performed after each interest computation but holds no statement ('To be "
+     "implemented'), so no fee changes any record.",
+     "always", ()),
+    ("FIN", "CBACT04C", "rule", "DEFAULT disclosure group fallback", (("paragraph", "1200-GET-INTEREST-RATE"),),
+     "When DISCGRP has no record for the account's group, type and category, CBACT04C displays 'DISCLOSURE "
+     "GROUP RECORD MISSING' and 'TRY WITH DEFAULT GROUP CODE' and reads the rate of group 'DEFAULT'. The "
+     "group is taken from ACCT-GROUP-ID.",
+     "always", ()),
+    ("FIN", "CBACT04C", "rule", "no interest record at zero rate",
+     (("regex", r"IF\s+DIS-INT-RATE\s+NOT\s*=\s*0\s+PERFORM\s+1300-COMPUTE-INTEREST"
+                r"\s+PERFORM\s+1400-COMPUTE-FEES\s+END-IF"),),
+     "A category whose disclosure rate is zero computes no interest and writes no transaction record.",
+     "always", ()),
+    ("FIN", "CBACT04C", "interface", "interest transaction record", (("paragraph", "1300-B-WRITE-TX"),),
+     "Each interest amount is written to TRANSACT (SYSTRAN) as a CVTRA05Y record: TRAN-ID = the 10-character "
+     "PARM date followed by a 6-digit counter, type '01', category 0005, source 'System', description 'Int. "
+     "for a/c <account>' followed by x'00' fill, the card from the cross-reference, and the run clock as both "
+     "timestamps.",
+     "always", ()),
+    ("FIN", "CBACT04C", "recovery", "abend when the DEFAULT group is missing",
+     (("paragraph", "1200-A-GET-DEFAULT-INT-RATE"),),
+     "When the 'DEFAULT' disclosure group is missing as well, CBACT04C displays 'ERROR READING DEFAULT "
+     "DISCLOSURE GROUP', the file status, and abends through CEE3ABD.",
+     "always", ()),
+    ("FIN", "CBACT04C", "recovery", "abend on open failure",
+     tuple(("paragraph", p) for p in ("0000-TCATBALF-OPEN", "0100-XREFFILE-OPEN", "0200-DISCGRP-OPEN",
+                                      "0300-ACCTFILE-OPEN", "0400-TRANFILE-OPEN", "9999-ABEND-PROGRAM",
+                                      "9910-DISPLAY-IO-STATUS")),
+     "A file that cannot be opened displays its error line, the file status and abends through CEE3ABD; the "
+     "DISCGRP open error reads 'ERROR OPENING DALY REJECTS FILE' (GAP-DEF-004).",
+     "always", ()),
+    ("FIN", "CBACT04C", "recovery", "abend on read, write, rewrite or close failure after open",
+     tuple(("paragraph", p) for p in ("1000-TCATBALF-GET-NEXT", "1050-UPDATE-ACCOUNT", "1100-GET-ACCT-DATA",
+                                      "1110-GET-XREF-DATA", "1300-B-WRITE-TX", "9000-TCATBALF-CLOSE",
+                                      "9100-XREFFILE-CLOSE", "9200-DISCGRP-CLOSE", "9300-ACCTFILE-CLOSE",
+                                      "9400-TRANFILE-CLOSE")),
+     "A read, write, rewrite or close error displays its error line ('ERROR READING TRANSACTION CATEGORY "
+     "FILE', 'ERROR WRITING TRANSACTION RECORD', 'ERROR RE-WRITING ACCOUNT FILE', 'ERROR CLOSING ...'), the "
+     "file status and abends through CEE3ABD.",
+     "always", ()),
+    # CBTRN03C: transaction report (TRANREPT).
+    ("RPT", "CBTRN03C", "rule", "DATEPARM window", (("main",), ("paragraph", "0550-DATEPARM-READ")),
+     "Only TRANSACT records whose TRAN-PROC-TS(1:10) lies between the DATEPARM start and end dates (both "
+     "included) are reported. The first record outside the window ends the read loop, because NEXT SENTENCE "
+     "leaves the inline PERFORM: later records and all totals are lost (GAP-DEF-012).",
+     "always", ()),
+    ("RPT", "CBTRN03C", "report", "report header", (("paragraph", "1120-WRITE-HEADERS"),),
+     "The 133-byte report starts with four header lines: the title 'Daily Transaction Report' with 'Date "
+     "Range: <start> to <end>', a blank line, the column headings and a separator.",
+     "always", ()),
+    ("RPT", "CBTRN03C", "report", "detail line", (("paragraph", "1120-WRITE-DETAIL"),),
+     "Each reported transaction is one detail line: id, account, type code and description, category code and "
+     "description, source and edited amount.",
+     "always", ()),
+    ("RPT", "CBTRN03C", "report", "page break",
+     (("paragraph", "1100-WRITE-TRANSACTION-REPORT"), ("paragraph", "1110-WRITE-PAGE-TOTALS")),
+     "WS-LINE-COUNTER counts every header, total and detail line; before a detail line, when the counter is a "
+     "multiple of 20, a page total, a separator and the four header lines are written. Account-total lines "
+     "count too, so a break can be skipped (GAP-DEF-012).",
+     "always", ()),
+    ("RPT", "CBTRN03C", "report", "account totals", (("paragraph", "1120-WRITE-ACCOUNT-TOTALS"),),
+     "When the card number changes, except before the first card, the account total of the previous card and "
+     "a separator are written and the account total is reset.",
+     "always", ()),
+    ("RPT", "CBTRN03C", "report", "end-of-file totals",
+     (("regex", r"DISPLAY\s+'TRAN-AMT '.*?PERFORM\s+1110-WRITE-GRAND-TOTALS"),
+      ("paragraph", "1110-WRITE-GRAND-TOTALS")),
+     "At end of file the last amount is added to the page and account totals a second time, then the page "
+     "total and the grand total are written; no final account total is written (GAP-DEF-012).",
+     "always", ()),
+    ("RPT", "CBTRN03C", "recovery", "abend on INVALID KEY lookup of card, type or category",
+     tuple(("paragraph", p) for p in ("1500-A-LOOKUP-XREF", "1500-B-LOOKUP-TRANTYPE", "1500-C-LOOKUP-TRANCATG")),
+     "A card missing from CARDXREF, a type missing from TRANTYPE or a category missing from TRANCATG displays "
+     "'INVALID CARD NUMBER : ', 'INVALID TRANSACTION TYPE : ' or 'INVALID TRAN CATG KEY : ' with the key and "
+     "abends through CEE3ABD.",
+     "always", ()),
+    ("RPT", "CBTRN03C", "recovery", "abend on open failure",
+     tuple(("paragraph", p) for p in ("0000-TRANFILE-OPEN", "0100-REPTFILE-OPEN", "0200-CARDXREF-OPEN",
+                                      "0300-TRANTYPE-OPEN", "0400-TRANCATG-OPEN", "0500-DATEPARM-OPEN",
+                                      "9999-ABEND-PROGRAM", "9910-DISPLAY-IO-STATUS")),
+     "A file that cannot be opened (for example no DATEPARM) displays 'ERROR OPENING <file>' ('ERROR OPENING "
+     "DATE PARM FILE'), the file status and abends through CEE3ABD.",
+     "always", ()),
+    ("RPT", "CBTRN03C", "recovery", "abend on read, write or close failure after open",
+     tuple(("paragraph", p) for p in ("0550-DATEPARM-READ", "1000-TRANFILE-GET-NEXT", "1111-WRITE-REPORT-REC",
+                                      "9000-TRANFILE-CLOSE", "9100-REPTFILE-CLOSE", "9200-CARDXREF-CLOSE",
+                                      "9300-TRANTYPE-CLOSE", "9400-TRANCATG-CLOSE", "9500-DATEPARM-CLOSE")),
+     "A read, write or close error displays 'ERROR READING TRANSACTION FILE', 'ERROR WRITING REPTFILE' or "
+     "'ERROR CLOSING ...', the file status and abends through CEE3ABD.",
+     "always", ()),
+    # CBSTM03A with its file service CBSTM03B: statements (CREASTMT).
+    ("RPT", "CBSTM03A", "report", "text statement",
+     (("paragraph", "5000-CREATE-STATEMENT"), ("paragraph", "6000-WRITE-TRANS")),
+     "For each card of the cross-reference, an 80-byte text statement is written to STMTFILE: the customer "
+     "name and address block, account id, current balance and FICO score, one line per transaction and the "
+     "total.",
+     "always", ()),
+    ("RPT", "CBSTM03A", "report", "HTML statement",
+     (("paragraph", "5100-WRITE-HTML-HEADER"), ("paragraph", "5200-WRITE-HTML-NMADBS"),
+      ("paragraph", "6000-WRITE-TRANS"), ("paragraph", "4000-TRNXFILE-GET")),
+     "For each card the statement is also written to HTMLFILE as 100-byte HTML lines: the document and table "
+     "header, 'Statement for Account Number: <account id>', the bank name and address ('Bank of XYZ', '410 "
+     "Terry Ave N', 'Seattle WA 99999'), the customer name and three address lines, 'Basic Details' with the "
+     "Account ID, Current Balance and FICO Score lines, 'Transaction Summary' with the Tran ID, Tran Details "
+     "and Amount headers, a table row per transaction (id, details, amount), and fixed closing lines with "
+     "'<h3>End of Statement</h3>'. The HTML statement has no total: the transaction total is written only to "
+     "STMTFILE.",
+     "always", ()),
+    ("RPT", "CBSTM03A", "report", "JCL step and DD display", (("main",),),
+     "CBSTM03A walks the z/OS PSA, TCB and TIOT from address 0 and displays 'Running JCL : <job> Step <step>' "
+     "and each DD name with a valid or null UCB; this runs only where page zero holds those control blocks.",
+     "conditional", ("GAP-DOC-020", "GAP-STB-003")),
+    ("RPT", "CBSTM03A", "calculation", "per-statement transaction total", (("paragraph", "4000-TRNXFILE-GET"),),
+     "The amounts of the card's transactions are summed into WS-TOTAL-AMT, which is reset for each card; the "
+     "total is shown only on the text statement, as the STMTFILE 'Total EXP:' line, never on the HTML "
+     "statement.",
+     "always", ()),
+    ("RPT", "CBSTM03B", "interface", "file service operations O/C/R/K/W/Z",
+     (("regex", r"05\s+LK-M03B-OPER.*?88\s+M03B-REWRITE[^\n]*"), ("paragraph", "0000-START")),
+     "CBSTM03A calls CBSTM03B with a DD name (TRNXFILE, XREFFILE, CUSTFILE, ACCTFILE), an operation code, a key "
+     "and its length. CBSTM03B declares six operations (O open, C close, R read next, K read by key, W write, Z "
+     "rewrite) but implements only O, R and C for TRNXFILE and XREFFILE and O, K and C for CUSTFILE and "
+     "ACCTFILE, opening each file for input; any other operation, W and Z included, which no caller passes, "
+     "does no I/O and returns that DD's last file status (GAP-UNC-016). An unknown DD name returns at once "
+     "with LK-M03B-RC unchanged. CBSTM03B returns the file status in LK-M03B-RC and the record in "
+     "LK-M03B-FLDT.",
+     "always", ()),
+    ("RPT", "CBSTM03A", "rule", "51-card x 10-transaction table limit",
+     (("regex", r"05\s+WS-CARD-TBL\s+OCCURS\s+51\s+TIMES.*?WS-TRCT[^\n]*"), ("paragraph", "8500-READTRNX-READ")),
+     "The transactions are held in a table of 51 cards with 10 transactions each, filled without a bound "
+     "check; more cards or transactions overrun it (GAP-DEF-007).",
+     "always", ()),
+    ("RPT", "CBSTM03A", "recovery", "abend on open failure",
+     tuple(("paragraph", p) for p in ("8100-TRNXFILE-OPEN", "8200-XREFFILE-OPEN", "8300-CUSTFILE-OPEN",
+                                      "8400-ACCTFILE-OPEN", "9999-ABEND-PROGRAM")),
+     "A file that CBSTM03B cannot open displays 'ERROR OPENING <file>' with the return code and abends through "
+     "CEE3ABD.",
+     "always", ()),
+    ("RPT", "CBSTM03A", "recovery", "abend on read or close failure after open",
+     tuple(("paragraph", p) for p in ("1000-XREFFILE-GET-NEXT", "2000-CUSTFILE-GET", "3000-ACCTFILE-GET",
+                                      "8500-READTRNX-READ", "9100-TRNXFILE-CLOSE", "9200-XREFFILE-CLOSE",
+                                      "9300-CUSTFILE-CLOSE", "9400-ACCTFILE-CLOSE")),
+     "A read or close error returned by CBSTM03B displays 'ERROR READING <file>' or 'ERROR CLOSING <file>' "
+     "with the return code and abends through CEE3ABD.",
+     "always", ()),
+    # CSUTLDTC: date validation through LE CEEDAYS.
+    ("UTL", "CSUTLDTC", "rule", "CEEDAYS feedback-token mapping",
+     (("regex", r"02\s+FEEDBACK-TOKEN-VALUE\..*?FC-YEAR-IN-ERA-ZERO[^\n]*"), ("paragraph", "A000-MAIN")),
+     "The CEEDAYS feedback token is mapped to the severity, the message number and a 15-character text: 'Date "
+     "is valid', 'Insufficient', 'Datevalue error', 'Invalid Era', 'Unsupp. Range', 'Invalid month', 'Bad Pic "
+     "String', 'Nonnumeric data', 'YearInEra is 0', and 'Date is invalid' for any other token.",
+     "always", ()),
+    ("UTL", "CSUTLDTC", "rule", "date acceptance for masks YYYY-MM-DD and YYYYMMDD", (("paragraph", "A000-MAIN"),),
+     "Which dates are accepted is decided by CEEDAYS for the mask the caller passes: 'YYYY-MM-DD' from "
+     "CORPT00C and COTRN02C, 'YYYYMMDD' from COACTUPC through CSUTLDPY (EDIT-DATE-LE).",
+     "always", ()),
+    ("UTL", "CSUTLDTC", "interface", "result message layout and RETURN-CODE",
+     (("regex", r"01\s+WS-MESSAGE\..*?WS-DATE-FMT[^\n]*"), ("main",),
+      ("regex", r"MOVE\s+WS-DATE-TO-TEST\s+TO\s+WS-DATE(?![\w-])")),
+     "The 80-byte result is the 4-digit severity, 'Mesg Code: ', the 4-digit message number, a space, the "
+     "15-character text, a space, 'TstDate: ', a 10-byte date field, a space, 'Mask used:', the 10-byte mask "
+     "as passed and 4 spaces; RETURN-CODE is set to the severity. The date field does not hold the date: "
+     "after CEEDAYS the whole WS-DATE-TO-TEST group is moved into it, so it holds the binary Vstring length "
+     "x'000A' followed by the first 8 characters of the date passed, and the last two characters of a "
+     "10-character date are lost.",
+     "always", ()),
+)
+
+
+# --------------------------------------------------------------------------
+# JCL-semantics and cross-job items (static tables)
+# --------------------------------------------------------------------------
+
+# (area, owner, kind, label, path, anchor patterns, description). Only a real
+# job scheduler exercises these, so their scenarios run on unikix only.
+JCL_ROWS: tuple[tuple[str, str, str, str, str, tuple[str, ...], str], ...] = (
+    ("DAT", "ACCTFILE", "recovery", "JCL MAXCC reset after DELETE", "app/jcl/ACCTFILE.jcl",
+     (r"IF\s+MAXCC\s+LE\s+08\s+THEN\s+SET\s+MAXCC\s*=\s*0",),
+     "In STEP05 the IDCAMS DELETE of the cluster is followed by 'IF MAXCC LE 08 THEN SET MAXCC = 0': a DELETE "
+     "ending with condition code 8 or less (8 when the cluster does not exist) leaves the step with return "
+     "code 0, while a higher code is kept as the step's return code. The DEFINE (STEP10) and REPRO (STEP15) "
+     "steps have no COND and run whatever STEP05 returned; their own return codes decide the job's outcome, "
+     "so a final return code 0 is not guaranteed. The same conditional statement is in {jobs}; an "
+     "unconditional 'SET MAXCC = 0' is in {reset}, and 'IF LASTCC=12 THEN SET MAXCC=0' is in {lastcc}."),
+    ("DAT", "POSTTRAN", "recovery", "JCL DISP=(NEW,CATLG,DELETE) on step failure", "app/jcl/POSTTRAN.jcl",
+     (r"//DALYREJS\s+DD\s+DISP=\(NEW,CATLG,DELETE\).*?DALYREJS\(\+1\)",),
+     "An output generation allocated with DISP=(NEW,CATLG,DELETE), such as DALYREJS(+1), is catalogued when "
+     "the step ends normally and deleted when it abends, so an abended POSTTRAN leaves no new DALYREJS "
+     "generation."),
+    ("DAT", "TRANBKP", "recovery", "JCL COND=(4,LT) on the DEFINE step", "app/jcl/TRANBKP.jcl",
+     (r"//STEP10\s+EXEC\s+PGM=IDCAMS,COND=\(4,LT\)",),
+     "The TRANSACT DEFINE (STEP10) is bypassed when an earlier step ended with a return code greater than 4. "
+     "STEP05 deletes the cluster and then its alternate index, each DELETE followed by 'IF MAXCC LE 08 THEN "
+     "SET MAXCC = 0', so a DELETE of a missing cluster or alternate index (code 8 or less) becomes 0 and does "
+     "not bypass the DEFINE. STEP05 has no COND, so it runs even after the REPROC backup (STEP05R) ended with "
+     "a return code above 4; the DEFINE is then bypassed, and a successful DELETE leaves the cluster "
+     "undefined. A DELETE ending above 8 keeps its code and bypasses the DEFINE: after a failed cluster "
+     "DELETE the old cluster can remain in place, after a failed alternate-index DELETE the deleted cluster "
+     "stays undefined. Whether the cluster exists after the job therefore depends on the DELETE's outcome."),
+    ("DAT", "DEFGDGB", "config", "JCL GDG (+1)/(0) generation roll", "app/jcl/DEFGDGB.jcl",
+     (r"DEFINE\s+GENERATIONDATAGROUP.*DEFINE\s+GENERATIONDATAGROUP[^\n]*",),
+     "Each (+1) reference ({plus}) creates a new generation of a GDG base defined here, and each (0) "
+     "reference ({zero}) reads the newest one; generations beyond the LIMIT roll off."),
+    ("DAT", "CARDFILE", "config", "JCL AIX, PATH and BLDINDEX alternate-key access", "app/jcl/CARDFILE.jcl",
+     (r"//STEP40\s+EXEC", r"//STEP50\s+EXEC", r"//STEP60\s+EXEC"),
+     "DEFINE ALTERNATEINDEX, DEFINE PATH and BLDINDEX give the card file (and likewise the cross-reference "
+     "and transaction files in XREFFILE, TRANFILE and TRANIDX) an alternate key, read through the PATH "
+     "cluster."),
+    ("RPT", "CREASTMT", "recovery", "JCL COND=(0,NE) on the statement steps", "app/jcl/CREASTMT.JCL",
+     (r"//STEP020\s+EXEC\s+PGM=IDCAMS,COND=\(0,NE\)", r"//STEP030\s+EXEC\s+PGM=IEFBR14,COND=\(0,NE\)",
+      r"//STEP040\s+EXEC\s+PGM=CBSTM03A,COND=\(0,NE\)"),
+     "The REPRO, delete and CBSTM03A steps are bypassed once any earlier step ended with a non-zero return "
+     "code, so a failed sort produces no TRXFL load and no statements."),
+    ("RPT", "TRANREPT", "config", "proc resolution of EXEC PROC=TRANREPT", "app/proc/TRANREPT.prc",
+     (r"\A[^\n]*",),
+     "The TRNRPT00 job that CORPT00C submits runs EXEC PROC=TRANREPT, but app/proc/TRANREPT.prc begins with "
+     "'//REPROC PROC', so how the scheduler resolves the proc decides what runs (GAP-DEF-008)."),
+    ("CFG", "OPENFIL", "config", "JCL CICS file close and open through SDSF CEMT", "app/jcl/OPENFIL.jcl",
+     (r"//OPCIFIL\s+EXEC\s+PGM=SDSF.*?CEMT[^\n]*\n(?:[^\n]*CEMT[^\n]*\n)*",),
+     "OPENFIL and CLOSEFIL (and the OPCIFIL/CLCIFIL steps of CARDFILE, CUSTFILE and TRANFILE) issue '/F "
+     "CICSAWSA,'CEMT SET FIL(...) OPE' or 'CLO' through SDSF, opening or closing the region's files; observed "
+     "only through a region file inquiry."),
+    ("CFG", "CBADMCDJ", "config", "JCL CSD install by DFHCSDUP", "app/jcl/CBADMCDJ.jcl",
+     (r"//STEP1\s+EXEC\s+PGM=DFHCSDUP.*?DFHCSD[^\n]*",),
+     "CBADMCDJ runs DFHCSDUP against the region's CSD to define the CARDDEMO group (libraries, mapsets, "
+     "programs, transactions) for installation."),
+)
+
+# (label, description, README anchor patterns)
+BAT_ROWS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("daily batch cycle POSTTRAN, INTCALC, TRANBKP, COMBTRAN, CREASTMT, TRANREPT",
+     "Run against one catalog, POSTTRAN posts DALYTRAN, INTCALC writes the interest transactions to "
+     "SYSTRAN, TRANBKP backs TRANSACT up and redefines it, COMBTRAN merges the backup and SYSTRAN into "
+     "TRANSACT, CREASTMT writes the statements and TRANREPT the transaction report; the end state of "
+     "ACCTDATA, TCATBALF, TRANSACT, the statements and the report is asserted. TRANBKP sits between INTCALC "
+     "and COMBTRAN as in the README (GAP-DOC-015).",
+     (r"\|\s*POSTTRAN\s*\|[^\n]*\n.*?\|\s*CREASTMT\s*\|[^\n]*",)),
+    ("README full batch run order CLOSEFIL to OPENFIL",
+     "The README's full batch run, CLOSEFIL, ACCTFILE, CARDFILE, XREFFILE, CUSTFILE, TRANBKP, DISCGRP, "
+     "TCATBALF, TRANTYPE, DUSRSECJ, POSTTRAN, INTCALC, TRANBKP, COMBTRAN, CREASTMT, TRANIDX, OPENFIL, run in "
+     "that order with the region's files closed and reopened around it.",
+     (r"## Running full batch.*?\|\s*OPENFIL\s*\|[^\n]*",)),
+)
+
+
+def _jobs_matching(pattern: str, repo_root: Path) -> list[str]:
+    folder = repo_root / "app/jcl"
+    regex = re.compile(pattern)
+    return sorted(
+        path.stem.upper() for path in _regular_files(folder)
+        if regex.search("\n".join(read_lines(path)))
+    )
+
+
+def jcl_items(repo_root: Path = REPO_ROOT) -> list[dict[str, Any]]:
+    maxcc = [job for job in _jobs_matching(r"IF\s+MAXCC\s+LE\s+08\s+THEN\s+SET\s+MAXCC\s*=\s*0", repo_root)
+             if job != "ACCTFILE"]
+    reset = _jobs_matching(r"(?m)^[ \t]*SET\s+MAXCC\s*=\s*0", repo_root)
+    lastcc = _jobs_matching(r"IF\s+LASTCC\s*=\s*12\s+THEN\s+SET\s+MAXCC\s*=\s*0", repo_root)
+    plus = _jobs_matching(r"\(\+1\)", repo_root)
+    zero = _jobs_matching(r"\(0\)", repo_root)
+    fills = {"jobs": ", ".join(maxcc) or "no other job", "reset": ", ".join(reset) or "no job",
+             "lastcc": ", ".join(lastcc) or "no job", "plus": ", ".join(plus), "zero": ", ".join(zero)}
+    drafts = []
+    for area, owner, kind, label, path, patterns, description in JCL_ROWS:
+        drafts.append(
+            _draft(area, kind, f"{owner} {label}", text_source(path, patterns, repo_root),
+                   description.format(**fills), "integration")
+        )
+    return drafts
+
+
+def bat_items(repo_root: Path = REPO_ROOT) -> list[dict[str, Any]]:
+    return [
+        _draft("BAT", "job", f"BAT {label}", text_source(README_PATH, patterns, repo_root), description, "integration")
+        for label, description, patterns in BAT_ROWS
+    ]
+
+
+# --------------------------------------------------------------------------
+# Source items
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CsdEntry:
+    kind: str  # FILE, LIBRARY, MAPSET, PROGRAM, TDQUEUE, TRANSACTION
+    name: str
+    first: int
+    last: int
+    attributes: dict[str, str]
+
+
+_CSD_DEFINE_RE = re.compile(r"^\s*DEFINE\s+([A-Z]+)\(([^)]+)\)\s+GROUP\(", re.I)
+_CSD_ATTRIBUTE_RE = re.compile(r"\b([A-Z][A-Z0-9]*)\(([^()]*)\)")
+
+
+def parse_csd(repo_root: Path = REPO_ROOT) -> list[CsdEntry]:
+    """Every ``DEFINE`` of the CSD, with its line range (the DEFINE line to
+    the line before the next DEFINE) and its attributes."""
+    lines = read_lines(repo_root / CSD_PATH)
+    starts = [(number, match) for number, line in enumerate(lines, start=1)
+              if (match := _CSD_DEFINE_RE.match(line))]
+    entries = []
+    for position, (number, match) in enumerate(starts):
+        last = starts[position + 1][0] - 1 if position + 1 < len(starts) else len(lines)
+        while last > number and not lines[last - 1].strip():
+            last -= 1
+        text = " ".join(lines[number - 1:last])
+        attributes = {key.upper(): value.strip() for key, value in _CSD_ATTRIBUTE_RE.findall(text)}
+        entries.append(CsdEntry(match.group(1).upper(), match.group(2).strip().upper(), number, last, attributes))
+    return entries
+
+
+def read_fct_list(repo_root: Path = REPO_ROOT) -> list[tuple[int, str]]:
+    """(line, file name) of each entry of the UniKix copy's ``fct.lst``, read
+    from the zip in memory. ``__MACOSX/`` AppleDouble members are skipped."""
+    data = _zip_member(repo_root / UNIKIX_ZIP, UNIKIX_ZIP, FCT_MEMBER)
+    try:
+        text = data.decode("ascii")
+    except UnicodeDecodeError as exc:
+        raise InventoryError(
+            f"{UNIKIX_ZIP}:{FCT_MEMBER} is not ASCII text: byte {exc.start} is {data[exc.start]:#04x}"
+        ) from exc
+    return [
+        (number, line.split(",")[0].strip().upper())
+        for number, line in enumerate(text.splitlines(), start=1)
+        if line.strip()
+    ]
+
+
+def _files(directory: Path) -> list[Path]:
+    return sorted(
+        (p for p in _regular_files(directory) if p.name != ".gitkeep"),
+        key=lambda p: p.name,
+    )
+
+
+def _whole_file(path: Path, repo_root: Path) -> str:
+    return cite(_relative(path, repo_root), [(1, max(len(read_lines(path)), 1))])
+
+
+_EXEC_RE = re.compile(r"^//(\S+)\s+EXEC\s+(PGM|PROC)=([A-Z0-9#@$]+)", re.I | re.M)
+
+
+def _job_steps(path: Path) -> list[tuple[str, str]]:
+    text = "\n".join(read_lines(path))
+    return [(step, target.upper()) for step, _kind, target in _EXEC_RE.findall(text)]
+
+
+@dataclass
+class _Repository:
+    """Everything the item builders read, parsed once per generation."""
+
+    root: Path
+    programs: dict[str, CobolProgram]
+    program_files: dict[str, Path]
+    job_files: dict[str, Path]
+    proc_files: dict[str, Path]
+    control_files: dict[str, Path]
+    copiers: dict[str, list[str]]  # copybook path -> programs whose COPY reaches it
+    csd: list[CsdEntry]
+
+    @classmethod
+    def load(cls, root: Path) -> "_Repository":
+        program_files = {p.stem.upper(): p for p in _files(root / "app/cbl")}
+        programs: dict[str, CobolProgram] = {}
+        copiers: dict[str, list[str]] = {}
+        for name, path in program_files.items():
+            program = CobolProgram(name, _relative(path, root), resolve_copies(path, root), comment_lines(path, root))
+            programs[name] = program
+            for copied in sorted({line.path for line in program.lines} - {program.path}):
+                copiers.setdefault(copied, []).append(name)
+        return cls(
+            root,
+            programs,
+            program_files,
+            {p.stem.upper(): p for p in _files(root / "app/jcl")},
+            {p.stem.upper(): p for p in _files(root / "app/proc")},
+            {p.stem.upper(): p for p in _files(root / "app/ctl")},
+            copiers,
+            parse_csd(root),
+        )
+
+    def callers(self, name: str) -> list[str]:
+        result = []
+        for caller, program in self.programs.items():
+            tokens = program.tokens
+            if any(
+                program.words[i] == "CALL" and tokens[i + 1].literal and tokens[i + 1].value.strip().upper() == name
+                for i in range(program.proc_start, len(tokens) - 1)
+            ):
+                result.append(caller)
+        return result
+
+    def job_runs(self, name: str) -> list[str]:
+        runs = []
+        for kind, files in (("job", self.job_files), ("proc", self.proc_files)):
+            for member, path in files.items():
+                runs.extend(f"{kind} {member} step {step}" for step, target in _job_steps(path) if target == name)
+        return runs
+
+
+def _is_batch(name: str) -> bool:
+    return not name.startswith("CO")
+
+
+def _program_item(area: str, repo: _Repository, name: str) -> dict[str, Any]:
+    path = repo.program_files[name]
+    source = _whole_file(path, repo.root)
+    if not _is_batch(name):
+        transactions = [e.name for e in repo.csd if e.kind == "TRANSACTION" and e.attributes.get("PROGRAM") == name]
+        maps = [Path(p).stem for p, users in repo.copiers.items() if p.startswith("app/cpy-bms/") and name in users]
+        description = (
+            f"Online CICS program {name}, started by transaction {', '.join(transactions) or '(none)'} and "
+            f"showing map {', '.join(maps) or '(none)'}; its behaviour items cover the messages, navigation, "
+            f"edits and file updates the screen exposes."
+        )
+        return _draft(area, "program", f"{name} program", source, description, "e2e")
+    runs = repo.job_runs(name)
+    callers = repo.callers(name)
+    parts = []
+    if runs:
+        parts.append("run by " + ", ".join(runs))
+    if callers:
+        parts.append("called by " + ", ".join(callers))
+    if parts:
+        description = f"Batch program {name}, " + "; ".join(parts) + "."
+        return _draft(area, "program", f"{name} program", source, description, "unit")
+    description = f"Batch program {name}; no job or proc step runs it and no program calls it."
+    return _draft(area, "program", f"{name} program", source, description, "unit", "unused", ["GAP-UNC-003"])
+
+
+def _job_item(area: str, repo: _Repository, name: str, kind: str) -> dict[str, Any]:
+    files = repo.job_files if kind == "job" else repo.proc_files
+    path = files[name]
+    steps = ", ".join(f"{step} {target}" for step, target in _job_steps(path))
+    noun = "Job" if kind == "job" else "Proc"
+    description = f"{noun} {name} ({_relative(path, repo.root)}): steps {steps or '(none)'}."
+    return _draft(area, "job", f"{name} {kind}", _whole_file(path, repo.root), description, "integration")
+
+
+def _control_card_item(area: str, repo: _Repository, name: str) -> dict[str, Any]:
+    path = repo.control_files[name]
+    statements = " ".join(
+        line.strip() for line in read_lines(path) if line.strip() and not line.lstrip().startswith("/*")
+    )
+    users = sorted(
+        member for files in (repo.job_files, repo.proc_files) for member, p in files.items()
+        if re.search(rf"\b{re.escape(name)}\b", "\n".join(read_lines(p)))
+    )
+    description = (
+        f"IDCAMS control card {name} holding '{statements}', read as SYSIN by {', '.join(users) or 'no member'}."
+    )
+    return _draft(area, "config", f"{name} control card", _whole_file(path, repo.root), description, "integration")
+
+
+def _map_item(area: str, repo: _Repository, map_name: str) -> dict[str, Any]:
+    symbolic = f"app/cpy-bms/{map_name}.CPY"
+    bms = next((p for p in _files(repo.root / "app/bms") if p.stem.upper() == map_name), None)
+    if bms is None:
+        raise InventoryError(f"app/bms has no mapset {map_name} for the symbolic map copybook {symbolic}")
+    shown_by = ", ".join(repo.copiers.get(symbolic, [])) or "no program"
+    description = (
+        f"BMS mapset {map_name} ({_relative(bms, repo.root)}) with its symbolic map copybook {symbolic}; sent and "
+        f"received by {shown_by}. Covered through the screen-field assertions of that program's scenarios."
+    )
+    return _draft(area, "map", f"{map_name} map", _whole_file(bms, repo.root), description, "e2e")
+
+
+def _csd_items(repo: _Repository) -> list[dict[str, Any]]:
+    """The CSD definitions that are items of their own: files, transactions,
+    libraries and the TDQ, in that order and in CSD order within each.
+    PROGRAM and MAPSET definitions belong to the program and map items."""
+    items = []
+    programs_with_source = set(repo.program_files)
+    order = ("FILE", "TRANSACTION", "LIBRARY", "TDQUEUE")
+    for kind in order:
+        for entry in (e for e in repo.csd if e.kind == kind):
+            source = cite(CSD_PATH, [(entry.first, entry.last)])
+            attrs = entry.attributes
+            if kind == "FILE":
+                items.append(_draft(
+                    "CFG", "config", f"{entry.name} CSD file", source,
+                    f"CSD FILE {entry.name} on {attrs.get('DSNAME', '?')} (STATUS {attrs.get('STATUS', '?')}, "
+                    f"ADD {attrs.get('ADD', '?')}, UPDATE {attrs.get('UPDATE', '?')}, DELETE "
+                    f"{attrs.get('DELETE', '?')}); covered through the online scenarios that read or update it.",
+                    "e2e",
+                ))
+            elif kind == "TRANSACTION":
+                program = attrs.get("PROGRAM", "")
+                description = f"CSD TRANSACTION {entry.name} starts PROGRAM({program})"
+                if attrs.get("DESCRIPTION"):
+                    description += f", '{attrs['DESCRIPTION']}'"
+                if program in programs_with_source:
+                    items.append(_draft("CFG", "transaction", f"{entry.name} transaction", source,
+                                        description + "; covered by the scenarios that enter it.", "e2e"))
+                else:
+                    items.append(_draft(
+                        "CFG", "transaction", f"{entry.name} transaction", source,
+                        description + f"; no source of {program} exists, so the transaction cannot run.",
+                        "e2e", "unreachable", ["GAP-DOC-001"],
+                    ))
+            elif kind == "LIBRARY":
+                status = attrs.get("STATUS", "")
+                description = (
+                    f"CSD LIBRARY {entry.name} on {attrs.get('DSNAME01', '?')} (RANKING {attrs.get('RANKING', '?')}, "
+                    f"STATUS {status})."
+                )
+                if status == "DISABLED":
+                    items.append(_draft("CFG", "config", f"{entry.name} CSD library", source,
+                                        description + " Disabled, so the region loads nothing from it.",
+                                        "e2e", "conditional", ["GAP-MIS-012", "GAP-UNC-006"]))
+                else:
+                    items.append(_draft("CFG", "config", f"{entry.name} CSD library", source, description, "e2e"))
+            else:
+                items.append(_draft(
+                    "CFG", "config", f"{entry.name} CSD TDQ", source,
+                    f"CSD TDQUEUE {entry.name}, '{attrs.get('DESCRIPTION', '')}': extrapartition, DDNAME "
+                    f"{attrs.get('DDNAME', '?')}, {attrs.get('RECORDSIZE', '?')}-byte {attrs.get('RECORDFORMAT', '?')} "
+                    f"records; CORPT00C writes report jobs to it.",
+                    "e2e",
+                ))
+    return items
+
+
+def _layout_items(repo: _Repository) -> list[dict[str, Any]]:
+    items = []
+    for path in _files(repo.root / "app/cpy"):
+        rel = _relative(path, repo.root)
+        name = path.stem.upper()
+        users = repo.copiers.get(rel, [])
+        source = _whole_file(path, repo.root)
+        if not users:
+            items.append(_draft("LAY", "layout", f"{name} copybook", source,
+                                f"Copybook {name}: no program copies it.", "unit", "unused", ["GAP-UNC-001"]))
+            continue
+        batch_users = [u for u in users if _is_batch(u)]
+        level = LAYOUT_LEVEL_OVERRIDES.get(name, "unit" if batch_users else "e2e")
+        description = (
+            f"Copybook {name}, copied by {', '.join(users)}; covered through the scenarios whose decoded "
+            f"assertions use it."
+        )
+        if name in LAYOUT_LEVEL_OVERRIDES:
+            description += f" {LAYOUT_LEVEL_REASONS[name]}"
+        items.append(_draft("LAY", "layout", f"{name} copybook", source, description, level))
+    return items
+
+
+def _data_items(repo: _Repository) -> list[dict[str, Any]]:
+    items = []
+    member_texts = {
+        member: "\n".join(read_lines(path))
+        for files in (repo.job_files, repo.proc_files) for member, path in sorted(files.items())
+    }
+    for path in _files(repo.root / "app/data/ASCII"):
+        lines = read_lines(path)
+        items.append(_draft(
+            "DTA", "interface", f"{path.name} data file", _whole_file(path, repo.root),
+            f"ASCII data file of {len(lines)} records, one per line; a fixture source whose lines are padded with "
+            f"spaces to the record length.",
+            DATA_LEVEL_OVERRIDES.get(path.name, "unit"),
+        ))
+    for path in _files(repo.root / "app/data/EBCDIC"):
+        length = EBCDIC_RECORD_LENGTHS.get(path.name)
+        if length is None:
+            raise InventoryError(f"no record length is registered for {path.name}")
+        try:
+            size = path.stat().st_size
+        except OSError as exc:
+            raise InventoryError(f"cannot read {path}: {_os_reason(exc)}") from exc
+        if size % length:
+            raise InventoryError(f"{path.name}: {size} bytes is not a multiple of the record length {length}")
+        records = size // length
+        rel = _relative(path, repo.root)
+        description = (
+            f"EBCDIC (cp037) data file of {records} fixed-length {length}-byte record{'s' if records != 1 else ''}; "
+            f"the source range counts records, not lines."
+        )
+        level = DATA_LEVEL_OVERRIDES.get(path.name, "unit")
+        dataset = re.compile(re.escape(path.name) + r"(?![\w.])")
+        users = [member for member, text in member_texts.items() if dataset.search(text)]
+        if users:
+            items.append(_draft("DTA", "interface", f"{path.name} data file", cite(rel, [(1, records)]),
+                                description + f" Its data set is named by {', '.join(users)}.", level))
+        else:
+            items.append(_draft("DTA", "interface", f"{path.name} data file", cite(rel, [(1, records)]),
+                                description + " No job or proc names its data set.", level, "unused", ["GAP-UNC-002"]))
+    return items
+
+
+def _unikix_file_items(repo: _Repository) -> list[dict[str, Any]]:
+    csd_files = {e.name for e in repo.csd if e.kind == "FILE"}
+    items = []
+    for number, name in read_fct_list(repo.root):
+        if name in csd_files:
+            continue
+        items.append(_draft(
+            "CFG", "config", f"{name} fct.lst file", f"{UNIKIX_ZIP}:{FCT_MEMBER}:{number}",
+            f"Region file {name} defined only by the UniKix copy's fct.lst (not by the CSD); verified when the "
+            f"test-owned region lists it open and enabled.",
+            "e2e",
+        ))
+    return items
+
+
+def _program_without_source_items(repo: _Repository) -> list[dict[str, Any]]:
+    items = []
+    for entry in (e for e in repo.csd if e.kind == "PROGRAM"):
+        if entry.name in repo.program_files:
+            continue
+        transactions = [
+            e.name for e in repo.csd if e.kind == "TRANSACTION" and e.attributes.get("PROGRAM") == entry.name
+        ]
+        items.append(_draft(
+            PROGRAM_AREA_OVERRIDES.get(entry.name, "CFG"), "program", f"{entry.name} program",
+            cite(CSD_PATH, [(entry.first, entry.last)]),
+            f"CSD PROGRAM({entry.name}) '{entry.attributes.get('DESCRIPTION', '')}', started by transaction "
+            f"{', '.join(transactions) or '(none)'}; neither app/cbl nor the UniKix copy holds its source, so "
+            f"nothing can run it.",
+            "e2e", "unreachable", ["GAP-DOC-001"],
+        ))
+    return items
+
+
+# CSD programs without a source, by area.
+PROGRAM_AREA_OVERRIDES = {"COCRDSEC": "CRD"}
+
+
+# --------------------------------------------------------------------------
+# Generation
+# --------------------------------------------------------------------------
+
+
+def _assignment_problems(repo: _Repository) -> list[str]:
+    """Repository files that no area table assigns, or that a table names
+    but the repository lacks: a new or removed source item."""
+    problems = []
+    tables = (
+        ("program", repo.program_files, PROGRAM_AREAS, "app/cbl"),
+        ("job", repo.job_files, JOB_AREAS, "app/jcl"),
+        ("proc", repo.proc_files, PROC_AREAS, "app/proc"),
+        ("control card", repo.control_files, CONTROL_CARD_AREAS, "app/ctl"),
+    )
+    for noun, files, table, folder in tables:
+        assigned = [name for names in table.values() for name in names]
+        for name in sorted(set(files) - set(assigned)):
+            problems.append(f"{folder}/{files[name].name}: {noun} {name} has no inventory area")
+        for name in sorted(set(assigned) - set(files)):
+            problems.append(f"{noun} {name} is assigned an area but {folder} has no such member")
+        for name, count in sorted(Counter(assigned).items()):
+            if count > 1:
+                problems.append(f"{noun} {name} is assigned to {count} areas")
+    for bms in _files(repo.root / "app/bms"):
+        symbolic = f"app/cpy-bms/{bms.stem.upper()}.CPY"
+        if not (repo.root / symbolic).is_file():
+            problems.append(f"{_relative(bms, repo.root)}: no symbolic map copybook {symbolic}")
+        elif not repo.copiers.get(symbolic):
+            problems.append(f"{_relative(bms, repo.root)}: no program copies {symbolic}")
+    return problems
+
+
+def _maps_of(repo: _Repository, program: str) -> list[str]:
+    return sorted(
+        Path(path).stem.upper() for path, users in repo.copiers.items()
+        if path.startswith("app/cpy-bms/") and program in users
+    )
+
+
+def _drafts_by_area(repo: _Repository) -> dict[str, list[dict[str, Any]]]:
+    problems = _assignment_problems(repo)
+    if problems:
+        raise InventoryError("source items not assigned:\n  " + "\n  ".join(problems))
+    by_area: dict[str, list[dict[str, Any]]] = {area: [] for area in AREAS}
+    jcl = jcl_items(repo.root)
+    for area in AREAS:
+        drafts = by_area[area]
+        programs = PROGRAM_AREAS.get(area, ())
+        online = [p for p in programs if not _is_batch(p)]
+        batch = [p for p in programs if _is_batch(p)]
+        drafts.extend(_program_item(area, repo, p) for p in online)
+        drafts.extend(_map_item(area, repo, m) for p in online for m in _maps_of(repo, p))
+        drafts.extend(_program_item(area, repo, p) for p in batch)
+        if area == "CFG":
+            drafts.extend(_csd_items(repo))
+        drafts.extend(_job_item(area, repo, j, "job") for j in JOB_AREAS.get(area, ()))
+        drafts.extend(_job_item(area, repo, p, "proc") for p in PROC_AREAS.get(area, ()))
+        drafts.extend(_control_card_item(area, repo, c) for c in CONTROL_CARD_AREAS.get(area, ()))
+        if area == "LAY":
+            drafts.extend(_layout_items(repo))
+        elif area == "DTA":
+            drafts.extend(_data_items(repo))
+        # Behaviour items follow the source items of the area.
+        for program in online:
+            drafts.extend(online_items(area, repo.programs[program]))
+        for row_area, program, kind, label, anchors, description, activation, gaps in BATCH_ROWS:
+            if row_area == area:
+                drafts.append(_draft(area, kind, f"{program} {label}",
+                                     anchored_source(repo.programs[program], anchors),
+                                     description, "unit", activation, gaps))
+        drafts.extend(d for d in jcl if d["area"] == area)
+        drafts.extend(d for d in _program_without_source_items(repo) if d["area"] == area)
+        if area == "CFG":
+            drafts.extend(_unikix_file_items(repo))
+        if area == "BAT":
+            drafts.extend(bat_items(repo.root))
+    # An unused batch program makes its behaviour items unused as well.
+    for drafts in by_area.values():
+        unused = {d["name"].split()[0] for d in drafts if d["kind"] == "program" and d["activation"] == "unused"}
+        for draft in drafts:
+            owner = draft["name"].split()[0]
+            if owner in unused and draft["kind"] != "program" and draft["activation"] == "always":
+                draft["activation"] = "unused"
+                draft["gap_ids"] = sorted(set(draft["gap_ids"]) | {"GAP-UNC-003"})
+    return by_area
+
+
+_ITEM_REF_RE = re.compile(r"\{item:([^{}]+)\}")
+
+
+def item_ref(name: str) -> str:
+    """A reference, inside a description, to the item called ``name``;
+    generate_items replaces it with that item's id once every item is
+    numbered. Static descriptions write the same ``{item:<name>}`` text."""
+    if "{" in name or "}" in name:
+        raise InventoryError(f"item name {name!r} cannot be referenced: it contains a brace")
+    return f"{{item:{name}}}"
+
+
+def generate_items(repo_root: Path = REPO_ROOT) -> list[dict[str, Any]]:
+    """Every inventory item the extraction rules and tables produce for the
+    repository at ``repo_root``, numbered per area: source items first, then
+    behaviour items. Item references (``item_ref``) in descriptions are
+    replaced by the cited item's id."""
+    repo = _Repository.load(Path(repo_root))
+    items = []
+    for area, drafts in _drafts_by_area(repo).items():
+        for number, draft in enumerate(drafts, start=1):
+            item = {"id": f"INV-{area}-{number:03d}"}
+            item.update({key: draft[key] for key in ITEM_FIELDS[1:]})
+            items.append(item)
+    names = Counter(item["name"] for item in items)
+    duplicates = sorted(name for name, count in names.items() if count > 1)
+    if duplicates:
+        raise InventoryError("item names are not unique: " + "; ".join(duplicates))
+    ids = {item["name"]: item["id"] for item in items}
+    for item in items:
+        for cited in _ITEM_REF_RE.findall(item["description"]):
+            if cited not in ids:
+                raise InventoryError(f"{item['id']} ({item['name']}): description cites unknown item {cited!r}")
+        item["description"] = _ITEM_REF_RE.sub(lambda match: ids[match.group(1)], item["description"])
+        if "{item:" in item["description"]:
+            raise InventoryError(f"{item['id']} ({item['name']}): malformed item reference in its description")
+    return items
+
+
+# --------------------------------------------------------------------------
+# Header
+# --------------------------------------------------------------------------
+
+# The planning figures of the freeze; --freeze reports any difference so it
+# can be recorded in header.changes with its reason.
+PLANNED_TOTAL = 684
+PLANNED_SOURCE_ITEMS = {
+    "program": 28, "job": 31, "config": 12, "transaction": 18, "map": 17, "layout": 28, "interface": 21,
+}
+PLANNED_DERIVED_ITEMS = {
+    "program": 1, "job": 2, "config": 11, "interface": 14, "report": 20,
+    "calculation": 13, "recovery": 104, "rule": 364,
+}
+
+
+def item_area(item: dict[str, Any]) -> str:
+    match = ID_RE.match(str(item.get("id", "")))
+    if match is None:
+        raise InventoryError(f"inventory id {item.get('id')!r} is not INV-<AREA>-<nnn>")
+    return match.group(1)
+
+
+def _source_path(source: str) -> str:
+    return source.split(":", 1)[0]
+
+
+def is_source_item(item: dict[str, Any]) -> bool:
+    """Whether ``item`` is one of the repository's source items rather than a
+    derived behaviour item, decided by its kind and the file it cites."""
+    kind, path = item["kind"], _source_path(item["source"])
+    if kind in ("transaction", "map", "layout"):
+        return True
+    if kind == "program":
+        return path.startswith("app/cbl/")
+    if kind == "job":
+        return path.startswith(("app/jcl/", "app/proc/"))
+    if kind == "config":
+        return path in (CSD_PATH,) or path.startswith("app/ctl/")
+    if kind == "interface":
+        return path.startswith("app/data/")
+    return False
+
+
+def _counts(items: Iterable[dict[str, Any]]) -> tuple[Counter, Counter, dict[str, Counter]]:
+    source, derived = Counter(), Counter()
+    areas = {area: Counter() for area in AREAS}
+    for item in items:
+        area = item_area(item)
+        if is_source_item(item):
+            source[item["kind"]] += 1
+            areas[area]["source"] += 1
+        else:
+            derived[item["kind"]] += 1
+            areas[area]["derived"] += 1
+    return source, derived, areas
+
+
+def header_from_items(
+    items: Sequence[dict[str, Any]],
+    *,
+    frozen_commit: str,
+    frozen_on: str,
+    changes: Sequence[dict[str, Any]] = (),
+    protected_base: str = PROTECTED_BASE,
+) -> dict[str, Any]:
+    """The inventory header, its counts computed from ``items``."""
+    source, derived, areas = _counts(items)
+    return {
+        "frozen_commit": frozen_commit,
+        "frozen_on": frozen_on,
+        "protected_base": protected_base,
+        "total": len(items),
+        "source_items": {kind: source.get(kind, 0) for kind in SOURCE_KINDS},
+        "derived_items": {kind: derived[kind] for kind in KINDS if derived[kind]},
+        "by_area": {
+            area: {
+                "source": areas[area]["source"],
+                "derived": areas[area]["derived"],
+                "total": areas[area]["source"] + areas[area]["derived"],
+            }
+            for area in AREAS
+        },
+        "changes": [_change_copy(change) for change in changes],
+    }
+
+
+def _change_copy(change: Any) -> dict[str, Any]:
+    if not isinstance(change, dict):
+        raise InventoryError(f"header: change {_shown(change)} is not a mapping")
+    return dict(change)
+
+
+def _is_counts(value: Any) -> bool:
+    return isinstance(value, dict) and all(
+        isinstance(key, str) and isinstance(count, int) and not isinstance(count, bool)
+        for key, count in value.items()
+    )
+
+
+def _header_problems(header: dict[str, Any]) -> list[str]:
+    """Shape problems of the header fields present, found before any count or
+    change is computed from them: no key outside the eight header fields, the
+    commit and base are strings, the date a string or date, the total an
+    integer, ``source_items`` and ``derived_items`` map kinds to counts,
+    ``by_area`` maps each area to its counts, and ``changes`` is a list of
+    mappings with a date and a reason, whose ``inventory_id``, where given,
+    is a string and whose ``gap_id``, where present, a GAP id."""
+    problems = []
+    unexpected = sorted(key if isinstance(key, str) else _shown(key) for key in header if key not in _HEADER_KEYS)
+    if unexpected:
+        problems.append(f"header: unexpected key(s) {', '.join(unexpected)}")
+    for key, types in (("frozen_commit", str), ("frozen_on", (str, datetime.date)), ("protected_base", str)):
+        if key in header and not isinstance(header[key], types):
+            problems.append(f"header: {key} {_shown(header[key])} is not a string")
+    total = header.get("total")
+    if "total" in header and (not isinstance(total, int) or isinstance(total, bool)):
+        problems.append(f"header: total {_shown(total)} is not an integer")
+    for key in ("source_items", "derived_items"):
+        if key in header and not _is_counts(header[key]):
+            problems.append(f"header: {key} {_shown(header[key])} is not a mapping of kind to count")
+    if "by_area" in header:
+        by_area = header["by_area"]
+        if not isinstance(by_area, dict):
+            problems.append(f"header: by_area {_shown(by_area)} is not a mapping of area to counts")
+        else:
+            problems.extend(
+                f"header: by_area {_shown(area)} {_shown(counts)} is not a mapping of part to count"
+                for area, counts in by_area.items()
+                if not isinstance(area, str) or not _is_counts(counts)
+            )
+    if "changes" in header:
+        changes = header["changes"]
+        if not isinstance(changes, list):
+            problems.append(f"header: changes {_shown(changes)} is not a list")
+        else:
+            for change in changes:
+                if not isinstance(change, dict) or not change.get("reason") or not change.get("date"):
+                    problems.append(f"header: change {_shown(change)} lacks a date or reason")
+                elif not isinstance(change.get("inventory_id") or "", str):
+                    problems.append(f"header: change {_shown(change)} has an inventory_id that is not a string")
+                elif "gap_id" in change and not (
+                    isinstance(change["gap_id"], str) and _GAP_RE.fullmatch(change["gap_id"])
+                ):
+                    problems.append(f"header: change {_shown(change)} has a gap_id that is not GAP-<CAT>-<nnn>")
+    return problems
+
+
+# --------------------------------------------------------------------------
+# Inventory file API
+# --------------------------------------------------------------------------
+
+
+def _area_order(item: dict[str, Any]) -> tuple[int, str]:
+    # The file lists items area by area (SEC ... BAT), then by id, so each
+    # area reads as its source items followed by its behaviour items.
+    return AREAS.index(item_area(item)), item["id"]
+
+
+@contextlib.contextmanager
+def _locked(target: Path) -> Iterator[None]:
+    """Hold an exclusive lock on the directory of the inventory file
+    ``target`` (created if missing) while a load, modify and write runs, so
+    concurrent writers take turns and none loses another's additions. The
+    lock is taken on the directory itself, so no lock file is created."""
+    directory = target.parent
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(directory, os.O_RDONLY)
+    except OSError as exc:
+        raise InventoryError(f"cannot lock {directory}: {exc.strerror or exc}") from exc
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(descriptor)  # closing the descriptor releases the lock
+
+
+_ABSENT = object()
+
+
+def _read_yaml(path: str | Path) -> Any:
+    """The YAML document at ``path``, safely loaded (``None`` for a file with
+    no document), or ``_ABSENT`` when no file exists there. An unreadable,
+    non-UTF-8 or malformed file raises InventoryError naming it."""
+    try:
+        return load_yaml(path)
+    except FileNotFoundError:
+        return _ABSENT
+    except OSError as exc:
+        raise InventoryError(f"cannot read {path}: {_os_reason(exc)}") from exc
+    except YAMLLoadError as exc:
+        # Not UTF-8, not valid YAML, a value that cannot be built, or a refused
+        # structure: the message already names the file, and the line where known.
+        raise InventoryError(str(exc)) from exc
+
+
+def load(path: str | Path = INVENTORY_FILE, missing_ok: bool = False) -> dict[str, Any]:
+    """The inventory file as ``{"header": {...}, "items": [...]}``.
+
+    A missing file raises InventoryError unless ``missing_ok``, which returns
+    an empty inventory. A file that exists but is empty, unreadable, not
+    UTF-8, not valid YAML or not an inventory raises InventoryError whatever
+    ``missing_ok`` says, so a damaged inventory is never taken for an absent
+    one and regenerated over."""
+    data = _read_yaml(path)
+    if data is _ABSENT:
+        if missing_ok:
+            return {"header": {}, "items": []}
+        raise InventoryError(f"{path} does not exist; run inventory_tools.py --freeze")
+    if data is None:
+        raise InventoryError(
+            f"{path} is empty: restore it from version control (deleting it and running "
+            f"inventory_tools.py --freeze regenerates it without the items added after the freeze)"
+        )
+    if isinstance(data, dict) and "header" not in data and "items" not in data:
+        raise InventoryError(f"{path} is not an inventory: it has neither 'header' nor 'items'")
+    if (
+        not isinstance(data, dict)
+        or not isinstance(data.get("items", []), list)
+        or not isinstance(data.get("header", {}), dict)
+    ):
+        raise InventoryError(f"{path} is not a mapping with a 'header' mapping and an 'items' list")
+    return {"header": data.get("header") or {}, "items": data.get("items") or []}
+
+
+def _confined_target(path: str | Path, repo_root: Path) -> Path:
+    """The file ``path`` resolves to, symlinks followed, provided it lies
+    inside ``tests/inventory/`` of ``repo_root`` and is not a directory; any
+    other target raises InventoryError before anything is read or written."""
+    root = Path(os.path.realpath(repo_root))
+    allowed = root / "tests" / "inventory"
+    real = Path(os.path.realpath(path))
+    if allowed not in real.parents:
+        raise InventoryError(
+            f"{path} resolves to {real} outside tests/inventory/ of {root}; the inventory is written only there"
+        )
+    try:
+        is_directory = real.is_dir()
+    except OSError as exc:
+        raise InventoryError(f"cannot read {path}: {_os_reason(exc)}") from exc
+    if is_directory:
+        raise InventoryError(f"{path} resolves to the directory {real}, not an inventory file")
+    return real
+
+
+def write(
+    inventory: dict[str, Any], path: str | Path = INVENTORY_FILE, *, repo_root: Path = REPO_ROOT
+) -> bool:
+    """Write ``inventory`` as canonical YAML, items in area order then id.
+    Returns whether the file changed. ``path`` must resolve inside
+    ``tests/inventory/`` of ``repo_root``; the file it resolves to is
+    replaced atomically."""
+    target = _confined_target(path, repo_root)
+    records = inventory.get("items", [])
+    for item in records:
+        missing = [key for key in ITEM_FIELDS if key not in item]
+        if missing:
+            raise InventoryError(f"{item.get('id', '?')}: missing field(s) {', '.join(missing)}")
+    document = {
+        "header": inventory.get("header", {}),
+        "items": [{key: item[key] for key in ITEM_FIELDS} for item in sorted(records, key=_area_order)],
+    }
+    try:
+        return write_text(target, dump_yaml(document))
+    except OSError as exc:
+        raise InventoryError(f"cannot write {path}: {_os_reason(exc)}") from exc
+
+
+def items(inventory: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """The inventory items (loaded from the inventory file when not given)."""
+    return list((inventory if inventory is not None else load())["items"])
+
+
+def item_ids(inventory: dict[str, Any] | None = None) -> list[str]:
+    return [item["id"] for item in items(inventory)]
+
+
+def by_id(inventory: dict[str, Any] | None = None) -> dict[str, dict[str, Any]]:
+    return {item["id"]: item for item in items(inventory)}
+
+
+def next_id(area: str, inventory: dict[str, Any] | None = None) -> str:
+    """The next unused id of ``area``; numbers are never reused."""
+    if area not in AREAS:
+        raise InventoryError(f"unknown area {area!r}; one of {', '.join(AREAS)}")
+    matches = (ID_RE.match(item_id) for item_id in item_ids(inventory))
+    numbers = [int(match.group(2)) for match in matches if match and match.group(1) == area]
+    number = max(numbers, default=0) + 1
+    if number > 999:
+        raise InventoryError(f"area {area} has no inventory number left")
+    return f"INV-{area}-{number:03d}"
+
+
+def _validate_new_item(item: dict[str, Any], repo_root: Path) -> None:
+    for key in ("kind", "name", "source", "description"):
+        if not isinstance(item.get(key), str) or not item[key].strip():
+            raise InventoryError(f"new item needs a non-empty {key}: {item!r}")
+    if item["kind"] not in KINDS:
+        raise InventoryError(f"new item kind {item['kind']!r} is not one of {', '.join(KINDS)}")
+    if item["activation"] not in ACTIVATIONS:
+        raise InventoryError(f"new item activation {item['activation']!r} is not one of {', '.join(ACTIVATIONS)}")
+    if item["level"] not in LEVELS:
+        raise InventoryError(f"new item level {item['level']!r} is not one of {', '.join(LEVELS)}")
+    for gap in item["gap_ids"]:
+        if not _GAP_RE.match(gap):
+            raise InventoryError(f"new item gap id {gap!r} is not GAP-<CAT>-<nnn>")
+    problem = _source_problem(item["source"], repo_root)
+    if problem:
+        raise InventoryError(f"new item {item['name']!r}: {problem}")
+
+
+def _id_list(candidate: dict[str, Any], key: str) -> list[str]:
+    """The ``scenario_ids`` or ``gap_ids`` of a new item: absent or a list of
+    non-empty strings."""
+    value = candidate.get(key)
+    if value is None:
+        return []
+    if not isinstance(value, (list, tuple)) or not all(isinstance(entry, str) and entry.strip() for entry in value):
+        raise InventoryError(f"new item {key} must be a list of non-empty strings, not {_shown(value)}")
+    return list(value)
+
+
+def _known_gap_ids(repo_root: Path) -> set[str]:
+    """The ``gap_id`` of every entry of the ``gaps`` list of
+    ``tests/inventory/gaps.yaml`` of ``repo_root``."""
+    path = Path(repo_root) / "tests" / "inventory" / "gaps.yaml"
+    data = _read_yaml(path)
+    if data is _ABSENT:
+        raise InventoryError(f"{path} does not exist, so the gap ids of new items and closure records cannot be "
+                             "checked")
+    gaps = data.get("gaps") if isinstance(data, dict) else None
+    if not isinstance(gaps, list):
+        raise InventoryError(f"{path} has no 'gaps' list")
+    return {
+        entry["gap_id"] for entry in gaps if isinstance(entry, dict) and isinstance(entry.get("gap_id"), str)
+    }
+
+
+def append_items(
+    new_items: Sequence[dict[str, Any]],
+    reason: str,
+    path: str | Path = INVENTORY_FILE,
+    *,
+    repo_root: Path = REPO_ROOT,
+) -> list[str]:
+    """Add behaviour or source items found after the freeze.
+
+    Each new item gives its ``area`` and the contract fields ``kind``,
+    ``name``, ``source``, ``description`` and ``level`` (``activation``
+    defaults to ``always``). Ids are assigned with the next free number of
+    the area, each addition is recorded in ``header.changes`` as ``{date,
+    inventory_id, reason}`` and ``header.total`` rises with it. Items are
+    never deleted. Returns the assigned ids.
+
+    ``path`` must resolve inside ``tests/inventory/`` of ``repo_root``. The
+    load, the additions and the write run under a lock on its directory, so
+    concurrent calls each record every id they return.
+    """
+    if not isinstance(reason, str) or not reason.strip():
+        raise InventoryError("an inventory addition needs a reason")
+    target = _confined_target(path, repo_root)
+    with _locked(target):
+        inventory = load(path)
+        header = dict(inventory["header"])
+        if not header:
+            raise InventoryError(f"{path} has no header; freeze the inventory before adding items")
+        records = list(inventory["items"])
+        problems = _header_problems(header) + _item_problems(records)
+        if problems:
+            raise _refusal(path, "extended", problems)
+        changes = list(header.get("changes") or [])
+        today = datetime.date.today().isoformat()
+        assigned = []
+        requested_gaps: set[str] = set()
+        for new in new_items:
+            if not isinstance(new, dict):
+                raise InventoryError(f"new item {_shown(new)} is not a mapping")
+            candidate = dict(new)
+            area = candidate.pop("area", None)
+            item = {
+                "kind": candidate.get("kind"),
+                "name": candidate.get("name"),
+                "source": candidate.get("source"),
+                "description": candidate.get("description"),
+                "activation": candidate.get("activation", "always"),
+                "level": candidate.get("level"),
+                "scenario_ids": sorted(_id_list(candidate, "scenario_ids")),
+                "status": "not-covered",
+                "gap_ids": sorted(set(_id_list(candidate, "gap_ids"))),
+            }
+            _validate_new_item(item, repo_root)
+            requested_gaps.update(item["gap_ids"])
+            item_id = next_id(area, {"header": header, "items": records})
+            records.append({"id": item_id, **item})
+            changes.append({"date": today, "inventory_id": item_id, "reason": reason.strip()})
+            assigned.append(item_id)
+        unknown_gaps = sorted(requested_gaps - _known_gap_ids(repo_root)) if requested_gaps else []
+        if unknown_gaps:
+            raise InventoryError(
+                f"new item gap id(s) {', '.join(unknown_gaps)} are not entries of tests/inventory/gaps.yaml"
+            )
+        header.update(
+            header_from_items(
+                records,
+                frozen_commit=header.get("frozen_commit", "unknown"),
+                frozen_on=header.get("frozen_on", today),
+                changes=changes,
+                protected_base=header.get("protected_base", PROTECTED_BASE),
+            )
+        )
+        write({"header": header, "items": records}, target, repo_root=repo_root)
+    return assigned
+
+
+def append_closures(
+    closures: Sequence[tuple[str, str]],
+    path: str | Path = INVENTORY_FILE,
+    *,
+    repo_root: Path = REPO_ROOT,
+) -> list[dict[str, Any]]:
+    """Record in ``header.changes`` the reason of each gap-register closing.
+
+    Before closing, the caller checks that the inventory holds the additions
+    the closing evidence entails and an activation it does not contradict;
+    this function records the reason, not those additions or activation edits.
+
+    ``closures`` holds ``(gap_id, reason)`` pairs: the id of an entry of
+    ``tests/inventory/gaps.yaml`` of ``repo_root``, and a reason naming the
+    entry, why it closed and its resolving evidence. Each pair becomes the
+    closure record ``{date, gap_id, reason}``, dated today and appended in
+    order. A closure record holds no ``inventory_id``, so it is no addition:
+    the items, ``total`` and the header counts stay as they are. Returns the
+    records appended; nothing is read or written when ``closures`` is empty.
+
+    InventoryError is raised, the file left unchanged, for a pair whose gap
+    id is not ``GAP-<CAT>-<nnn>`` or no entry of ``gaps.yaml``, a pair with
+    an empty reason, an inventory with no header, and a header or items of
+    the wrong shape. ``path`` must resolve inside ``tests/inventory/`` of
+    ``repo_root``; the load, the checks and the write run under a lock on
+    its directory, as in ``append_items``.
+    """
+    pairs = []
+    for closure in closures:
+        if not isinstance(closure, (tuple, list)) or len(closure) != 2:
+            raise InventoryError(f"a closure record needs a (gap_id, reason) pair, not {_shown(closure)}")
+        gap_id, reason = closure
+        if not isinstance(gap_id, str) or not _GAP_RE.fullmatch(gap_id):
+            raise InventoryError(f"closure record gap id {_shown(gap_id)} is not GAP-<CAT>-<nnn>")
+        if not isinstance(reason, str) or not reason.strip():
+            raise InventoryError(f"the closure record of {gap_id} needs a reason")
+        pairs.append((gap_id, reason.strip()))
+    if not pairs:
+        return []
+    target = _confined_target(path, repo_root)
+    with _locked(target):
+        inventory = load(path)
+        header = dict(inventory["header"])
+        if not header:
+            raise InventoryError(f"{path} has no header; freeze the inventory before recording a closure")
+        records = list(inventory["items"])
+        problems = _header_problems(header) + _item_problems(records)
+        if problems:
+            raise _refusal(path, "extended", problems)
+        unknown = sorted({gap_id for gap_id, _ in pairs} - _known_gap_ids(repo_root))
+        if unknown:
+            raise InventoryError(
+                f"closure record gap id(s) {', '.join(unknown)} are not entries of tests/inventory/gaps.yaml"
+            )
+        today = datetime.date.today().isoformat()
+        added = [{"date": today, "gap_id": gap_id, "reason": reason} for gap_id, reason in pairs]
+        header["changes"] = [*(header.get("changes") or []), *added]
+        write({"header": header, "items": records}, target, repo_root=repo_root)
+    return [dict(record) for record in added]
+
+
+def withdraw_closures(
+    closures: Sequence[dict[str, Any]],
+    path: str | Path = INVENTORY_FILE,
+    *,
+    repo_root: Path = REPO_ROOT,
+) -> list[dict[str, Any]]:
+    """Withdraw exactly the records returned by ``append_closures`` when
+    the register could not record their closings.
+
+    Each ``{date, gap_id, reason}`` removes one equal ``header.changes``
+    record, searching from the end, so earlier identical records and all
+    unrelated changes, items and counts survive. The load, validation,
+    removal and write hold the same directory lock as ``append_items``;
+    a concurrent addition is never overwritten by an earlier snapshot.
+    Returns copies of the withdrawn records, in the given order; an empty
+    request reads and writes nothing.
+
+    A malformed request, an inventory without a valid header and items, or
+    any requested occurrence missing raises InventoryError before writing
+    anything. Missing occurrences are refused, not silently ignored, so a
+    failed rollback cannot be mistaken for a completed one. No gap-register
+    read is needed: that file may be what the transaction could not write.
+    ``path`` must resolve inside ``tests/inventory/`` of ``repo_root``.
+    """
+    requested = []
+    for record in closures:
+        if (not isinstance(record, dict) or set(record) != {"date", "gap_id", "reason"}
+                or not isinstance(record["date"], str) or not record["date"].strip()
+                or not isinstance(record["gap_id"], str) or not _GAP_RE.fullmatch(record["gap_id"])
+                or not isinstance(record["reason"], str) or not record["reason"].strip()):
+            raise InventoryError(f"cannot withdraw malformed closure record {_shown(record)}")
+        requested.append(dict(record))
+    if not requested:
+        return []
+    target = _confined_target(path, repo_root)
+    with _locked(target):
+        inventory = load(path)
+        header = dict(inventory["header"])
+        if not header:
+            raise InventoryError(f"{path} has no header; cannot withdraw closure records")
+        records = list(inventory["items"])
+        problems = _header_problems(header) + _item_problems(records)
+        if problems:
+            raise _refusal(path, "updated", problems)
+        changes = list(header.get("changes") or [])
+        for record in requested:
+            index = next((index for index in range(len(changes) - 1, -1, -1) if changes[index] == record), None)
+            if index is None:
+                raise InventoryError(f"{path} cannot withdraw closure record {_shown(record)}: no matching "
+                                     "header.changes record remains; nothing was withdrawn")
+            del changes[index]
+        header["changes"] = changes
+        write({"header": header, "items": records}, target, repo_root=repo_root)
+    return requested
+
+
+_MAX_REFUSAL_PROBLEMS = 3
+
+
+def _refusal(path: str | Path, action: str, problems: Sequence[str]) -> InventoryError:
+    """One line naming ``path`` and its first problems."""
+    listed = "; ".join(problems[:_MAX_REFUSAL_PROBLEMS])
+    more = len(problems) - _MAX_REFUSAL_PROBLEMS
+    if more > 0:
+        listed += f"; {more} more: run inventory_tools.py --check --inventory {path} to list them"
+    return InventoryError(f"{path} cannot be {action}: {listed}")
+
+
+def _added_ids(header: dict[str, Any]) -> set[str]:
+    return {
+        change["inventory_id"]
+        for change in header.get("changes") or []
+        if isinstance(change, dict) and change.get("inventory_id")
+    }
+
+
+def freeze(path: str | Path = INVENTORY_FILE, repo_root: Path = REPO_ROOT) -> dict[str, Any]:
+    """Write the inventory header from the items recorded at ``path``.
+
+    An inventory with no items is generated first, numbered and stamped with
+    the commit and date of the freeze. Existing items are never renumbered or
+    rewritten; only the header counts are recomputed. Returns the header.
+
+    ``path`` must resolve, symlinks followed, inside ``tests/inventory/`` of
+    ``repo_root``; that is checked before anything is generated. A file that
+    exists there but is empty or no inventory is refused, never regenerated
+    over. The load, generation and write run under a lock on its directory."""
+    target = _confined_target(path, repo_root)
+    with _locked(target):
+        inventory = load(path, missing_ok=True)
+        header = inventory["header"]
+        records = inventory["items"]
+        problems = _header_problems(header) + _item_problems(records)
+        if problems:
+            raise _refusal(path, "frozen", problems)
+        if not records:
+            records = generate_items(repo_root)
+            frozen_commit, frozen_on = git_head(repo_root), datetime.date.today().isoformat()
+        else:
+            frozen_commit = header.get("frozen_commit") or git_head(repo_root)
+            frozen_on = header.get("frozen_on") or datetime.date.today().isoformat()
+        new_header = header_from_items(
+            records,
+            frozen_commit=frozen_commit,
+            frozen_on=frozen_on,
+            changes=header.get("changes") or [],
+            protected_base=header.get("protected_base") or PROTECTED_BASE,
+        )
+        write({"header": new_header, "items": records}, target, repo_root=repo_root)
+    return new_header
+
+
+def _planning_differences(header: dict[str, Any]) -> list[str]:
+    notes = []
+    if header["total"] != PLANNED_TOTAL:
+        notes.append(f"total {header['total']} differs from the planning total {PLANNED_TOTAL}")
+    for label, recorded, planned in (
+        ("source", header["source_items"], PLANNED_SOURCE_ITEMS),
+        ("derived", header["derived_items"], PLANNED_DERIVED_ITEMS),
+    ):
+        for kind in sorted(set(recorded) | set(planned)):
+            if recorded.get(kind, 0) != planned.get(kind, 0):
+                notes.append(
+                    f"{label} {kind}: {recorded.get(kind, 0)} against the planning figure {planned.get(kind, 0)}"
+                )
+    return notes
+
+
+# --------------------------------------------------------------------------
+# Drift check
+# --------------------------------------------------------------------------
+
+_RANGE_RE = re.compile(r"^\d+(?:-\d+)?(?:,\d+(?:-\d+)?)*$")
+_HEADER_KEYS = (
+    "frozen_commit", "frozen_on", "protected_base", "total",
+    "source_items", "derived_items", "by_area", "changes",
+)
+_MAX_LISTED_DIFFERENCES = 25
+
+
+def parse_source(source: str) -> tuple[str, list[tuple[int, int]]]:
+    """Split an item ``source`` into the cited file and its line ranges. The
+    file part of a zip member citation keeps the member path."""
+    path, _, lines = str(source).rpartition(":")
+    if not path or not _RANGE_RE.match(lines):
+        raise InventoryError(f"source {source!r} is not '<path>:<lines>'")
+    ranges = []
+    for part in lines.split(","):
+        first, _, last = part.partition("-")
+        ranges.append((int(first), int(last or first)))
+    return path, ranges
+
+
+def _line_count(data: bytes) -> int:
+    lines = data.decode("latin-1").split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    return max(len(lines), 1)
+
+
+def _source_problem(source: Any, repo_root: Path) -> str | None:
+    """Why ``source`` cites no existing lines of the repository at
+    ``repo_root``, or ``None`` when it does.
+
+    The cited path is normalized, relative to the repository, and resolves
+    to a regular file inside it. Every range runs forward from line 1 to no
+    further than the file's end: its lines (an empty file has one, as
+    whole-file citations count it), its records for an ``app/data/EBCDIC``
+    file, or the member's lines for a zip member citation
+    ``<zip>:<member>:<lines>``."""
+    if not isinstance(source, str):
+        return f"source {_shown(source)} is not '<path>:<lines>'"
+    try:
+        cited, ranges = parse_source(source)
+    except InventoryError as exc:
+        return str(exc)
+    shown = _shown(source)
+    archive, colon, member = cited.partition(":")
+    in_zip = bool(colon) and archive.lower().endswith(".zip")
+    relative = archive if in_zip else cited
+    pure = PurePosixPath(relative)
+    if pure.is_absolute() or ".." in pure.parts or pure.as_posix() != relative:
+        return f"source {shown}: {relative} is not a normalized path relative to the repository"
+    root = Path(os.path.realpath(repo_root))
+    real = Path(os.path.realpath(root / relative))
+    if real != root and root not in real.parents:
+        return f"source {shown}: {relative} resolves outside the repository"
+    try:
+        if not real.is_file():
+            return f"source {shown}: {relative} is not a file of the repository"
+        if in_zip:
+            bound, unit = _line_count(_zip_member(real, relative, member)), "lines"
+        elif pure.parent.as_posix() == "app/data/EBCDIC":
+            length = EBCDIC_RECORD_LENGTHS.get(pure.name)
+            if length is None:
+                return f"source {shown}: no record length is registered for {pure.name}"
+            bound, unit = real.stat().st_size // length, "records"
+        else:
+            bound, unit = max(len(read_lines(real)), 1), "lines"
+    except OSError as exc:
+        return f"source {shown}: cannot read {relative}: {_os_reason(exc)}"
+    except InventoryError as exc:
+        return f"source {shown}: {exc}"
+    for first, last in ranges:
+        if first < 1 or first > last:
+            return f"source {shown}: range {first}-{last} does not run forward from line 1 or later"
+        if last > bound:
+            return f"source {shown}: {last} is past the end of {cited}, which has {bound} {unit}"
+    return None
+
+
+def _item_problems(records: Sequence[Any]) -> list[str]:
+    problems: list[str] = []
+    seen: dict[str, int] = {}
+    numbers: dict[str, list[int]] = {area: [] for area in AREAS}
+    for position, item in enumerate(records):
+        if not isinstance(item, dict):
+            problems.append(f"item {position} is not a mapping")
+            continue
+        label = item["id"] if isinstance(item.get("id"), str) else f"item {position}"
+        extra = sorted(str(key) for key in set(item) - set(ITEM_FIELDS))
+        missing = [key for key in ITEM_FIELDS if key not in item]
+        if missing:
+            problems.append(f"{label}: missing field(s) {', '.join(missing)}")
+            continue
+        if extra:
+            problems.append(f"{label}: unexpected field(s) {', '.join(extra)}")
+        match = ID_RE.match(str(item["id"]))
+        if match is None:
+            problems.append(f"{label}: id is not INV-<AREA>-<nnn>")
+        else:
+            numbers[match.group(1)].append(int(match.group(2)))
+            seen[item["id"]] = seen.get(item["id"], 0) + 1
+        for key, allowed in (("kind", KINDS), ("activation", ACTIVATIONS), ("level", LEVELS), ("status", STATUSES)):
+            if item[key] not in allowed:
+                problems.append(f"{label}: {key} {_shown(item[key])} is not one of {', '.join(allowed)}")
+        for key in ("name", "description"):
+            if not isinstance(item[key], str) or not item[key].strip():
+                problems.append(f"{label}: {key} is empty")
+        if not isinstance(item["source"], str):
+            problems.append(f"{label}: source {_shown(item['source'])} is not '<path>:<lines>'")
+        else:
+            try:
+                parse_source(item["source"])
+            except InventoryError as exc:
+                problems.append(f"{label}: {exc}")
+        for key in ("scenario_ids", "gap_ids"):
+            if not isinstance(item[key], list):
+                problems.append(f"{label}: {key} is not a list")
+        if isinstance(item["gap_ids"], list):
+            for gap in item["gap_ids"]:
+                if not isinstance(gap, str) or not _GAP_RE.match(gap):
+                    problems.append(f"{label}: gap id {_shown(gap)} is not GAP-<CAT>-<nnn>")
+    problems.extend(f"{item_id}: id used {count} times" for item_id, count in sorted(seen.items()) if count > 1)
+    for area, used in numbers.items():
+        if used and sorted(used) != list(range(1, max(used) + 1)):
+            problems.append(f"area {area}: ids are not numbered 1..{max(used)} without holes")
+    return problems
+
+
+def _subtract(counts: Counter, minus: Counter) -> dict[str, int]:
+    return {key: counts.get(key, 0) - minus.get(key, 0) for key in set(counts) | set(minus)}
+
+
+def _match_spans(regex: re.Pattern[str], lines: Sequence[str]) -> Iterator[tuple[int, int, int, int]]:
+    """For every match of ``regex`` in ``lines`` joined by newlines: the index
+    of the line it starts on and its offset in that line, then the same for
+    its last character."""
+    offsets = list(itertools.accumulate((len(line) + 1 for line in lines[:-1]), initial=0))
+    for match in regex.finditer("\n".join(lines)):
+        start, end = match.start(), max(match.end() - 1, match.start())
+        first, last = (bisect.bisect_right(offsets, offset) - 1 for offset in (start, end))
+        yield first, start - offsets[first], last, end - offsets[last]
+
+
+def interface_hits(repo_root: Path = REPO_ROOT) -> list[tuple[str, int, str]]:
+    """(path, line, text) of every match of INTERFACE_PATTERNS in the
+    application sources: ``line`` is the line the match starts on and
+    ``text`` the lines it spans, stripped and joined by single spaces. One hit
+    per line, in file and line order.
+
+    Each file is searched whole, comments included, so a match may span
+    lines. A COBOL source (INTERFACE_CODE_DIRS) is searched as code as well,
+    sequence areas and comment lines left out and continuation lines joined,
+    so a statement such as ``EXEC SQL`` split over lines that carry sequence
+    numbers, or with comment lines between its words, is found too.
+    InventoryError when such a source cannot be read as code."""
+    regex = re.compile("|".join(f"(?:{pattern})" for pattern in INTERFACE_PATTERNS), re.I)
+    hits = []
+    for directory in INTERFACE_SEARCH_DIRS:
+        folder = repo_root / directory
+        try:
+            if not folder.is_dir():
+                continue
+            paths = sorted(p for p in folder.rglob("*") if p.is_file())
+        except OSError as exc:
+            raise InventoryError(f"cannot search {folder}: {_os_reason(exc)}") from exc
+        for path in paths:
+            raw = read_lines(path)
+            reach: dict[int, int] = {}  # line a match starts on -> last line spanned
+            spans = [(first + 1, last + 1) for first, _, last, _ in _match_spans(regex, raw)]
+            if directory in INTERFACE_CODE_DIRS:
+                with _inventory_errors():
+                    logical = join_continuations(code_lines(path, repo_root))
+                spans.extend(
+                    (logical[first].origin(start).line, logical[last].origin(end).line)
+                    for first, start, last, end in _match_spans(regex, [line.text for line in logical])
+                )
+            for first, last in spans:
+                reach[first] = max(reach.get(first, first), last)
+            rel = _relative(path, repo_root)
+            for first in sorted(reach):
+                text = " ".join(filter(None, (line.strip() for line in raw[first - 1:reach[first]])))
+                hits.append((rel, first, text))
+    return hits
+
+
+def check(path: str | Path = INVENTORY_FILE, repo_root: Path = REPO_ROOT) -> list[str]:
+    """Every way the inventory at ``path`` drifts from the repository and
+    from its own header; an empty list means none.
+
+    The source items are recounted and the extraction rules re-run; the
+    result must equal the recorded items (``scenario_ids``, ``status`` and
+    ``gap_ids`` ignored) apart from the additions recorded in
+    ``header.changes``, and the header counts net of those additions."""
+    return _check_inventory(load(path), repo_root)
+
+
+def _check_inventory(inventory: dict[str, Any], repo_root: Path) -> list[str]:
+    """The findings of ``check`` for an inventory already loaded."""
+    findings: list[str] = []
+    header, records = inventory["header"], inventory["items"]
+    findings.extend(_item_problems(records))
+    if findings:
+        return findings
+    for key in _HEADER_KEYS:
+        if key not in header:
+            findings.append(f"header: missing {key}")
+    if findings:
+        return findings
+    # The counts and the change log are computed from the header below, so a
+    # header of the wrong shape is reported before anything reads it.
+    findings.extend(_header_problems(header))
+    if findings:
+        return findings
+    if header["protected_base"] != PROTECTED_BASE:
+        findings.append(f"header: protected_base {header['protected_base']} is not {PROTECTED_BASE}")
+    if header["total"] != len(records):
+        findings.append(f"header: total {header['total']} but {len(records)} items are recorded")
+    expected = header_from_items(
+        records, frozen_commit=header["frozen_commit"], frozen_on=header["frozen_on"],
+        changes=header["changes"], protected_base=header["protected_base"],
+    )
+    for key in ("source_items", "derived_items", "by_area"):
+        if header[key] != expected[key]:
+            findings.append(f"header: {key} {header[key]} does not match the recorded items {expected[key]}")
+    known = {item["id"] for item in records}
+    for change in header["changes"]:
+        if change.get("inventory_id") and change["inventory_id"] not in known:
+            findings.append(f"header: change cites unknown item {change['inventory_id']}")
+
+    added = _added_ids(header)
+    # Regeneration does not cover the additions, so their citations are
+    # checked against the repository here.
+    for item in records:
+        if item["id"] in added:
+            problem = _source_problem(item["source"], repo_root)
+            if problem:
+                findings.append(f"{item['id']}: {problem}")
+    try:
+        regenerated = generate_items(repo_root)
+    except InventoryError as exc:
+        findings.append(f"extraction failed: {exc}")
+        return findings
+    added_items = [item for item in records if item["id"] in added]
+    added_source, added_derived, added_areas = _counts(added_items)
+    source, derived, areas = _counts(regenerated)
+    net_source = _subtract(Counter(header["source_items"]), added_source)
+    net_derived = _subtract(Counter(header["derived_items"]), added_derived)
+    for kind in sorted(set(net_source) | set(source)):
+        if net_source.get(kind, 0) != source.get(kind, 0):
+            findings.append(
+                f"source items: {kind} recounts to {source.get(kind, 0)}, "
+                f"header has {net_source.get(kind, 0)} net of additions"
+            )
+    for kind in sorted(set(net_derived) | set(derived)):
+        if net_derived.get(kind, 0) != derived.get(kind, 0):
+            findings.append(
+                f"derived items: {kind} re-extracts to {derived.get(kind, 0)}, "
+                f"header has {net_derived.get(kind, 0)} net of additions"
+            )
+    for area in AREAS:
+        recorded = header["by_area"].get(area, {})
+        for part in ("source", "derived"):
+            net = recorded.get(part, 0) - added_areas[area][part]
+            if net != areas[area][part]:
+                findings.append(
+                    f"area {area}: {part} recounts to {areas[area][part]}, header has {net} net of additions"
+                )
+
+    frozen = {item["id"]: item for item in records if item["id"] not in added}
+    fresh = {item["id"]: item for item in regenerated}
+    differences = []
+    for item_id in sorted(set(frozen) | set(fresh), key=lambda i: (AREAS.index(item_area({"id": i})), i)):
+        old, new = frozen.get(item_id), fresh.get(item_id)
+        if old is None:
+            differences.append(f"{item_id}: extracted ({new['name']}) but not recorded")
+        elif new is None:
+            differences.append(f"{item_id}: recorded ({old['name']}) but no longer extracted")
+        else:
+            for key in ITEM_FIELDS:
+                if key not in REPORT_FIELDS and old[key] != new[key]:
+                    differences.append(f"{item_id}: {key} recorded {old[key]!r}, extracted {new[key]!r}")
+    if differences:
+        findings.extend(differences[:_MAX_LISTED_DIFFERENCES])
+        if len(differences) > _MAX_LISTED_DIFFERENCES:
+            findings.append(f"... and {len(differences) - _MAX_LISTED_DIFFERENCES} more item differences")
+
+    # A Db2, IMS or MQ reference needs an interface item of its own; the
+    # whole-file citation of a program or job item does not account for it.
+    cited: dict[str, list[tuple[int, int]]] = {}
+    for item in records:
+        if item["kind"] == "interface":
+            file_path, ranges = parse_source(item["source"])
+            cited.setdefault(file_path, []).extend(ranges)
+    try:
+        hits = interface_hits(repo_root)
+    except InventoryError as exc:
+        findings.append(f"interface search failed: {exc}")
+        return findings
+    for file_path, number, text in hits:
+        if not any(first <= number <= last for first, last in cited.get(file_path, [])):
+            findings.append(f"{file_path}:{number}: external interface reference with no interface item: {text}")
+    return findings
+
+
+# --------------------------------------------------------------------------
+# Command line
+# --------------------------------------------------------------------------
+
+
+_EPILOG = """\
+examples (from the repository root):
+  python tests/harness/inventory_tools.py --check
+  python tests/harness/inventory_tools.py --freeze
+  python tests/harness/inventory_tools.py --check --inventory /scratch/copy/tests/inventory/inventory.yaml
+
+exit codes:
+  0  --check passed, or --freeze wrote the header (or found it current)
+  1  --check found drift, or the inventory was refused or could not be read
+  2  usage error
+
+A relative --inventory path resolves against the current directory, not the
+repository root. --check reads any path and checks it against this repository.
+--freeze writes only inside tests/inventory/ of the repository holding this
+script; to freeze a copy of the repository, run that copy's own tool.
+"""
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="inventory_tools.py",
+        description="Freeze the CardDemo functional inventory or check it for drift.",
+        epilog=_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    action = parser.add_mutually_exclusive_group(required=True)
+    action.add_argument("--freeze", action="store_true",
+                        help="generate the items when none are recorded, then write the header from the items")
+    action.add_argument("--check", action="store_true",
+                        help="recount and re-extract; exit 1 on any drift from the recorded inventory")
+    parser.add_argument("--inventory", type=Path, default=INVENTORY_FILE,
+                        help="inventory file (default: tests/inventory/inventory.yaml)")
+    args = parser.parse_args(argv)
+    try:
+        if args.freeze:
+            header = freeze(args.inventory)
+            print(
+                f"inventory frozen: {header['total']} items "
+                f"({sum(header['source_items'].values())} source, {sum(header['derived_items'].values())} derived) "
+                f"in {args.inventory}"
+            )
+            notes = _planning_differences(header)
+            for note in notes:
+                print(f"note: {note}", file=sys.stderr)
+            if notes:
+                print("note: record each difference in header.changes with its reason before committing the freeze",
+                      file=sys.stderr)
+            return 0
+        inventory = load(args.inventory)
+        findings = _check_inventory(inventory, REPO_ROOT)
+    except HarnessError as exc:
+        print(f"inventory_tools: {exc}", file=sys.stderr)
+        return 1
+    if findings:
+        for finding in findings:
+            print(finding, file=sys.stderr)
+        print(f"inventory check failed: {len(findings)} finding(s)", file=sys.stderr)
+        return 1
+    print(f"inventory check passed: {len(inventory['items'])} items match the repository")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

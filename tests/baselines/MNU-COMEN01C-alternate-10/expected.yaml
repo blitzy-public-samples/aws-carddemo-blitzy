@@ -1,0 +1,10 @@
+# Derived from source: exactly the screen fields the scenario's expected
+# asserts, the menu COMEN01C sends under CM00, then the bill-payment map
+# COBIL00C sends under CB00 after the XCTL for option 10.
+screens:
+- '@map': COMEN01
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COBIL00
+  PGMNAME: COBIL00C
+  TRNNAME: CB00

@@ -1,0 +1,19 @@
+adapter: gnucobol-batch
+baseline_version: 1.0.0
+decoded:
+  messages:
+  - 'DTCDRV DATE=2022-07-18 MASK=YYYY-MM-DD RC=0003 RESULT=0003Mesg Code: 2512 Date is invalid TstDate: ..2022-07- Mask used:YYYY-MM-DD     HEX=303030334D65736720436F64653A2032353132204461746520697320696E76616C696420547374446174653A20000A323032322D30372D204D61736B20757365643A595959592D4D4D2D444420202020'
+  return_code: 0
+evidence_path: tests/reports/results/UTL-CSUTLDTC-negative-14.yaml
+execution_fingerprint: 12d684a61e11757de97034310a0be1e0044aedf6d677b73acf38852fe19ab919
+execution_id: gnucobol-batch-83cc8690cc70efaf
+gap_id: null
+reason: null
+scenario_digest: 982993d3f039e00d16a92c2e78a66b7a1c407119ad35a4e0066a4ea86517a19e
+scenario_id: UTL-CSUTLDTC-negative-14
+source_identity:
+  commit: ab3f66e8e82d6a0f204d218435c52b0662a2f5df
+  tree: app
+  units:
+    app/cbl/CSUTLDTC.cbl: 58c165dcfc3927232c02c152c673e3dee551587b85e7fe56ca67325c980eebb6
+status: passed

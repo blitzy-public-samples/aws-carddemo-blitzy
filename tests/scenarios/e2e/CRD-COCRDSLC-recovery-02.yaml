@@ -1,0 +1,157 @@
+# The card view looks up a card while the region file CARDDAT is out of service.
+#
+# Steps 1-2 reach the COCRDSL search screen as CRD-COCRDSLC-normal-01 does.
+# USER0001 (type U in the USRSEC fixture) signs on through CC00 and reaches the
+# main menu, whose option 4 'Credit Card View' makes COMEN01C transfer control
+# (XCTL) to COCRDSLC with CDEMO-FROM-PROGRAM COMEN01C and the program context
+# reset to enter [app/cbl/COMEN01C.cbl:145-155] [app/cpy/COMEN02Y.cpy:43-47].
+# Entered from the menu without the reenter flag, COCRDSLC initializes the
+# COMMAREA, takes the CDEMO-PGM-ENTER path and sends COCRDSL with both filters
+# blank, the INFOMSG prompt and no error, reading no file; 1400-SEND-SCREEN
+# sets CDEMO-PGM-REENTER and the task returns TRANSID CCDL
+# [app/cbl/COCRDSLC.cbl:264-279,349-356,394-406,457-497,563-576]. Sign-on reads
+# only USRSEC and the menu step reads no file, so the CARDDAT fault, applied
+# after the sign-on step, first acts in step 3.
+#
+# Step 3 enters account 00000000050 and card 0500024453765740, record 1 of the
+# CARDDATA fixture. Both filters are numeric and non-zero, so they become
+# CDEMO-ACCT-ID and CDEMO-CARD-NUM and the input is valid
+# [app/cbl/COCRDSLC.cbl:357-365,608-720]. 9100-GETCARD-BYACCTCARD reads CARDDAT
+# by the card number [app/cbl/COCRDSLC.cbl:726-750]. The response is neither
+# NORMAL nor NOTFND, so the WHEN OTHER branch sets INPUT-ERROR and, since
+# WS-RETURN-MSG is still off, FLG-ACCTFILTER-NOT-OK; it moves 'READ' to
+# ERROR-OPNAME, LIT-CARDFILENAME 'CARDDAT ' to ERROR-FILE, the RESP and RESP2
+# to ERROR-RESP and ERROR-RESP2, and the composed WS-FILE-ERROR-MESSAGE to
+# WS-RETURN-MSG, the primary item [app/cbl/COCRDSLC.cbl:187-188,762-771]. The
+# re-entry path then sends COCRDSL whatever 9000-READ-DATA found
+# [app/cbl/COCRDSLC.cbl:364-369]. The fixture holds the card, so the fault is
+# the only reason no card is shown.
+#
+# WS-FILE-ERROR-MESSAGE is 80 bytes [app/cbl/COCRDSLC.cbl:102-121]:
+# 'File Error: ', ERROR-OPNAME X(8), ' on ', ERROR-FILE X(9), ' returned RESP ',
+# ERROR-RESP X(10), ',RESP2 ', ERROR-RESP2 X(10) and 5 spaces. WS-RETURN-MSG
+# is X(75) [app/cbl/COCRDSLC.cbl:134], so the move keeps exactly the text up to
+# the end of ERROR-RESP2, and ERRMSGO X(80) pads it with 5 spaces
+# [app/cbl/COCRDSLC.cbl:494]. Moving the S9(09) COMP RESP fields to X(10)
+# yields their 9 unsigned digits and a space [app/cbl/COCRDSLC.cbl:41-44].
+#
+# Assumption behind the numeric parts: the unikix adapter makes a region file
+# unavailable with region_file_disable (tests/adapters/unikix/commands.yaml),
+# the CEMT SET FIL(CARDDAT) DIS equivalent, and CICS answers a READ on a
+# disabled file with DISABLED, RESP 84 and RESP2 50. Closing the file instead
+# would answer NOTOPEN, RESP 19 and RESP2 60 (000000019 and 000000060). The
+# expectation is derived from the source and the CICS file control responses,
+# never observed (GAP-INF-006); an imported UniKix run confirms or replaces it.
+# Without a confirmed region file control the runner raises
+# MissingPrerequisite under GAP-MIS-011.
+#
+# The screen after the failed read carries the COCRDSLC header and the filters
+# echoed from CC-ACCT-ID and CC-CARD-NUM, since CDEMO-ACCT-ID and CDEMO-CARD-NUM
+# are non-zero. FOUND-CARDS-FOR-ACCOUNT was never set, so the card details
+# keep the LOW-VALUES of 1100-SCREEN-INIT; the map is sent with ERASE and those
+# fields have no INITIAL value, so they read back as spaces at their full BMS
+# length. WS-INFO-MSG starts blank on every task, so 1200-SETUP-SCREEN-VARS
+# puts the input prompt in INFOMSG [app/cbl/COCRDSLC.cbl:254-256,427-497].
+# The red ACCTSID colour and the cursor that 1300-SETUP-SCREEN-ATTRS sets for
+# FLG-ACCTFILTER-NOT-OK are attributes, not field values, so they are not
+# asserted [app/cbl/COCRDSLC.cbl:514-535].
+id: CRD-COCRDSLC-recovery-02
+level: e2e
+type: recovery
+description: >-
+  USER0001 signs on, selects option 4 'Credit Card View' on the main menu and,
+  on the COCRDSLC card view screen (CCDL), enters account 00000000050 and card
+  0500024453765740 while the region file CARDDAT is unavailable. COCRDSLC's
+  READ of the card master fails with a response other than NORMAL or NOTFND,
+  so COCRDSL is sent again with the entered filters, no card details, the
+  prompt 'Please enter Account and Card Number' and the composed message
+  'File Error: READ on CARDDAT returned RESP <resp>,RESP2 <resp2>'.
+# The recovery message is the primary item, then the program, the map the
+# option is entered on, the map asserted, the transaction that runs the failing
+# step, the CSD file the READ fails on, and the online-only copybooks COCRDSLC
+# copies. Sign-on and the menu (CC00, CM00, COSGN00, USRSEC) are verified by
+# the SEC and MNU scenarios, the information prompt by its own CRD scenario,
+# and CSUSR01Y, CVACT02Y, CVCUS01Y and the data files at the lowest level that
+# executes them.
+inventory_ids:
+- INV-CRD-041  # COCRDSLC 'File Error: READ on CARDDAT' (9100-GETCARD-BYACCTCARD, READ at line 742)
+- INV-CRD-002  # COCRDSLC program
+- INV-MNU-003  # COMEN01 map, the main menu option 4 is entered on
+- INV-CRD-005  # COCRDSL map, sent on entry and again with the file error
+- INV-CFG-013  # CCDL transaction, the TRANSID COCRDSLC returns with and the failing ENTER runs under
+- INV-CFG-003  # CARDDAT CSD file, the card master the READ fails on
+- INV-LAY-002  # COCOM01Y: the COMMAREA whose reenter flag routes the ENTER to the edits and the read
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COCRDSLC
+- INV-LAY-009  # CSMSG02Y: the abend data COCRDSLC copies
+- INV-LAY-011  # CSSTRPFY: YYYY-STORE-PFKEY mapping ENTER to CCARD-AID-ENTER
+- INV-LAY-019  # CVCRD01Y: CCARD-AID and the CC-ACCT-ID and CC-CARD-NUM filters
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-006  # CRD end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-MIS-011  # no confirmed region file control to make CARDDAT unavailable
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user from USRSEC. CARDDATA holds card
+    # 0500024453765740, so the failure comes from the fault alone.
+    USRSEC: {base: USRSEC}
+    CARDDATA: {base: CARDDATA}
+  parameters:
+    clock_mode: relative
+  # No `after`: an online unavailable fault is applied after the sign-on step
+  # and before the failing one, and no step reaches CARDDAT before the card
+  # lookup of step 3.
+  faults:
+  - target: CARDDAT
+    operation: read
+    condition: unavailable
+# PASSWORD is the README's documented demo password, not a secret: the scenario
+# schema accepts no other sign-on password.
+inputs:
+  steps:
+  - {transid: CC00, aid: ENTER, fields: {USERID: USER0001, PASSWD: PASSWORD}, '@map': COSGN00}
+  - {aid: ENTER, fields: {OPTION: '4'}, '@map': COMEN01}
+  - {aid: ENTER, fields: {ACCTSID: '00000000050', CARDSID: '0500024453765740'}, '@map': COCRDSL}
+expected:
+  # One entry per step, each the screen the step ends on. Text fields keep
+  # their full BMS length with trailing spaces: ERRMSG is 78 characters on
+  # COMEN01 and 80 on COCRDSL, INFOMSG and the titles 40. CURDATE and CURTIME
+  # come from the region clock, so they are matchers in the MM/DD/YY and
+  # HH:MM:SS forms 1100-SCREEN-INIT builds [app/cbl/COCRDSLC.cbl:437-449].
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN004: '04. Credit Card View                    '
+    ERRMSG: '                                                                              '
+  - '@map': COCRDSL
+    TRNNAME: CCDL
+    PGMNAME: COCRDSLC
+    ACCTSID: '           '
+    CARDSID: '                '
+    INFOMSG: 'Please enter Account and Card Number    '
+    ERRMSG: '                                                                                '
+  - '@map': COCRDSL
+    TRNNAME: CCDL
+    PGMNAME: COCRDSLC
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time, format: '%H:%M:%S'}
+    ACCTSID: '00000000050'
+    CARDSID: '0500024453765740'
+    CRDNAME: '                                                  '
+    CRDSTCD: ' '
+    EXPMON: '  '
+    EXPYEAR: '    '
+    INFOMSG: 'Please enter Account and Card Number    '
+    ERRMSG: 'File Error: READ     on CARDDAT   returned RESP 000000084 ,RESP2 000000050      '
+  # One ERRMSG value per step: blank on the menu and on the first card view,
+  # then the composed file error.
+  messages:
+  - '                                                                              '
+  - '                                                                                '
+  - 'File Error: READ     on CARDDAT   returned RESP 000000084 ,RESP2 000000050      '

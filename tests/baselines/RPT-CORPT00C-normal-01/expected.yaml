@@ -1,0 +1,98 @@
+# Derived baseline (capture_platform: derived in manifest.yaml) for
+# RPT-CORPT00C-normal-01, the Monthly report. Authored from the source because
+# only unikix can run the scenario; tagged inferred-not-observed (GAP-INF-009,
+# GAP-INF-012, GAP-MIS-017) and replaced only by `report.py --import-unikix`
+# on eligible evidence, never edited to match a run.
+#
+# One screen per step, the screen shown after the step's AID; messages holds
+# each step's ERRMSG. Text is the whole BMS field, trailing spaces kept. Steps
+# 1 and 2 assert every field the scenario's expected names: a superset of the
+# MNU-COMEN01C-alternate-09 entries for the same two steps, with equal values.
+# - Step 1: USER0001 (type U) signs on and COSGN00C XCTLs to COMEN01C, which
+#   sends COMEN01 under CM00 with a blank ERRMSG [app/cbl/COSGN00C.cbl:230-237]
+#   [app/cbl/COMEN01C.cbl:75-90].
+# - Step 2: option 9 XCTLs to CORPT00C [app/cpy/COMEN02Y.cpy:74-78]
+#   [app/cbl/COMEN01C.cbl:115-156]. Its first entry moves LOW-VALUES to
+#   CORPT0AO and sends CORPT00 under CR00 with the COTTL01Y titles and a blank
+#   ERRMSG [app/cbl/CORPT00C.cbl:163-181,556-580,609-628]
+#   [app/cpy/COTTL01Y.cpy:17-22].
+# - Step 3: MONTHLY with CONFIRM Y. The start date is the first and the end
+#   date the last day of the run month: DATE-OF-INTEGER of INTEGER-OF-DATE of
+#   the first of the next month, minus one, rolling the year after December
+#   [app/cbl/CORPT00C.cbl:213-238]. The JOB-LINES loop stops on '/*EOF' but
+#   writes it first, so JOBS receives 17 records of 80 bytes
+#   [app/cbl/CORPT00C.cbl:81-127,462-523]. INITIALIZE-ALL-FIELDS blanks the
+#   input fields and CONFIRM (CORPT0AO redefines CORPT0AI), and ERRMSG is
+#   'Monthly' plus ' report submitted for printing ...', 41 characters padded
+#   to 78 [app/cbl/CORPT00C.cbl:445-456,633-646].
+#
+# The run date comes from the region clock, which unikix cannot fix
+# (GAP-MIS-015), so records 11, 12 and 15 and the screen CURDATE and CURTIME
+# are matchers. Records 11 and 12 are whole-line matchers rendering the first
+# or last day of the run month inside the JOB-DATA filler (PIC X(18)/X(10)/X(52)
+# and X(16)/X(10)/X(54)), every other byte literal. Record 15 is FILLER-3
+# (X(10), space, X(10), X(59)) under run-month-end: its %Y-%m parts are the run
+# year and month, so the start date is that month's '%Y-%m-01'.
+file_state:
+  '@TDQ:JOBS':
+    records:
+    - '//TRNRPT00 JOB ''TRAN REPORT'',CLASS=A,MSGCLASS=0,                                '
+    - '// NOTIFY=&SYSUID                                                               '
+    - '//*                                                                             '
+    - '//JOBLIB JCLLIB ORDER=(''AWS.M2.CARDDEMO.PROC'')                                  '
+    - '//*                                                                             '
+    - '//STEP10 EXEC PROC=TRANREPT                                                     '
+    - '//*                                                                             '
+    - '//STEP05R.SYMNAMES DD *                                                         '
+    - 'TRAN-CARD-NUM,263,16,ZD                                                         '
+    - 'TRAN-PROC-DT,305,10,CH                                                          '
+    - format: 'PARM-START-DATE,C''%Y-%m-%d''                                                   '
+      match: run-month-start
+    - format: 'PARM-END-DATE,C''%Y-%m-%d''                                                     '
+      match: run-month-end
+    - '/*                                                                              '
+    - '//STEP10R.DATEPARM DD *                                                         '
+    - format: '%Y-%m-01 %Y-%m-%d                                                           '
+      match: run-month-end
+    - '/*                                                                              '
+    - '/*EOF                                                                           '
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'Monthly report submitted for printing ...                                     '
+screens:
+- '@map': COMEN01
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': CORPT00
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  PGMNAME: CORPT00C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CR00
+- '@map': CORPT00
+  CONFIRM: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  CUSTOM: ' '
+  EDTDD: '  '
+  EDTMM: '  '
+  EDTYYYY: '    '
+  ERRMSG: 'Monthly report submitted for printing ...                                     '
+  MONTHLY: ' '
+  PGMNAME: CORPT00C
+  SDTDD: '  '
+  SDTMM: '  '
+  SDTYYYY: '    '
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CR00
+  YEARLY: ' '

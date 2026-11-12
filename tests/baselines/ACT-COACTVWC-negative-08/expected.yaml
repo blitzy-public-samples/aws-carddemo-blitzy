@@ -1,0 +1,61 @@
+# Derived from the source, never observed: no TPE region runs in CI.
+# Step 3 asks COACTVWC for account 00000000003: CXACAIX and ACCTDAT answer
+# NORMAL, CUSTDAT answers NOTFND for customer 000000003
+# [app/cbl/COACTVWC.cbl:687-722,825-857]. The composed message is 78
+# characters, but STRING stops at the 75-byte WS-RETURN-MSG, so only
+# '0000000' of ERROR-RESP2 survives; ERRMSG is those 75 bytes plus 3 spaces.
+# The account fields are record 3 of app/data/ASCII/acctdata.txt edited by
+# PICOUT +ZZZ,ZZZ,ZZZ.99; the customer fields stay LOW-VALUES and read back as
+# spaces at full BMS length. CURDATE and CURTIME come from the region clock,
+# hence the matchers. Values keep their trailing spaces.
+screens:
+- '@map': COMEN01
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COACTVW
+  ACCTSID: '           '
+  ERRMSG: '                                                                              '
+  INFOMSG: 'Enter or update id of account to display     '
+  PGMNAME: COACTVWC
+  TRNNAME: CAVW
+- '@map': COACTVW
+  AADDGRP: '          '
+  ACCTSID: '00000000003'
+  ACRCYCR: +           .00
+  ACRCYDB: +           .00
+  ACRDLIM: +      4,909.00
+  ACSADL1: '                                                  '
+  ACSADL2: '                                                  '
+  ACSCITY: '                                                  '
+  ACSCTRY: '   '
+  ACSEFTC: '          '
+  ACSFNAM: '                         '
+  ACSGOVT: '                    '
+  ACSHLIM: +        538.00
+  ACSLNAM: '                         '
+  ACSMNAM: '                         '
+  ACSPFLG: ' '
+  ACSPHN1: '             '
+  ACSPHN2: '             '
+  ACSSTTE: '  '
+  ACSTDOB: '          '
+  ACSTFCO: '   '
+  ACSTNUM: '         '
+  ACSTSSN: '            '
+  ACSTTUS: Y
+  ACSZIPC: '     '
+  ACURBAL: +        147.00
+  ADTOPEN: '2013-08-23'
+  AEXPDT: '2024-01-10'
+  AREISDT: '2024-01-10'
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'CustId:000000003 not found in customer master.Resp: 000000013  REAS:0000000   '
+  INFOMSG: 'Enter or update id of account to display     '
+  PGMNAME: COACTVWC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CAVW

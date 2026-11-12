@@ -1,0 +1,118 @@
+# COBIL00C refuses a bill payment for an account the account master does not
+# hold. Account ids in app/data/ASCII/acctdata.txt run 00000000001-00000000050,
+# so the notfnd condition comes from the fixture itself and needs no fault entry.
+#
+# Steps 1 and 2 are those of MNU-COMEN01C-alternate-10: USER0001 signs on
+# through CC00 and reaches the main menu COMEN01, and option 10 'Bill Payment'
+# makes COMEN01C transfer control with XCTL to COBIL00C with the program context
+# reset [app/cbl/COMEN01C.cbl:115-155] [app/cpy/COMEN02Y.cpy:80-84]. COMEN01C
+# passes only the COCOM01Y COMMAREA, so CDEMO-CB00-TRN-SELECTED is padded with
+# spaces, no account is fetched, and COBIL00C sends the empty COBIL00 with a
+# blank message line [app/cbl/COBIL00C.cbl:64-72,107-122,289-301].
+# Step 3 enters account 99999999999 with CONFIRM left blank and presses ENTER
+# under CB00:
+# - The id is not blank, so it goes to ACCT-ID; CONFIRM arrives as low-values,
+#   so READ-ACCTDAT-FILE runs without a payment being confirmed
+#   [app/cbl/COBIL00C.cbl:154-184].
+# - READ UPDATE of ACCTDAT by that id answers NOTFND: the error flag is set,
+#   'Account ID NOT found...' goes to WS-MESSAGE, the cursor to ACTIDIN, and
+#   SEND-BILLPAY-SCREEN sends COBIL00 with ERASE [app/cbl/COBIL00C.cbl:343-372].
+#   The same literal is also moved on the REWRITE and CXACAIX NOTFND branches
+#   (lines 392 and 425); the inventory holds the three as one item, and this
+#   path reaches line 361.
+# - The moves of ACCT-CURR-BAL into CURBAL follow that SEND, so the screen
+#   shows CURBAL as sent: blank. The error flag skips the balance check, the
+#   cross-reference read and the payment, and the task ends with RETURN
+#   TRANSID CB00 [app/cbl/COBIL00C.cbl:146-149,193-244]. COBIL0AO redefines
+#   COBIL0AI, so ACTIDIN echoes the id as received.
+#
+# Expected values are derived from the source: no TPE region runs in CI. Screen
+# values are whole fields at their BMS length, trailing spaces kept. ERRMSG is
+# WS-MESSAGE, X(80), cut to ERRMSGO, X(78). CURDATE and CURTIME come from the
+# region clock, so they are matchers and the clock is relative.
+id: BIL-COBIL00C-negative-05
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, chooses main-menu option 10 (Bill Payment) and, on
+  COBIL00, enters account 99999999999, which the account master does not hold.
+  READ UPDATE of ACCTDAT answers NOTFND, so COBIL00C shows COBIL00 again with
+  the entered id, a blank balance and 'Account ID NOT found...' in ERRMSG; no
+  payment is made.
+# Primary item first, then the program, the maps the screens assert, the
+# transaction step 3 runs under, the CSD file the failed lookup reads, and the
+# online-only copybooks COBIL00C copies. CXACAIX and TRANSACT are never read on
+# this path, so their CSD files are verified by the payment scenarios. Sign-on
+# and the menu option (CC00, CM00, COSGN00, USRSEC) belong to the SEC and MNU
+# scenarios; batch copybooks and data files are verified at the lowest level
+# that executes them.
+inventory_ids:
+- INV-BIL-008  # COBIL00C message 'Account ID NOT found...' (recovery: not found for a user-entered key)
+- INV-BIL-001  # COBIL00C program
+- INV-MNU-003  # COMEN01 map, where option 10 is entered
+- INV-BIL-002  # COBIL00 map, the bill-payment screen of steps 2 and 3
+- INV-CFG-012  # CB00 transaction, under which COBIL00C receives the account id
+- INV-CFG-001  # ACCTDAT CSD file: the read by account id that answers NOTFND
+- INV-LAY-002  # COCOM01Y: the COMMAREA that makes the ENTER a reentry
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COBIL00C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-008  # BIL end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+    # The 50 repository accounts; none has the id 99999999999.
+    ACCTDATA: {base: ACCTDATA}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '10'
+  # CONFIRM is left blank, so the id is looked up without a payment.
+  - aid: ENTER
+    '@map': COBIL00
+    fields:
+      ACTIDIN: '99999999999'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: 'CM00'
+    PGMNAME: 'COMEN01C'
+  - '@map': COBIL00
+    TRNNAME: 'CB00'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COBIL00C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ERRMSG: '                                                                              '
+  - '@map': COBIL00
+    TRNNAME: 'CB00'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COBIL00C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACTIDIN: '99999999999'
+    CURBAL: '              '
+    CONFIRM: ' '
+    ERRMSG: 'Account ID NOT found...                                                       '
+  # The ERRMSG of each step: the menu and the empty bill-payment screen carry none.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Account ID NOT found...                                                       '

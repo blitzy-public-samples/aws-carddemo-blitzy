@@ -1,0 +1,35 @@
+# Manifest of the derived baseline of USR-COUSR01C-alternate-02: CU01 entered
+# directly, without a COMMAREA. Only unikix can run the scenario, so
+# expected.yaml was authored from the source, not captured
+# (inferred-not-observed, GAP-INF-004, GAP-INF-012). It names no execution_id
+# or execution_fingerprint and holds no datasets/ until an eligible UniKix run
+# is imported (report.py --import-unikix), the only way it is promoted.
+#
+# source_identity.units are the app/ units the step executes: COUSR01C, which
+# finds EIBCALEN = 0 and XCTLs to COSGN00C with a COMMAREA before sending any
+# map of its own [app/cbl/COUSR01C.cbl:78-80,165-178], and COSGN00C, which
+# takes the ENTER as an empty sign-on attempt and sends the sign-on map
+# COSGN00 [app/cbl/COSGN00C.cbl:80-88,108-122]. Each program brings its COPY
+# closure, as harness.results computes it for a program, so COSGN00C's
+# symbolic map COSGN00.CPY is listed too; COSGN00.bms is the one map sent.
+# COUSR01.bms is never sent on this path, so it is absent. DFHAID and DFHBMSCA
+# are CICS-supplied and not in the repository. source_commit is HEAD at
+# authoring; app/ is byte-identical to the suite's starting commit.
+baseline_version: 1.0.0
+capture_date: '2026-11-10'
+capture_platform: derived
+source_commit: 8da594ed14d23cf59dfd713f29eb2f8084c0316b
+source_identity:
+  commit: 8da594ed14d23cf59dfd713f29eb2f8084c0316b
+  tree: app
+  units:
+    app/bms/COSGN00.bms: 6747ba57e45fed7e52af728a1f8688ed8fab90b93e1234ab0a0bcae32fa39056
+    app/cbl/COSGN00C.cbl: 4f901ae6b113eebae60ae1d94b30f8cb9906d031a4419770bf56980bdf97e377
+    app/cbl/COUSR01C.cbl: aa131b1e3382dc6d101b42f1c97d4fb0c2fdd706819ed9f9a0187c82b30f3019
+    app/cpy-bms/COSGN00.CPY: e2a2f8f6e76e1613cbd8f0baaca87d571a49a7bc219d16a732e4e4ecd7485407
+    app/cpy-bms/COUSR01.CPY: a263a33ce46ea0b50ade18e4e18dd27dc848a516a9851a16d015c7240de82926
+    app/cpy/COCOM01Y.cpy: 77097557ee4c365f62138328d3e280ce7aba5f81d418c6f16434f0fbb2aafa6c
+    app/cpy/COTTL01Y.cpy: 5032bfa9428354bb4a62e8c82ba1efa7dcf6b80f27544ad99a81c8a8df8ed41b
+    app/cpy/CSDAT01Y.cpy: 61dd7b01d974c13cd47f71774c613dd67996418a22fae730d09b246c0b710ad7
+    app/cpy/CSMSG01Y.cpy: ef8ce44572885d63e46a02516f992cabbbc57ea94235000fd376325750e26eda
+    app/cpy/CSUSR01Y.cpy: 37c34094dc4124bc6255e0b06a0387442f4f0dd9d51dd6623b559d370aa0d2cb

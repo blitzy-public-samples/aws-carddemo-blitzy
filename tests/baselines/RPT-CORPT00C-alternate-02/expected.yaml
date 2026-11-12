@@ -1,0 +1,73 @@
+# Derived baseline of scenario RPT-CORPT00C-alternate-02 (capture_platform:
+# derived): USER0001 signs on, selects main menu option 9 'Transaction
+# Reports', lands on CORPT00 with no report selected and presses PF3, which
+# returns to the COMEN01C main menu. Authored from the source, never captured;
+# open until a UniKix run is imported (GAP-INF-009, GAP-INF-012).
+#
+# One screen per step, each the screen shown after the step's AID, holding the
+# fields the scenario asserts for that step. Text values are whole fields at
+# their BMS length with trailing spaces kept: TRNNAME 4, PGMNAME 8, TITLE01,
+# TITLE02 and OPTNnnn 40, ERRMSG 78 [app/bms/COMEN01.bms] [app/bms/CORPT00.bms].
+# The titles are COTTL01Y's [app/cpy/COTTL01Y.cpy:18-22]. CURDATE and CURTIME
+# come from the region clock through CSDAT01Y, so they are run-date (mm/dd/yy)
+# and run-time matchers [app/cpy/CSDAT01Y.cpy:30-41].
+# Step 1: COSGN00C XCTLs a type-U user to COMEN01C with program context 0
+# [app/cbl/COSGN00C.cbl:209-240]. On first entry COMEN01C sets re-enter, clears
+# COMEN1AO and sends COMEN1A with ERASE, its CM00/COMEN01C header and the blank
+# WS-MESSAGE in ERRMSG [app/cbl/COMEN01C.cbl:36-38,82-90,182-194].
+# Step 2: option 9 XCTLs to CORPT00C with context 0 [app/cpy/COMEN02Y.cpy:74-78].
+# On first entry CORPT00C clears CORPT0AO, puts the cursor on MONTHLY and sends
+# CORPT0A with ERASE, its CR00/CORPT00C header and ERRMSG spaces
+# [app/cbl/CORPT00C.cbl:37-38,163-181,556-578,609-628].
+# Step 3: CR00 re-enters CORPT00C, which receives the map and, on DFHPF3, moves
+# 'COMEN01C' to CDEMO-TO-PROGRAM [app/cbl/CORPT00C.cbl:182-189];
+# RETURN-TO-PREV-SCREEN records CR00/CORPT00C as the caller, zeroes
+# CDEMO-PGM-CONTEXT and XCTLs to COMEN01C [app/cbl/CORPT00C.cbl:540-551].
+# COMEN01C, entered with context 0, sends the main menu afresh exactly as in
+# step 1 [app/cbl/COMEN01C.cbl:82-90,182-231]: the ten COMEN02Y options, each
+# '<nn>. ' and the 35-byte name in the 40-byte WS-MENU-OPT-TXT
+# [app/cbl/COMEN01C.cbl:48,236-277] [app/cpy/COMEN02Y.cpy:21-84], and ERRMSG
+# spaces. Nothing is written to the JOBS queue on this path.
+# messages: the unikix adapter copies the ERRMSG of each step's formatted
+# screen, so the list is the three blank 78-byte ERRMSG values in step order.
+messages:
+- '                                                                              '
+- '                                                                              '
+- '                                                                              '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': CORPT00
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  PGMNAME: CORPT00C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CR00
+- '@map': COMEN01
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  OPTN001: '01. Account View                        '
+  OPTN002: '02. Account Update                      '
+  OPTN003: '03. Credit Card List                    '
+  OPTN004: '04. Credit Card View                    '
+  OPTN005: '05. Credit Card Update                  '
+  OPTN006: '06. Transaction List                    '
+  OPTN007: '07. Transaction View                    '
+  OPTN008: '08. Transaction Add                     '
+  OPTN009: '09. Transaction Reports                 '
+  OPTN010: '10. Bill Payment                        '
+  PGMNAME: COMEN01C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CM00

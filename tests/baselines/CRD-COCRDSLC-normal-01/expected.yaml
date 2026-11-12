@@ -1,0 +1,92 @@
+# Derived baseline of scenario CRD-COCRDSLC-normal-01 (capture_platform:
+# derived): USER0001 signs on, selects main-menu option 4 'Credit Card View'
+# and, on the COCRDSLC search screen, enters account 00000000050 and card
+# 0500024453765740. Authored from app/cbl/COCRDSLC.cbl, never captured; open
+# until report.py --import-unikix promotes a UniKix run (GAP-INF-006,
+# GAP-INF-012).
+# One screen per step, each the screen shown after the step's AID. Values are
+# at full BMS field width with their trailing spaces; fields the program
+# leaves LOW-VALUES are captured as spaces. CURDATE and CURTIME come from the
+# region clock, so they are run-date and run-time matchers.
+screens:
+# Step 1: COSGN00C XCTLs a type-U user to COMEN01C with program context 0
+# [app/cbl/COSGN00C.cbl:222-240]; on first entry COMEN01C sends COMEN1A from
+# LOW-VALUES with ERASE [app/cbl/COMEN01C.cbl:87-90,182-193]: header
+# [app/cbl/COMEN01C.cbl:212-231] [app/cpy/COTTL01Y.cpy:18-22], option 4 as
+# '04' + '. ' + its 35-byte name in the 40-byte WS-MENU-OPT-TXT
+# [app/cbl/COMEN01C.cbl:48,236-256] [app/cpy/COMEN02Y.cpy:43-47], and the
+# blank WS-MESSAGE in the 78-byte ERRMSG [app/cbl/COMEN01C.cbl:79-80,187].
+- '@map': 'COMEN01'
+  CURDATE: {match: 'run-date', format: '%m/%d/%y'}
+  CURTIME: {match: 'run-time'}
+  ERRMSG: '                                                                              '
+  OPTN004: '04. Credit Card View                    '
+  PGMNAME: 'COMEN01C'
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: 'CM00'
+# Step 2: option 4 is numeric, within the 10 options, of user type U and not a
+# DUMMY program, so COMEN01C XCTLs to COCRDSLC with context 0
+# [app/cbl/COMEN01C.cbl:127-155]. COCRDSLC takes WHEN CDEMO-PGM-ENTER and sends
+# CCRDSLA without reading a file [app/cbl/COCRDSLC.cbl:349-356,427-496]: no
+# card is found, so the card fields stay LOW-VALUES; the blank WS-INFO-MSG
+# becomes the input prompt; the blank WS-RETURN-MSG fills the 80-byte ERRMSG.
+# 1400-SEND-SCREEN sets CDEMO-PGM-REENTER, and COMMON-RETURN returns the
+# COMMAREA with TRANSID CCDL [app/cbl/COCRDSLC.cbl:394-406,563-567].
+- '@map': 'COCRDSL'
+  # The blank card fields are asserted, as on the same screen of
+  # MNU-COMEN01C-alternate-04, because every path gives spaces. COCRDSLC tests
+  # its working-storage CDEMO-FROM-PROGRAM before DFHCOMMAREA is copied in
+  # [app/cbl/COCRDSLC.cbl:268-279]: initialized, CDEMO-ACCT-ID and
+  # CDEMO-CARD-NUM are zero and ACCTSID and CARDSID get LOW-VALUES; restored
+  # from the menu, they get either LOW-VALUES or the CC-ACCT-ID and CC-CARD-NUM
+  # that INITIALIZE CC-WORK-AREA leaves blank [app/cbl/COCRDSLC.cbl:254-256,
+  # 462-472]. CRDNAME, CRDSTCD, EXPMON and EXPYEAR are moved only when
+  # FOUND-CARDS-FOR-ACCOUNT is set [app/cbl/COCRDSLC.cbl:474-485].
+  ACCTSID: '           '
+  CARDSID: '                '
+  CRDNAME: '                                                  '
+  CRDSTCD: ' '
+  CURDATE: {match: 'run-date', format: '%m/%d/%y'}
+  CURTIME: {match: 'run-time'}
+  ERRMSG: '                                                                                '
+  EXPMON: '  '
+  EXPYEAR: '    '
+  INFOMSG: 'Please enter Account and Card Number    '
+  PGMNAME: 'COCRDSLC'
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: 'CCDL'
+# Step 3: the COMMAREA carries CDEMO-PGM-REENTER, so ENTER takes
+# 2000-PROCESS-INPUTS. Both filters are supplied, numeric and non-zero, so they
+# become CDEMO-ACCT-ID and CDEMO-CARD-NUM and the input is valid
+# [app/cbl/COCRDSLC.cbl:357-369,608-720]. 9100-GETCARD-BYACCTCARD reads CARDDAT
+# by the card number alone (the account key move is commented out); the READ
+# is NORMAL and sets FOUND-CARDS-FOR-ACCOUNT [app/cbl/COCRDSLC.cbl:736-754].
+# 1200-SETUP-SCREEN-VARS then shows record 1 of the CARDDATA fixture (line 1 of
+# app/data/ASCII/carddata.txt) through CVACT02Y [app/cbl/COCRDSLC.cbl:457-497]:
+# - ACCTSID and CARDSID echo CC-ACCT-ID and CC-CARD-NUM, both non-zero.
+# - CRDNAME is CARD-EMBOSSED-NAME X(50), 'Aniya Von' and 41 spaces.
+# - EXPYEAR and EXPMON are positions 1-4 and 6-7 of CARD-EXPIRAION-DATE
+#   '2023-03-09' through CARD-EXPIRAION-DATE-X [app/cbl/COCRDSLC.cbl:84-90];
+#   the map has no expiry-day field, so the day is not shown.
+# - CRDSTCD is CARD-ACTIVE-STATUS.
+# - INFOMSG is the 40-byte WS-INFO-MSG holding the 31-character
+#   FOUND-CARDS-FOR-ACCOUNT value, three leading spaces included
+#   [app/cbl/COCRDSLC.cbl:126,129-130]; ERRMSG is the 75-byte WS-RETURN-MSG,
+#   left at spaces, in the 80-byte field.
+- '@map': 'COCRDSL'
+  ACCTSID: '00000000050'
+  CARDSID: '0500024453765740'
+  CRDNAME: 'Aniya Von                                         '
+  CRDSTCD: 'Y'
+  CURDATE: {match: 'run-date', format: '%m/%d/%y'}
+  CURTIME: {match: 'run-time'}
+  ERRMSG: '                                                                                '
+  EXPMON: '03'
+  EXPYEAR: '2023'
+  INFOMSG: '   Displaying requested details         '
+  PGMNAME: 'COCRDSLC'
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: 'CCDL'

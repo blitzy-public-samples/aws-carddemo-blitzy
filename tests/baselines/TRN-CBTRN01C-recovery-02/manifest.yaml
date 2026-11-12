@@ -1,0 +1,24 @@
+# Derived baseline: no adapter fails a DALYTRAN READ after a successful open
+# (GAP-MIS-013), so expected.yaml is authored from app/cbl/CBTRN01C.cbl
+# (derived_from: source) and is inferred-not-observed (GAP-INF-013). It carries
+# no execution_id or execution_fingerprint and holds no datasets/ until an
+# observed run replaces it. source_commit is the suite's starting commit, whose
+# app/ tree the derivation read and which app/ never changes from;
+# source_identity names what a gnucobol-batch run of CBTRN01C executes: the
+# program and its COPY closure.
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: derived
+derived_from: source
+source_commit: 93ebec71ff7b59a68cedd7c501afe496a8eaa68d
+source_identity:
+  commit: 93ebec71ff7b59a68cedd7c501afe496a8eaa68d
+  tree: app
+  units:
+    app/cbl/CBTRN01C.cbl: 18cebdd95bff49b5316c271204fb20f59d2dd72615bc1715498c9cc8a50187f7
+    app/cpy/CVACT01Y.cpy: 81a08bad15af5664326a6f0af3650f570821c4857ffdec3a6a39f91f07dca728
+    app/cpy/CVACT02Y.cpy: 9f1c62ef31b9d541712f1ed28f79e011ea7338611f5e0f30f2e1cbf624181223
+    app/cpy/CVACT03Y.cpy: ffc6079e09b28739e154bf6c1e1c36d408209faa91f6cf7008078dc596a1c370
+    app/cpy/CVCUS01Y.cpy: 944fd9a8eb10a683d0db97b9a87f2151982f649970287eb74358826056af25f8
+    app/cpy/CVTRA05Y.cpy: d7bde0e78ff608497087b9909c889ed39e347269f964bda767b92b547fbb5fec
+    app/cpy/CVTRA06Y.cpy: c5c69f1b86c5a10156d3c5881d7cf387e6b925aae32825360f85bf4056a554a1

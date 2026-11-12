@@ -1,0 +1,25 @@
+# Derived baseline, inferred-not-observed (GAP-INF-002, GAP-INF-012): authored
+# from the source, never captured. PF5 on the sign-on screen reaches WHEN OTHER,
+# which moves CCDA-MSG-INVALID-KEY to WS-MESSAGE without receiving the map and
+# sends COSGN0A of mapset COSGN00 again with its header rebuilt
+# [app/cbl/COSGN00C.cbl:85-100,145-157,177-204] [app/cpy/CSMSG01Y.cpy:20-21].
+# ERRMSG is the full 78-byte field [app/bms/COSGN00.bms:197-200]: the 40-character
+# message and 38 trailing spaces, as Result.messages carries it too. CURTIME is
+# 9 bytes and receives the 8-byte hh:mm:ss. APPLID and SYSID name the region and
+# USERID and PASSWD hold uncleared working storage on this path, so none of them
+# is asserted.
+messages:
+- 'Invalid key pressed. Please see below...                                      '
+screens:
+- '@map': COSGN00
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    format: '%H:%M:%S '
+    match: run-time
+  ERRMSG: 'Invalid key pressed. Please see below...                                      '
+  PGMNAME: COSGN00C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CC00

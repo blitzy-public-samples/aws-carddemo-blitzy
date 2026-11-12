@@ -1,0 +1,24 @@
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'Invalid key pressed. Please see below...                                      '
+screens:
+- '@map': COADM01
+  ERRMSG: '                                                                              '
+  PGMNAME: COADM01C
+  TRNNAME: CA00
+- '@map': COUSR02
+  ERRMSG: '                                                                              '
+  PGMNAME: COUSR02C
+  TRNNAME: CU02
+- '@map': COUSR02
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Invalid key pressed. Please see below...                                      '
+  PGMNAME: COUSR02C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CU02

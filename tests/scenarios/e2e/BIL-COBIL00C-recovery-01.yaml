@@ -1,0 +1,167 @@
+# COBIL00C cannot look up the account to pay while the region file ACCTDAT is
+# out of service.
+#
+# Step 1: USER0001 signs on through CC00, and COSGN00C routes the type U user to
+# the main menu COMEN01 [app/cbl/COSGN00C.cbl:221-237]. COMEN01C, entered for
+# the first time, sends the menu with a blank ERRMSG [app/cbl/COMEN01C.cbl:77-90,
+# 182-194]. Sign-on reads only USRSEC and the menu reads no file.
+# Step 2: option '10' is 'Bill Payment', program COBIL00C, so COMEN01C moves 0
+# to CDEMO-PGM-CONTEXT and transfers control (XCTL) to COBIL00C within the CM00
+# task [app/cbl/COMEN01C.cbl:115-156] [app/cpy/COMEN02Y.cpy:80-84]. COMEN01C
+# passes only the COCOM01Y COMMAREA, so the group MOVE into COBIL00C's longer
+# CARDDEMO-COMMAREA pads CDEMO-CB00-TRN-SELECTED with spaces and no account is
+# looked up on that first entry: COBIL00C moves LOW-VALUES to COBIL0AO, sends
+# COBIL00 with its CB00 header, empty fields and a blank ERRMSG, and returns
+# with TRANSID CB00 [app/cbl/COBIL00C.cbl:99-122,146-149,289-303].
+# Step 3: ENTER under CB00 with account 00000000001, the first ACCTDATA fixture
+# record, and CONFIRM left empty. COBIL00C receives the map and performs
+# PROCESS-ENTER-KEY [app/cbl/COBIL00C.cbl:123-127,306-315]. It finds the id
+# supplied, and the empty CONFIRM (spaces or LOW-VALUES) performs
+# READ-ACCTDAT-FILE, a READ of ACCTDAT by the id with UPDATE
+# [app/cbl/COBIL00C.cbl:154-184,343-356]. With the file closed or disabled the
+# response is neither NORMAL nor NOTFND, so WHEN OTHER DISPLAYs RESP and RESP2,
+# sets the error flag, moves 'Unable to lookup Account...' to WS-MESSAGE, puts
+# the cursor on the account id and sends COBIL00 with ERASE
+# [app/cbl/COBIL00C.cbl:365-371,289-303]. The MOVE of ACCT-CURR-BAL
+# into CURBALI that follows runs after that send and changes nothing on the
+# screen [app/cbl/COBIL00C.cbl:193-194]; the error flag stops the balance test,
+# the payment and the second send [app/cbl/COBIL00C.cbl:197-244], and
+# MAIN-PARA returns with TRANSID CB00 [app/cbl/COBIL00C.cbl:146-149].
+#
+# Expected values are derived from the source (no TPE region runs in CI):
+# - COBIL0AO redefines COBIL0AI [app/cpy-bms/COBIL00.CPY:79], so the account id
+#   is sent back as received. CURBAL and CONFIRM were sent without data on the
+#   first send and are still LOW-VALUES or spaces, so BMS sends nothing for them
+#   and the capture shows spaces at the field's full BMS length
+#   [app/bms/COBIL00.bms:85-130].
+# - ERRMSG is the first 78 bytes of the 80-byte WS-MESSAGE, trailing spaces kept.
+# - The header is POPULATE-HEADER-INFO's: the COTTL01Y titles, CB00, COBIL00C,
+#   and CURDATE mm/dd/yy and CURTIME hh:mm:ss of the run clock through CSDAT01Y,
+#   hence the matchers and clock_mode relative [app/cbl/COBIL00C.cbl:319-340].
+# - The DISPLAY of RESP and RESP2 goes to the region log, not to the terminal,
+#   and is not asserted. The failed READ UPDATE leaves no lock and no REWRITE
+#   follows, so ACCTDATA is unloaded unchanged.
+id: BIL-COBIL00C-recovery-01
+level: e2e
+type: recovery
+description: >-
+  USER0001 signs on, chooses main menu option 10 'Bill Payment' and enters
+  account 00000000001 on the COBIL00 bill payment screen while the region file
+  ACCTDAT is unavailable. The READ UPDATE fails with a response other than
+  NORMAL or NOTFND, so COBIL00C shows 'Unable to lookup Account...' on COBIL00
+  with the account id kept and no balance, and the account record is left as
+  loaded.
+# The recovery message is the primary item, then the program, the map option 10
+# is entered on and the map asserted, the transaction under which the failing
+# READ runs and the CSD file it fails on, then the online-only copybooks
+# COBIL00C copies. CVACT01Y and the ACCTDATA data files are left out: their
+# lowest executing level is the batch scenarios. The sign-on items (COSGN00,
+# CC00, USRSEC) and CM00 belong to the SEC and MNU scenarios.
+inventory_ids:
+- INV-BIL-009  # COBIL00C message 'Unable to lookup Account...' (recovery)
+- INV-BIL-001  # COBIL00C program
+- INV-MNU-003  # COMEN01 map, the main menu option 10 is entered on
+- INV-BIL-002  # COBIL00 map, the bill payment screen the failure is shown on
+- INV-CFG-012  # CB00 transaction, under which the lookup of step 3 runs
+- INV-CFG-001  # ACCTDAT CSD file, the target of the failing READ UPDATE
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA COMEN01C passes with the XCTL
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the header date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COBIL00C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-008  # bill payment (BIL) end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-MIS-011  # no confirmed region file control to put ACCTDAT out of service
+preconditions:
+  datasets:
+    # COSGN00C reads USER0001 from the 10 repository users.
+    USRSEC: {base: USRSEC}
+    # The 50 repository accounts: account 00000000001 exists, so only the
+    # file's availability fails, and the unload after the run is compared with
+    # them.
+    ACCTDATA: {base: ACCTDATA}
+  parameters:
+    clock_mode: relative
+  # No `after`: the unikix adapter applies an online fault after the sign-on
+  # step. Sign-on reads only USRSEC, and COMEN01C's option transfer and
+  # COBIL00C's first send touch no file, so the first ACCTDAT operation after
+  # the fault is the READ UPDATE of step 3. An adapter without a confirmed
+  # region file control raises MissingPrerequisite under GAP-MIS-011.
+  faults:
+  - target: ACCTDAT
+    operation: read
+    condition: unavailable
+inputs:
+  # PASSWORD is the demo password the README documents for USER0001, the only
+  # sign-on scenarios.py accepts; it is test data for a local region, not a
+  # secret.
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: USER0001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '10'}
+    '@map': COMEN01
+  - aid: ENTER
+    fields: {ACTIDIN: '00000000001'}
+    '@map': COBIL00
+expected:
+  # Text fields keep their full BMS length with trailing spaces: ERRMSG is 78
+  # characters, the titles and OPTN010 40, CURBAL 14. CURDATE and CURTIME come
+  # from the region clock, so they are matchers.
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN010: '10. Bill Payment                        '
+    ERRMSG: '                                                                              '
+  - '@map': COBIL00
+    TRNNAME: CB00
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COBIL00C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACTIDIN: '           '
+    CURBAL: '              '
+    CONFIRM: ' '
+    ERRMSG: '                                                                              '
+  - '@map': COBIL00
+    TRNNAME: CB00
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COBIL00C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACTIDIN: '00000000001'
+    CURBAL: '              '
+    CONFIRM: ' '
+    ERRMSG: 'Unable to lookup Account...                                                   '
+  # The ERRMSG value of each step: blank on the main menu and on the first
+  # COBIL00 send, then the failure message.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Unable to lookup Account...                                                   '
+  file_state:
+    # Unloaded once the file is back in service: the 50 fixture accounts, with
+    # account 00000000001 as loaded, since the failed READ UPDATE is followed
+    # by no REWRITE.
+    ACCTDATA:
+      count: 50
+      contains:
+      - ACCT-ID: '1'
+        ACCT-ACTIVE-STATUS: 'Y'
+        ACCT-CURR-BAL: '194.00'
+        ACCT-CREDIT-LIMIT: '2020.00'
+        ACCT-CASH-CREDIT-LIMIT: '1020.00'
+        ACCT-OPEN-DATE: '2014-11-20'
+        ACCT-EXPIRAION-DATE: '2025-05-20'
+        ACCT-REISSUE-DATE: '2025-05-20'
+        ACCT-CURR-CYC-CREDIT: '0.00'
+        ACCT-CURR-CYC-DEBIT: '0.00'
+        ACCT-ADDR-ZIP: 'A000000000'
+        ACCT-GROUP-ID: '          '

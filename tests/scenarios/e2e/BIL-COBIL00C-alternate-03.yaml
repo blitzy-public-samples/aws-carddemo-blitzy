@@ -1,0 +1,76 @@
+# Direct entry of CB00 without signing on. Started from a cleared screen,
+# COBIL00C finds EIBCALEN = 0, moves 'COSGN00C' to CDEMO-TO-PROGRAM and
+# transfers control (XCTL) to it with the COMMAREA of COCOM01Y
+# [app/cbl/COBIL00C.cbl:107-109,273-284]. COBIL00C never sends its own map
+# COBIL00, so that map is not listed.
+#
+# Because the XCTL passes a COMMAREA, COSGN00C runs with EIBCALEN > 0 and the
+# ENTER that started CB00: it receives map COSGN0A from the unformatted input
+# of the cleared screen and sends the sign-on screen, then returns with
+# TRANSID CC00 [app/cbl/COSGN00C.cbl:80-102,108-157]. The message on that first
+# screen depends on how the region's BMS maps that input into COSGN0AI, which
+# COSGN00C does not test (RESP is captured, never checked). The step therefore
+# declares COSGN00 as its input map: the adapter stops on any other screen
+# (COBIL00 included), so the comparison fails on '@map', and otherwise
+# presses the step's ENTER on the sign-on screen with nothing typed.
+#
+# That ENTER runs CC00. USERID was sent with FSET [app/bms/COSGN00.bms:156],
+# so it comes back holding spaces or nothing; either way COSGN00C finds the
+# user id SPACES or LOW-VALUES and sends COSGN00 again with
+# 'Please enter User ID ...' [app/cbl/COSGN00C.cbl:117-122,145-157]. That
+# screen, not the one the CB00 task sends, is the asserted outcome.
+#
+# The listing rule keeps COSGN00C's own items out: 'Please enter User ID ...'
+# (INV-SEC-005) is verified by SEC-COSGN00C-negative-01, and transaction CC00
+# by the scenarios that enter it. The asserted path never reads USRSEC,
+# because no user id arrives. It is loaded only so the region holds its usual
+# user file, and its CSD file item is therefore not listed. No asserted value
+# depends on the clock; clock_mode is relative because unikix cannot fix it
+# (GAP-MIS-015).
+id: BIL-COBIL00C-alternate-03
+level: e2e
+type: alternate
+description: >-
+  Transaction CB00 is entered on a cleared screen with no COMMAREA, so no user
+  has signed on. COBIL00C does not show its bill payment screen: it transfers
+  control to COSGN00C, and the terminal shows the sign-on map COSGN00. ENTER
+  pressed there with nothing typed leaves the terminal on COSGN00, with
+  transaction CC00 and program COSGN00C in its header and 'Please enter User
+  ID ...' in ERRMSG.
+inventory_ids:
+- INV-BIL-018  # COBIL00C entry without COMMAREA returns to sign-on (rule)
+- INV-BIL-001  # COBIL00C program
+- INV-SEC-002  # COSGN00 map, the screen the XCTL lands on
+- INV-CFG-012  # CB00 transaction, which starts COBIL00C
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA passed on the XCTL
+- INV-LAY-005  # COTTL01Y copybook, copied by COBIL00C
+- INV-LAY-006  # CSDAT01Y copybook, copied by COBIL00C
+- INV-LAY-008  # CSMSG01Y copybook, copied by COBIL00C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-008  # the BIL end-to-end baselines are derived, never observed
+- GAP-INF-012  # the online-only copybooks are covered only through derived e2e baselines
+preconditions:
+  datasets:
+    USRSEC:
+      base: USRSEC
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  # A first step is started from a cleared screen: its '@map' is the map the
+  # transaction id leads to, here the sign-on map COSGN00C sends after the XCTL.
+  - transid: CB00
+    '@map': COSGN00
+    aid: ENTER
+    fields: {}
+expected:
+  screens:
+  # Field values are full BMS width with their trailing spaces: TRNNAME 4,
+  # PGMNAME 8, ERRMSG 78 [app/bms/COSGN00.bms].
+  - '@map': COSGN00
+    TRNNAME: CC00
+    PGMNAME: COSGN00C
+    ERRMSG: 'Please enter User ID ...                                                      '

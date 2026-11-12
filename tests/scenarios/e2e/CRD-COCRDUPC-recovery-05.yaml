@@ -1,0 +1,176 @@
+# The card for update is looked up while the region file CARDDAT is out of
+# service.
+#
+# Step 1: USER0001 (type U in the USRSEC fixture) signs on through CC00, and
+# COSGN00C transfers control to COMEN01C, whose first entry sends COMEN01 with
+# a blank message and returns with TRANSID CM00 [app/cbl/COSGN00C.cbl:221-240]
+# [app/cbl/COMEN01C.cbl:82-90,107-110,182-194]. Sign-on reads only USRSEC, so
+# the fault, applied after the sign-on step, first acts in step 3.
+#
+# Step 2: option 5 is 'Credit Card Update', program COCRDUPC, so COMEN01C moves
+# 0 (CDEMO-PGM-ENTER) to CDEMO-PGM-CONTEXT and transfers control (XCTL) to
+# COCRDUPC within the CM00 task [app/cbl/COMEN01C.cbl:115-157]
+# [app/cpy/COMEN02Y.cpy:49-53]. Entered from the menu, COCRDUPC takes the
+# fresh-entry branch: it initializes its own COMMAREA area, sends COCRDUP with
+# the search-key prompt and no message, and returns with TRANSID CCUP, no file
+# read [app/cbl/COCRDUPC.cbl:384,388-401,502-512,546-558,1138-1163]. The
+# account and card fields are sent unprotected (DFHBMFSE) because no details
+# are fetched yet [app/cbl/COCRDUPC.cbl:1168-1174].
+#
+# Step 3: account 00000000050 and its card 0500024453765740 (the first record
+# of the CARDDATA fixture) are entered. CCUP re-enters COCRDUPC
+# in the WHEN OTHER branch; both search keys pass their edits, and with no
+# details fetched 2000-DECIDE-ACTION runs 9000-READ-DATA, whose
+# 9100-GETCARD-BYACCTCARD reads CARDDAT by card number
+# [app/cbl/COCRDUPC.cbl:535-543,578-604,641-662,721-796,948-966,1343-1390].
+# The response is neither NORMAL nor NOTFND, so the WHEN OTHER branch sets
+# INPUT-ERROR and FLG-ACCTFILTER-NOT-OK, moves 'READ' to ERROR-OPNAME and
+# 'CARDDAT ' to ERROR-FILE, the RESP and RESP2 to ERROR-RESP and ERROR-RESP2,
+# and the composed WS-FILE-ERROR-MESSAGE to WS-RETURN-MSG
+# [app/cbl/COCRDUPC.cbl:1402-1411], the primary item. FOUND-CARDS-FOR-ACCOUNT
+# is not set, so no card details are kept and CCUP-CHANGE-ACTION stays
+# 'details not fetched' [app/cbl/COCRDUPC.cbl:963-965,1352-1369].
+#
+# The composed message is 80 bytes [app/cbl/COCRDUPC.cbl:133-152]: 'File
+# Error: ', ERROR-OPNAME X(8), ' on ', ERROR-FILE X(9), ' returned RESP ',
+# ERROR-RESP X(10), ',RESP2 ', ERROR-RESP2 X(10) and 5 spaces. WS-RETURN-MSG
+# is X(75) [app/cbl/COCRDUPC.cbl:173], so the trailing 5 spaces are cut, and
+# ERRMSGO X(80) pads them back [app/cpy-bms/COCRDUP.CPY:212]
+# [app/cbl/COCRDUPC.cbl:1163]. Moving the S9(09) COMP RESP fields to X(10)
+# yields their 9 unsigned digits and a space [app/cbl/COCRDUPC.cbl:41-44].
+#
+# Assumption behind the numeric parts: the unikix adapter makes a region file
+# unavailable with region_file_disable (tests/adapters/unikix/commands.yaml),
+# the CEMT SET FIL(CARDDAT) DIS equivalent, and CICS answers a READ on a
+# disabled file with DISABLED, RESP 84 and RESP2 50. Closing the file instead
+# would answer NOTOPEN, RESP 19 and RESP2 60 (000000019 and 000000060). The
+# scenario schema compares screen text exactly and offers matchers only for
+# clock values, so the full message is pinned; a region that reports other
+# numbers changes only the tail after 'RESP ', which the import of the first
+# UniKix run replaces under GAP-INF-006.
+#
+# The screen after the failed read is sent with ERASE
+# [app/cbl/COCRDUPC.cbl:1324-1336]. It carries the COCRDUPC header, the entered
+# keys echoed from CC-ACCT-ID and CC-CARD-NUM, LOW-VALUES in the card name,
+# status and expiry fields because no details were fetched, the search-key
+# prompt again, and the error message
+# [app/cbl/COCRDUPC.cbl:1052-1106,1138-1163]. The detail fields have no INITIAL
+# value, so they are captured as spaces at their full BMS length; EXPDAY is a
+# dark field and holds no data either. ERRMSG starts at row 23, column 2 and
+# runs onto row 24, column 1 [app/bms/COCRDUP.bms:154-157]; its 80th character
+# is a space.
+#
+# The expectation is derived from the source and the CICS file control
+# responses, never observed (GAP-INF-006); no TPE region runs in CI. The UniKix
+# copy of COCRDUPC (COCRDUPC.cl2) differs from app/ only in 1230-EDIT-NAME
+# (GAP-DOC-023), which this path never runs, and its COCRDUP.bms is identical,
+# so no UniKix-copy gap applies. Without a confirmed region file control the
+# runner raises MissingPrerequisite under GAP-MIS-011.
+id: CRD-COCRDUPC-recovery-05
+level: e2e
+type: recovery
+description: >-
+  USER0001 signs on, selects option 5 'Credit Card Update' on the main menu and
+  enters account 00000000050 with card 0500024453765740 while the region file
+  CARDDAT is unavailable. COCRDUPC's READ of the card master fails with a
+  response other than NORMAL or NOTFND, so COCRDUP is sent again with the
+  entered keys, no card details, the prompt 'Please enter Account and Card
+  Number' and the composed message 'File Error: READ on CARDDAT returned RESP
+  <resp>,RESP2 <resp2>'.
+# The recovery message is the primary item, then the program, the map the
+# option is entered on, the map asserted, the transaction that runs the failing
+# step, the CSD file the READ fails on, and the online-only copybooks COCRDUPC
+# copies. Sign-on and the menu option (CC00, CM00, COSGN00, COMEN01C, USRSEC)
+# are verified by the SEC and MNU scenarios. CSUSR01Y, CVACT02Y, CVCUS01Y and
+# the data files are left out: their lowest executing level is a batch
+# scenario.
+inventory_ids:
+- INV-CRD-075  # COCRDUPC message 'File Error: READ on CARDDAT' (9100-GETCARD-BYACCTCARD, READ at line 1382)
+- INV-CRD-003  # COCRDUPC program
+- INV-MNU-003  # COMEN01 map, the main menu option 5 is entered on
+- INV-CRD-006  # COCRDUP map, the screen the failed read is sent on
+- INV-CFG-015  # CCUP transaction, which re-enters COCRDUPC for the search keys
+- INV-CFG-003  # CARDDAT CSD file, the card master the READ fails on
+- INV-LAY-002  # COCOM01Y: the COMMAREA whose context selects fresh entry, then re-entry
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COCRDUPC
+- INV-LAY-009  # CSMSG02Y: the abend data COCRDUPC copies
+- INV-LAY-011  # CSSTRPFY: the AID mapping that turns ENTER into CCARD-AID-ENTER
+- INV-LAY-019  # CVCRD01Y: CC-ACCT-ID and CC-CARD-NUM, echoed into ACCTSID and CARDSID
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-006  # CRD end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-MIS-011  # no confirmed region file control to make CARDDAT unavailable
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user from USRSEC; CARDDATA holds card
+    # 0500024453765740 of account 00000000050, so the fault is the only reason
+    # no card is shown.
+    USRSEC: {base: USRSEC}
+    CARDDATA: {base: CARDDATA}
+  parameters:
+    clock_mode: relative
+  # Applied after the sign-on step and before the failing one, as every online
+  # unavailable fault is; no step reaches CARDDAT before the card lookup of
+  # step 3. An adapter without region file control raises MissingPrerequisite
+  # under GAP-MIS-011.
+  faults:
+  - target: CARDDAT
+    operation: read
+    condition: unavailable
+# PASSWORD is the README's documented demo password, not a secret: the scenario
+# schema accepts no other sign-on password.
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields: {USERID: USER0001, PASSWD: PASSWORD}
+  - aid: ENTER
+    '@map': COMEN01
+    fields: {OPTION: '5'}
+  - aid: ENTER
+    '@map': COCRDUP
+    fields: {ACCTSID: '00000000050', CARDSID: '0500024453765740'}
+expected:
+  # Text fields keep their full BMS length with trailing spaces: ERRMSG is 78
+  # characters on COMEN01 and 80 on COCRDUP, INFOMSG 40, the titles 40.
+  # CURDATE and CURTIME come from the region clock, so they are matchers.
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN005: '05. Credit Card Update                  '
+    ERRMSG: '                                                                              '
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    PGMNAME: COCRDUPC
+    ACCTSID: '           '
+    CARDSID: '                '
+    INFOMSG: 'Please enter Account and Card Number    '
+    ERRMSG: '                                                                                '
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    PGMNAME: COCRDUPC
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000050'
+    CARDSID: '0500024453765740'
+    CRDNAME: '                                                  '
+    CRDSTCD: ' '
+    EXPMON: '  '
+    EXPYEAR: '    '
+    EXPDAY: '  '
+    INFOMSG: 'Please enter Account and Card Number    '
+    ERRMSG: 'File Error: READ     on CARDDAT   returned RESP 000000084 ,RESP2 000000050      '
+  # The ERRMSG value of each step: blank on the menu and on the search-key
+  # screen, then the composed file error.
+  messages:
+  - '                                                                              '
+  - '                                                                                '
+  - 'File Error: READ     on CARDDAT   returned RESP 000000084 ,RESP2 000000050      '

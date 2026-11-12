@@ -1,0 +1,161 @@
+# A custom-range report request whose start date has the right form but is
+# no calendar date: 02/30/2022. The refusal comes from CSUTLDTC, called with
+# the mask YYYY-MM-DD, so the scenario also verifies CSUTLDTC's date
+# acceptance for the mask CORPT00C passes.
+#
+# Steps 1-2: USER0001 signs on through CC00, COSGN00C routes the type-U user
+# to the main menu COMEN01, and option '9' ('Transaction Reports') zeroes
+# CDEMO-PGM-CONTEXT and transfers control with XCTL to CORPT00C
+# [app/cbl/COMEN01C.cbl:115-156] [app/cpy/COMEN02Y.cpy:74-78]. On that first
+# entry CORPT00C sets CDEMO-PGM-REENTER, clears CORPT0AO to LOW-VALUES and
+# sends CORPT00 with its header and a blank ERRMSG, then returns with
+# TRANSID(CR00) [app/cbl/CORPT00C.cbl:172-181,199-202,556-591].
+#
+# Step 3 marks CUSTOM and enters the range 02/30/2022 to 07/06/2022, then
+# presses ENTER under CR00. CORPT00C receives the map into CORPT0AI and
+# performs PROCESS-ENTER-KEY [app/cbl/CORPT00C.cbl:183-186,596-604]:
+# - MONTHLY and YEARLY keep their blank INITIAL and CUSTOM holds 'X', so the
+#   custom branch runs; every date part is supplied, so none of the six
+#   empty-field checks holds [app/cbl/CORPT00C.cbl:212-303].
+# - NUMVAL-C re-edits each part through WS-NUM-99 or WS-NUM-9999, which leaves
+#   '02', '30', '2022', '07', '06' and '2022' as entered; each part is numeric,
+#   the months are not above '12' and the days not above '31', so no
+#   'Not a valid Month/Day/Year' message is sent [app/cbl/CORPT00C.cbl:305-379].
+# - WS-START-DATE becomes 2022-02-30 and goes to CALL 'CSUTLDTC' with the mask
+#   'YYYY-MM-DD' [app/cbl/CORPT00C.cbl:381-394]. February has no 30th, so
+#   CEEDAYS answers the severity-3 token FC-BAD-DATE-VALUE (X'09CC'), which
+#   CSUTLDTC returns as severity '0003' and message number '2508'
+#   ('Datevalue error') [app/cbl/CSUTLDTC.cbl:61-70,103-134].
+# - The severity is not '0000' and the message number is not '2513' (the
+#   unsupported-range token CORPT00C tolerates), so CORPT00C moves 'Start Date
+#   - Not a valid date...' to WS-MESSAGE, sets WS-ERR-FLG, puts the cursor on
+#   SDTMM and performs SEND-TRNRPT-SCREEN [app/cbl/CORPT00C.cbl:396-406].
+# - SEND-TRNRPT-SCREEN rebuilds the header from COTTL01Y and CSDAT01Y, moves
+#   the message to ERRMSG, sends CORPT00 with ERASE and goes to RETURN-TO-CICS,
+#   which ends the task [app/cbl/CORPT00C.cbl:556-591,609-628]. The end date is
+#   never validated and SUBMIT-JOB-TO-INTRDR is never reached, so nothing is
+#   written to the JOBS queue.
+# Priority decision: that nothing is submitted follows from the source path and
+# is not asserted as an empty @TDQ:JOBS. That observation needs the JOBS
+# capture (GAP-MIS-017) and would hold this message item blocked wherever the
+# TPE runs but the capture does not; the queue write is verified by
+# RPT-CORPT00C-normal-01..03.
+#
+# Expected values are derived from the source; no TPE region runs in CI.
+# - Which dates CEEDAYS refuses is known only through the stub and the IBM
+#   CEEDAYS semantics, never observed (GAP-INF-001), and whether UniKix
+#   supplies CEEDAYS is open (GAP-MIS-010). A unikix run executes the UniKix
+#   copy, whose CSUTLDTC passes trimmed Vstring lengths to CEEDAYS
+#   (GAP-DOC-021). The 10-character date and mask carry no trailing spaces, so
+#   the outcome is expected to be the same, but that record cannot verify the
+#   app/ items the entry lists.
+# - CORPT0AO redefines CORPT0AI [app/cpy-bms/CORPT00.CPY:121], so the screen
+#   sent back shows the received fields as NUMVAL-C left them: CUSTOM 'X' and
+#   the six date parts as entered. MONTHLY and YEARLY come back blank (their
+#   INITIAL blanks, sent as spaces because the fields are FSET), and CONFIRM,
+#   which has no INITIAL, shows as a space [app/bms/CORPT00.bms:80-210].
+# - Text fields are compared at their full BMS length with trailing spaces:
+#   ERRMSG is 78 bytes [app/bms/CORPT00.bms:218-221], the 32-character message
+#   followed by spaces from the 80-byte WS-MESSAGE [app/cbl/CORPT00C.cbl:39].
+# - CURDATE and CURTIME come from the region clock in the mm/dd/yy and
+#   hh:mm:ss forms of CSDAT01Y, hence the matchers and clock_mode relative.
+id: RPT-CORPT00C-negative-14
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, selects option 9 'Transaction Reports' on the main menu
+  and, on CORPT00 (CR00), marks Custom and enters the range 02/30/2022 to
+  07/06/2022. Every part is supplied, numeric and in range, but CSUTLDTC
+  refuses 2022-02-30 for the mask YYYY-MM-DD, so CORPT00C sends CORPT00 again
+  with the entered values and 'Start Date - Not a valid date...', and submits
+  no report.
+# Primary item first, then the program, the maps asserted, the transaction
+# step 3 runs under, the online-only copybooks CORPT00C copies, and the
+# CSUTLDTC date-acceptance item whose refusal of the date this outcome rests
+# on. Sign-on and the menu option (CC00, CM00, COSGN00, USRSEC) are verified by
+# the SEC and MNU scenarios; CORPT00C reads no file, and the batch record
+# copybooks and the data files are verified at the lowest level that executes
+# them.
+inventory_ids:
+- INV-RPT-023  # CORPT00C message 'Start Date - Not a valid date...' (rule)
+- INV-RPT-001  # CORPT00C program
+- INV-MNU-003  # COMEN01 map, where option 9 is entered
+- INV-RPT-002  # CORPT00 map, the empty screen and the refused request
+- INV-CFG-019  # CR00 transaction, under which the request is processed
+- INV-LAY-002  # COCOM01Y: the COMMAREA that makes step 3 a re-entry
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by CORPT00C
+- INV-UTL-003  # CSUTLDTC date acceptance for masks YYYY-MM-DD and YYYYMMDD: 2022-02-30 refused
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-009  # RPT end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-INF-001  # which dates CEEDAYS accepts is known only through the stub
+- GAP-MIS-010  # whether UniKix supplies CEEDAYS
+- GAP-DOC-021  # the UniKix CSUTLDTC passes trimmed Vstring lengths to CEEDAYS
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user USER0001; CORPT00C reads no file.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '9'
+  # The valid custom range with the start date moved to February 30th.
+  - aid: ENTER
+    '@map': CORPT00
+    fields:
+      CUSTOM: 'X'
+      SDTMM: '02'
+      SDTDD: '30'
+      SDTYYYY: '2022'
+      EDTMM: '07'
+      EDTDD: '06'
+      EDTYYYY: '2022'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    ERRMSG: '                                                                              '
+  - '@map': CORPT00
+    TRNNAME: CR00
+    PGMNAME: CORPT00C
+    ERRMSG: '                                                                              '
+  - '@map': CORPT00
+    TRNNAME: CR00
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: CORPT00C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    MONTHLY: ' '
+    YEARLY: ' '
+    CUSTOM: 'X'
+    SDTMM: '02'
+    SDTDD: '30'
+    SDTYYYY: '2022'
+    EDTMM: '07'
+    EDTDD: '06'
+    EDTYYYY: '2022'
+    CONFIRM: ' '
+    ERRMSG: 'Start Date - Not a valid date...                                              '
+  # One ERRMSG value per step: blank on the main menu and on the first
+  # CORPT00 screen, the invalid-start-date message after ENTER.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Start Date - Not a valid date...                                              '

@@ -1,0 +1,108 @@
+# User add with the first name left blank. ADMIN001 (user type A) signs on
+# through CC00 and COSGN00C transfers control to the admin menu COADM01C
+# [app/cbl/COSGN00C.cbl:221-240]. Option 2 of COADM02Y is 'User Add
+# (Security)', program COUSR01C [app/cpy/COADM02Y.cpy:29-32], so COADM01C
+# transfers control to it with the program context reset
+# [app/cbl/COADM01C.cbl:115-145]. Entered without the reenter flag, COUSR01C
+# clears its output map, sends COUSR01 with WS-MESSAGE still spaces and returns
+# with TRANSID CU01 [app/cbl/COUSR01C.cbl:73-87,107-110,184-196].
+#
+# The ENTER of step 3 runs CU01 again. COUSR01C receives map COUSR1A and the
+# first WHEN of PROCESS-ENTER-KEY finds FNAMEI equal to SPACES or LOW-VALUES:
+# it sets the error flag, moves 'First Name can NOT be empty...' to WS-MESSAGE
+# and sends the screen again [app/cbl/COUSR01C.cbl:88-92,115-123]. The error
+# flag keeps it from WRITE-USER-SEC-FILE, so no USRSEC record is written
+# [app/cbl/COUSR01C.cbl:153-160]. COUSR1AO redefines COUSR1AI and is not
+# cleared on this path, so the last name, user id and user type just received
+# are sent back unchanged, and the blank first name stays blank
+# [app/cpy-bms/COUSR01.CPY:17-91]. PASSWD is a dark (DRK) field, so its
+# content is not asserted.
+#
+# Screen values are whole fields at their BMS length with trailing spaces kept,
+# because comparison never trims. ERRMSG is WS-MESSAGE (X(80)) cut to ERRMSGO
+# (X(78)); CURTIME is the 8-character hh:mm:ss of CSDAT01Y moved to the
+# 8-character CURTIMEO. expected.messages is not asserted: it carries the
+# ERRMSG of every step, which the screens below already assert.
+# TESTU001 is invented user data typed into the COUSR01 maintenance fields; it
+# never signs on. The baseline is derived from the source: no TPE region runs
+# in CI.
+id: USR-COUSR01C-negative-02
+level: e2e
+type: negative
+description: >-
+  ADMIN001 signs on, chooses option 2 (User Add) on the admin menu and submits
+  the add-user screen with ENTER, the first name blank and the last name,
+  user id TESTU001, password and user type U filled in. COUSR01C refuses the
+  add before any USRSEC write and shows map COUSR01 again with its header
+  (CU01, COUSR01C, the titles, the run date and time), the entered last name,
+  user id and type, and 'First Name can NOT be empty...' in ERRMSG
+  [app/cbl/COUSR01C.cbl:117-123]. USRSEC still holds only its 10 fixture
+  users.
+# Primary item first, then the program, the maps the screens assert (COADM01,
+# COUSR01), the transaction step 3 enters (CU01, the TRANSID COUSR01C returned
+# with), the CSD file whose state is asserted, and the online-only copybooks
+# COUSR01C copies. CSUSR01Y is a batch-level copybook verified elsewhere, and
+# the sign-on and menu transactions belong to their own scenarios.
+inventory_ids:
+- INV-USR-023  # COUSR01C message 'First Name can NOT be empty...' (rule)
+- INV-USR-002  # COUSR01C program
+- INV-MNU-004  # COADM01 map, the admin menu the sign-on lands on
+- INV-USR-006  # COUSR01 map, the add-user screen
+- INV-CFG-024  # CU01 transaction, under which the ENTER of step 3 runs COUSR01C
+- INV-CFG-008  # USRSEC CSD file, read by the sign-on and left unwritten by COUSR01C
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA that makes the ENTER a reentry
+- INV-LAY-005  # COTTL01Y copybook, TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y copybook, CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y copybook, copied by COUSR01C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-004  # USR end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user; COUSR01C would write the new user here.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - {transid: CC00, aid: ENTER, fields: {USERID: ADMIN001, PASSWD: PASSWORD}, '@map': COSGN00}
+  - {aid: ENTER, fields: {OPTION: '2'}, '@map': COADM01}
+  # The empty value leaves the first name field blank, so COUSR01C receives no
+  # first name.
+  - aid: ENTER
+    '@map': COUSR01
+    fields:
+      FNAME: ''
+      LNAME: TESTLAST
+      USERID: TESTU001
+      PASSWD: TESTPWD1
+      USRTYPE: U
+expected:
+  screens:
+  # One entry per step, each the screen the step ends on.
+  - '@map': COADM01
+    TRNNAME: CA00
+    PGMNAME: COADM01C
+  - '@map': COUSR01
+    TRNNAME: CU01
+    PGMNAME: COUSR01C
+    ERRMSG: '                                                                              '
+  - '@map': COUSR01
+    TRNNAME: CU01
+    PGMNAME: COUSR01C
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time, format: '%H:%M:%S'}
+    FNAME: '                    '
+    LNAME: 'TESTLAST            '
+    USERID: TESTU001
+    USRTYPE: U
+    ERRMSG: 'First Name can NOT be empty...                                                '
+  file_state:
+    # COUSR01C's only USRSEC operation is the WRITE of a new key, so the 10
+    # fixture users, and no TESTU001, are the unchanged file.
+    USRSEC: {count: 10}

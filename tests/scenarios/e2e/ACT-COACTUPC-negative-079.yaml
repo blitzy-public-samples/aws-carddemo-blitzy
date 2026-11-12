@@ -1,0 +1,346 @@
+# COACTUPC refuses a Date of Birth day outside 1 to 31: the WS-VALID-DAY check
+# of EDIT-DAY, copied from CSUTLDPY, for the Date of Birth field
+# [app/cpy/CSUTLDPY.cpy:150-207] [app/cpy/CSUTLDWY.cpy:25-29].
+#
+# Steps 1-3 sign on as USER0001, choose main-menu option 2 and fetch account
+# 00000000001, as ACT-COACTUPC-alternate-04 does: CXACAIX gives customer
+# 000000001 (card 9680294154603697, line 49 of app/data/ASCII/cardxref.txt),
+# ACCTDAT and CUSTDAT are read without UPDATE, and 3202-SHOW-ORIGINAL-VALUES
+# shows the records with 'Update account details presented above.'; the date
+# of birth 1961-06-08 is split into DOBYEAR, DOBMON and DOBDAY, and every
+# editable field is DFHBMFSE (unprotected, MDT on), so all of them come back
+# on the next AID [app/cbl/COACTUPC.cbl:2568-2580,2787-2865,3500-3561,
+# 3608-3884].
+# Step 4 types 39 over the birth day and presses ENTER.
+# - 1100-RECEIVE-MAP moves the 39 to ACUP-NEW-CUST-DOB-DAY
+#   [app/cbl/COACTUPC.cbl:1270-1275].
+# - 1205-COMPARE-OLD-NEW sets CHANGE-HAS-OCCURRED at the account test, which
+#   is false because its group-id term compares the LOW-VALUES of the blank
+#   Account Group with the fetched spaces (TRIM removes spaces only,
+#   GAP-DEF-019), and exits before the customer fields are compared: the date
+#   of birth 19610639 would differ from the fetched 19610608 as well, but that
+#   comparison is not reached. So 1200-EDIT-MAP-INPUTS sets
+#   ACUP-CHANGES-NOT-OK and runs the field edits in screen order
+#   [app/cbl/COACTUPC.cbl:1213-1218,1460-1470,1697-1704,3847].
+# - Account Status, Open Date, Credit Limit, Expiry Date, Cash Credit Limit,
+#   Reissue Date, Current Balance, the cycle credit and debit limits and SSN
+#   123-45-6789 pass on the fetched and invented values, so WS-RETURN-MSG is
+#   still off when the Date of Birth edit runs [app/cbl/COACTUPC.cbl:1472-1531].
+# - EDIT-DATE-CCYYMMDD for Date of Birth 19610639: year 1961 (century 19) and
+#   month 06 pass. In EDIT-DAY, TEST-NUMVAL of '39' is 0, so the numeric check
+#   passes and WS-EDIT-DATE-DD-N is 39; WS-VALID-DAY (1 through 31) fails, so
+#   INPUT-ERROR and FLG-DAY-NOT-OK are set and the trimmed field name and
+#   ':day must be a number between 1 and 31.' are STRINGed into WS-RETURN-MSG
+#   [app/cbl/COACTUPC.cbl:1533-1538] [app/cpy/CSUTLDPY.cpy:170-199].
+# - EDIT-DAY-MONTH-YEAR finds no 31st, 30th or 29th to check; the date flags
+#   are not all valid, so it leaves for EDIT-DATE-CCYYMMDD-EXIT and CSUTLDTC is
+#   not called for this date [app/cpy/CSUTLDPY.cpy:209-278]. The flags moved to
+#   WS-EDIT-DT-OF-BIRTH-FLGS are not WS-EDIT-DT-OF-BIRTH-ISVALID, so
+#   EDIT-DATE-OF-BIRTH, the future-date check, does not run
+#   [app/cbl/COACTUPC.cbl:216-230,1538-1543].
+# - The later edits pass on the invented customer below, and an edit writes its
+#   message only while WS-RETURN-MSG-OFF holds, so this message stays
+#   [app/cbl/COACTUPC.cbl:1545-1676].
+# - INPUT-ERROR leaves ACUP-CHANGES-NOT-OK, which 2000-DECIDE-ACTION only
+#   continues on: no READ UPDATE or REWRITE runs [app/cbl/COACTUPC.cbl:2596-2597].
+# - 3203-SHOW-UPDATED-VALUES shows the received values, 39 included, with the
+#   valid amounts re-edited through +ZZZ,ZZZ,ZZZ.99; 3250-SETUP-INFOMSG sets
+#   PROMPT-FOR-CHANGES and moves WS-RETURN-MSG to ERRMSG; 3300 keeps the fields
+#   editable, puts the cursor on DOBDAY and CSSETATY turns it red (no '*', the
+#   field is not blank); 3390 makes F12=Cancel bright, while F5=Save stays dark
+#   without a confirmation prompt [app/cbl/COACTUPC.cbl:2870-2951,2955-2981,
+#   3097-3100,3328-3331,3566-3581] [app/cpy/CSSETATY.cpy].
+#
+# Expected values are derived from the source (no TPE region runs in CI):
+# - ERRMSG is 'Date of Birth' (the trimmed X(25) WS-EDIT-VARIABLE-NAME) and
+#   ':day must be a number between 1 and 31.', 52 characters, in the 75-byte
+#   WS-RETURN-MSG and the 78-byte ERRMSGO. The numeric-day predicate
+#   (INV-ACT-136) composes the same text; '39' is numeric and reaches the range
+#   check, which is the item this scenario verifies.
+# - Screen fields are compared at their full BMS length, trailing spaces kept.
+#   FKEY05 is dark (ASKIP,DRK) and the s3270 capture renders it as blanks.
+# - The tpe adapter enters a field with EraseEOF before typing; DOBDAY is two
+#   bytes, so '39' fills it.
+# - CURDATE and CURTIME come from the region clock, hence the matchers and
+#   clock_mode relative.
+#
+# Customer 000000001 is replaced by invented data that passes every other
+# COACTUPC edit: the repository record has FICO 274, below 300, and zip 12546,
+# which is not a North Carolina zip [app/cbl/COACTUPC.cbl:2514-2558]. Area code
+# 919 is a general-purpose code and NC27 a valid state and zip pair
+# [app/cpy/CSLKPCDY.cpy:521,895,1186]. Account 00000000001 and its
+# cross-reference stay as in the repository.
+id: ACT-COACTUPC-negative-079
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, chooses main-menu option 2 (Account Update), fetches
+  account 00000000001 with its customer 000000001, changes the date-of-birth
+  day from 08 to 39 and presses ENTER. COACTUPC refuses the value: the message
+  line shows 'Date of Birth:day must be a number between 1 and 31.', the screen
+  keeps the entered values, 39 included, editable under 'Update account details
+  presented above.', and F12=Cancel is shown while F5=Save is not. Nothing is
+  saved: ACCTDATA and CUSTDATA still hold the fetched records.
+# Primary item first, then the program, the maps asserted, the transaction of
+# steps 3 and 4, the CSD files COACTUPC reads, and the online-only copybooks it
+# copies. Sign-on (CC00, COSGN00, USRSEC) and the menu transaction are
+# verified by the SEC and MNU scenarios; the batch record copybooks and the
+# data files are verified at the lowest level that executes them.
+inventory_ids:
+- INV-ACT-137  # COACTUPC Date of Birth: day 1-31 (EDIT-DAY field edit)
+- INV-ACT-002  # COACTUPC program
+- INV-MNU-003  # COMEN01 map, where option 2 is entered
+- INV-ACT-004  # COACTUP map, the search, detail and refused-change screens
+- INV-CFG-009  # CAUP transaction, which runs the fetch and the edits
+- INV-CFG-006  # CXACAIX CSD file: card cross-reference by account id
+- INV-CFG-001  # ACCTDAT CSD file: account master read
+- INV-CFG-005  # CUSTDAT CSD file: customer master read
+- INV-LAY-002  # COCOM01Y: the COMMAREA carrying the context and ids
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-007  # CSLKPCDY: the area-code and state/zip lookups the later edits pass
+- INV-LAY-008  # CSMSG01Y, copied by COACTUPC
+- INV-LAY-009  # CSMSG02Y: abend data, copied by COACTUPC
+- INV-LAY-010  # CSSETATY: the error attribute set on DOBDAY
+- INV-LAY-011  # CSSTRPFY: the AID mapping that selects the ENTER path
+- INV-LAY-013  # CSUTLDPY: EDIT-DAY, which refuses the day, and the other date edits
+- INV-LAY-014  # CSUTLDWY: WS-VALID-DAY and the date-edit work areas
+- INV-LAY-019  # CVCRD01Y: CC-ACCT-ID and the AID flags
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-005  # ACT end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+# The UniKix CSUTLDPY tests the day with IS NUMERIC and drops FUNCTION TRIM from
+# the field name of every date-edit message, so the ERRMSG of screen 4 differs
+# on UniKix.
+- GAP-DOC-024
+# The Open, Expiry and Reissue Date edits before the Date of Birth pass only if
+# CEEDAYS, called through CSUTLDTC, accepts 20141120, 20250520 and 20250520,
+# which no run has observed; otherwise an earlier date message would stand.
+- GAP-INF-001
+# The UniKix COACTUPC changes the amount receive and edits that the credit and
+# cash limits, the balance and the cycle limits pass through before the Date
+# of Birth edit, and that screen 4 re-edits.
+- GAP-DOC-022
+# The UniKix COACTUP.bms differs at row 1, columns 1-9, where TRNNAME stands.
+- GAP-DOC-025
+preconditions:
+  datasets:
+    ACCTDATA: {base: ACCTDATA}
+    CARDXREF: {base: CARDXREF}
+    # Customer 000000001 replaced by invented data, as in the other COACTUPC
+    # scenarios; the 168-byte FILLER keeps the repository record's spaces.
+    CUSTDATA:
+      base: CUSTDATA
+      records:
+      - CUST-ID: '000000001'
+        CUST-FIRST-NAME: Testfirst
+        CUST-MIDDLE-NAME: Testmiddle
+        CUST-LAST-NAME: Testlast
+        CUST-ADDR-LINE-1: 100 Test Street
+        CUST-ADDR-LINE-2: Suite 1
+        CUST-ADDR-LINE-3: Raleigh
+        CUST-ADDR-STATE-CD: NC
+        CUST-ADDR-COUNTRY-CD: USA
+        CUST-ADDR-ZIP: '27601'
+        CUST-PHONE-NUM-1: (919)555-0101
+        CUST-PHONE-NUM-2: (919)555-0102
+        CUST-SSN: '123456789'
+        CUST-GOVT-ISSUED-ID: TESTGOVT0001
+        CUST-DOB-YYYY-MM-DD: '1961-06-08'
+        CUST-EFT-ACCOUNT-ID: '0053581756'
+        CUST-PRI-CARD-HOLDER-IND: Y
+        CUST-FICO-CREDIT-SCORE: '700'
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+# PASSWORD is the documented demo password of README.md, not a secret.
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '2'
+  - aid: ENTER
+    '@map': COACTUP
+    fields:
+      ACCTSID: '00000000001'
+  - aid: ENTER
+    '@map': COACTUP
+    fields:
+      DOBDAY: '39'
+expected:
+  screens:
+  # One entry per step, each the screen the step ends on.
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN002: '02. Account Update                      '
+    ERRMSG: '                                                                              '
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    PGMNAME: COACTUPC
+    ACCTSID: '           '
+    INFOMSG: 'Enter or update id of account to update      '
+    ERRMSG: '                                                                              '
+  # The fetched account and customer, editable, with the change prompt.
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COACTUPC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000001'
+    ACSTTUS: 'Y'
+    OPNYEAR: '2014'
+    OPNMON: '11'
+    OPNDAY: '20'
+    ACRDLIM: '+      2,020.00'
+    EXPYEAR: '2025'
+    EXPMON: '05'
+    EXPDAY: '20'
+    ACSHLIM: '+      1,020.00'
+    RISYEAR: '2025'
+    RISMON: '05'
+    RISDAY: '20'
+    ACURBAL: '+        194.00'
+    ACRCYCR: '+           .00'
+    AADDGRP: '          '
+    ACRCYDB: '+           .00'
+    ACSTNUM: '000000001'
+    ACTSSN1: '123'
+    ACTSSN2: '45'
+    ACTSSN3: '6789'
+    DOBYEAR: '1961'
+    DOBMON: '06'
+    DOBDAY: '08'
+    ACSTFCO: '700'
+    ACSFNAM: 'Testfirst                '
+    ACSMNAM: 'Testmiddle               '
+    ACSLNAM: 'Testlast                 '
+    ACSADL1: '100 Test Street                                   '
+    ACSSTTE: 'NC'
+    ACSADL2: 'Suite 1                                           '
+    ACSZIPC: '27601'
+    ACSCITY: 'Raleigh                                           '
+    ACSCTRY: 'USA'
+    ACSPH1A: '919'
+    ACSPH1B: '555'
+    ACSPH1C: '0101'
+    ACSGOVT: 'TESTGOVT0001        '
+    ACSPH2A: '919'
+    ACSPH2B: '555'
+    ACSPH2C: '0102'
+    ACSEFTC: '0053581756'
+    ACSPFLG: 'Y'
+    INFOMSG: 'Update account details presented above.      '
+    ERRMSG: '                                                                              '
+    FKEYS: 'ENTER=Process F3=Exit'
+    FKEY05: '       '
+    FKEY12: '          '
+  # The refused change: the entered 39 kept, every field still editable, the
+  # change prompt again and the Date of Birth message; F12=Cancel shown,
+  # F5=Save dark.
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COACTUPC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000001'
+    ACSTTUS: 'Y'
+    OPNYEAR: '2014'
+    OPNMON: '11'
+    OPNDAY: '20'
+    ACRDLIM: '+      2,020.00'
+    EXPYEAR: '2025'
+    EXPMON: '05'
+    EXPDAY: '20'
+    ACSHLIM: '+      1,020.00'
+    RISYEAR: '2025'
+    RISMON: '05'
+    RISDAY: '20'
+    ACURBAL: '+        194.00'
+    ACRCYCR: '+           .00'
+    AADDGRP: '          '
+    ACRCYDB: '+           .00'
+    ACSTNUM: '000000001'
+    ACTSSN1: '123'
+    ACTSSN2: '45'
+    ACTSSN3: '6789'
+    DOBYEAR: '1961'
+    DOBMON: '06'
+    DOBDAY: '39'
+    ACSTFCO: '700'
+    ACSFNAM: 'Testfirst                '
+    ACSMNAM: 'Testmiddle               '
+    ACSLNAM: 'Testlast                 '
+    ACSADL1: '100 Test Street                                   '
+    ACSSTTE: 'NC'
+    ACSADL2: 'Suite 1                                           '
+    ACSZIPC: '27601'
+    ACSCITY: 'Raleigh                                           '
+    ACSCTRY: 'USA'
+    ACSPH1A: '919'
+    ACSPH1B: '555'
+    ACSPH1C: '0101'
+    ACSGOVT: 'TESTGOVT0001        '
+    ACSPH2A: '919'
+    ACSPH2B: '555'
+    ACSPH2C: '0102'
+    ACSEFTC: '0053581756'
+    ACSPFLG: 'Y'
+    INFOMSG: 'Update account details presented above.      '
+    ERRMSG: 'Date of Birth:day must be a number between 1 and 31.                          '
+    FKEYS: 'ENTER=Process F3=Exit'
+    FKEY05: '       '
+    FKEY12: 'F12=Cancel'
+  # The refused change writes nothing: both files keep their 50 records, and
+  # account 00000000001 and customer 000000001 are as fetched, the date of
+  # birth still 1961-06-08.
+  file_state:
+    ACCTDATA:
+      count: 50
+      contains:
+      - ACCT-ID: '1'
+        ACCT-ACTIVE-STATUS: 'Y'
+        ACCT-CURR-BAL: '194.00'
+        ACCT-CREDIT-LIMIT: '2020.00'
+        ACCT-CASH-CREDIT-LIMIT: '1020.00'
+        ACCT-OPEN-DATE: '2014-11-20'
+        ACCT-EXPIRAION-DATE: '2025-05-20'
+        ACCT-REISSUE-DATE: '2025-05-20'
+        ACCT-CURR-CYC-CREDIT: '0.00'
+        ACCT-CURR-CYC-DEBIT: '0.00'
+        ACCT-GROUP-ID: '          '
+    CUSTDATA:
+      count: 50
+      contains:
+      - CUST-ID: '1'
+        CUST-FIRST-NAME: 'Testfirst                '
+        CUST-MIDDLE-NAME: 'Testmiddle               '
+        CUST-LAST-NAME: 'Testlast                 '
+        CUST-ADDR-LINE-1: '100 Test Street                                   '
+        CUST-ADDR-LINE-2: 'Suite 1                                           '
+        CUST-ADDR-LINE-3: 'Raleigh                                           '
+        CUST-ADDR-STATE-CD: 'NC'
+        CUST-ADDR-COUNTRY-CD: 'USA'
+        CUST-ADDR-ZIP: '27601     '
+        CUST-PHONE-NUM-1: '(919)555-0101  '
+        CUST-PHONE-NUM-2: '(919)555-0102  '
+        CUST-SSN: '123456789'
+        CUST-GOVT-ISSUED-ID: 'TESTGOVT0001        '
+        CUST-DOB-YYYY-MM-DD: '1961-06-08'
+        CUST-EFT-ACCOUNT-ID: '0053581756'
+        CUST-PRI-CARD-HOLDER-IND: 'Y'
+        CUST-FICO-CREDIT-SCORE: '700'

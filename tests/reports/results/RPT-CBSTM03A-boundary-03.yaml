@@ -1,0 +1,37 @@
+adapter: gnucobol-batch
+baseline_version: 1.0.0
+decoded:
+  datasets:
+    HTMLFILE: []
+    STMTFILE: []
+  messages:
+  - 'Running JCL : CREASTMT Step STEP040 '
+  - 'DD Names from TIOT: '
+  - ': STEPLIB  -- valid UCB'
+  - ': SYSPRINT -- valid UCB'
+  - ': SYSOUT   -- valid UCB'
+  - ': TRNXFILE -- valid UCB'
+  - ': XREFFILE -- valid UCB'
+  - ': ACCTFILE -- valid UCB'
+  - ': CUSTFILE -- valid UCB'
+  - ': STMTFILE -- valid UCB'
+  - ': HTMLFILE -- valid UCB'
+  return_code: 0
+evidence_path: tests/reports/results/RPT-CBSTM03A-boundary-03.yaml
+execution_fingerprint: 22eb44ca56b646e9e86097f5bb52c67e0c82b5c7821e960a0a725d051f97d622
+execution_id: gnucobol-batch-eebc6712b8c80214
+gap_id: null
+reason: null
+scenario_digest: 23082ce9b278b5909c3c812046eba71fbf33bf86d898ab203523cdf733800f19
+scenario_id: RPT-CBSTM03A-boundary-03
+source_identity:
+  commit: ce9f6aff53f0ac819039927a2edff31f10f77b06
+  tree: app
+  units:
+    app/cbl/CBSTM03A.CBL: 54210164f798c7b38609400d846d4b03f46da2c67cdf69e968951cfc3e8caf3e
+    app/cbl/CBSTM03B.CBL: c183707f0dae0b5e9387373fc3624f0462ad95ccbbb6c8a34167591e206bcbf8
+    app/cpy/COSTM01.CPY: 660aa12a59dc411cf9e9b5ab2deb7b097802f73e4269518b7cea74d8f8e9df5c
+    app/cpy/CUSTREC.cpy: f87a0a041fbd8f38dc9c23a9519b917af9c7008527e9cb924f91c2fb4e0a2ecc
+    app/cpy/CVACT01Y.cpy: 81a08bad15af5664326a6f0af3650f570821c4857ffdec3a6a39f91f07dca728
+    app/cpy/CVACT03Y.cpy: ffc6079e09b28739e154bf6c1e1c36d408209faa91f6cf7008078dc596a1c370
+status: passed

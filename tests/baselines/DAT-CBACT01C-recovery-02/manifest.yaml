@@ -1,0 +1,10 @@
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: derived
+source_commit: ae9cb473e65a42d2da3b5c323ecb29cae395d7b6
+source_identity:
+  commit: ae9cb473e65a42d2da3b5c323ecb29cae395d7b6
+  tree: app
+  units:
+    app/cbl/CBACT01C.cbl: 426cf9bd190b777104bb964e9d5a2929197ed7621f8b334f229ef12e60e63966
+    app/cpy/CVACT01Y.cpy: 81a08bad15af5664326a6f0af3650f570821c4857ffdec3a6a39f91f07dca728

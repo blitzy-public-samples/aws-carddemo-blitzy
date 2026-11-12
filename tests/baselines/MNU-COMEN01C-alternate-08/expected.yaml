@@ -1,0 +1,5 @@
+screens:
+- '@map': COMEN01
+- '@map': COTRN02
+  PGMNAME: COTRN02C
+  TRNNAME: CT02

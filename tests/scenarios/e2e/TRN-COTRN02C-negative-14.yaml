@@ -1,0 +1,156 @@
+# COTRN02C refuses a transaction whose Merchant ID is blank with 'Merchant ID
+# can NOT be empty...'. Eighth of the TRN-COTRN02C empty-field series
+# (negative-07 Type CD through negative-17 Merchant Zip): step 3 enters the
+# series' valid field set with MID alone left blank.
+#
+# Steps 1-2 reach the empty Add Transaction screen: USER0001 (type U) is routed
+# to COMEN01C, and option 8 transfers control to COTRN02C, which sends COTRN02
+# with a blank ERRMSG [app/cbl/COSGN00C.cbl:230-237]
+# [app/cbl/COMEN01C.cbl:115-156] [app/cbl/COTRN02C.cbl:115-130,516-528].
+# Step 3 presses ENTER under CT02 [app/cbl/COTRN02C.cbl:131-135,530-534]:
+# - VALIDATE-INPUT-KEY-FIELDS takes the card branch: ACTIDIN is blank, the card
+#   number is numeric and goes back to CARDNIN through WS-CARD-NUM-N PIC 9(16),
+#   and READ CCXREF by card is NORMAL, so XREF-ACCT-ID 00000000050 (record 1 of
+#   the CARDXREF fixture) is moved to ACTIDIN [app/cbl/COTRN02C.cbl:210-223,
+#   609-637].
+# - The error flag is still off, so VALIDATE-INPUT-DATA-FIELDS keeps the input
+#   and evaluates the empty checks in screen order: Type CD to Proc Date are
+#   supplied, MIDI is spaces or low-values, so 'Merchant ID can NOT be
+#   empty...' goes to WS-MESSAGE, the cursor to MID, and SEND-TRNADD-SCREEN
+#   sends COTRN02 with ERASE and RETURNs TRANSID CT02
+#   [app/cbl/COTRN02C.cbl:235-299,516-534]. The later checks, the CSUTLDTC
+#   calls and ADD-TRANSACTION never run, so TRANSACT is neither browsed nor
+#   written.
+# COTRN2AO redefines COTRN2AI, so every entry field is sent back as received:
+# Acct # and Card # as the key validation set them, the data fields as entered,
+# padded with blanks by BMS. MID and CONFIRM were sent no data, so they come
+# back blank.
+# Text fields are compared at their full BMS length with trailing spaces:
+# ERRMSG is 78 bytes, the message padded from the 80-byte WS-MESSAGE.
+# CURDATE and CURTIME come from the region clock, so they are matchers and the
+# clock is relative.
+id: TRN-COTRN02C-negative-14
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, chooses main-menu option 8 (Transaction Add) and enters a
+  transaction for repository card 0500024453765740 with every field supplied
+  except Merchant ID. COTRN02C resolves the card to account 00000000050 through
+  CCXREF, then refuses the entry with 'Merchant ID can NOT be empty...' on
+  COTRN02; no transaction is written.
+# Primary item first, then the program, the maps asserted, the transaction step
+# 3 runs under, the CSD file COTRN02C reads, and the online-only copybooks it
+# copies. Sign-on and the menu (CC00, CM00, COSGN00, USRSEC, the option-8
+# navigation) are verified by the SEC and MNU scenarios. The TRANSACT CSD file
+# is not listed: this path issues no command against it, and file_state asserts
+# only its data.
+inventory_ids:
+- INV-TRN-043  # COTRN02C message 'Merchant ID can NOT be empty...'
+- INV-TRN-003  # COTRN02C program
+- INV-MNU-003  # COMEN01 map, where option 8 is entered
+- INV-TRN-006  # COTRN02 map, the add screen of steps 2 and 3
+- INV-CFG-022  # CT02 transaction, under which COTRN02C receives the entry
+- INV-CFG-004  # CCXREF CSD file, read by card number
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carrying the program context
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the screen date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COTRN02C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-007  # TRN end-to-end baselines derived, never observed on a TPE region
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    CARDXREF: {base: CARDXREF}
+    # The logical TRANSACT holds no repository data of its own, so it is built
+    # from the 300 repository daily transactions, the same 350-byte TRAN-RECORD
+    # shape, as in the other TRN-COTRN02C scenarios.
+    TRANSACT: {base: DALYTRAN}
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '8'
+  # The valid field set of the series, with MID left blank.
+  - aid: ENTER
+    '@map': COTRN02
+    fields:
+      CARDNIN: '0500024453765740'
+      TTYPCD: '01'
+      TCATCD: '0001'
+      TRNSRC: 'POS TERM'
+      TDESC: 'Test purchase'
+      TRNAMT: '+00000012.34'
+      TORIGDT: '2022-07-01'
+      TPROCDT: '2022-07-01'
+      MID: ''
+      MNAME: 'Test Merchant'
+      MCITY: 'Testville'
+      MZIP: '27601'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: 'CM00'
+    PGMNAME: 'COMEN01C'
+  - '@map': COTRN02
+    TRNNAME: 'CT02'
+    PGMNAME: 'COTRN02C'
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: 'CT02'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COTRN02C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACTIDIN: '00000000050'
+    CARDNIN: '0500024453765740'
+    TTYPCD: '01'
+    TCATCD: '0001'
+    TRNSRC: 'POS TERM  '
+    TDESC: 'Test purchase                                               '
+    TRNAMT: '+00000012.34'
+    TORIGDT: '2022-07-01'
+    TPROCDT: '2022-07-01'
+    MID: '         '
+    MNAME: 'Test Merchant                 '
+    MCITY: 'Testville                '
+    MZIP: '27601     '
+    CONFIRM: ' '
+    ERRMSG: 'Merchant ID can NOT be empty...                                               '
+  # The ERRMSG of each step: the menu and the empty add screen carry none.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Merchant ID can NOT be empty...                                               '
+  file_state:
+    # No record is written: the 300 fixture records remain, and the highest of
+    # them, the last key in TRANSACT, is unchanged.
+    TRANSACT:
+      count: 300
+      contains:
+      - TRAN-ID: '0000000996722787'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: 'POS TERM  '
+        TRAN-DESC: 'Purchase at Kilback LLC                                                                             '
+        TRAN-AMT: '603.22'
+        TRAN-MERCHANT-ID: '800000000'
+        TRAN-MERCHANT-NAME: 'Kilback LLC                                       '
+        TRAN-MERCHANT-CITY: 'Cummeratamouth                                    '
+        TRAN-MERCHANT-ZIP: '53200-7529'
+        TRAN-CARD-NUM: '3260763612337560'
+        TRAN-ORIG-TS: '2022-06-10 19:27:53.000000'
+        TRAN-PROC-TS: '                          '

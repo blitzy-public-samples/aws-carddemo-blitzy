@@ -1,0 +1,127 @@
+# Derived baseline of scenario ACT-COACTUPC-normal-01: USER0001 signs on,
+# takes main menu option 2 'Account Update' and fetches account 00000000001
+# on COACTUP. Authored from the source, never captured:
+# app/cbl/COSGN00C.cbl:225-237 (type U routed to COMEN01C),
+# app/cbl/COMEN01C.cbl:145-155,236-252 (the option text, and the XCTL to
+# COACTUPC with CDEMO-FROM-PROGRAM COMEN01C and CDEMO-PGM-CONTEXT 0) and
+# app/cbl/COACTUPC.cbl:880-886,964-1003,1039-1062,1429-1446,1783-1818,
+# 2568-2580,2668-2865,2955-2981,3566-3584,3608-3885 with app/bms/COACTUP.bms.
+# Open until a UniKix run is imported: GAP-INF-005 (derived ACT end-to-end
+# baselines) and GAP-INF-012 (online-only copybooks).
+# One screen per step, each the one shown after the step's AID:
+# 1. the main menu COMEN01 after sign-on, with option 2's text;
+# 2. COACTUP on fresh entry: 3200-SETUP-SCREEN-VARS does nothing on
+#    CDEMO-PGM-ENTER, so ACCTSID stays LOW-VALUES (captured as spaces), and
+#    no '*' is set because CDEMO-PGM-REENTER is set only after the send
+#    [app/cbl/COACTUPC.cbl:968-971,3180-3184]; INFOMSG prompts for the id;
+# 3. the fetch: 9000-READ-ACCT reads CXACAIX (card 9680294154603697,
+#    customer 000000001), ACCTDAT and CUSTDAT, and 3202-SHOW-ORIGINAL-VALUES
+#    shows the stored values: amounts through PIC +ZZZ,ZZZ,ZZZ.99
+#    [app/cbl/COACTUPC.cbl:371], dates split into year, month and day, the
+#    SSN into 3/2/4 digits, each phone '(aaa)bbb-cccc' as (2:3), (6:3) and
+#    (10:4), and the first 5 bytes of the 10-byte CUST-ADDR-ZIP. The account
+#    is acctdata.txt record 1; the customer is the scenario's invented
+#    CUSTDATA record.
+#
+# INFOMSG of step 3. The scenario's primary item, FOUND-ACCOUNT-DATA 'Details
+# of selected account shown above' [app/cbl/COACTUPC.cbl:466-467], is set only
+# in 1200-EDIT-MAP-INPUTS once details have been fetched [app/cbl/COACTUPC.cbl:1452],
+# that is on a later ENTER, never on this fetch. Before every send,
+# 3250-SETUP-INFOMSG sets WS-INFO-MSG for every ACUP-CHANGE-ACTION value
+# [app/cbl/COACTUPC.cbl:654-668,2957-2977] and moves it to INFOMSG
+# [app/cbl/COACTUPC.cbl:2979]; the 3300 cursor test that reads FOUND-ACCOUNT-DATA
+# runs after it [app/cbl/COACTUPC.cbl:3010]. The literal therefore never reaches
+# the screen, and this baseline pins PROMPT-FOR-CHANGES 'Update account details
+# presented above.' [app/cbl/COACTUPC.cbl:470-471], the 40-byte WS-INFO-MSG in
+# the 45-byte field. The scenario's inline expectation agrees, and the scenario
+# carries observed-only with GAP-UNC-014, the register's entry for messages
+# that are set but never shown (GAP-UNC-013 covers only conditions never set
+# or tested). A UniKix import either confirms this value (MINOR promotion) or
+# replaces it (MAJOR bump with an uncertain-purpose entry).
+#
+# Values are whole BMS fields with their trailing spaces.
+# - ERRMSG is the blank 75-byte WS-RETURN-MSG in the 78-byte field.
+# - AADDGRP is 10 spaces: ACCT-GROUP-ID is blank in every acctdata.txt
+#   record, whose group id sits in ACCT-ADDR-ZIP, which COACTUPC never shows
+#   (GAP-DEF-005).
+# - TRNNAME CAUP is 3100-SCREEN-INIT's MOVE of LIT-THISTRANID
+#   [app/cbl/COACTUPC.cbl:2675]. The app/ map also defines an unnamed
+#   DFHMDF LENGTH=9,POS=(1,1) after INFOMSG [app/bms/COACTUP.bms:487-488],
+#   over 'Tran:' and TRNNAME; the UniKix copy drops it (GAP-DOC-025), so a
+#   UniKix record never verifies the items behind that difference.
+# - FKEY05 'F5=Save' and FKEY12 'F12=Cancel' keep their DRK attribute, since
+#   3390-SETUP-INFOMSG-ATTRS brightens them only for changes made or a
+#   confirmation prompt [app/cbl/COACTUPC.cbl:3566-3584]; the screen capture
+#   shows a zero-intensity field as blanks.
+# - CURDATE and CURTIME come from the run clock, which UniKix cannot fix,
+#   hence the matchers.
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  OPTN002: '02. Account Update                      '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COACTUP
+  ACCTSID: '           '
+  ERRMSG: '                                                                              '
+  INFOMSG: 'Enter or update id of account to update      '
+  PGMNAME: COACTUPC
+  TRNNAME: CAUP
+- '@map': COACTUP
+  AADDGRP: '          '
+  ACCTSID: '00000000001'
+  ACRCYCR: +           .00
+  ACRCYDB: +           .00
+  ACRDLIM: +      2,020.00
+  ACSADL1: '100 Test Street                                   '
+  ACSADL2: 'Suite 1                                           '
+  ACSCITY: 'Raleigh                                           '
+  ACSCTRY: USA
+  ACSEFTC: 0053581756
+  ACSFNAM: 'Testfirst                '
+  ACSGOVT: 'TESTGOVT0001        '
+  ACSHLIM: +      1,020.00
+  ACSLNAM: 'Testlast                 '
+  ACSMNAM: 'Testmiddle               '
+  ACSPFLG: Y
+  ACSPH1A: '919'
+  ACSPH1B: '555'
+  ACSPH1C: '0101'
+  ACSPH2A: '919'
+  ACSPH2B: '555'
+  ACSPH2C: '0102'
+  ACSSTTE: NC
+  ACSTFCO: '700'
+  ACSTNUM: '000000001'
+  ACSTTUS: Y
+  ACSZIPC: '27601'
+  ACTSSN1: '123'
+  ACTSSN2: '45'
+  ACTSSN3: '6789'
+  ACURBAL: +        194.00
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  DOBDAY: 08
+  DOBMON: '06'
+  DOBYEAR: '1961'
+  ERRMSG: '                                                                              '
+  EXPDAY: '20'
+  EXPMON: '05'
+  EXPYEAR: '2025'
+  FKEY05: '       '
+  FKEY12: '          '
+  FKEYS: ENTER=Process F3=Exit
+  INFOMSG: 'Update account details presented above.      '
+  OPNDAY: '20'
+  OPNMON: '11'
+  OPNYEAR: '2014'
+  PGMNAME: COACTUPC
+  RISDAY: '20'
+  RISMON: '05'
+  RISYEAR: '2025'
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CAUP

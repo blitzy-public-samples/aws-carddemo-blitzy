@@ -1,0 +1,73 @@
+# ADMIN001 signs on with a wrong password. COSGN00C upper-cases the entered user
+# id and password [app/cbl/COSGN00C.cbl:132-136], reads USRSEC by the user id
+# [app/cbl/COSGN00C.cbl:211-219] and, with RESP 0 but SEC-USR-PWD not equal to the
+# entered password, moves 'Wrong Password. Try again ...' to WS-MESSAGE, puts the
+# cursor on the password and sends the sign-on map again
+# [app/cbl/COSGN00C.cbl:222-245]. No XCTL is issued, so nobody is signed on and the
+# screen stays COSGN00; RETURN TRANSID(CC00) keeps the transaction pseudo-
+# conversational [app/cbl/COSGN00C.cbl:98-102].
+#
+# The password WRONGPWD is invented. It differs from ADMIN001's password PASSWORD
+# [app/jcl/DUSRSECJ.jcl:35] after upper-casing as well, so the case folding cannot
+# turn it into a match (a lower-case 'password' would sign on).
+#
+# Expected values are derived from the source (no TPE region runs in CI):
+# - ERRMSG is the 78-byte ERRMSGO, so the 29-character message is followed by 49
+#   spaces (WS-MESSAGE X(80) moved to X(78)); comparisons never trim.
+# - USERID shows the id as entered, because COSGN0AO redefines the received
+#   COSGN0AI [app/cpy-bms/COSGN00.CPY:85]. PASSWD is a dark (DRK) field and is
+#   not asserted; APPLID and SYSID come from EXEC CICS ASSIGN and are platform
+#   values, so they are not asserted either.
+# - The header fields are POPULATE-HEADER-INFO's [app/cbl/COSGN00C.cbl:177-204]:
+#   the COTTL01Y titles, CC00, COSGN00C, CURDATE as mm/dd/yy of the run date, and
+#   CURTIME as hh:mm:ss moved into the 9-byte CURTIMEO, hence its trailing space.
+id: SEC-COSGN00C-negative-03
+level: e2e
+type: negative
+description: >-
+  ADMIN001 enters transaction CC00 and signs on with the invented wrong password
+  WRONGPWD. COSGN00C finds the user in USRSEC, the password does not match, and the
+  sign-on screen COSGN00 is sent again with 'Wrong Password. Try again ...' in ERRMSG
+  and the entered user id kept; no menu is reached.
+inventory_ids:
+- INV-SEC-007  # COSGN00C message 'Wrong Password. Try again ...' (rule)
+- INV-SEC-001  # COSGN00C program
+- INV-SEC-002  # COSGN00 map
+- INV-CFG-016  # CC00 transaction
+- INV-CFG-008  # USRSEC CSD file, read by user id
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA returned with TRANSID CC00
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the screen date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COSGN00C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-002  # derived sign-on e2e baselines
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    '@map': COSGN00
+    aid: ENTER
+    fields:
+      USERID: ADMIN001
+      PASSWD: WRONGPWD
+expected:
+  screens:
+  - '@map': COSGN00
+    TRNNAME: CC00
+    PGMNAME: COSGN00C
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time, format: '%H:%M:%S '}
+    USERID: ADMIN001
+    ERRMSG: 'Wrong Password. Try again ...                                                 '
+  messages:
+  - 'Wrong Password. Try again ...                                                 '

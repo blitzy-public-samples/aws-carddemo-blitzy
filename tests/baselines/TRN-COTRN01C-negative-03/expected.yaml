@@ -1,0 +1,65 @@
+# Derived baseline of scenario TRN-COTRN01C-negative-03 (capture_platform:
+# derived): authored from the app/ source, not observed, because no TPE region
+# runs in CI. Open until a UniKix run is imported: GAP-INF-007 (derived TRN
+# end-to-end baselines) and GAP-INF-012 (online-only copybooks).
+# One screen per step, the one shown after the step's AID:
+# 1. USER0001 (type U) signs on through CC00 and COSGN00C transfers to
+#    COMEN01C [app/cbl/COSGN00C.cbl:232-237], whose first entry sends the main
+#    menu with a blank message. OPTN007 is the STRING of option number 7, '. '
+#    and 'Transaction View' into the 40-byte WS-MENU-OPT-TXT
+#    [app/cbl/COMEN01C.cbl:236-250] [app/cpy/COMEN02Y.cpy:61-65].
+# 2. Option 7 XCTLs to COTRN01C with CDEMO-PGM-CONTEXT zero
+#    [app/cbl/COMEN01C.cbl:127-155]. CDEMO-CT01-TRN-SELECTED is blank, so
+#    COTRN01C clears COTRN1AO to LOW-VALUES, reads nothing and sends COTRN01
+#    with a blank message [app/cbl/COTRN01C.cbl:94-109,213-225]; the capture
+#    shows nulls as spaces.
+# 3. ENTER with TRNIDIN 9999999999999999: PROCESS-ENTER-KEY moves SPACES to
+#    the thirteen detail fields and reads TRANSACT by that id with UPDATE
+#    [app/cbl/COTRN01C.cbl:144-174]. TRANSACT, built from the repository's
+#    daily transactions, holds no such id, so the READ answers NOTFND: the
+#    error flag is set, 'Transaction ID NOT found...' goes to WS-MESSAGE and
+#    the screen is sent again [app/cbl/COTRN01C.cbl:267-288]. The error flag
+#    skips the moves of the record into the screen, so the detail fields stay
+#    blank and TRNIDIN keeps the entered id. Nothing is locked or written, so
+#    no file_state is asserted.
+# Values are full BMS field width with trailing spaces kept [app/bms/COTRN01.bms]:
+# ERRMSG is the first 78 bytes of the 80-byte WS-MESSAGE, TITLE01 and TITLE02
+# the COTTL01Y titles. CURDATE and CURTIME come from the region clock, which
+# UniKix cannot fix, so they are matchers judged against the run date.
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  OPTN007: '07. Transaction View                    '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COTRN01
+  ERRMSG: '                                                                              '
+  PGMNAME: COTRN01C
+  TRNIDIN: '                '
+  TRNNAME: CT01
+- '@map': COTRN01
+  CARDNUM: '                '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    format: '%H:%M:%S'
+    match: run-time
+  ERRMSG: 'Transaction ID NOT found...                                                   '
+  MCITY: '                         '
+  MID: '         '
+  MNAME: '                              '
+  MZIP: '          '
+  PGMNAME: COTRN01C
+  TCATCD: '    '
+  TDESC: '                                                            '
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TORIGDT: '          '
+  TPROCDT: '          '
+  TRNAMT: '            '
+  TRNID: '                '
+  TRNIDIN: '9999999999999999'
+  TRNNAME: CT01
+  TRNSRC: '          '
+  TTYPCD: '  '

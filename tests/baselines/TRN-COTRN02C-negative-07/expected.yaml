@@ -1,0 +1,96 @@
+# Derived baseline of scenario TRN-COTRN02C-negative-07 (capture_platform
+# derived, tag inferred-not-observed): USER0001 signs on, takes main-menu
+# option 8 (Transaction Add) and enters a valid transaction by card number
+# 0500024453765740 with CONFIRM Y, except that Type CD is blank. COTRN02C
+# refuses it with 'Type CD can NOT be empty...' and writes nothing. Authored
+# from the source, never captured; no TPE region runs in CI:
+# - step 1: app/cbl/COSGN00C.cbl:230-240 routes the type 'U' user to COMEN01C,
+#   which sends COMEN01 headed CM00/COMEN01C [app/cbl/COMEN01C.cbl:36-37,
+#   212-219];
+# - step 2: option 8 XCTLs to COTRN02C [app/cpy/COMEN02Y.cpy:66-71]
+#   [app/cbl/COMEN01C.cbl:144-155]; its first entry moves LOW-VALUES to
+#   COTRN2AO and sends COTRN02 with the CT02/COTRN02C header, the
+#   app/cpy/COTTL01Y.cpy titles, the run-clock CURDATE and CURTIME and a blank
+#   ERRMSG [app/cbl/COTRN02C.cbl:112-130,516-571];
+# - step 3: VALIDATE-INPUT-KEY-FIELDS takes the card branch; the card goes back
+#   into CARDNINI unchanged through the PIC 9(16) WS-CARD-NUM-N, READ CCXREF is
+#   NORMAL and XREF-ACCT-ID 00000000050 (record 1 of app/data/ASCII/cardxref.txt)
+#   replaces ACTIDINI [app/cbl/COTRN02C.cbl:56,193-223,609-637].
+#   VALIDATE-INPUT-DATA-FIELDS starts with ERR-FLG off, so no field is cleared,
+#   and its first WHEN matches the blank TTYPCDI; SEND-TRNADD-SCREEN sends
+#   COTRN02 and returns with TRANSID CT02, ending the task before any later
+#   edit, the CONFIRM evaluation or ADD-TRANSACTION [app/cbl/COTRN02C.cbl:
+#   164-188,235-257,516-534]. COTRN2AO redefines COTRN2AI
+#   [app/cpy-bms/COTRN02.CPY:145], so the entered values are sent back as
+#   received.
+# Values are whole BMS fields with their trailing spaces [app/bms/COTRN02.bms]:
+# ERRMSG is the 78-byte field holding the 80-byte WS-MESSAGE, and messages
+# holds each step's ERRMSG in step order. CURDATE and CURTIME come from the
+# region clock, which UniKix cannot fix, hence the matchers.
+# file_state: no WRITE occurs, so TRANSACT keeps the 300 records built from
+# app/data/ASCII/dailytran.txt, among them the highest TRAN-ID, decoded with
+# CVTRA05Y.
+# Open under GAP-INF-007 (derived TRN end-to-end baselines) and GAP-INF-012
+# (online-only copybooks). Only `report.py --import-unikix` promotes this
+# baseline; it is never edited by hand to match a run.
+file_state:
+  TRANSACT:
+    contains:
+    - TRAN-AMT: '603.22'
+      TRAN-CARD-NUM: '3260763612337560'
+      TRAN-CAT-CD: '1'
+      TRAN-DESC: 'Purchase at Kilback LLC                                                                             '
+      TRAN-ID: 0000000996722787
+      TRAN-MERCHANT-CITY: 'Cummeratamouth                                    '
+      TRAN-MERCHANT-ID: '800000000'
+      TRAN-MERCHANT-NAME: 'Kilback LLC                                       '
+      TRAN-MERCHANT-ZIP: 53200-7529
+      TRAN-ORIG-TS: '2022-06-10 19:27:53.000000'
+      TRAN-PROC-TS: '                          '
+      TRAN-SOURCE: 'POS TERM  '
+      TRAN-TYPE-CD: '01'
+    count: 300
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'Type CD can NOT be empty...                                                   '
+screens:
+- '@map': COMEN01
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COTRN02
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  PGMNAME: COTRN02C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CT02
+- '@map': COTRN02
+  ACTIDIN: '00000000050'
+  CARDNIN: '0500024453765740'
+  CONFIRM: Y
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Type CD can NOT be empty...                                                   '
+  MCITY: 'Testville                '
+  MID: '800000001'
+  MNAME: 'Test Merchant                 '
+  MZIP: '27601     '
+  PGMNAME: COTRN02C
+  TCATCD: '0001'
+  TDESC: 'Test purchase                                               '
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TORIGDT: '2022-07-01'
+  TPROCDT: '2022-07-01'
+  TRNAMT: '+00000012.34'
+  TRNNAME: CT02
+  TRNSRC: 'POS TERM  '
+  TTYPCD: '  '

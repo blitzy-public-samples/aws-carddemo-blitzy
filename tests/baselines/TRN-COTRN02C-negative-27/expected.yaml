@@ -1,0 +1,78 @@
+# Derived baseline of scenario TRN-COTRN02C-negative-27; not observed.
+# USER0001 signs on (CC00), takes main menu option 8 'Transaction Add' and, on
+# COTRN02 (transaction CT02), confirms a valid transaction for card
+# 0500024453765740 while TRANSACT holds no record at all.
+# Authored from the source, never captured:
+# - app/cbl/COSGN00C.cbl:230-237 and app/cbl/COMEN01C.cbl:85-91,182-194
+#   (type U -> COMEN01C, first entry: LOW-VALUES map sent with a blank ERRMSG;
+#   option 8 transfers to COTRN02C with the program context reset);
+# - app/cbl/COTRN02C.cbl:107-130,516-534 (first entry: LOW-VALUES map, CT02
+#   header from app/cpy/COTTL01Y.cpy and app/cpy/CSDAT01Y.cpy, blank ERRMSG);
+# - app/cbl/COTRN02C.cbl:210-223,609-637 (card path: NUMVAL into PIC 9(16)
+#   back into CARDNIN, CCXREF read by card number; card 0500024453765740 is
+#   app/data/ASCII/cardxref.txt:1, account 00000000050 moved into ACTIDIN);
+# - app/cbl/COTRN02C.cbl:383-386 (the amount through NUMVAL-C and
+#   WS-TRAN-AMT-E PIC +99999999.99 back into TRNAMT: +00000012.34);
+# - app/cbl/COTRN02C.cbl:164-171,442-446,642-660 (CONFIRM Y: STARTBR at
+#   HIGH-VALUES answers NOTFND on the empty file, so 'Transaction ID NOT
+#   found...' is sent and RETURN TRANSID CT02 ends the task before READPREV,
+#   the next-id computation and the WRITE).
+# That STARTBR answers NOTFND on an empty cluster, rather than positioning for
+# a READPREV that ends the file, is inferred, not observed; this pins the
+# NOTFND branch the scenario targets.
+# Open under GAP-INF-007 (derived TRN end-to-end baselines) and GAP-INF-012
+# (online-only copybooks). Only `report.py --import-unikix` promotes it, from
+# imported UniKix evidence; it is never edited by hand to match a run.
+# One screen per step, each the screen shown after the step's AID; messages
+# holds each step's ERRMSG. COTRN2AO redefines COTRN2AI, so the last screen
+# echoes every received field at its BMS length, trailing spaces kept; ERRMSG
+# is the 80-byte WS-MESSAGE cut to 78. CURDATE and CURTIME come from the
+# region clock and are the only matchers. TRANSACT is still empty.
+file_state:
+  TRANSACT:
+    records: []
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'Transaction ID NOT found...                                                   '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COTRN02
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  PGMNAME: COTRN02C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CT02
+- '@map': COTRN02
+  ACTIDIN: '00000000050'
+  CARDNIN: '0500024453765740'
+  CONFIRM: Y
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Transaction ID NOT found...                                                   '
+  MCITY: 'Testville                '
+  MID: '800000001'
+  MNAME: 'Test Merchant                 '
+  MZIP: '27601     '
+  PGMNAME: COTRN02C
+  TCATCD: '0001'
+  TDESC: 'Test purchase                                               '
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TORIGDT: '2022-07-01'
+  TPROCDT: '2022-07-01'
+  TRNAMT: '+00000012.34'
+  TRNNAME: CT02
+  TRNSRC: 'POS TERM  '
+  TTYPCD: '01'

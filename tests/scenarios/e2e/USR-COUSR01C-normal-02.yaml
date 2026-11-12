@@ -1,0 +1,126 @@
+# The USRSEC record COUSR01C writes when an administrator adds a user.
+# ADMIN001 signs on through CC00 and COSGN00C routes the type 'A' user to the
+# admin menu COADM01 [app/cbl/COSGN00C.cbl:221-234]. Option '2' is the 'User Add
+# (Security)' entry, so COADM01C transfers control to COUSR01C with
+# CDEMO-PGM-CONTEXT 0 [app/cpy/COADM02Y.cpy:29-32] [app/cbl/COADM01C.cbl:115-145].
+# On that first entry COUSR01C sends COUSR01 with its input fields cleared and
+# returns with TRANSID CU01 [app/cbl/COUSR01C.cbl:82-87,107-110].
+#
+# The third step runs under CU01. RECEIVE MAP pads each entered value with
+# blanks to the field's length (the BMS default JUSTIFY=(LEFT,BLANK)). All five
+# fields are supplied, so PROCESS-ENTER-KEY moves USERIDI, FNAMEI, LNAMEI,
+# PASSWDI and USRTYPEI into SEC-USER-DATA and WRITE-USER-SEC-FILE writes the
+# 80-byte record to USRSEC keyed by SEC-USR-ID [app/cbl/COUSR01C.cbl:115-160,
+# 238-248] [app/cpy/CSUSR01Y.cpy:17-23]. Each value is the field's input text at
+# the record field's width: user id and password fill all 8 bytes, the names are
+# padded with spaces to 20, and the type is one byte. All entered values are upper
+# case, so the record does not depend on the terminal's upper-case translation.
+#
+# SEC-USR-FILLER (offsets 57-79) is deliberately left unasserted. COUSR01C never
+# moves anything to it, and SEC-USER-DATA is working storage without a VALUE
+# clause that the program never initializes. Its bytes are therefore whatever the
+# runtime's initial working storage holds (undefined for Enterprise COBOL, and
+# set by the UniKix build's compile flags), not something the source determines.
+# An imported UniKix run pins them in the promoted baseline's raw bytes.
+#
+# USRSEC starts as the 10 fixture users, none of whose ids is TESTU001, so the
+# WRITE answers NORMAL. The file then holds 11 records, listed in key order: the
+# 10 fixture users unchanged, listed in full, and the new record, TESTU001
+# sorting between ADMIN005 and USER0001.
+#
+# On NORMAL, COUSR01C clears the five input fields (the output map redefines the
+# input map) and composes 'User ' SEC-USR-ID ' has been added ...' into the
+# cleared WS-MESSAGE. It then resends COUSR01 with that text in the 78-byte
+# ERRMSG field [app/cbl/COUSR01C.cbl:184-196,250-259,287-295]. The header shows
+# CU01, COUSR01C and the COTTL01Y titles, with CURDATE and CURTIME from the run
+# clock through CSDAT01Y [app/cbl/COUSR01C.cbl:214-233] [app/cpy/COTTL01Y.cpy:17-22].
+# The first two steps end on screens whose ERRMSG is blank. Expected text values
+# are full field width with their trailing spaces. CURDATE and CURTIME are
+# matchers, so the clock is relative.
+#
+# TESTU001 is invented data and never signs on. The baseline is derived from the
+# source, because no TPE region runs in CI.
+id: USR-COUSR01C-normal-02
+level: e2e
+type: normal
+description: >-
+  ADMIN001 signs on, chooses admin option 2 and, on the COUSR01 Add User screen,
+  adds user TESTU001 (first name TESTADMF, last name TESTADML, password TESTPWDA,
+  type A). COUSR01C writes the new 80-byte USRSEC record with the entered values
+  padded to their field widths, leaves the 10 existing users unchanged, clears
+  the screen and shows 'User TESTU001 has been added ...'.
+inventory_ids:
+- INV-USR-033  # COUSR01C USRSEC WRITE (interface)
+- INV-USR-002  # COUSR01C program
+- INV-MNU-004  # COADM01 map, the admin menu option 2 is entered on
+- INV-USR-006  # COUSR01 map, the Add User screen the record is entered on
+- INV-CFG-024  # CU01 transaction, under which the add is processed
+- INV-CFG-008  # USRSEC CSD file, the file the record is written to
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carried into COUSR01C
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the header date and time
+- INV-LAY-008  # CSMSG01Y copybook, the common messages COUSR01C copies
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-004  # user administration (USR) end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user; COUSR01C writes the new user next to them.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: ADMIN001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '2'}
+    '@map': COADM01
+  # Invented user-maintenance data entered on COUSR01, not a sign-on.
+  - aid: ENTER
+    fields: {FNAME: TESTADMF, LNAME: TESTADML, USERID: TESTU001, PASSWD: TESTPWDA, USRTYPE: A}
+    '@map': COUSR01
+expected:
+  screens:
+  - '@map': COADM01
+  - '@map': COUSR01
+  - '@map': COUSR01
+    TRNNAME: 'CU01'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COUSR01C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    FNAME: '                    '
+    LNAME: '                    '
+    USERID: '        '
+    PASSWD: '        '
+    USRTYPE: ' '
+    ERRMSG: 'User TESTU001 has been added ...                                              '
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'User TESTU001 has been added ...                                              '
+  file_state:
+    USRSEC:
+      count: 11
+      contains:
+      # In SEC-USR-ID key order: the 10 fixture users unchanged, with the new
+      # TESTU001 between ADMIN005 and USER0001.
+      - {SEC-USR-ID: ADMIN001, SEC-USR-FNAME: 'MARGARET            ', SEC-USR-LNAME: 'GOLD                ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: ADMIN002, SEC-USR-FNAME: 'RUSSELL             ', SEC-USR-LNAME: 'RUSSELL             ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: ADMIN003, SEC-USR-FNAME: 'RAYMOND             ', SEC-USR-LNAME: 'WHITMORE            ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: ADMIN004, SEC-USR-FNAME: 'EMMANUEL            ', SEC-USR-LNAME: 'CASGRAIN            ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: ADMIN005, SEC-USR-FNAME: 'GRANVILLE           ', SEC-USR-LNAME: 'LACHAPELLE          ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: A, SEC-USR-FILLER: '                       '}
+      # The record COUSR01C writes; SEC-USR-FILLER is left out (see the header).
+      - {SEC-USR-ID: TESTU001, SEC-USR-FNAME: 'TESTADMF            ', SEC-USR-LNAME: 'TESTADML            ', SEC-USR-PWD: TESTPWDA, SEC-USR-TYPE: A}
+      - {SEC-USR-ID: USER0001, SEC-USR-FNAME: 'LAWRENCE            ', SEC-USR-LNAME: 'THOMAS              ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: USER0002, SEC-USR-FNAME: 'AJITH               ', SEC-USR-LNAME: 'KUMAR               ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: USER0003, SEC-USR-FNAME: 'LAURITZ             ', SEC-USR-LNAME: 'ALME                ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: USER0004, SEC-USR-FNAME: 'AVERARDO            ', SEC-USR-LNAME: 'MAZZI               ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: USER0005, SEC-USR-FNAME: 'LEE                 ', SEC-USR-LNAME: 'TING                ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: U, SEC-USR-FILLER: '                       '}

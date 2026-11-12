@@ -1,0 +1,160 @@
+# COTRN02C cannot start its backward browse of an empty TRANSACT file, so a
+# fully valid, confirmed transaction is refused with 'Transaction ID NOT
+# found...' and nothing is written.
+#
+# Steps 1-2 reach the empty Add Transaction screen as the other TRN-COTRN02C
+# scenarios do: USER0001 (type U) is routed to COMEN01C, and option 8 'Transaction
+# Add' transfers control to COTRN02C with the program context reset, so COTRN02C
+# sets the re-enter flag, finds no transaction selected and sends COTRN02 with a
+# blank ERRMSG [app/cbl/COSGN00C.cbl:230-237] [app/cbl/COMEN01C.cbl:115-156]
+# [app/cpy/COMEN02Y.cpy:67-72] [app/cbl/COTRN02C.cbl:115-130,516-534].
+# Step 3 enters the valid field set of TRN-COTRN02C-normal-01, card number only,
+# with CONFIRM Y, and presses ENTER under CT02:
+# - VALIDATE-INPUT-KEY-FIELDS takes the card branch: READ CCXREF by card
+#   0500024453765740, record 1 of the CARDXREF fixture, is NORMAL, and its
+#   account 00000000050 is moved into ACTIDIN [app/cbl/COTRN02C.cbl:193-223,609-637].
+# - VALIDATE-INPUT-DATA-FIELDS finds every field supplied and well formed; the
+#   amount goes through NUMVAL-C and WS-TRAN-AMT-E PIC +99999999.99 back to
+#   +00000012.34, and CSUTLDTC accepts both dates with mask YYYY-MM-DD
+#   [app/cbl/COTRN02C.cbl:58-60,235-437].
+# - CONFIRM Y performs ADD-TRANSACTION, which moves HIGH-VALUES to TRAN-ID and
+#   issues STARTBR TRANSACT with that full 16-byte key and the default GTEQ
+#   [app/cbl/COTRN02C.cbl:164-171,442-446,642-650]. A full key of X'FF's asks
+#   CICS to position at the end of the data set for READPREV, but an empty data
+#   set holds no record to position on, so STARTBR answers NOTFND (IBM CICS TS
+#   STARTBR and empty-data-set documentation; this exact combination is inferred,
+#   not observed, GAP-INF-007).
+# - The NOTFND branch sets the error flag, moves 'Transaction ID NOT found...' to
+#   WS-MESSAGE, puts the cursor on ACTIDIN and performs SEND-TRNADD-SCREEN, which
+#   sends COTRN02 with ERASE and ends the task with RETURN TRANSID CT02
+#   [app/cbl/COTRN02C.cbl:652-660,516-534]. READPREV, ENDBR, the next-id
+#   computation and the WRITE never run, so TRANSACT stays empty.
+# COTRN2AO redefines COTRN2AI and INITIALIZE-ALL-FIELDS is not performed, so the
+# screen sent back keeps every value entered, with ACTIDIN now holding the
+# cross-referenced account and TRNAMT its edited form.
+#
+# Expected text values are whole fields at their BMS length with trailing
+# spaces kept: BMS pads each received field with blanks (JUSTIFY=BLANK default)
+# [app/bms/COTRN02.bms]. ERRMSG is 78 bytes of the 80-byte WS-MESSAGE. CURDATE
+# and CURTIME come from the region clock through CSDAT01Y, so they are matchers
+# and the clock is relative. The baseline is derived from the source: no TPE
+# region runs in CI.
+id: TRN-COTRN02C-negative-27
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, chooses main-menu option 8 (Transaction Add) and, on
+  COTRN02, enters a valid transaction for repository card 0500024453765740 with
+  CONFIRM Y while TRANSACT holds no record. The STARTBR at HIGH-VALUES that
+  looks for the highest transaction id answers NOTFND, so COTRN02C sends
+  COTRN02 back with the entered values, the cross-referenced account
+  00000000050 and 'Transaction ID NOT found...', and writes no transaction.
+# Primary item first, then the program, the maps asserted, the transaction step
+# 3 runs under, the CSD files COTRN02C reads and browses, and the online-only
+# copybooks it copies. Sign-on and the menu option (CC00, CM00, COSGN00, USRSEC)
+# are verified by the SEC and MNU scenarios; the batch record copybooks
+# (CVTRA05Y, CVACT03Y) and the data files are verified at the lowest level that
+# executes them.
+inventory_ids:
+- INV-TRN-059  # COTRN02C message 'Transaction ID NOT found...' (recovery)
+- INV-TRN-003  # COTRN02C program
+- INV-MNU-003  # COMEN01 map, where option 8 is entered
+- INV-TRN-006  # COTRN02 map, the add screen of steps 2 and 3
+- INV-CFG-022  # CT02 transaction, under which COTRN02C receives the add
+- INV-CFG-004  # CCXREF CSD file: card cross-reference read by card number
+- INV-CFG-007  # TRANSACT CSD file: the empty file whose STARTBR answers NOTFND
+- INV-LAY-002  # COCOM01Y: the COMMAREA carrying the program context
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COTRN02C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-007  # TRN end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-DOC-011  # repository card in place of the tech-spec card 4111111111111111
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user; CCXREF resolves the card to its account;
+    # TRANSACT is loaded with no record at all.
+    USRSEC: {base: USRSEC}
+    CARDXREF: {base: CARDXREF}
+    TRANSACT: {records: []}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '8'
+  # ACTIDIN is left blank, so the card number selects the cross-reference.
+  - aid: ENTER
+    '@map': COTRN02
+    fields:
+      CARDNIN: '0500024453765740'
+      TTYPCD: '01'
+      TCATCD: '0001'
+      TRNSRC: 'POS TERM'
+      TDESC: 'Test purchase'
+      TRNAMT: '+00000012.34'
+      TORIGDT: '2022-07-01'
+      TPROCDT: '2022-07-01'
+      MID: '800000001'
+      MNAME: 'Test Merchant'
+      MCITY: 'Testville'
+      MZIP: '27601'
+      CONFIRM: 'Y'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: 'CM00'
+    PGMNAME: 'COMEN01C'
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: 'CT02'
+    PGMNAME: 'COTRN02C'
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: 'CT02'
+    PGMNAME: 'COTRN02C'
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    ACTIDIN: '00000000050'
+    CARDNIN: '0500024453765740'
+    TTYPCD: '01'
+    TCATCD: '0001'
+    TRNSRC: 'POS TERM  '
+    TDESC: 'Test purchase                                               '
+    TRNAMT: '+00000012.34'
+    TORIGDT: '2022-07-01'
+    TPROCDT: '2022-07-01'
+    MID: '800000001'
+    MNAME: 'Test Merchant                 '
+    MCITY: 'Testville                '
+    MZIP: '27601     '
+    CONFIRM: 'Y'
+    ERRMSG: 'Transaction ID NOT found...                                                   '
+  # The ERRMSG of each step: the menu and the empty add screen carry none.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Transaction ID NOT found...                                                   '
+  file_state:
+    # The browse failed before READPREV, so no id was computed and no record
+    # was written: TRANSACT is still empty.
+    TRANSACT:
+      records: []

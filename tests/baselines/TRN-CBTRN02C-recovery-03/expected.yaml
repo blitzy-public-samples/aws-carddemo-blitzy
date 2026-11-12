@@ -1,0 +1,19 @@
+# Derived from app/cbl/CBTRN02C.cbl:194-219,291-306,380-392,446-465,707-727;
+# inferred-not-observed (GAP-INF-013, GAP-MIS-013); pinned, never corrected.
+# The single DALYTRAN record's invented card is in no CARDXREF record, so it is
+# rejected with reason 100 without a display, and the first DALYREJS WRITE is
+# the one that fails. The io-error is taken as file status 30 (numeric, not 9x),
+# shown as NNNN0030. CEE3ABD ends the run (GAP-STB-001, GAP-DEF-001), so the
+# exact message list pins as absent the close messages, the processed and
+# rejected counts and the end-of-execution line; return_code is null. DALYREJS,
+# opened OUTPUT, holds no record because the failed WRITE wrote none.
+datasets:
+  DALYREJS:
+    count: 0
+messages:
+- START OF EXECUTION OF PROGRAM CBTRN02C
+- ERROR WRITING TO REJECTS FILE
+- 'FILE STATUS IS: NNNN0030'
+- ABENDING PROGRAM
+- CARDDEMO-ABEND CEE3ABD
+return_code: null

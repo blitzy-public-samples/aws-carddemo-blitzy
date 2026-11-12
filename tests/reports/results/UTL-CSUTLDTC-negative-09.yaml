@@ -1,0 +1,19 @@
+adapter: gnucobol-batch
+baseline_version: 1.0.0
+decoded:
+  messages:
+  - 'DTCDRV DATE=2022-07-18 MASK=YYYY-MM-DD RC=0003 RESULT=0003Mesg Code: 2513 Unsupp. Range   TstDate: ..2022-07- Mask used:YYYY-MM-DD     HEX=303030334D65736720436F64653A203235313320556E737570702E2052616E6765202020547374446174653A20000A323032322D30372D204D61736B20757365643A595959592D4D4D2D444420202020'
+  return_code: 0
+evidence_path: tests/reports/results/UTL-CSUTLDTC-negative-09.yaml
+execution_fingerprint: 19690ff7a626fd39adac83fb90d0a00706193c9521474619195e379329b8f031
+execution_id: gnucobol-batch-2e8e9f32d7537c80
+gap_id: null
+reason: null
+scenario_digest: a4de8a5eea501acccae6b9808b5913a0d22dcd09519d4929106c359304b2cbf0
+scenario_id: UTL-CSUTLDTC-negative-09
+source_identity:
+  commit: ab3f66e8e82d6a0f204d218435c52b0662a2f5df
+  tree: app
+  units:
+    app/cbl/CSUTLDTC.cbl: 58c165dcfc3927232c02c152c673e3dee551587b85e7fe56ca67325c980eebb6
+status: passed

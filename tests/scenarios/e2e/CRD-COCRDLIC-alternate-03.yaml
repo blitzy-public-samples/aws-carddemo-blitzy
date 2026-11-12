@@ -1,0 +1,123 @@
+id: CRD-COCRDLIC-alternate-03
+level: e2e
+type: alternate
+description: >-
+  USER0001 signs on through CC00 and takes main-menu option 3, which transfers
+  control to COCRDLIC with the program context zero
+  [app/cbl/COMEN01C.cbl:145-155] [app/cpy/COMEN02Y.cpy:37-41]. Entered from the
+  menu, COCRDLIC starts afresh on the first page, browses CARDDAT forward from
+  the lowest key and shows the first seven cards in card-number order, page 1
+  [app/cbl/COCRDLIC.cbl:334-343,572-582,1123-1195]. Pressing PF7 on that page
+  starts a CCLI task that receives the map with both filters and every
+  selection blank, so no input error is raised
+  [app/cbl/COCRDLIC.cbl:357-362,962-1121]. CA-FIRST-PAGE still holds, so the
+  PF7-on-first-page branch reads
+  forward again from the first card of the page, 0500024453765740, and shows
+  the same seven rows with the page number unchanged
+  [app/cbl/COCRDLIC.cbl:237-238,439-454,1173-1181]. 1400-SETUP-MESSAGE takes its
+  PF7-and-first-page branch, moving 'NO PREVIOUS PAGES TO DISPLAY' to the error
+  message, and the information line stays blank because 1100-SCREEN-INIT
+  cleared it and the branch sets no information message
+  [app/cbl/COCRDLIC.cbl:665-671,895-930].
+# Primary item first, then the program, the maps the steps land on (COMEN01
+# after sign-on, COCRDLI after option 3 and after PF7), the transaction the PF7
+# input runs under (COCRDLIC returns with TRANSID CCLI), the CSD file browsed,
+# and the online-only copybooks COCRDLIC copies. Sign-on, the menu routing and
+# the page-1 content are covered by the scenarios that own them.
+inventory_ids:
+- INV-CRD-012
+- INV-CRD-001
+- INV-MNU-003
+- INV-CRD-004
+- INV-CFG-014
+- INV-CFG-003
+- INV-LAY-002
+- INV-LAY-005
+- INV-LAY-006
+- INV-LAY-008
+- INV-LAY-011
+- INV-LAY-019
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-006
+- GAP-INF-012
+preconditions:
+  datasets:
+    CARDDATA: {base: CARDDATA}
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '3'
+  - aid: PF7
+    '@map': COCRDLI
+    fields: {}
+# Steps 1 and 2 assert only the screen each lands on; their content is pinned
+# by the scenarios of the programs that send them.
+# Screen 3 is the PF7 send. Its rows are the first seven CARDDATA keys, all
+# with active status Y; CARD-ACCT-ID (PIC 9(11)) reaches ACCTNOn with its
+# leading zeros. PAGENO is the PIC 9(1) page counter moved to the PIC X(3)
+# field, so it holds '1' followed by two spaces. The filters were blank, so
+# ACCTSID and CARDSID go out as LOW-VALUES and show as spaces; the selection
+# fields return as received. Screen values are whole fields at their BMS
+# length, trailing spaces kept: comparison never trims.
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+  - '@map': COCRDLI
+    TRNNAME: CCLI
+    PGMNAME: COCRDLIC
+  - '@map': COCRDLI
+    TRNNAME: CCLI
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COCRDLIC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    PAGENO: '1  '
+    ACCTSID: '           '
+    CARDSID: '                '
+    CRDSEL1: ' '
+    ACCTNO1: '00000000050'
+    CRDNUM1: '0500024453765740'
+    CRDSTS1: 'Y'
+    CRDSEL2: ' '
+    ACCTNO2: '00000000027'
+    CRDNUM2: '0683586198171516'
+    CRDSTS2: 'Y'
+    CRDSEL3: ' '
+    ACCTNO3: '00000000002'
+    CRDNUM3: '0923877193247330'
+    CRDSTS3: 'Y'
+    CRDSEL4: ' '
+    ACCTNO4: '00000000020'
+    CRDNUM4: '0927987108636232'
+    CRDSTS4: 'Y'
+    CRDSEL5: ' '
+    ACCTNO5: '00000000012'
+    CRDNUM5: '0982496213629795'
+    CRDSTS5: 'Y'
+    CRDSEL6: ' '
+    ACCTNO6: '00000000044'
+    CRDNUM6: '1014086565224350'
+    CRDSTS6: 'Y'
+    CRDSEL7: ' '
+    ACCTNO7: '00000000037'
+    CRDNUM7: '1142167692878931'
+    CRDSTS7: 'Y'
+    INFOMSG: '                                             '
+    ERRMSG: 'NO PREVIOUS PAGES TO DISPLAY                                                  '

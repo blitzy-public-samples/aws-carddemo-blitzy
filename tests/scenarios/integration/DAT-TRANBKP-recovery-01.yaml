@@ -1,0 +1,80 @@
+# TRANBKP runs three steps against one catalog [app/jcl/TRANBKP.jcl:23-68]:
+# - STEP05R runs procedure REPROC, whose only step PRC001 is IDCAMS reading the
+#   control card REPROCT, one REPRO of the TRANSACT cluster into a new
+#   TRANSACT-BKUP generation [app/proc/REPROC.prc:21-28] [app/ctl/REPROCT.ctl:15];
+# - STEP05 deletes the cluster and then its alternate index, each DELETE
+#   followed by 'IF MAXCC LE 08 THEN SET MAXCC = 0' [app/jcl/TRANBKP.jcl:37-46];
+# - STEP10 defines the cluster again and carries COND=(4,LT)
+#   [app/jcl/TRANBKP.jcl:51], so it is bypassed once an earlier step has ended
+#   with a return code above 4.
+# The trigger is a TRANSACT cluster that is defined but was never loaded; every
+# dataset the job refers to exists, so no step fails on allocation. VSAM refuses
+# to open an empty cluster for input, so the REPRO fails at OPEN and the backup
+# step ends with return code 12. A step that ends with a return code, however
+# high, ends normally, so the backup generation it allocated new is catalogued
+# by its normal-end disposition; the reset leaves the backup base without
+# generations, so this is the first. STEP05 has no COND and runs: deleting the
+# base cluster deletes its alternate index and path with it, the second DELETE
+# finds no entry (code 8), and the MAXCC resets leave the step at return code 0.
+# STEP10 is bypassed because 4 is less than 12: it writes no STEP line, the
+# cluster stays undefined, and the job's return code is that of the highest
+# executed step, 12.
+# Derived, never observed (GAP-INF-011). Only a job scheduler that evaluates COND
+# exercises the item, and listing it leaves unikix the only capable adapter,
+# because the gnucobol-batch job driver records COND without evaluating it. The
+# return code 12 is the z/OS outcome of a REPRO from an empty cluster; if BPE ends
+# that step at 4 or below, STEP10 runs and defines the cluster again, and the
+# import of the first eligible unikix run replaces this expectation. Inline
+# messages are an ordered subsequence of the step lines, so the baseline's
+# complete list is what shows that STEP10 wrote none. The TRANBKP job, REPROC and
+# REPROCT are listed by DAT-TRANBKP-normal-01; only the COND item is listed here.
+id: DAT-TRANBKP-recovery-01
+level: integration
+type: recovery
+description: >-
+  With the TRANSACT cluster defined but never loaded, the REPROC backup step of
+  TRANBKP fails at OPEN and ends with return code 12, and the new TRANSACT-BKUP
+  generation it allocated is still catalogued by its normal-end disposition.
+  STEP05 deletes the cluster with its alternate index and ends with return code 0
+  after the MAXCC resets. STEP10 carries COND=(4,LT), which holds because 4 is
+  less than 12, so it is bypassed: the cluster is not defined again and the job
+  ends with return code 12. The expectation is derived and assumes that the REPRO
+  from an empty cluster ends above 4; if UniKix ends it at 4 or below, STEP10 runs
+  and the imported observation replaces this expectation.
+inventory_ids:
+- INV-DAT-042  # TRANBKP JCL COND=(4,LT) on the DEFINE step
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-011  # the JCL-semantics expectations are derived until a BPE run is imported
+- GAP-MIS-007  # cluster definition, unload and catalog listing on UniKix are unconfirmed
+- GAP-MIS-006  # BPE job submission and its step return codes are unconfirmed
+preconditions:
+  datasets:
+    # Defined and never loaded: the REPRO input exists and holds no record.
+    TRANSACT: {records: []}
+  parameters:
+    # unikix cannot fix its clock (GAP-MIS-015); no expected value depends on the
+    # run date.
+    clock_mode: relative
+  faults: []
+inputs:
+  job: TRANBKP
+expected:
+  return_code: 12
+  # One line per executed step, the complete list: the bypassed STEP10 writes
+  # none, and neither adapter writes a line per job, so the job's own return
+  # code is return_code alone.
+  messages:
+  - STEP STEP05R.PRC001 RC 0012
+  - STEP STEP05 RC 0000
+  file_state:
+    # The unikix listing holds every catalogued entry of the application, all
+    # clusters and GDG bases included, which no source fixes in full, and no
+    # expected form asserts that an entry is absent short of that whole listing.
+    # So only the backup base and its new generation are asserted; the absence of
+    # the TRANSACT cluster is pinned once an observed listing replaces this one.
+    '@CATALOG':
+      contains:
+      - AWS.M2.CARDDEMO.TRANSACT.BKUP GDG -
+      - AWS.M2.CARDDEMO.TRANSACT.BKUP GENERATION G0001V00

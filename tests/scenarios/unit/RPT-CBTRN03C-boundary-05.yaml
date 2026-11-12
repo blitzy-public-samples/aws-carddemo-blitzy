@@ -1,0 +1,62 @@
+# The count boundary of the CBTRN03C report: the transaction input exists but
+# holds no record. All six files open and DATEPARM is read and displayed. The
+# first READ of TRANFILE returns status 10 and sets END-OF-FILE, but the loop
+# body still evaluates the DATEPARM window on TRAN-RECORD, which READ ... INTO
+# never filled: working storage without VALUE is all x'00' under defaultbyte 0
+# (GAP-STB-011), so TRAN-PROC-TS(1:10) is below the start date and NEXT
+# SENTENCE leaves the inline PERFORM before the end-of-file branch. No header,
+# no 'TRAN-AMT' display and no page or grand total is written, and TRANREPT is
+# empty [app/cbl/CBTRN03C.cbl:160-217,248-272]. Spaces in place of x'00' would
+# take the same path, since spaces also sort below the start date.
+#
+# TRANSACT-DALY, the sequential TRANFILE input, is declared with an empty record
+# list rather than left out: leaving it out is an open failure. CARDXREF,
+# TRANTYPE and TRANCATG are opened INPUT but never read; they are the repository
+# fixtures, so both data-file items of each are listed.
+id: RPT-CBTRN03C-boundary-05
+level: unit
+type: boundary
+description: >-
+  CBTRN03C reads an empty transaction file: it displays the start line, the
+  DATEPARM range and the end line, writes no report line (no header and no page
+  or grand total), and ends with return code 0.
+inventory_ids:
+- INV-RPT-041
+- INV-RPT-003
+- INV-DTA-003
+- INV-DTA-013
+- INV-DTA-009
+- INV-DTA-020
+- INV-DTA-008
+- INV-DTA-019
+tags: []
+gap_ids:
+- GAP-MIS-001
+- GAP-STB-010
+- GAP-STB-011
+preconditions:
+  datasets:
+    TRANSACT-DALY:
+      records: []
+    CARDXREF:
+      base: CARDXREF
+    TRANTYPE:
+      base: TRANTYPE
+    TRANCATG:
+      base: TRANCATG
+  parameters:
+    DATEPARM: '2022-07-01 2022-07-31'
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults: []
+inputs:
+  program: CBTRN03C
+expected:
+  return_code: 0
+  datasets:
+    TRANREPT:
+      records: []
+  messages:
+  - START OF EXECUTION OF PROGRAM CBTRN03C
+  - Reporting from 2022-07-01 to 2022-07-31
+  - END OF EXECUTION OF PROGRAM CBTRN03C

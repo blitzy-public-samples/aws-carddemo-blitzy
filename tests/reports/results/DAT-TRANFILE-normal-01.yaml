@@ -1,0 +1,45 @@
+adapter: gnucobol-batch
+baseline_version: 1.0.0
+decoded:
+  file_state:
+    TRANSACT:
+    - TRAN-AMT:
+        raw: '0000000000000000000000'
+      TRAN-CARD-NUM: "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+      TRAN-CAT-CD:
+        raw: '00000000'
+      TRAN-DESC: "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+      TRAN-ID: "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+      TRAN-MERCHANT-CITY: "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+      TRAN-MERCHANT-ID:
+        raw: '000000000000000000'
+      TRAN-MERCHANT-NAME: "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+      TRAN-MERCHANT-ZIP: "\0\0\0\0\0\0\0\0\0\0"
+      TRAN-ORIG-TS: "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+      TRAN-PROC-TS: "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+      TRAN-RECORD.FILLER#1: "\0\0\0\0\0\0\0\0\0\0\0\000000100"
+      TRAN-SOURCE: "\0\0\0\0\0\0\0\0\0\0"
+      TRAN-TYPE-CD: "\0\0"
+  messages:
+  - STEP CLCIFIL RC 0000
+  - STEP STEP05 RC 0000
+  - STEP STEP10 RC 0000
+  - STEP STEP15 RC 0000
+  - STEP STEP20 RC 0000
+  - STEP STEP25 RC 0000
+  - STEP STEP30 RC 0000
+  - STEP OPCIFIL RC 0000
+  return_code: 0
+evidence_path: tests/reports/results/DAT-TRANFILE-normal-01.yaml
+execution_fingerprint: 68890617b296ef673b1cc17fab774287a8e8485a3b728d8d002ff5bd6aee0c5d
+execution_id: gnucobol-batch-512eb287a1b58a2c
+gap_id: null
+reason: null
+scenario_digest: 67bf8d2f1edcc0fa1fab1c8486949332db3ac8c0c72e240cbf94936dc3f13021
+scenario_id: DAT-TRANFILE-normal-01
+source_identity:
+  commit: ce44c9645756395b5a8eac87afa2fa8da93f029b
+  tree: app
+  units:
+    app/jcl/TRANFILE.jcl: 360080ae5bf5153c3ecbf82385b070a6c7a2cdbf18870685951bf9894516730a
+status: passed

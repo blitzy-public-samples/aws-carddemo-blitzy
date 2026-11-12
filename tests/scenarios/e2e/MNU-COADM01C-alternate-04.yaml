@@ -1,0 +1,57 @@
+id: MNU-COADM01C-alternate-04
+level: e2e
+type: alternate
+description: >-
+  ADMIN001 signs on, reaches the admin menu that COADM01C sends under CA00, and
+  selects option 3 'User Update (Security)'. The option is numeric, not zero
+  and within the 4 admin options, and its program name does not begin 'DUMMY',
+  so COADM01C transfers control with XCTL to COUSR02C with the program context
+  reset to enter [app/cbl/COADM01C.cbl:36-37,115-145]
+  [app/cpy/COADM02Y.cpy:20,34-37]. The COMMAREA COADM01C passes is the
+  COCOM01Y area alone, so COUSR02C's group move pads its CDEMO-CU02 extension
+  with spaces, no user is preselected, and on that first entry it sends its
+  empty update map COUSR02 headed with its own transaction CU02 and program
+  name COUSR02C [app/cbl/COUSR02C.cbl:36-37,49-58,94-105,266-278,296-303].
+inventory_ids:
+- INV-MNU-026  # COADM01C option 3 User Update (Security) to COUSR02C (rule)
+- INV-MNU-002  # COADM01C program
+- INV-MNU-004  # COADM01 map, the input map of the option step
+- INV-USR-007  # COUSR02 map, the screen the XCTL lands on
+- INV-CFG-011  # CA00 transaction, which the option step's ENTER starts
+- INV-LAY-001  # COADM02Y copybook, the option table holding COUSR02C
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA passed on XCTL
+- INV-LAY-005  # COTTL01Y copybook, copied by COADM01C
+- INV-LAY-006  # CSDAT01Y copybook, copied by COADM01C
+- INV-LAY-008  # CSMSG01Y copybook, copied by COADM01C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-003  # derived MNU end-to-end baselines, never observed on a TPE region
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    USRSEC:
+      base: USRSEC
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields:
+      USERID: ADMIN001
+      PASSWD: PASSWORD
+    '@map': COSGN00
+  - aid: ENTER
+    fields:
+      OPTION: '3'
+    '@map': COADM01
+expected:
+  screens:
+  - '@map': COADM01
+    TRNNAME: CA00
+    PGMNAME: COADM01C
+  - '@map': COUSR02
+    TRNNAME: CU02
+    PGMNAME: COUSR02C

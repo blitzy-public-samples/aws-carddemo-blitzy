@@ -1,0 +1,155 @@
+# The card update refuses an expiry year well outside 1950-2099. USER0001 (type U
+# in the USRSEC fixture) signs on through CC00 and reaches the main menu, whose
+# option 5 'Credit Card Update' makes COMEN01C XCTL to COCRDUPC
+# [app/cbl/COMEN01C.cbl:146-155] [app/cpy/COMEN02Y.cpy:49-53]. Coming from the
+# menu without CDEMO-PGM-REENTER, COCRDUPC initialises the COMMAREA, takes the
+# fresh-entry path and sends COCRDUP with blank search keys, the prompt 'Please
+# enter Account and Card Number' and a blank ERRMSG; it sets CDEMO-PGM-REENTER
+# and returns TRANSID CCUP [app/cbl/COCRDUPC.cbl:388-394,502-511,1084-1085,
+# 1141-1142,1161-1163].
+#
+# ENTER with account 00000000050 and its card 0500024453765740 (the first
+# record of carddata.txt) runs 1000-PROCESS-INPUTS on the WHEN OTHER path:
+# 1210 and 1220 accept both keys, and 2000-DECIDE-ACTION, still
+# CCUP-DETAILS-NOT-FETCHED, performs 9000-READ-DATA, which reads CARDDAT by card
+# number, upper-cases the embossed name and keeps the old name, expiry and
+# status; FOUND-CARDS-FOR-ACCOUNT sets CCUP-SHOW-DETAILS
+# [app/cbl/COCRDUPC.cbl:535-542,641-661,721-800,954-966,1343-1394]. The screen
+# shows the card with 'Details of selected card shown above', and 3300 unprotects
+# the name, status, month and year with DFHBMFSE, so all four come back on the
+# next ENTER [app/cbl/COCRDUPC.cbl:1107-1112,1145-1146,1181-1190].
+#
+# ENTER with EXPYEAR '1900' (the other fields as fetched): 1200-EDIT-MAP-INPUTS
+# finds a change against the fetched data and sets CCUP-CHANGES-NOT-OK
+# [app/cbl/COCRDUPC.cbl:667-696]. 'ANIYA VON' passes 1230-EDIT-NAME, 'Y' passes
+# 1240-EDIT-CARDSTATUS and '03' passes VALID-MONTH, so WS-RETURN-MSG is still
+# off when 1260-EDIT-EXPIRY-YEAR finds 1900 outside VALID-YEAR 1950 THRU 2099
+# and sets CARD-EXPIRY-YEAR-NOT-VALID, 'Invalid card expiry year'
+# [app/cbl/COCRDUPC.cbl:96-99,199-200,806-944]. INPUT-ERROR keeps the state at
+# 'E', so 2000 does nothing, no READ UPDATE or REWRITE is issued, and CARDDATA
+# is unchanged [app/cbl/COCRDUPC.cbl:710-714,982-983]. 'E' is one of
+# CCUP-CHANGES-MADE, so 3200 shows the received values, the year 1900 included,
+# and 3250 shows 'Update card details presented above.'
+# [app/cbl/COCRDUPC.cbl:282-285,1113-1117,1147-1148,1163].
+#
+# Screen fields are compared at their full BMS length, trailing spaces
+# included; positions the program leaves as LOW-VALUES read back as spaces.
+# ERRMSG is the 75-byte WS-RETURN-MSG in the 80-byte ERRMSGO, whose data runs
+# from row 23, column 2 to row 24, column 1 [app/bms/COCRDUP.bms:154-157].
+# INFOMSG is the 40-byte WS-INFO-MSG. The dark fields EXPDAY and FKEYSC are not
+# asserted. CURDATE and CURTIME come from the region clock, so they are
+# matchers.
+#
+# The UniKix COCRDUPC.cl2 differs from app/ only in the alphabets-only test of
+# 1230-EDIT-NAME (GAP-DOC-023, which affects the name message alone): both forms
+# accept 'ANIYA VON', and COCRDUP.bms is identical, so the outcome is the same
+# on either tree. The baseline is derived from the source: no TPE region runs
+# in CI. The year edges 1949, 1950, 2099 and 2100 are CRD-COCRDUPC-boundary-05..08.
+id: CRD-COCRDUPC-negative-09
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, selects option 5 'Credit Card Update' on the main menu,
+  fetches account 00000000050 with card 0500024453765740, then changes the
+  expiry year to 1900 and presses ENTER. 1260-EDIT-EXPIRY-YEAR refuses the year
+  as outside 1950-2099: COCRDUP is sent again with 'Invalid card expiry year' in
+  the message line, the entered values (year 1900) still shown with the prompt
+  'Update card details presented above.', and the CARDDAT record is not
+  rewritten.
+inventory_ids:
+- INV-CRD-064  # COCRDUPC message 'Invalid card expiry year' (rule)
+- INV-CRD-003  # COCRDUPC program
+- INV-MNU-003  # COMEN01 map, the main menu option 5 is entered on
+- INV-CRD-006  # COCRDUP map: the search, detail and refusal screens
+- INV-CFG-015  # CCUP transaction, the TRANSID COCRDUPC returns with and the ENTERs run under
+- INV-CFG-003  # CARDDAT CSD file, read by card number to fetch the card
+- INV-LAY-002  # COCOM01Y: the COMMAREA whose context routes each ENTER
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COCRDUPC
+- INV-LAY-009  # CSMSG02Y, copied by COCRDUPC (abend data area)
+- INV-LAY-011  # CSSTRPFY: YYYY-STORE-PFKEY maps ENTER to CCARD-AID-ENTER
+- INV-LAY-019  # CVCRD01Y: CCARD-AID, CC-ACCT-ID and CC-CARD-NUM
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-006  # CRD end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    CARDDATA: {base: CARDDATA}
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+# PASSWORD is the documented demo password of README.md, not a secret.
+inputs:
+  steps:
+  - {transid: CC00, aid: ENTER, fields: {USERID: USER0001, PASSWD: PASSWORD}, '@map': COSGN00}
+  - {aid: ENTER, fields: {OPTION: '5'}, '@map': COMEN01}
+  - {aid: ENTER, fields: {ACCTSID: '00000000050', CARDSID: '0500024453765740'}, '@map': COCRDUP}
+  - {aid: ENTER, fields: {EXPYEAR: '1900'}, '@map': COCRDUP}
+expected:
+  screens:
+  # One entry per step, each the screen the step ends on.
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    PGMNAME: COCRDUPC
+    ACCTSID: '           '
+    CARDSID: '                '
+    CRDNAME: '                                                  '
+    CRDSTCD: ' '
+    EXPMON: '  '
+    EXPYEAR: '    '
+    INFOMSG: 'Please enter Account and Card Number    '
+    ERRMSG: '                                                                                '
+  # The fetched card, editable, its name upper-cased by 9000-READ-DATA.
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    PGMNAME: COCRDUPC
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time, format: '%H:%M:%S'}
+    ACCTSID: '00000000050'
+    CARDSID: '0500024453765740'
+    CRDNAME: 'ANIYA VON                                         '
+    CRDSTCD: 'Y'
+    EXPMON: '03'
+    EXPYEAR: '2023'
+    INFOMSG: 'Details of selected card shown above    '
+    ERRMSG: '                                                                                '
+    FKEYS: 'ENTER=Process F3=Exit'
+  # The refused year: the received values shown again, 1900 included, with the
+  # year message and the change prompt.
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    PGMNAME: COCRDUPC
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time, format: '%H:%M:%S'}
+    ACCTSID: '00000000050'
+    CARDSID: '0500024453765740'
+    CRDNAME: 'ANIYA VON                                         '
+    CRDSTCD: 'Y'
+    EXPMON: '03'
+    EXPYEAR: '1900'
+    INFOMSG: 'Update card details presented above.    '
+    ERRMSG: 'Invalid card expiry year                                                        '
+    FKEYS: 'ENTER=Process F3=Exit'
+  # The refusal writes nothing: CARDDATA keeps its 50 records, and card
+  # 0500024453765740 keeps its repository name, expiry and status.
+  file_state:
+    CARDDATA:
+      count: 50
+      contains:
+      - CARD-NUM: '0500024453765740'
+        CARD-ACCT-ID: '50'
+        CARD-CVV-CD: '747'
+        CARD-EMBOSSED-NAME: 'Aniya Von                                         '
+        CARD-EXPIRAION-DATE: '2023-03-09'
+        CARD-ACTIVE-STATUS: 'Y'

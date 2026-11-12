@@ -1,0 +1,59 @@
+# An out-of-range month passed to CSUTLDTC with the mask CORPT00C and COTRN02C
+# use. DTCDRV calls CSUTLDTC once with the date 2022-13-01 and the mask
+# YYYY-MM-DD, as one 80-byte DTCIN record (DTC-REC of FD DTC-FILE)
+# [tests/stubs/DTCDRV.cbl:95-100].
+# CSUTLDTC passes both as 10-byte Vstrings to CEEDAYS
+# [app/cbl/CSUTLDTC.cbl:105-120]; the stub finds every position numeric and the
+# separators matched, then refuses month 13 with the severity-3 token
+# 00 03 09 D5 59 C3 C5 C5 [tests/stubs/ceedays.c:35-47]. CSUTLDTC moves severity
+# 3 and message number 2517 (x'09D5') into the result, maps the token through
+# FC-INVALID-MONTH to 'Invalid month  ' [app/cbl/CSUTLDTC.cbl:67,123-140] and
+# sets RETURN-CODE to the severity [app/cbl/CSUTLDTC.cbl:97-98], which DTCDRV
+# prints as RC=0003.
+#
+# Which token a real CEEDAYS returns for month 13 is known only through the
+# stub, so the expectation is inferred (GAP-INF-001) although the baseline is
+# captured on gnucobol-batch. The token-to-text mapping and the result layout
+# are CSUTLDTC's own code and run unchanged.
+#
+# The line is pinned byte for byte as DTCDRV prints it. Result bytes 46-47 hold
+# x'000A': MOVE WS-DATE-TO-TEST TO WS-DATE copies the binary Vstring length and
+# the first 8 date characters into the 10-byte TstDate field
+# [app/cbl/CSUTLDTC.cbl:122], shown as '..' in RESULT and 000A in HEX. That is
+# pinned as observed, never corrected. DTCDRV itself ends with exit status 0.
+id: UTL-CSUTLDTC-negative-02
+level: unit
+type: negative
+description: >-
+  CSUTLDTC refuses the date 2022-13-01 under the mask YYYY-MM-DD: the CEEDAYS
+  stub returns the invalid-month token x'09D5', and the 80-byte result reads
+  severity 0003, 'Mesg Code:' 2517 and 'Invalid month', with TstDate and the
+  mask, and RETURN-CODE 3.
+inventory_ids:
+- INV-UTL-003  # CSUTLDTC date acceptance (rule): month 13 is refused
+- INV-UTL-001  # CSUTLDTC program
+- INV-UTL-002  # CSUTLDTC CEEDAYS feedback-token mapping (rule): 09D5 -> 'Invalid month'
+- INV-UTL-004  # CSUTLDTC result message layout and RETURN-CODE (interface)
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-STB-002  # CEEDAYS replaced by the test-tree stub tests/stubs/ceedays.c
+- GAP-INF-001  # which dates CEEDAYS accepts is known only through the stub
+- GAP-STB-004  # DTCDRV emulates only the CALL interface of CSUTLDTC's callers
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
+preconditions:
+  datasets: {}
+  parameters:
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults: []
+inputs:
+  program: CSUTLDTC
+  param_files:
+    # Date X(10) then mask X(10); the record is padded with spaces to 80 bytes.
+    DTCIN:
+    - '2022-13-01YYYY-MM-DD'
+expected:
+  return_code: 0
+  messages:
+  - 'DTCDRV DATE=2022-13-01 MASK=YYYY-MM-DD RC=0003 RESULT=0003Mesg Code: 2517 Invalid month   TstDate: ..2022-13- Mask used:YYYY-MM-DD     HEX=303030334D65736720436F64653A203235313720496E76616C6964206D6F6E7468202020547374446174653A20000A323032322D31332D204D61736B20757365643A595959592D4D4D2D444420202020'

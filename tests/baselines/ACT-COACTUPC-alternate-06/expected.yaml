@@ -1,0 +1,47 @@
+# Derived baseline (capture_platform: derived in manifest.yaml) for
+# ACT-COACTUPC-alternate-06, authored from the source because only unikix can
+# run the scenario: inferred-not-observed under GAP-INF-005 and GAP-INF-012,
+# and replaced only by `report.py --import-unikix <execution_id>`. A UniKix
+# record cannot verify the COACTUP map item: its copy drops the unnamed field
+# at row 1, columns 1-9 (GAP-DOC-025), which is therefore never asserted.
+#
+# CAUP entered directly, with no COMMAREA and no sign-on: COACTUPC sets
+# CDEMO-PGM-ENTER and ACUP-DETAILS-NOT-FETCHED, checks no user id or type,
+# sends its own fresh COACTUP screen with ACCTSID unprotected and FSET, and
+# returns with TRANSID CAUP and CDEMO-PGM-REENTER
+# [app/cbl/COACTUPC.cbl:880-886,964-973,1007-1019,2994-2996]. Whether that is
+# intended is GAP-UNC-010, so it is pinned as observed (observed-only).
+#
+# This screen is the reply to the step's ENTER, not the fresh screen: the
+# adapter identifies the fresh COACTUP as the step's input map, then presses
+# the AID. On that ENTER ACCTSID arrives empty, so 1210-EDIT-ACCOUNT flags the
+# filter blank and 1200-EDIT-MAP-INPUTS replaces 'Account number not provided'
+# with 'No input received'; nothing is read, the detail fields stay
+# LOW-VALUES, the search prompt stays, and the blank filter on re-entry puts
+# '*' in ACCTSID [app/cbl/COACTUPC.cbl:1051-1062,1429-1446,1783-1797,
+# 2568-2580,2698-2725,2955-2981,3176-3184]. FKEYS shows its BMS INITIAL
+# [app/bms/COACTUP.bms:493-497]; the titles come from COTTL01Y.
+#
+# Keys are exactly those the scenario's expected names. Values are whole BMS
+# fields, trailing spaces kept; LOW-VALUES show as spaces. CURDATE and
+# CURTIME, built from the clock as mm/dd/yy and hh:mm:ss
+# [app/cpy/CSDAT01Y.cpy:30-41], are the only matcher fields.
+screens:
+- '@map': COACTUP
+  ACCTSID: '*          '
+  ACSFNAM: '                         '
+  ACSLNAM: '                         '
+  ACSTNUM: '         '
+  ACSTTUS: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'No input received                                                             '
+  FKEYS: ENTER=Process F3=Exit
+  INFOMSG: 'Enter or update id of account to update      '
+  PGMNAME: COACTUPC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CAUP

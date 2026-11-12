@@ -1,0 +1,216 @@
+# First page of the COCRDLIC card list, reached from the main menu, then the
+# list filtered by one card number entered in the card filter.
+#
+# USER0001 (type U) signs on; COSGN00C transfers control to COMEN01C, which
+# sends the main menu COMEN01 [app/cbl/COSGN00C.cbl:209-240]
+# [app/cbl/COMEN01C.cbl:82-90]. Option 3, right-justified into WS-OPTION as 03,
+# selects COMEN02Y's 'Credit Card List', program COCRDLIC, and COMEN01C transfers
+# control there with CDEMO-FROM-PROGRAM COMEN01C and the program context reset to
+# 0 [app/cbl/COMEN01C.cbl:115-157] [app/cpy/COMEN02Y.cpy:37-41].
+#
+# In that task COCRDLIC [app/cbl/COCRDLIC.cbl:300-343,357-362,572-582]:
+# - copies the COMMAREA, then, entered from another program with the context 0,
+#   re-initializes its own paging area (which also discards the bytes it copied
+#   from past the end of the menu's shorter COMMAREA) and sets page 1;
+# - receives no map, because the previous program is not COCRDLIC, so the
+#   account and card filters stay blank and the select flags keep the spaces
+#   INITIALIZE gave them; the task's ENTER key reaches WHEN OTHER;
+# - browses CARDDAT GTEQ from a blank card number, so from the first key, and
+#   fills the 7 rows (WS-MAX-SCREEN-LINES) with account, card number and active
+#   status in key order; the look-ahead READNEXT finds the 8th card, so
+#   CA-NEXT-PAGE-EXISTS holds and no error message is set
+#   [app/cbl/COCRDLIC.cbl:177-178,1123-1260].
+# 1000-SEND-MAP then builds the screen [app/cbl/COCRDLIC.cbl:642-743,837-946]:
+# the titles, CCLI, COCRDLIC, the run date and time; the page number 1, a
+# PIC 9(1) moved to the 3-byte PAGENO and so left-justified as '1  '; the 7
+# rows; the filters left at LOW-VALUES, because the previous program is the
+# menu; and 'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD' in INFOMSG, set because
+# WS-NO-INFO-MESSAGE (set by 1100-SCREEN-INIT) and CA-NEXT-PAGE-EXISTS share one
+# WHEN branch [app/cbl/COCRDLIC.cbl:669,917-919,926-930]. It is sent once, with
+# ERASE, and the task returns with TRANSID CCLI.
+#
+# ENTER with card 4011500891777367 in CARDSID and the account filter left blank
+# re-enters CCLI. CDEMO-FROM-PROGRAM is now COCRDLIC, so the paging area is
+# restored from the COMMAREA and 2000-RECEIVE-MAP runs: 2210-EDIT-ACCOUNT finds
+# the account filter blank and moves zero to CDEMO-ACCT-ID; 2220-EDIT-CARD finds
+# CC-CARD-NUM numeric and not zero, so it sets FLG-CARDFILTER-ISVALID and moves
+# the card to CDEMO-CARD-NUM; 2250-EDIT-ARRAY finds no row selected
+# [app/cbl/COCRDLIC.cbl:326-331,357-362,1003-1117]. The view and update tests
+# subscript WS-EDIT-SELECT with I-SELECTED = 0, outside the 7-entry table;
+# without subscript checking that byte is the last byte of the packed
+# WS-EDIT-SELECT-COUNTER (x'0C'), neither 'S' nor 'U', so WHEN OTHER browses
+# forward from WS-CA-FIRST-CARD-NUM, 0500024453765740
+# [app/cbl/COCRDLIC.cbl:69-76,517-519,572-582]. The same tests, with I-SELECTED
+# still 0, run on the first display from the menu. This is the suspected defect
+# GAP-DEF-024, pinned as derived and never fixed; a region that checks
+# subscripts would abend the task instead. 9500-FILTER-RECORDS excludes
+# every card whose CARD-NUM differs from CC-CARD-NUM-N, so only
+# 4011500891777367, the fixture's record 18 (account 00000000013, status Y)
+# [app/data/ASCII/carddata.txt:18], fills row 1, and the page number stays 1.
+# The browse reaches ENDFILE with that one row, so the main-loop ENDFILE branch
+# sets 'NO MORE RECORDS TO SHOW' and not WS-NO-RECORDS-FOUND, because a row was
+# found [app/cbl/COCRDLIC.cbl:1156-1187,1233-1245,1382-1405]. 1000-SEND-MAP
+# leaves rows 2-7 at LOW-VALUES. 1300-SETUP-SCREEN-ATTRS, entered from COCRDLIC,
+# sends the blank account filter as LOW-VALUES, since CDEMO-ACCT-ID is 0, and
+# echoes CC-CARD-NUM in CARDSID, since the card filter is valid
+# [app/cbl/COCRDLIC.cbl:837-868]. 1400-SETUP-MESSAGE, with no filter error and
+# neither PF7 nor PF8, finds the WS-NO-INFO-MESSAGE that 1100-SCREEN-INIT set,
+# so it shows 'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD' in INFOMSG beside the
+# error message [app/cbl/COCRDLIC.cbl:669,895-930].
+#
+# Expected values are derived from the source (no TPE region runs in CI) and are
+# whole fields at their BMS length, trailing spaces kept: comparison never trims.
+# Fields left at LOW-VALUES (ACCTSID and CARDSID on page 1; ACCTSID and rows 2-7
+# after the card filter) show as spaces. The page-1 rows are the first seven
+# records of the CARDDATA fixture, whose 50 cards are in key order and all
+# have CARD-ACTIVE-STATUS 'Y'; the 8th is 1561409106491600
+# [app/data/ASCII/carddata.txt:1-8]. The dark, unset CRDSTP2-CRDSTP7 fields are
+# not asserted. The main menu is asserted only by its identification fields: its
+# content is covered by the COMEN01C (MNU) scenarios. CURDATE and CURTIME come
+# from the run clock, so they are matchers and the clock is relative.
+id: CRD-COCRDLIC-normal-01
+level: e2e
+type: normal
+description: >-
+  USER0001 signs on and enters option 3 (Credit Card List) on the main menu.
+  COCRDLIC, entered from the menu, browses CARDDAT from the first key and shows
+  page 1 of the card list: the first 7 cards of the fixture in card-number order
+  with their accounts and active status 'Y', blank filters, a blank ERRMSG and
+  'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD' in INFOMSG, since an 8th card
+  exists. USER0001 then enters repository card 4011500891777367 as the card
+  filter, and COCRDLIC shows only that card (account 00000000013, status 'Y') in
+  row 1, rows 2-7 empty, the filter echoed in CARDSID, 'NO MORE RECORDS TO SHOW'
+  in ERRMSG and 'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD' in INFOMSG.
+# Primary item first, then the program, the maps asserted, the transaction the
+# list screen names and returns with, the CSD file browsed, and the online-only
+# copybooks COCRDLIC copies.
+inventory_ids:
+- INV-CRD-025  # COCRDLIC card list content (report): 7 rows per page
+- INV-CRD-001  # COCRDLIC program
+- INV-MNU-003  # COMEN01 map, where option 3 is entered
+- INV-CRD-004  # COCRDLI map, both list screens asserted
+- INV-CFG-014  # CCLI transaction, TRNNAME and the RETURN TRANSID of the list
+- INV-CFG-003  # CARDDAT CSD file, browsed by card number
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA passed by the menu
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the screen date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COCRDLIC
+- INV-LAY-011  # CSSTRPFY copybook, mapping the ENTER key
+- INV-LAY-019  # CVCRD01Y copybook, the AID, filter and message work area
+tags:
+- inferred-not-observed
+- suspected-defect
+gap_ids:
+- GAP-INF-006  # derived CRD end-to-end baselines, never observed on a TPE region
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-DEF-024  # the selection tests subscript WS-EDIT-SELECT with 0 when no row is selected
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+    CARDDATA: {base: CARDDATA}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '3'
+  - aid: ENTER
+    '@map': COCRDLI
+    fields:
+      CARDSID: '4011500891777367'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+  - '@map': COCRDLI
+    TRNNAME: CCLI
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COCRDLIC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    PAGENO: '1  '
+    ACCTSID: '           '
+    CARDSID: '                '
+    CRDSEL1: ' '
+    ACCTNO1: '00000000050'
+    CRDNUM1: '0500024453765740'
+    CRDSTS1: 'Y'
+    CRDSEL2: ' '
+    ACCTNO2: '00000000027'
+    CRDNUM2: '0683586198171516'
+    CRDSTS2: 'Y'
+    CRDSEL3: ' '
+    ACCTNO3: '00000000002'
+    CRDNUM3: '0923877193247330'
+    CRDSTS3: 'Y'
+    CRDSEL4: ' '
+    ACCTNO4: '00000000020'
+    CRDNUM4: '0927987108636232'
+    CRDSTS4: 'Y'
+    CRDSEL5: ' '
+    ACCTNO5: '00000000012'
+    CRDNUM5: '0982496213629795'
+    CRDSTS5: 'Y'
+    CRDSEL6: ' '
+    ACCTNO6: '00000000044'
+    CRDNUM6: '1014086565224350'
+    CRDSTS6: 'Y'
+    CRDSEL7: ' '
+    ACCTNO7: '00000000037'
+    CRDNUM7: '1142167692878931'
+    CRDSTS7: 'Y'
+    INFOMSG: 'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD    '
+    ERRMSG: '                                                                              '
+  # Step 3: the card filter 4011500891777367 is accepted, so the browse keeps that
+  # card alone in row 1, echoes the filter and reaches the end of CARDDAT.
+  - '@map': COCRDLI
+    TRNNAME: CCLI
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COCRDLIC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    PAGENO: '1  '
+    ACCTSID: '           '
+    CARDSID: '4011500891777367'
+    CRDSEL1: ' '
+    ACCTNO1: '00000000013'
+    CRDNUM1: '4011500891777367'
+    CRDSTS1: 'Y'
+    CRDSEL2: ' '
+    ACCTNO2: '           '
+    CRDNUM2: '                '
+    CRDSTS2: ' '
+    CRDSEL3: ' '
+    ACCTNO3: '           '
+    CRDNUM3: '                '
+    CRDSTS3: ' '
+    CRDSEL4: ' '
+    ACCTNO4: '           '
+    CRDNUM4: '                '
+    CRDSTS4: ' '
+    CRDSEL5: ' '
+    ACCTNO5: '           '
+    CRDNUM5: '                '
+    CRDSTS5: ' '
+    CRDSEL6: ' '
+    ACCTNO6: '           '
+    CRDNUM6: '                '
+    CRDSTS6: ' '
+    CRDSEL7: ' '
+    ACCTNO7: '           '
+    CRDNUM7: '                '
+    CRDSTS7: ' '
+    INFOMSG: 'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD    '
+    ERRMSG: 'NO MORE RECORDS TO SHOW                                                       '

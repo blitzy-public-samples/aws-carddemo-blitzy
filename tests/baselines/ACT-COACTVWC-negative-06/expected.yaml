@@ -1,0 +1,67 @@
+# ACT-COACTVWC-negative-06: derived baseline, inferred-not-observed
+# (GAP-INF-005, GAP-INF-012). Authored from the source; no TPE region runs in
+# CI, so `report.py --import-unikix` replaces it once a UniKix run is imported.
+#
+# Step 1, USER0001 signed on: COSGN00C XCTLs to COMEN01C, whose first entry
+# blanks ERRMSGO and sends COMEN01 [app/cbl/COMEN01C.cbl:75-92,182-187].
+# Step 2, option '1': COMEN01C sets CDEMO-PGM-CONTEXT to 0 and XCTLs to
+# COACTVWC, which sends COACTVW with a blank message
+# [app/cbl/COMEN01C.cbl:145-155] [app/cbl/COACTVWC.cbl:282-286,353-360].
+# Step 3, account 99999999999: the CXACAIX read returns NOTFND and COACTVW is
+# sent again without account or customer data
+# [app/cbl/COACTVWC.cbl:361-373,687-699,723-758,460-535].
+#
+# ERRMSG of step 3:
+# - The STRING parts are 'Account:' (8), WS-CARD-RID-ACCT-ID-X (11),
+#   ' not found in' (13), ' Cross ref file.  Resp:' (23), ERROR-RESP X(10),
+#   ' Reas:' (6) and ERROR-RESP2 X(10): 81 characters into WS-RETURN-MSG
+#   X(75), with no ON OVERFLOW, so the first 75 are kept
+#   [app/cbl/COACTVWC.cbl:98-103,117,745-757].
+# - MOVE WS-RESP-CD (S9(9) COMP) TO ERROR-RESP gives its 9 unsigned digits
+#   and a space: '000000013 ' for DFHRESP(NOTFND) = 13 [app/cbl/COACTVWC.cbl:40-43].
+# - Only the first 4 characters of ERROR-RESP2 fit, '0000' for any RESP2 below
+#   100000 (CICS gives 80 for a READ NOTFND), so the text does not depend on it.
+# - ERRMSGO X(78) at POS=(23,1) receives the 75 characters and 3 spaces
+#   [app/cbl/COACTVWC.cbl:532] [app/bms/COACTVW.bms:365-368].
+# INFOMSG is the 40-character WS-PROMPT-FOR-INPUT text padded to 45: 9000-READ-ACCT
+# sets WS-NO-INFO-MESSAGE and 1200-SETUP-SCREEN-VARS then sets the prompt
+# [app/cbl/COACTVWC.cbl:689,528-534]. ACCTSID echoes CC-ACCT-ID
+# [app/cbl/COACTVWC.cbl:468]; FOUND-ACCT-IN-MASTER and FOUND-CUST-IN-MASTER stay
+# unset, so the detail fields keep the LOW-VALUES of 1100-SCREEN-INIT and show
+# blank at full width. CURDATE and CURTIME come from the region clock, hence
+# matchers. TRNNAME 'CAVW' is read from the UniKix COACTVW map, which drops the
+# unnamed row-1 field that overlaps it in app/bms/COACTVW.bms (GAP-DOC-025).
+# messages holds every step's ERRMSG, blank ones included, as
+# tests/adapters/unikix/tpe.py captures them. Values keep their trailing spaces.
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'Account:99999999999 not found in Cross ref file.  Resp:000000013  Reas:0000   '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COACTVW
+  ERRMSG: '                                                                              '
+  PGMNAME: COACTVWC
+  TRNNAME: CAVW
+- '@map': COACTVW
+  ACCTSID: '99999999999'
+  ACRDLIM: '               '
+  ACSFNAM: '                         '
+  ACSLNAM: '                         '
+  ACSTNUM: '         '
+  ACSTTUS: ' '
+  ACURBAL: '               '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Account:99999999999 not found in Cross ref file.  Resp:000000013  Reas:0000   '
+  INFOMSG: 'Enter or update id of account to display     '
+  PGMNAME: COACTVWC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CAVW

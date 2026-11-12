@@ -1,0 +1,102 @@
+# ADMIN001 opens the user list and selects the first row with X, which is
+# neither U nor D. COUSR00C is re-entered with ENTER, receives COUSR00 and, in
+# PROCESS-ENTER-KEY, takes the first non-blank selection field: SEL0001 holds
+# X, so the flag is X and the selected user is USRID01, which is FSET and so
+# comes back as ADMIN001 [app/cbl/COUSR00C.cbl:121-124,149-154] [app/bms/COUSR00.bms:153-166].
+# Flag and user are both supplied, but X matches neither the U/u branch
+# (XCTL to COUSR02C) nor the D/d branch (XCTL to COUSR03C), so WHEN OTHER moves
+# 'Invalid selection. Valid values are U and D' to WS-MESSAGE without setting
+# the error flag, and no transfer happens [app/cbl/COUSR00C.cbl:187-216].
+# USRIDIN came back blank, so the browse restarts at LOW-VALUES and
+# PROCESS-PAGE-FORWARD sends COUSR00 again with ERRMSG = WS-MESSAGE
+# [app/cbl/COUSR00C.cbl:218-232,282-331,522-526]. SEL0001 still shows X,
+# because COUSR0AO redefines the received COUSR0AI and nothing clears it
+# [app/cpy-bms/COUSR00.CPY:72,373,428].
+#
+# USRSEC holds the 10 repository users plus the data-only user TESTU002: after
+# filling the 10 rows, PROCESS-PAGE-FORWARD reads one more record to decide
+# whether a next page exists. With 10 users or fewer that read ends the file and
+# replaces WS-MESSAGE with 'You have reached the bottom of the page...' before
+# the screen is sent, so the invalid-selection message only reaches the screen
+# when an 11th record follows the first page [app/cbl/COUSR00C.cbl:308-316,634-640].
+# TESTU002 is invented data that never signs on, so it carries no password.
+# It sorts between ADMIN005 and USER0001 in both ASCII and EBCDIC, so row 1 is
+# ADMIN001 on either collating sequence.
+#
+# The first entry from the admin menu (option 1, CDEMO-PGM-CONTEXT 0) lists the
+# same first page with a blank message [app/cbl/COADM01C.cbl:137-145]
+# [app/cbl/COUSR00C.cbl:115-119]. Expected text values are full field width with
+# their trailing spaces; the clock-derived CURDATE and CURTIME are matchers, so
+# the clock is relative.
+id: USR-COUSR00C-negative-02
+level: e2e
+type: negative
+description: >-
+  ADMIN001 signs on, opens the user list (admin option 1, CU00) and enters X
+  beside the first user. COUSR00C refuses the selection with 'Invalid
+  selection. Valid values are U and D', transfers to neither COUSR02C nor
+  COUSR03C, and redisplays COUSR00 with the X still in SEL0001. USRSEC holds an
+  11th user so the next-page look-ahead read does not overwrite the message.
+inventory_ids:
+- INV-USR-010  # COUSR00C message 'Invalid selection. Valid values are U and D' (rule)
+- INV-USR-001  # COUSR00C program
+- INV-MNU-004  # COADM01 map, the screen option 1 is entered on
+- INV-USR-005  # COUSR00 map, the list the selection is entered on and redisplayed
+- INV-CFG-023  # CU00 transaction, the list's own transaction
+- INV-CFG-008  # USRSEC CSD file, browsed for the list
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carrying the re-entry flag and selection
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the screen date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COUSR00C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-004  # derived USR end-to-end baselines, never observed on a TPE region
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    USRSEC:
+      base: USRSEC
+      records:
+      - SEC-USR-ID: TESTU002
+        SEC-USR-FNAME: TEST
+        SEC-USR-LNAME: USERTWO
+        SEC-USR-TYPE: U
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    '@map': COSGN00
+    fields:
+      USERID: ADMIN001
+      PASSWD: PASSWORD
+    aid: ENTER
+  - '@map': COADM01
+    fields:
+      OPTION: '1'
+    aid: ENTER
+  - '@map': COUSR00
+    fields:
+      SEL0001: X
+    aid: ENTER
+expected:
+  screens:
+  - '@map': COADM01
+    TRNNAME: 'CA00'
+    PGMNAME: 'COADM01C'
+  - '@map': COUSR00
+    TRNNAME: 'CU00'
+    PGMNAME: 'COUSR00C'
+    ERRMSG: '                                                                              '
+  - '@map': COUSR00
+    TRNNAME: 'CU00'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COUSR00C'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    SEL0001: 'X'
+    USRID01: 'ADMIN001'
+    ERRMSG: 'Invalid selection. Valid values are U and D                                   '

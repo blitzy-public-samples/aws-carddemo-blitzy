@@ -1,0 +1,64 @@
+# CSUTLDTC's mapping of the CEEDAYS feedback token 09D6 (bad picture string),
+# reached by injection.
+#
+# Only an unsupported picture string makes CEEDAYS return 09D6, and the callers
+# pass YYYY-MM-DD or YYYYMMDD alone, so the token is injected: the parameter
+# ceedays_feedback makes the test-tree CEEDAYS stub return the severity-3 token
+# 00 03 09 D6 59 'CEE' (EBCDIC) 00000000 whatever the date (GAP-STB-002). The
+# call passes the valid date 2022-07-18 with the mask YYYY-MM-DD, so the
+# injection is the only cause of the outcome. What is pinned is CSUTLDTC's own
+# code, observed, not which dates CEEDAYS refuses, so the scenario is untagged.
+#
+# Path [app/cbl/CSUTLDTC.cbl:42-57,68,88-102,116-151]:
+# - The token equals FC-BAD-PIC-STRING (X'000309D659C3C5C5'), so WS-RESULT is
+#   'Bad Pic String ' (X(15), one trailing space).
+# - SEVERITY 3 and MSG-NO x'09D6' (2518) are moved to the 4-digit WS-SEVERITY-N
+#   and WS-MSG-NO-N, and RETURN-CODE is set to the severity, 3.
+# - MOVE WS-DATE-TO-TEST TO WS-DATE copies the binary Vstring length x'000A'
+#   and the first 8 date bytes, so 'TstDate:' is followed by x'00' x'0A'
+#   '2022-07-'. DTCDRV renders those two bytes as '.' in RESULT and gives them
+#   as 000A in HEX; they are pinned as observed.
+#
+# DTCDRV prints one line per DTCIN record: DATE and MASK as passed, RC (the
+# RETURN-CODE CSUTLDTC leaves, 4 digits), the 80-byte result with
+# non-printable bytes as '.', and the same 80 bytes as hex. It then ends with
+# exit status 0, which is the scenario's return code (GAP-STB-004). The line was
+# captured from a GnuCOBOL 3.2 run of the app/ source under the suite's compile
+# options (GAP-STB-011).
+id: UTL-CSUTLDTC-negative-11
+level: unit
+type: negative
+description: >-
+  CEEDAYS is made to return the bad-picture-string token 09D6 for the valid
+  date 2022-07-18 with mask YYYY-MM-DD. CSUTLDTC maps it to severity 0003,
+  message number 2518 and the text 'Bad Pic String ', and sets RETURN-CODE to
+  the severity [app/cbl/CSUTLDTC.cbl:68,98,123-124,141-142].
+# No DTA or LAY item: the call list is built from the scenario, and CSUTLDTC
+# copies no copybook. Not the date-acceptance item INV-UTL-003: the injected
+# token replaces whatever CEEDAYS would decide for the date.
+inventory_ids:
+- INV-UTL-002  # CSUTLDTC CEEDAYS feedback-token mapping (rule): WHEN FC-BAD-PIC-STRING
+- INV-UTL-004  # CSUTLDTC result message layout and RETURN-CODE (interface)
+- INV-UTL-001  # CSUTLDTC program
+tags: []
+gap_ids:
+- GAP-STB-002  # CEEDAYS stub; 09D6 is reached only by injection here
+- GAP-STB-004  # DTCDRV stands in for CSUTLDTC's callers
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
+preconditions:
+  datasets: {}
+  parameters:
+    ceedays_feedback: '09D6'
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults: []
+inputs:
+  program: CSUTLDTC
+  param_files:
+    # One DTCDRV call: date X(10) then mask X(10), padded with spaces to 80 bytes.
+    DTCIN:
+    - '2022-07-18YYYY-MM-DD'
+expected:
+  return_code: 0
+  messages:
+  - 'DTCDRV DATE=2022-07-18 MASK=YYYY-MM-DD RC=0003 RESULT=0003Mesg Code: 2518 Bad Pic String  TstDate: ..2022-07- Mask used:YYYY-MM-DD     HEX=303030334D65736720436F64653A2032353138204261642050696320537472696E672020547374446174653A20000A323032322D30372D204D61736B20757365643A595959592D4D4D2D444420202020'

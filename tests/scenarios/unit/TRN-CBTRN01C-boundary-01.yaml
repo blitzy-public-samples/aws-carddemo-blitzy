@@ -1,0 +1,93 @@
+# The count boundary of CBTRN01C: DALYTRAN holds a single record. The main loop
+# displays the record and verifies its card through CARDXREF and ACCTDATA. The
+# next READ sets end of file, but the loop body still moves DALYTRAN-CARD-NUM
+# and runs 2000-LOOKUP-XREF and 3000-READ-ACCOUNT before the PERFORM UNTIL test
+# ends it [app/cbl/CBTRN01C.cbl:164-186]. READ ... INTO moves nothing at end of
+# file, so the second pass verifies the same card again, without the record
+# line. The duplicated verification is pinned as observed, never fixed
+# (GAP-DEF-006).
+#
+# The record is invented: its DALYTRAN-ID, merchant and description match no
+# repository transaction, and DALYTRAN-CARD-NUM is the repository card of
+# account 00000000001 and customer 000000001 [app/data/ASCII/cardxref.txt:49].
+# DALYTRAN is synthetic, so no dailytran.txt item is listed. The record line of
+# expected.messages is the whole 350-byte DALYTRAN-RECORD as DISPLAY writes it:
+# DALYTRAN-AMT 10.00 as the overpunch-signed 0000000100{, and the blank
+# DALYTRAN-PROC-TS and FILLER as 46 trailing spaces, which are significant.
+# TRANSACT is opened INPUT but never read, so it is an empty KSDS.
+id: TRN-CBTRN01C-boundary-01
+level: unit
+type: boundary
+description: >-
+  CBTRN01C reads a single daily transaction: it displays the record and the
+  successful XREF and account verification of its card, then, after end of
+  file, displays the same verification a second time without a record line,
+  and ends with return code 0.
+inventory_ids:
+- INV-TRN-069
+- INV-TRN-007
+- INV-LAY-026
+- INV-DTA-003
+- INV-DTA-013
+- INV-DTA-001
+- INV-DTA-011
+- INV-DTA-004
+- INV-DTA-014
+- INV-DTA-002
+- INV-DTA-012
+tags:
+- suspected-defect
+gap_ids:
+- GAP-DEF-006
+- GAP-UNC-003
+- GAP-STB-010
+- GAP-STB-011
+preconditions:
+  datasets:
+    DALYTRAN:
+      records:
+      - DALYTRAN-ID: '9900000000000101'
+        DALYTRAN-TYPE-CD: '01'
+        DALYTRAN-CAT-CD: 1
+        DALYTRAN-SOURCE: POS TERM
+        DALYTRAN-DESC: Synthetic purchase
+        DALYTRAN-AMT: '10.00'
+        DALYTRAN-MERCHANT-ID: 900000001
+        DALYTRAN-MERCHANT-NAME: Synthetic Test Merchant
+        DALYTRAN-MERCHANT-CITY: Testville
+        DALYTRAN-MERCHANT-ZIP: '00000'
+        DALYTRAN-CARD-NUM: '9680294154603697'
+        DALYTRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+        DALYTRAN-PROC-TS: ''
+    CARDXREF:
+      base: CARDXREF
+    ACCTDATA:
+      base: ACCTDATA
+    CUSTDATA:
+      base: CUSTDATA
+    CARDDATA:
+      base: CARDDATA
+    TRANSACT:
+      records: []
+  parameters:
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults: []
+inputs:
+  program: CBTRN01C
+expected:
+  return_code: 0
+  messages:
+  - START OF EXECUTION OF PROGRAM CBTRN01C
+  - '9900000000000101010001POS TERM  Synthetic purchase                                                                                  0000000100{900000001Synthetic Test Merchant                           Testville                                         00000     96802941546036972022-07-05 09:15:00.000000                                              '
+  - SUCCESSFUL READ OF XREF
+  - 'CARD NUMBER: 9680294154603697'
+  - 'ACCOUNT ID : 00000000001'
+  - 'CUSTOMER ID: 000000001'
+  - SUCCESSFUL READ OF ACCOUNT FILE
+  - SUCCESSFUL READ OF XREF
+  - 'CARD NUMBER: 9680294154603697'
+  - 'ACCOUNT ID : 00000000001'
+  - 'CUSTOMER ID: 000000001'
+  - SUCCESSFUL READ OF ACCOUNT FILE
+  - END OF EXECUTION OF PROGRAM CBTRN01C

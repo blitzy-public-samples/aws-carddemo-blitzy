@@ -1,0 +1,106 @@
+# Bill payment with the account id left blank. USER0001 (user type U) signs on
+# through CC00 and COSGN00C transfers control to the main menu COMEN01C
+# [app/cbl/COSGN00C.cbl:221-240]. Option 10 of COMEN02Y is 'Bill Payment',
+# program COBIL00C [app/cpy/COMEN02Y.cpy:80-84], so COMEN01C transfers control
+# to it with the program context reset [app/cbl/COMEN01C.cbl:127-155].
+# COMEN01C passes only the COCOM01Y COMMAREA, so the group MOVE into COBIL00C's
+# longer CARDDEMO-COMMAREA pads CDEMO-CB00-TRN-SELECTED with spaces and no
+# account is pre-selected. Entered without the reenter flag, COBIL00C clears
+# COBIL0AO to LOW-VALUES, sends COBIL00 with WS-MESSAGE still spaces and
+# returns with TRANSID CB00 [app/cbl/COBIL00C.cbl:38,63-72,107-122,146-149,
+# 289-326].
+#
+# The ENTER of step 3 runs CB00 again. COBIL00C receives map COBIL0A and the
+# first WHEN of PROCESS-ENTER-KEY finds ACTIDINI equal to SPACES or LOW-VALUES
+# (the erased field arrives with no data, so either value takes this branch):
+# it sets the error flag, moves 'Acct ID can NOT be empty...' to WS-MESSAGE,
+# puts the cursor on ACTIDIN and sends the screen again
+# [app/cbl/COBIL00C.cbl:112,123-127,154-164,289-300]. The error flag keeps it
+# from the CONFIRM evaluation, READ-ACCTDAT-FILE, the move of the balance into
+# CURBAL, the nothing-to-pay check and the payment itself, so no account is
+# read and CURBAL and CONFIRM, never filled on this screen, stay blank
+# [app/cbl/COBIL00C.cbl:169-243]. ACCTDATA is loaded only so the region starts
+# from the fixture state the other COBIL00C scenarios use; this path neither
+# reads nor changes it, so no file_state is asserted.
+#
+# Screen values are whole fields at their BMS length with trailing spaces kept,
+# because comparison never trims. ERRMSG is WS-MESSAGE (X(80)) cut to ERRMSGO
+# (X(78)); OPTN010 is the 40-character WS-MENU-OPT-TXT that COMEN01C strings
+# from the option number, '. ' and the 35-character option name
+# [app/cbl/COMEN01C.cbl:48,236-246]; CURTIME is the 8-character hh:mm:ss of
+# CSDAT01Y moved to the 8-character CURTIMEO [app/bms/COBIL00.bms:70-74]
+# [app/cpy-bms/COBIL00.CPY:116].
+# expected.messages is not asserted: it carries the ERRMSG of every step, which
+# the screens below already assert. The baseline is derived from the source:
+# no TPE region runs in CI.
+id: BIL-COBIL00C-negative-02
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, chooses option 10 (Bill Payment) on the main menu and
+  presses ENTER on the bill-payment screen with the account id blank. COBIL00C
+  refuses the payment before any ACCTDAT read and shows map COBIL00 again with
+  its header (CB00, COBIL00C, the titles, the run date and time), the blank
+  account id, no current balance, a blank confirmation, and 'Acct ID can NOT
+  be empty...' in ERRMSG [app/cbl/COBIL00C.cbl:154-164].
+# Primary item first, then the program, the maps the screens assert (COMEN01,
+# COBIL00), the transaction step 3 enters (CB00, the TRANSID COBIL00C returned
+# with), and the online-only copybooks COBIL00C copies. The ACCTDAT, CXACAIX
+# and TRANSACT CSD files are not listed because this path never touches them;
+# CVACT01Y, CVACT03Y and CVTRA05Y are batch-level copybooks verified elsewhere,
+# and the sign-on and menu items belong to their own scenarios.
+inventory_ids:
+- INV-BIL-004  # COBIL00C message 'Acct ID can NOT be empty...' (rule)
+- INV-BIL-001  # COBIL00C program
+- INV-MNU-003  # COMEN01 map, the main menu the sign-on lands on
+- INV-BIL-002  # COBIL00 map, the bill-payment screen
+- INV-CFG-012  # CB00 transaction, under which the ENTER of step 3 runs COBIL00C
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA that makes the ENTER a reentry
+- INV-LAY-005  # COTTL01Y copybook, TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y copybook, CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y copybook, copied by COBIL00C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-008  # BIL end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user USER0001; COBIL00C reads nothing here.
+    USRSEC: {base: USRSEC}
+    # The repository accounts, loaded as for every online BIL scenario.
+    ACCTDATA: {base: ACCTDATA}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - {transid: CC00, aid: ENTER, fields: {USERID: USER0001, PASSWD: PASSWORD}, '@map': COSGN00}
+  - {aid: ENTER, fields: {OPTION: '10'}, '@map': COMEN01}
+  # The empty value erases the account id field, so COBIL00C receives no
+  # account id.
+  - {aid: ENTER, fields: {ACTIDIN: ''}, '@map': COBIL00}
+expected:
+  screens:
+  # One entry per step, each the screen the step ends on.
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN010: '10. Bill Payment                        '
+    ERRMSG: '                                                                              '
+  - '@map': COBIL00
+    TRNNAME: CB00
+    PGMNAME: COBIL00C
+    ACTIDIN: '           '
+    ERRMSG: '                                                                              '
+  - '@map': COBIL00
+    TRNNAME: CB00
+    PGMNAME: COBIL00C
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    ACTIDIN: '           '
+    CURBAL: '              '
+    CONFIRM: ' '
+    ERRMSG: 'Acct ID can NOT be empty...                                                   '

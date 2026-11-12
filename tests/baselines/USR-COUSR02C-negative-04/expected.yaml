@@ -1,0 +1,141 @@
+# Derived baseline of scenario USR-COUSR02C-negative-04: ADMIN001 signs on,
+# takes admin option 3 to COUSR02C, fetches the invented user TESTU002 on
+# COUSR02, erases its last name and presses PF5. Authored from the source,
+# never captured:
+# - app/cbl/COSGN00C.cbl:221-237 (type A routed to COADM01C) and
+#   app/cbl/COADM01C.cbl:115-145 with app/cpy/COADM02Y.cpy:34-37 (option 3
+#   'User Update (Security)' -> COUSR02C);
+# - app/cbl/COUSR02C.cbl:90-105 (first entry: COUSR2AO cleared, blank ERRMSG);
+#   143-172 with 320-339 (READ UPDATE of USRSEC, the record's fields and
+#   'Press PF5 key to save your updates ...');
+# - app/cbl/COUSR02C.cbl:122-123,177-213 (PF5: UPDATE-USER-INFO tests the
+#   fields in screen order; the user id and first name are present, so the
+#   LNAMEI = SPACES OR LOW-VALUES branch sends 'Last Name can NOT be
+#   empty...'); ERR-FLG-ON skips the second READ and the REWRITE (215-245),
+#   so USRSEC stays exactly as loaded;
+# - app/cpy-bms/COUSR02.CPY:91 (COUSR2AO redefines COUSR2AI, so step 4 echoes
+#   the received fields: LNAME 20 blanks), header from
+#   app/cbl/COUSR02C.cbl:296-315 with app/cpy/COTTL01Y.cpy and
+#   app/cpy/CSDAT01Y.cpy;
+# - app/cpy/CSUSR01Y.cpy for the USRSEC record, and the fixture
+#   app/data/EBCDIC/AWS.M2.CARDDEMO.USRSEC.PS decoded as cp037 for the 10
+#   users; TESTU002's unnamed filler is the default record's spaces.
+# Open under GAP-INF-004 (derived USR end-to-end baselines) and GAP-INF-012
+# (online-only copybooks). Only `report.py --import-unikix` promotes it, from
+# imported UniKix evidence; it is never edited by hand to match a run.
+# One screen per step, each the screen shown after the step's AID; messages
+# holds each step's ERRMSG. Text is full BMS field width with trailing spaces
+# (ERRMSG is the 78-byte ERRMSGO: WS-MESSAGE X(80) moved to X(78)). PASSWD is
+# a dark field and is not asserted, as in the scenario. CURDATE and CURTIME
+# come from the region clock, which UniKix cannot fix, hence the matchers.
+file_state:
+  USRSEC:
+    count: 11
+    records:
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'MARGARET            '
+      SEC-USR-ID: ADMIN001
+      SEC-USR-LNAME: 'GOLD                '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: A
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'RUSSELL             '
+      SEC-USR-ID: ADMIN002
+      SEC-USR-LNAME: 'RUSSELL             '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: A
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'RAYMOND             '
+      SEC-USR-ID: ADMIN003
+      SEC-USR-LNAME: 'WHITMORE            '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: A
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'EMMANUEL            '
+      SEC-USR-ID: ADMIN004
+      SEC-USR-LNAME: 'CASGRAIN            '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: A
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'GRANVILLE           '
+      SEC-USR-ID: ADMIN005
+      SEC-USR-LNAME: 'LACHAPELLE          '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: A
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'TESTFIRST           '
+      SEC-USR-ID: TESTU002
+      SEC-USR-LNAME: 'TESTLAST            '
+      SEC-USR-PWD: TESTPWD2
+      SEC-USR-TYPE: U
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'LAWRENCE            '
+      SEC-USR-ID: USER0001
+      SEC-USR-LNAME: 'THOMAS              '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: U
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'AJITH               '
+      SEC-USR-ID: USER0002
+      SEC-USR-LNAME: 'KUMAR               '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: U
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'LAURITZ             '
+      SEC-USR-ID: USER0003
+      SEC-USR-LNAME: 'ALME                '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: U
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'AVERARDO            '
+      SEC-USR-ID: USER0004
+      SEC-USR-LNAME: 'MAZZI               '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: U
+    - SEC-USR-FILLER: '                       '
+      SEC-USR-FNAME: 'LEE                 '
+      SEC-USR-ID: USER0005
+      SEC-USR-LNAME: 'TING                '
+      SEC-USR-PWD: PASSWORD
+      SEC-USR-TYPE: U
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'Press PF5 key to save your updates ...                                        '
+- 'Last Name can NOT be empty...                                                 '
+screens:
+- '@map': COADM01
+  ERRMSG: '                                                                              '
+  PGMNAME: COADM01C
+  TRNNAME: CA00
+- '@map': COUSR02
+  ERRMSG: '                                                                              '
+  FNAME: '                    '
+  LNAME: '                    '
+  PGMNAME: COUSR02C
+  TRNNAME: CU02
+  USRIDIN: '        '
+  USRTYPE: ' '
+- '@map': COUSR02
+  ERRMSG: 'Press PF5 key to save your updates ...                                        '
+  FNAME: 'TESTFIRST           '
+  LNAME: 'TESTLAST            '
+  PGMNAME: COUSR02C
+  TRNNAME: CU02
+  USRIDIN: TESTU002
+  USRTYPE: U
+- '@map': COUSR02
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Last Name can NOT be empty...                                                 '
+  FNAME: 'TESTFIRST           '
+  LNAME: '                    '
+  PGMNAME: COUSR02C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CU02
+  USRIDIN: TESTU002
+  USRTYPE: U

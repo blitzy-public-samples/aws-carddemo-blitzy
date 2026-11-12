@@ -1,0 +1,11 @@
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: gnucobol-batch
+execution_fingerprint: ad5d4b383d3bfb77bab3c52ac62ee80dc591c82422a987358f3c825d1ad4bab6
+execution_id: gnucobol-batch-50f39e728699c235
+source_commit: 2667adc27599b5f205c27a9ba82a04818079c285
+source_identity:
+  commit: 2667adc27599b5f205c27a9ba82a04818079c285
+  tree: app
+  units:
+    app/cbl/CSUTLDTC.cbl: 58c165dcfc3927232c02c152c673e3dee551587b85e7fe56ca67325c980eebb6

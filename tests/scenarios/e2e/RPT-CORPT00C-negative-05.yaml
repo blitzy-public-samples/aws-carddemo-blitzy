@@ -1,0 +1,133 @@
+# A custom-range report request with the end month left empty.
+# USER0001 signs on through CC00 and reaches the main menu COMEN01; option '9'
+# is 'Transaction Reports', so COMEN01C zeroes CDEMO-PGM-CONTEXT and transfers
+# control with XCTL to CORPT00C [app/cbl/COMEN01C.cbl:115-156]
+# [app/cpy/COMEN02Y.cpy:74-78]. On that first entry CORPT00C sets
+# CDEMO-PGM-REENTER, clears CORPT0AO to LOW-VALUES and sends CORPT00 with its
+# header and the blank WS-MESSAGE in ERRMSG [app/cbl/CORPT00C.cbl:163-181,
+# 556-580,609-628].
+#
+# Step 3 marks CUSTOM and fills every date field of a valid range
+# (01/01/2022 to 07/06/2022) except the end month, then presses ENTER under
+# CR00. CORPT00C receives the map and PROCESS-ENTER-KEY finds MONTHLY and
+# YEARLY blank and CUSTOM marked [app/cbl/CORPT00C.cbl:183-186,208-256]. The
+# custom branch runs its empty checks in the order start month, day, year, end
+# month, day, year. The whole start date is supplied, so the first WHEN that
+# holds is EDTMMI = SPACES OR LOW-VALUES: CORPT00C moves 'End Date - Month can
+# NOT be empty...' to WS-MESSAGE, sets WS-ERR-FLG, puts the cursor on EDTMM and
+# performs SEND-TRNRPT-SCREEN [app/cbl/CORPT00C.cbl:259-286]. That paragraph
+# sends CORPT00 with ERASE and ends with GO TO RETURN-TO-CICS
+# [app/cbl/CORPT00C.cbl:556-591], so the task ends there: the end-day and
+# end-year checks, the NUMVAL-C normalization, the field checks, the CSUTLDTC
+# calls and SUBMIT-JOB-TO-INTRDR are never reached
+# [app/cbl/CORPT00C.cbl:287-510], and no report job is written to the JOBS
+# queue.
+# Priority decision: that nothing is submitted follows from the source path and
+# is pinned by the screen staying on CORPT00 with the end-month message, not
+# asserted as an empty @TDQ:JOBS. That observation needs the JOBS capture
+# (GAP-MIS-017) and would keep this message item blocked wherever the TPE runs
+# but the capture does not; the queue write is verified by
+# RPT-CORPT00C-normal-01..03.
+#
+# Expected values are derived from the source; no TPE region runs in CI.
+# - CORPT0AO redefines CORPT0AI [app/cpy-bms/CORPT00.CPY:121], so the received
+#   fields go back as entered: CUSTOM 'X' and the five supplied date parts.
+#   MONTHLY, YEARLY and the empty EDTMM come back blank (their INITIAL blanks,
+#   sent as spaces because the fields are FSET), and CONFIRM, which has no
+#   INITIAL, holds nulls that the screen shows as a space
+#   [app/bms/CORPT00.bms:80-210].
+# - Text fields are compared at their full BMS length with trailing spaces:
+#   ERRMSG is 78 bytes [app/bms/CORPT00.bms:218-221], the 36-character message
+#   followed by spaces from the 80-byte WS-MESSAGE [app/cbl/CORPT00C.cbl:39].
+# - CURDATE and CURTIME come from the region clock in the mm/dd/yy and
+#   hh:mm:ss forms of CSDAT01Y [app/cbl/CORPT00C.cbl:609-628], hence the
+#   matchers and clock_mode relative.
+id: RPT-CORPT00C-negative-05
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, selects option 9 'Transaction Reports' on the main menu
+  and, on CORPT00, marks Custom and enters the range 01/01/2022 to 07/06/2022
+  with the end month left empty. CORPT00C refuses the request with 'End Date -
+  Month can NOT be empty...', sends CORPT00 again with the entered values and
+  submits no report.
+# The sign-on step's own items (COSGN00, CC00, USRSEC) and the option-9
+# navigation belong to the SEC and MNU scenarios.
+inventory_ids:
+- INV-RPT-014  # CORPT00C message 'End Date - Month can NOT be empty...' (rule)
+- INV-RPT-001  # CORPT00C program
+- INV-MNU-003  # COMEN01 map, the main menu option 9 is entered on
+- INV-RPT-002  # CORPT00 map, the screen the range is entered on and sent again
+- INV-CFG-019  # CR00 transaction, under which the ENTER is processed
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA that makes the ENTER a reentry
+- INV-LAY-005  # COTTL01Y copybook, TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y copybook, CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y copybook, copied by CORPT00C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-009  # RPT end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user USER0001; this path reads nothing else.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '9'
+  # EDTMM is left as sent, so it is received empty.
+  - aid: ENTER
+    '@map': CORPT00
+    fields:
+      CUSTOM: 'X'
+      SDTMM: '01'
+      SDTDD: '01'
+      SDTYYYY: '2022'
+      EDTDD: '06'
+      EDTYYYY: '2022'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    ERRMSG: '                                                                              '
+  - '@map': CORPT00
+    TRNNAME: CR00
+    PGMNAME: CORPT00C
+    ERRMSG: '                                                                              '
+  - '@map': CORPT00
+    TRNNAME: CR00
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: CORPT00C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    MONTHLY: ' '
+    YEARLY: ' '
+    CUSTOM: 'X'
+    SDTMM: '01'
+    SDTDD: '01'
+    SDTYYYY: '2022'
+    EDTMM: '  '
+    EDTDD: '06'
+    EDTYYYY: '2022'
+    CONFIRM: ' '
+    ERRMSG: 'End Date - Month can NOT be empty...                                          '
+  # One ERRMSG value per step: blank on the main menu and on the first
+  # Transaction Reports screen, the empty-month message after the ENTER.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'End Date - Month can NOT be empty...                                          '

@@ -1,0 +1,100 @@
+id: TRN-CBTRN02C-recovery-04
+level: unit
+type: recovery
+description: >-
+  CBTRN02C posts one daily transaction whose card, account and category balance
+  record all exist, and the REWRITE of that TCATBAL record fails with an I/O
+  error. The transaction passes 1500-VALIDATE-TRAN (card 9680294154603697 belongs
+  to account 00000000001, whose credit limit and expiry date admit it), so
+  2000-POST-TRANSACTION performs 2700-UPDATE-TCATBAL; the READ finds key
+  00000000001/01/0001, and 2700-B-UPDATE-TCATBAL-REC displays 'ERROR REWRITING
+  TRANSACTION BALANCE FILE', the status through 9910-DISPLAY-IO-STATUS and
+  'ABENDING PROGRAM', then calls CEE3ABD without parameters
+  [app/cbl/CBTRN02C.cbl:193-219,370-422,424-444,467-501,526-542,707-727].
+  2800-UPDATE-ACCOUNT-REC and 2900-WRITE-TRANSACTION-FILE, which follow
+  2700-UPDATE-TCATBAL, never run, so the account record keeps its balance and
+  cycle amounts and TRANSACT, recreated empty by OPEN OUTPUT, receives no record;
+  the counts and the end-of-execution line are never displayed. No adapter
+  injects a rewrite failure after a successful open (GAP-MIS-013), so the
+  scenario stays implemented-unexecuted and its baseline is derived from the
+  source (GAP-INF-013).
+# Only the read/write/rewrite/close-failure item: this case never executes, so
+# listing the program, its copybooks or the data files here would block items
+# that the executed CBTRN02C scenarios verify (a scenario lists an item only when
+# the item's verification depends on it).
+inventory_ids:
+- INV-TRN-088  # CBTRN02C abend on read, write, rewrite or close failure after open
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-MIS-013  # no adapter injects a failure after a successful open
+- GAP-INF-013  # derived baseline of the post-open fault scenarios
+- GAP-STB-001  # CEE3ABD stub: no abend code, dump or LE condition handling
+- GAP-DEF-001  # CALL 'CEE3ABD' without parameters
+# CBTRN02C runs on Berkeley DB indexed files and is compiled with the mapped
+# options on gnucobol-batch, so the case cites those two stub limitations, as
+# every scenario whose program uses a seam does.
+- GAP-STB-010  # Berkeley DB indexed files in place of the VSAM KSDS; TRANFILE is recreated by OPEN OUTPUT
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
+preconditions:
+  datasets:
+    # One synthetic transaction; every value outside the card, type, category,
+    # amount and origination timestamp is invented and matches no real merchant.
+    DALYTRAN:
+      records:
+      - DALYTRAN-ID: '9900000000000421'
+        DALYTRAN-TYPE-CD: '01'
+        DALYTRAN-CAT-CD: '0001'
+        DALYTRAN-SOURCE: 'POS TERM'
+        DALYTRAN-DESC: 'Purchase at Synthetic Merchant 0421'
+        DALYTRAN-AMT: '10.00'
+        DALYTRAN-MERCHANT-ID: '990000421'
+        DALYTRAN-MERCHANT-NAME: 'Synthetic Merchant 0421'
+        DALYTRAN-MERCHANT-CITY: 'Testville'
+        DALYTRAN-MERCHANT-ZIP: '00000'
+        DALYTRAN-CARD-NUM: '9680294154603697'
+        DALYTRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+    # Repository record 49 maps the card to account 00000000001.
+    CARDXREF: {base: CARDXREF}
+    # Account 00000000001: balance 194.00, credit limit 2020.00, cycle credit and
+    # debit 0.00, expiry 2025-05-20, so the 10.00 transaction is neither over
+    # limit nor late.
+    ACCTDATA: {base: ACCTDATA}
+    # Repository record 1 is key 00000000001/01/0001, so 2700-UPDATE-TCATBAL takes
+    # the update path that issues the REWRITE.
+    TCATBALF: {base: TCATBALF}
+  parameters:
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults:
+  # The first REWRITE of TCATBALF fails.
+  - target: TCATBALF
+    operation: rewrite
+    condition: io-error
+inputs:
+  program: CBTRN02C
+expected:
+  return_code: null
+  messages:
+  - 'START OF EXECUTION OF PROGRAM CBTRN02C'
+  - 'ERROR REWRITING TRANSACTION BALANCE FILE'
+  # An io-error is taken as IBM file status 30 (inferred, GAP-INF-013): numeric
+  # and not 9x, so 9910-DISPLAY-IO-STATUS shows it as NNNN0030.
+  - 'FILE STATUS IS: NNNN0030'
+  - 'ABENDING PROGRAM'
+  - 'CARDDEMO-ABEND CEE3ABD'
+  file_state:
+    # 2800-UPDATE-ACCOUNT-REC never runs: all 50 accounts remain, and account 1
+    # keeps the balance and cycle amounts of the repository record. Values are
+    # the decoded forms: ACCT-ID is PIC 9(11), so account 00000000001 decodes to 1.
+    ACCTDATA:
+      count: 50
+      contains:
+      - ACCT-ID: '1'
+        ACCT-CURR-BAL: '194.00'
+        ACCT-CURR-CYC-CREDIT: '0.00'
+        ACCT-CURR-CYC-DEBIT: '0.00'
+  datasets:
+    # 2900-WRITE-TRANSACTION-FILE never runs.
+    TRANSACT:
+      count: 0

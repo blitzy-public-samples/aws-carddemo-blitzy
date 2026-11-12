@@ -1,0 +1,191 @@
+# The daily posting happy path of CBTRN02C: a credit and a debit for one account
+# whose transaction category balance record already exists. Card
+# 9680294154603697 cross-references account 00000000001, which starts with
+# ACCT-CURR-BAL 194.00, ACCT-CREDIT-LIMIT 2020.00, zero cycle credit and debit
+# and ACCT-EXPIRAION-DATE 2025-05-20; its TCATBALF record 00000000001/01/0001
+# starts at 0.00. Both records pass validation (cycle credit - cycle debit +
+# amount is 100.00, then 75.00, against the 2020.00 limit; origination date
+# before expiry) and are posted [app/cbl/CBTRN02C.cbl:193-235,370-422]:
+# - the amount is added to ACCT-CURR-BAL, and to ACCT-CURR-CYC-CREDIT when it is
+#   zero or more, otherwise to ACCT-CURR-CYC-DEBIT, so the -25.00 return makes
+#   the debit field negative [app/cbl/CBTRN02C.cbl:545-560];
+# - the existing category balance is read and rewritten with the amount added,
+#   so no 'Creating' line is displayed [app/cbl/CBTRN02C.cbl:467-501,526-542];
+# - the TRANSACT record copies the daily transaction and takes TRAN-PROC-TS from
+#   FUNCTION CURRENT-DATE in DB2 form, exact here because the clock is fixed
+#   [app/cbl/CBTRN02C.cbl:424-444,562-579,692-705].
+# TRANSACT is opened OUTPUT, which recreates it on GnuCOBOL (GAP-STB-010), so it
+# holds only the records this run writes. Expected text values are full field
+# width: decoded text keeps its trailing spaces and compares exactly. The
+# DALYTRAN records are invented; the other datasets are the repository fixtures.
+id: TRN-CBTRN02C-normal-01
+level: unit
+type: normal
+description: >-
+  CBTRN02C posts a 100.00 purchase and a -25.00 return for account 00000000001:
+  the account balance becomes 269.00 with cycle credit 100.00 and cycle debit
+  -25.00, the existing category balance becomes 75.00, both transactions are
+  written to TRANSACT with the run timestamp, nothing is rejected, and the
+  return code is 0.
+inventory_ids:
+- INV-TRN-081  # CBTRN02C balance posting (calculation)
+- INV-TRN-008  # CBTRN02C program
+- INV-TRN-083  # CBTRN02C TCATBAL update (calculation)
+- INV-TRN-084  # CBTRN02C TRANSACT record with processing timestamp (interface)
+- INV-TRN-086  # CBTRN02C processed and rejected counts (report)
+- INV-LAY-026  # CVTRA06Y copybook, the DALYTRAN records
+- INV-LAY-025  # CVTRA05Y copybook, the TRANSACT records
+- INV-LAY-016  # CVACT01Y copybook, the account records
+- INV-LAY-021  # CVTRA01Y copybook, the category balance records
+- INV-LAY-018  # CVACT03Y copybook, the cross-reference records
+- INV-DTA-003  # cardxref.txt, the CARDXREF fixture source
+- INV-DTA-013  # EBCDIC cross-reference file, its cross-check counterpart
+- INV-DTA-001  # acctdata.txt, the ACCTDATA fixture source
+- INV-DTA-011  # EBCDIC account data file, its cross-check counterpart
+- INV-DTA-007  # tcatbal.txt, the TCATBALF fixture source
+- INV-DTA-018  # EBCDIC category balance file, its cross-check counterpart
+tags: []
+gap_ids:
+- GAP-STB-010  # Berkeley DB indexed files in place of VSAM; OPEN OUTPUT recreates TRANSACT
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
+preconditions:
+  datasets:
+    DALYTRAN:
+      records:
+      - DALYTRAN-ID: '9900000000000301'
+        DALYTRAN-TYPE-CD: '01'
+        DALYTRAN-CAT-CD: '1'
+        DALYTRAN-SOURCE: POS TERM
+        DALYTRAN-DESC: Synthetic purchase
+        DALYTRAN-AMT: '100.00'
+        DALYTRAN-MERCHANT-ID: '900000001'
+        DALYTRAN-MERCHANT-NAME: Synthetic Merchant
+        DALYTRAN-MERCHANT-CITY: Testville
+        DALYTRAN-MERCHANT-ZIP: '00000'
+        DALYTRAN-CARD-NUM: '9680294154603697'
+        DALYTRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+        DALYTRAN-PROC-TS: ''
+      - DALYTRAN-ID: '9900000000000302'
+        DALYTRAN-TYPE-CD: '01'
+        DALYTRAN-CAT-CD: '1'
+        DALYTRAN-SOURCE: POS TERM
+        DALYTRAN-DESC: Synthetic return
+        DALYTRAN-AMT: '-25.00'
+        DALYTRAN-MERCHANT-ID: '900000001'
+        DALYTRAN-MERCHANT-NAME: Synthetic Merchant
+        DALYTRAN-MERCHANT-CITY: Testville
+        DALYTRAN-MERCHANT-ZIP: '00000'
+        DALYTRAN-CARD-NUM: '9680294154603697'
+        DALYTRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+        DALYTRAN-PROC-TS: ''
+    CARDXREF:
+      base: CARDXREF
+    ACCTDATA:
+      base: ACCTDATA
+    TCATBALF:
+      base: TCATBALF
+  parameters:
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults: []
+inputs:
+  program: CBTRN02C
+expected:
+  return_code: 0
+  datasets:
+    TRANSACT:
+      records:
+      - TRAN-ID: '9900000000000301'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: 'POS TERM  '
+        TRAN-DESC: 'Synthetic purchase                                                                                  '
+        TRAN-AMT: '100.00'
+        TRAN-MERCHANT-ID: '900000001'
+        TRAN-MERCHANT-NAME: 'Synthetic Merchant                                '
+        TRAN-MERCHANT-CITY: 'Testville                                         '
+        TRAN-MERCHANT-ZIP: '00000     '
+        TRAN-CARD-NUM: '9680294154603697'
+        TRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+        TRAN-PROC-TS: '2022-07-06-10.00.00.000000'
+      - TRAN-ID: '9900000000000302'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: 'POS TERM  '
+        TRAN-DESC: 'Synthetic return                                                                                    '
+        TRAN-AMT: '-25.00'
+        TRAN-MERCHANT-ID: '900000001'
+        TRAN-MERCHANT-NAME: 'Synthetic Merchant                                '
+        TRAN-MERCHANT-CITY: 'Testville                                         '
+        TRAN-MERCHANT-ZIP: '00000     '
+        TRAN-CARD-NUM: '9680294154603697'
+        TRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+        TRAN-PROC-TS: '2022-07-06-10.00.00.000000'
+    DALYREJS:
+      count: 0
+  file_state:
+    # Every account in key order: account 1 carries the postings and the other
+    # 49 keep their repository balances and zero cycle totals.
+    ACCTDATA:
+      records:
+      - {ACCT-ID: '1', ACCT-CURR-BAL: '269.00', ACCT-CURR-CYC-CREDIT: '100.00', ACCT-CURR-CYC-DEBIT: '-25.00'}
+      - {ACCT-ID: '2', ACCT-CURR-BAL: '158.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '3', ACCT-CURR-BAL: '147.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '4', ACCT-CURR-BAL: '40.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '5', ACCT-CURR-BAL: '345.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '6', ACCT-CURR-BAL: '218.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '7', ACCT-CURR-BAL: '193.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '8', ACCT-CURR-BAL: '605.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '9', ACCT-CURR-BAL: '560.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '10', ACCT-CURR-BAL: '159.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '11', ACCT-CURR-BAL: '212.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '12', ACCT-CURR-BAL: '176.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '13', ACCT-CURR-BAL: '41.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '14', ACCT-CURR-BAL: '15.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '15', ACCT-CURR-BAL: '489.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '16', ACCT-CURR-BAL: '733.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '17', ACCT-CURR-BAL: '33.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '18', ACCT-CURR-BAL: '144.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '19', ACCT-CURR-BAL: '480.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '20', ACCT-CURR-BAL: '369.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '21', ACCT-CURR-BAL: '112.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '22', ACCT-CURR-BAL: '55.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '23', ACCT-CURR-BAL: '104.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '24', ACCT-CURR-BAL: '400.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '25', ACCT-CURR-BAL: '61.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '26', ACCT-CURR-BAL: '46.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '27', ACCT-CURR-BAL: '284.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '28', ACCT-CURR-BAL: '68.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '29', ACCT-CURR-BAL: '339.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '30', ACCT-CURR-BAL: '2.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '31', ACCT-CURR-BAL: '31.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '32', ACCT-CURR-BAL: '30.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '33', ACCT-CURR-BAL: '410.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '34', ACCT-CURR-BAL: '253.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '35', ACCT-CURR-BAL: '166.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '36', ACCT-CURR-BAL: '110.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '37', ACCT-CURR-BAL: '7.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '38', ACCT-CURR-BAL: '612.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '39', ACCT-CURR-BAL: '843.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '40', ACCT-CURR-BAL: '43.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '41', ACCT-CURR-BAL: '375.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '42', ACCT-CURR-BAL: '302.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '43', ACCT-CURR-BAL: '610.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '44', ACCT-CURR-BAL: '263.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '45', ACCT-CURR-BAL: '186.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '46', ACCT-CURR-BAL: '396.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '47', ACCT-CURR-BAL: '32.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '48', ACCT-CURR-BAL: '226.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '49', ACCT-CURR-BAL: '100.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+      - {ACCT-ID: '50', ACCT-CURR-BAL: '492.00', ACCT-CURR-CYC-CREDIT: '0.00', ACCT-CURR-CYC-DEBIT: '0.00'}
+    # The 50 repository records and no new one: the existing 00000000001/01/0001
+    # record holds 100.00 - 25.00.
+    TCATBALF:
+      count: 50
+      contains:
+      - {TRANCAT-ACCT-ID: '1', TRANCAT-TYPE-CD: '01', TRANCAT-CD: '1', TRAN-CAT-BAL: '75.00'}
+  messages:
+  - START OF EXECUTION OF PROGRAM CBTRN02C
+  - TRANSACTIONS PROCESSED :000000002
+  - TRANSACTIONS REJECTED  :000000000
+  - END OF EXECUTION OF PROGRAM CBTRN02C

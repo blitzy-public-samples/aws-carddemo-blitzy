@@ -1,0 +1,7 @@
+file_state:
+  '@CATALOG':
+  - AWS.CUSTDATA.CLUSTER CLUSTER -
+messages:
+- STEP STEP05 RC 0008
+- STEP STEP05 RC 0000
+return_code: 8

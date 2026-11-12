@@ -1,0 +1,300 @@
+adapter: gnucobol-batch
+baseline_version: 1.0.0
+decoded:
+  datasets:
+    TRANREPT:
+    - 'DALYREPT                              Daily Transaction Report                 Date Range: 2022-01-01 to 2022-07-06                  '
+    - '                                                                                                                                     '
+    - 'Transaction ID   Account ID  Transaction Type   Tran Category                      Tran Source            Amount                     '
+    - '-------------------------------------------------------------------------------------------------------------------------------------'
+    - '9100000000000005 00000000050 01-Purchase        0001-Regular Sales Draft           POS TERM                33.33                     '
+    - '9100000000000008 00000000050 02-Payment         0002-Electronic payment            OPERATOR      -        100.00                     '
+    - 'Account Total....................................................................................-         66.67                     '
+    - '-------------------------------------------------------------------------------------------------------------------------------------'
+    - '9100000000000003 00000000027 02-Payment         0001-Cash payment                  OPERATOR      -         75.25                     '
+    - '9100000000000007 00000000027 01-Purchase        0004-ATM Cash Advance              POS TERM                60.00                     '
+    - 'Account Total....................................................................................-         15.25                     '
+    - '-------------------------------------------------------------------------------------------------------------------------------------'
+    - '9100000000000001 00000000001 01-Purchase        0001-Regular Sales Draft           POS TERM                45.67                     '
+    - '9100000000000004 00000000001 03-Credit          0001-Credit to Account             OPERATOR      -         10.10                     '
+    - '9100000000000009 00000000001 01-Purchase        0001-Regular Sales Draft           POS TERM                 9.99                     '
+    - 'Page Total ......................................................................................-         26.37                     '
+    - '-------------------------------------------------------------------------------------------------------------------------------------'
+    - 'Grand Total......................................................................................-         26.37                     '
+    TRANSACT-BKUP:
+    - TRAN-AMT: '45.67'
+      TRAN-CARD-NUM: '9680294154603697'
+      TRAN-CAT-CD: '1'
+      TRAN-DESC: 'Synthetic grocery purchase                                                                          '
+      TRAN-ID: '9100000000000001'
+      TRAN-MERCHANT-CITY: 'Testville                                         '
+      TRAN-MERCHANT-ID: '910000001'
+      TRAN-MERCHANT-NAME: 'Synthetic Grocer                                  '
+      TRAN-MERCHANT-ZIP: '00000     '
+      TRAN-ORIG-TS: '2022-03-15 09:00:00.000000'
+      TRAN-PROC-TS: 2022-03-15-10.00.00.000000
+      TRAN-RECORD.FILLER#1: '                    '
+      TRAN-SOURCE: 'POS TERM  '
+      TRAN-TYPE-CD: '01'
+    - TRAN-AMT: '120.00'
+      TRAN-CARD-NUM: '0500024453765740'
+      TRAN-CAT-CD: '2'
+      TRAN-DESC: 'Synthetic cash advance                                                                              '
+      TRAN-ID: '9100000000000002'
+      TRAN-MERCHANT-CITY: 'Testville                                         '
+      TRAN-MERCHANT-ID: '910000002'
+      TRAN-MERCHANT-NAME: 'Synthetic Cash Point                              '
+      TRAN-MERCHANT-ZIP: '00000     '
+      TRAN-ORIG-TS: '2021-12-31 08:00:00.000000'
+      TRAN-PROC-TS: 2021-12-31-23.59.59.999999
+      TRAN-RECORD.FILLER#1: '                    '
+      TRAN-SOURCE: 'POS TERM  '
+      TRAN-TYPE-CD: '01'
+    - TRAN-AMT: '-75.25'
+      TRAN-CARD-NUM: 0683586198171516
+      TRAN-CAT-CD: '1'
+      TRAN-DESC: 'Synthetic cash payment                                                                              '
+      TRAN-ID: '9100000000000003'
+      TRAN-MERCHANT-CITY: 'Testville                                         '
+      TRAN-MERCHANT-ID: '910000003'
+      TRAN-MERCHANT-NAME: 'Synthetic Payment Desk                            '
+      TRAN-MERCHANT-ZIP: '00000     '
+      TRAN-ORIG-TS: '2021-12-31 18:00:00.000000'
+      TRAN-PROC-TS: 2022-01-01-00.00.00.000000
+      TRAN-RECORD.FILLER#1: '                    '
+      TRAN-SOURCE: 'OPERATOR  '
+      TRAN-TYPE-CD: '02'
+    - TRAN-AMT: '-10.10'
+      TRAN-CARD-NUM: '9680294154603697'
+      TRAN-CAT-CD: '1'
+      TRAN-DESC: 'Synthetic account credit                                                                            '
+      TRAN-ID: '9100000000000004'
+      TRAN-MERCHANT-CITY: 'Testville                                         '
+      TRAN-MERCHANT-ID: '910000004'
+      TRAN-MERCHANT-NAME: 'Synthetic Credit Office                           '
+      TRAN-MERCHANT-ZIP: '00000     '
+      TRAN-ORIG-TS: '2022-07-06 08:00:00.000000'
+      TRAN-PROC-TS: 2022-07-06-23.59.59.999999
+      TRAN-RECORD.FILLER#1: '                    '
+      TRAN-SOURCE: 'OPERATOR  '
+      TRAN-TYPE-CD: '03'
+    - TRAN-AMT: '33.33'
+      TRAN-CARD-NUM: '0500024453765740'
+      TRAN-CAT-CD: '1'
+      TRAN-DESC: 'Synthetic bookshop purchase                                                                         '
+      TRAN-ID: '9100000000000005'
+      TRAN-MERCHANT-CITY: 'Testville                                         '
+      TRAN-MERCHANT-ID: '910000005'
+      TRAN-MERCHANT-NAME: 'Synthetic Bookshop                                '
+      TRAN-MERCHANT-ZIP: '00000     '
+      TRAN-ORIG-TS: '2022-05-20 09:00:00.000000'
+      TRAN-PROC-TS: 2022-05-20-10.00.00.000000
+      TRAN-RECORD.FILLER#1: '                    '
+      TRAN-SOURCE: 'POS TERM  '
+      TRAN-TYPE-CD: '01'
+    - TRAN-AMT: '250.50'
+      TRAN-CARD-NUM: 0683586198171516
+      TRAN-CAT-CD: '3'
+      TRAN-DESC: 'Synthetic convenience check                                                                         '
+      TRAN-ID: '9100000000000006'
+      TRAN-MERCHANT-CITY: 'Testville                                         '
+      TRAN-MERCHANT-ID: '910000006'
+      TRAN-MERCHANT-NAME: 'Synthetic Check Desk                              '
+      TRAN-MERCHANT-ZIP: '00000     '
+      TRAN-ORIG-TS: '2022-07-06 20:00:00.000000'
+      TRAN-PROC-TS: 2022-07-07-00.00.00.000000
+      TRAN-RECORD.FILLER#1: '                    '
+      TRAN-SOURCE: 'POS TERM  '
+      TRAN-TYPE-CD: '01'
+    - TRAN-AMT: '60.00'
+      TRAN-CARD-NUM: 0683586198171516
+      TRAN-CAT-CD: '4'
+      TRAN-DESC: 'Synthetic ATM withdrawal                                                                            '
+      TRAN-ID: '9100000000000007'
+      TRAN-MERCHANT-CITY: 'Testville                                         '
+      TRAN-MERCHANT-ID: '910000007'
+      TRAN-MERCHANT-NAME: 'Synthetic ATM                                     '
+      TRAN-MERCHANT-ZIP: '00000     '
+      TRAN-ORIG-TS: '2022-02-28 09:00:00.000000'
+      TRAN-PROC-TS: 2022-02-28-10.00.00.000000
+      TRAN-RECORD.FILLER#1: '                    '
+      TRAN-SOURCE: 'POS TERM  '
+      TRAN-TYPE-CD: '01'
+    - TRAN-AMT: '-100.00'
+      TRAN-CARD-NUM: '0500024453765740'
+      TRAN-CAT-CD: '2'
+      TRAN-DESC: 'Synthetic electronic payment                                                                        '
+      TRAN-ID: '9100000000000008'
+      TRAN-MERCHANT-CITY: 'Testville                                         '
+      TRAN-MERCHANT-ID: '910000008'
+      TRAN-MERCHANT-NAME: 'Synthetic Payment Desk                            '
+      TRAN-MERCHANT-ZIP: '00000     '
+      TRAN-ORIG-TS: '2022-06-30 09:00:00.000000'
+      TRAN-PROC-TS: 2022-06-30-10.00.00.000000
+      TRAN-RECORD.FILLER#1: '                    '
+      TRAN-SOURCE: 'OPERATOR  '
+      TRAN-TYPE-CD: '02'
+    - TRAN-AMT: '9.99'
+      TRAN-CARD-NUM: '9680294154603697'
+      TRAN-CAT-CD: '1'
+      TRAN-DESC: 'Synthetic hardware purchase                                                                         '
+      TRAN-ID: '9100000000000009'
+      TRAN-MERCHANT-CITY: 'Testville                                         '
+      TRAN-MERCHANT-ID: '910000009'
+      TRAN-MERCHANT-NAME: 'Synthetic Hardware                                '
+      TRAN-MERCHANT-ZIP: '00000     '
+      TRAN-ORIG-TS: '2022-04-01 09:00:00.000000'
+      TRAN-PROC-TS: 2022-04-01-10.00.00.000000
+      TRAN-RECORD.FILLER#1: '                    '
+      TRAN-SOURCE: 'POS TERM  '
+      TRAN-TYPE-CD: '01'
+    TRANSACT-DALY:
+    - TRAN-AMT: '33.33'
+      TRAN-CARD-NUM: '0500024453765740'
+      TRAN-CAT-CD: '1'
+      TRAN-DESC: 'Synthetic bookshop purchase                                                                         '
+      TRAN-ID: '9100000000000005'
+      TRAN-MERCHANT-CITY: 'Testville                                         '
+      TRAN-MERCHANT-ID: '910000005'
+      TRAN-MERCHANT-NAME: 'Synthetic Bookshop                                '
+      TRAN-MERCHANT-ZIP: '00000     '
+      TRAN-ORIG-TS: '2022-05-20 09:00:00.000000'
+      TRAN-PROC-TS: 2022-05-20-10.00.00.000000
+      TRAN-RECORD.FILLER#1: '                    '
+      TRAN-SOURCE: 'POS TERM  '
+      TRAN-TYPE-CD: '01'
+    - TRAN-AMT: '-100.00'
+      TRAN-CARD-NUM: '0500024453765740'
+      TRAN-CAT-CD: '2'
+      TRAN-DESC: 'Synthetic electronic payment                                                                        '
+      TRAN-ID: '9100000000000008'
+      TRAN-MERCHANT-CITY: 'Testville                                         '
+      TRAN-MERCHANT-ID: '910000008'
+      TRAN-MERCHANT-NAME: 'Synthetic Payment Desk                            '
+      TRAN-MERCHANT-ZIP: '00000     '
+      TRAN-ORIG-TS: '2022-06-30 09:00:00.000000'
+      TRAN-PROC-TS: 2022-06-30-10.00.00.000000
+      TRAN-RECORD.FILLER#1: '                    '
+      TRAN-SOURCE: 'OPERATOR  '
+      TRAN-TYPE-CD: '02'
+    - TRAN-AMT: '-75.25'
+      TRAN-CARD-NUM: 0683586198171516
+      TRAN-CAT-CD: '1'
+      TRAN-DESC: 'Synthetic cash payment                                                                              '
+      TRAN-ID: '9100000000000003'
+      TRAN-MERCHANT-CITY: 'Testville                                         '
+      TRAN-MERCHANT-ID: '910000003'
+      TRAN-MERCHANT-NAME: 'Synthetic Payment Desk                            '
+      TRAN-MERCHANT-ZIP: '00000     '
+      TRAN-ORIG-TS: '2021-12-31 18:00:00.000000'
+      TRAN-PROC-TS: 2022-01-01-00.00.00.000000
+      TRAN-RECORD.FILLER#1: '                    '
+      TRAN-SOURCE: 'OPERATOR  '
+      TRAN-TYPE-CD: '02'
+    - TRAN-AMT: '60.00'
+      TRAN-CARD-NUM: 0683586198171516
+      TRAN-CAT-CD: '4'
+      TRAN-DESC: 'Synthetic ATM withdrawal                                                                            '
+      TRAN-ID: '9100000000000007'
+      TRAN-MERCHANT-CITY: 'Testville                                         '
+      TRAN-MERCHANT-ID: '910000007'
+      TRAN-MERCHANT-NAME: 'Synthetic ATM                                     '
+      TRAN-MERCHANT-ZIP: '00000     '
+      TRAN-ORIG-TS: '2022-02-28 09:00:00.000000'
+      TRAN-PROC-TS: 2022-02-28-10.00.00.000000
+      TRAN-RECORD.FILLER#1: '                    '
+      TRAN-SOURCE: 'POS TERM  '
+      TRAN-TYPE-CD: '01'
+    - TRAN-AMT: '45.67'
+      TRAN-CARD-NUM: '9680294154603697'
+      TRAN-CAT-CD: '1'
+      TRAN-DESC: 'Synthetic grocery purchase                                                                          '
+      TRAN-ID: '9100000000000001'
+      TRAN-MERCHANT-CITY: 'Testville                                         '
+      TRAN-MERCHANT-ID: '910000001'
+      TRAN-MERCHANT-NAME: 'Synthetic Grocer                                  '
+      TRAN-MERCHANT-ZIP: '00000     '
+      TRAN-ORIG-TS: '2022-03-15 09:00:00.000000'
+      TRAN-PROC-TS: 2022-03-15-10.00.00.000000
+      TRAN-RECORD.FILLER#1: '                    '
+      TRAN-SOURCE: 'POS TERM  '
+      TRAN-TYPE-CD: '01'
+    - TRAN-AMT: '-10.10'
+      TRAN-CARD-NUM: '9680294154603697'
+      TRAN-CAT-CD: '1'
+      TRAN-DESC: 'Synthetic account credit                                                                            '
+      TRAN-ID: '9100000000000004'
+      TRAN-MERCHANT-CITY: 'Testville                                         '
+      TRAN-MERCHANT-ID: '910000004'
+      TRAN-MERCHANT-NAME: 'Synthetic Credit Office                           '
+      TRAN-MERCHANT-ZIP: '00000     '
+      TRAN-ORIG-TS: '2022-07-06 08:00:00.000000'
+      TRAN-PROC-TS: 2022-07-06-23.59.59.999999
+      TRAN-RECORD.FILLER#1: '                    '
+      TRAN-SOURCE: 'OPERATOR  '
+      TRAN-TYPE-CD: '03'
+    - TRAN-AMT: '9.99'
+      TRAN-CARD-NUM: '9680294154603697'
+      TRAN-CAT-CD: '1'
+      TRAN-DESC: 'Synthetic hardware purchase                                                                         '
+      TRAN-ID: '9100000000000009'
+      TRAN-MERCHANT-CITY: 'Testville                                         '
+      TRAN-MERCHANT-ID: '910000009'
+      TRAN-MERCHANT-NAME: 'Synthetic Hardware                                '
+      TRAN-MERCHANT-ZIP: '00000     '
+      TRAN-ORIG-TS: '2022-04-01 09:00:00.000000'
+      TRAN-PROC-TS: 2022-04-01-10.00.00.000000
+      TRAN-RECORD.FILLER#1: '                    '
+      TRAN-SOURCE: 'POS TERM  '
+      TRAN-TYPE-CD: '01'
+  file_state:
+    '@CATALOG':
+    - AWS.M2.CARDDEMO.CARDXREF.VSAM.KSDS CLUSTER -
+    - AWS.M2.CARDDEMO.DATEPARM NONVSAM -
+    - AWS.M2.CARDDEMO.TRANCATG.VSAM.KSDS CLUSTER -
+    - AWS.M2.CARDDEMO.TRANREPT GDG -
+    - AWS.M2.CARDDEMO.TRANREPT GENERATION G0001V00
+    - AWS.M2.CARDDEMO.TRANSACT.BKUP GDG -
+    - AWS.M2.CARDDEMO.TRANSACT.BKUP GENERATION G0001V00
+    - AWS.M2.CARDDEMO.TRANSACT.DALY GDG -
+    - AWS.M2.CARDDEMO.TRANSACT.DALY GENERATION G0001V00
+    - AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS CLUSTER -
+    - AWS.M2.CARDDEMO.TRANTYPE.VSAM.KSDS CLUSTER -
+  messages:
+  - STEP STEP05R.PRC001 RC 0000
+  - STEP STEP05R RC 0000
+  - STEP STEP10R RC 0000
+  - START OF EXECUTION OF PROGRAM CBTRN03C
+  - Reporting from 2022-01-01 to 2022-07-06
+  - '9100000000000005010001POS TERM  Synthetic bookshop purchase                                                                         0000000333C910000005Synthetic Bookshop                                Testville                                         00000     05000244537657402022-05-20 09:00:00.0000002022-05-20-10.00.00.000000                    '
+  - '9100000000000008020002OPERATOR  Synthetic electronic payment                                                                        0000001000}910000008Synthetic Payment Desk                            Testville                                         00000     05000244537657402022-06-30 09:00:00.0000002022-06-30-10.00.00.000000                    '
+  - '9100000000000003020001OPERATOR  Synthetic cash payment                                                                              0000000752N910000003Synthetic Payment Desk                            Testville                                         00000     06835861981715162021-12-31 18:00:00.0000002022-01-01-00.00.00.000000                    '
+  - '9100000000000007010004POS TERM  Synthetic ATM withdrawal                                                                            0000000600{910000007Synthetic ATM                                     Testville                                         00000     06835861981715162022-02-28 09:00:00.0000002022-02-28-10.00.00.000000                    '
+  - '9100000000000001010001POS TERM  Synthetic grocery purchase                                                                          0000000456G910000001Synthetic Grocer                                  Testville                                         00000     96802941546036972022-03-15 09:00:00.0000002022-03-15-10.00.00.000000                    '
+  - '9100000000000004030001OPERATOR  Synthetic account credit                                                                            0000000101}910000004Synthetic Credit Office                           Testville                                         00000     96802941546036972022-07-06 08:00:00.0000002022-07-06-23.59.59.999999                    '
+  - '9100000000000009010001POS TERM  Synthetic hardware purchase                                                                         0000000099I910000009Synthetic Hardware                                Testville                                         00000     96802941546036972022-04-01 09:00:00.0000002022-04-01-10.00.00.000000                    '
+  - TRAN-AMT 00000000999+
+  - WS-PAGE-TOTAL00000003636-
+  - END OF EXECUTION OF PROGRAM CBTRN03C
+  return_code: 0
+evidence_path: tests/reports/results/RPT-TRANREPT-normal-01.yaml
+execution_fingerprint: 509fae9c0fff7d7b83c41c4cf15ba0f071a1b2932cd5f225550c88f8fdaf6050
+execution_id: gnucobol-batch-0967a44240bda20f
+gap_id: null
+reason: null
+scenario_digest: 7509384b879eaed07944fe937bd643854d4ac31c79889b3b4847a75aa6c92335
+scenario_id: RPT-TRANREPT-normal-01
+source_identity:
+  commit: 03fece05ded5593ddaa37f455f1b0f662830747d
+  tree: app
+  units:
+    app/cbl/CBTRN03C.cbl: c9c5428073cbe19c1cd19fc066ed99972560c209a80b4aea3bae3cc5e20a3536
+    app/cpy/CVACT03Y.cpy: ffc6079e09b28739e154bf6c1e1c36d408209faa91f6cf7008078dc596a1c370
+    app/cpy/CVTRA03Y.cpy: fb15dbc4a6924cbddce0704932f9e61c067ac10004cd00839dff0ed7c7bb0667
+    app/cpy/CVTRA04Y.cpy: 89803bc13a06347e1f3d8a599a5383b87235b203dce9f18a486bc233186479f8
+    app/cpy/CVTRA05Y.cpy: d7bde0e78ff608497087b9909c889ed39e347269f964bda767b92b547fbb5fec
+    app/cpy/CVTRA07Y.cpy: 72ba597b1a40e1e6cf908e15da9e6a818a0ab899ef1d27d15edeb074963102fa
+    app/ctl/REPROCT.ctl: 5c6b8f26aa53c23131265e715b53130a1a7afd88b5bd3319aeca91f3d1a55bf5
+    app/jcl/TRANREPT.jcl: 7d8fc0777e6b9fb1c62aee6b4b10a67d127057c84b92203c7152f230b3db9571
+    app/proc/REPROC.prc: 4562039d1c7b90f05cc946dd1cd1cb93571bb279740c5c9777acfa3ea23fbc9f
+status: passed

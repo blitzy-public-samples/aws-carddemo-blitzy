@@ -1,0 +1,126 @@
+# The TCATBAL create path of CBTRN02C: one valid synthetic transaction whose
+# account, type and category have no TCATBALF record. 2700-UPDATE-TCATBAL reads
+# the 17-byte key (account 11 + type 2 + category 4) INVALID KEY, displays the
+# key and '.. Creating.', and 2700-A-CREATE-TCATBAL-REC initializes
+# TRAN-CAT-BAL-RECORD, sets the key, adds the amount and WRITEs the record
+# [app/cbl/CBTRN02C.cbl:467-524]. The repository tcatbal.txt holds only type 01
+# category 0001 keys, so card 9680294154603697 (account 00000000001,
+# cardxref.txt line 49) with type 02 category 0001 reaches it, while that
+# account's own 01/0001 record is left as loaded.
+#
+# The record passes both checks of 1500-B-LOOKUP-ACCT: 0.00 - 0.00 + -50.00 is
+# within the 2020.00 credit limit, and 2022-07-05 is before the 2025-05-20
+# expiration [app/cbl/CBTRN02C.cbl:393-422]. A negative amount goes to
+# ACCT-CURR-CYC-DEBIT [app/cbl/CBTRN02C.cbl:545-560].
+#
+# Numeric fields are written as the codec decodes them (Decimal text with the
+# field's scale, no leading zeros), text fields at their full width. The raw
+# bytes of every expected dataset, fillers included, are pinned by the observed
+# baseline's datasets/*.bin: INITIALIZE skips the FILLER of TRAN-CAT-BAL-RECORD
+# and TRAN-RECORD is never initialized, so on gnucobol-batch the created TCATBALF
+# record ends in 22 bytes and the TRANSACT record in 20 bytes of x'00', the
+# working-storage default of the compile options (GAP-STB-011).
+id: TRN-CBTRN02C-alternate-01
+level: unit
+type: alternate
+description: >-
+  CBTRN02C posts one synthetic payment of -50.00 for account 00000000001 under
+  type 02 category 0001, a key the repository TCATBALF lacks. The program
+  displays 'TCATBAL record not found for key : 00000000001020001.. Creating.',
+  writes a new TCATBALF record whose balance is the amount, subtracts 50.00
+  from the account balance (194.00 to 144.00) and adds -50.00 to its cycle
+  debit, writes one TRANSACT record stamped with the run clock, rejects nothing
+  and ends with return code 0.
+inventory_ids:
+- INV-TRN-082  # CBTRN02C TCATBAL create (calculation)
+- INV-TRN-008  # CBTRN02C program
+- INV-TRN-081  # CBTRN02C balance posting (calculation)
+- INV-TRN-084  # CBTRN02C TRANSACT record with processing timestamp (interface)
+- INV-LAY-025  # CVTRA05Y copybook, the TRANSACT layout
+- INV-LAY-016  # CVACT01Y copybook, the ACCTDATA layout
+- INV-LAY-021  # CVTRA01Y copybook, the TCATBALF layout
+- INV-DTA-003  # cardxref.txt, the CARDXREF fixture source
+- INV-DTA-013  # EBCDIC CARDXREF data file, its cross-check counterpart
+- INV-DTA-001  # acctdata.txt, the ACCTDATA fixture source
+- INV-DTA-011  # EBCDIC ACCTDATA data file, its cross-check counterpart
+- INV-DTA-007  # tcatbal.txt, the TCATBALF fixture source
+- INV-DTA-018  # EBCDIC TCATBALF data file, its cross-check counterpart
+tags: []
+gap_ids:
+- GAP-STB-010  # Berkeley DB indexed files in place of the VSAM KSDS
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
+preconditions:
+  datasets:
+    # Invented transaction: the id, merchant id, name, city and zip match no
+    # repository record and no real merchant.
+    DALYTRAN:
+      records:
+      - DALYTRAN-ID: '9900000000000311'
+        DALYTRAN-TYPE-CD: '02'
+        DALYTRAN-CAT-CD: '1'
+        DALYTRAN-SOURCE: OPERATOR
+        DALYTRAN-DESC: Synthetic cash payment
+        DALYTRAN-AMT: '-50.00'
+        DALYTRAN-MERCHANT-ID: '900000001'
+        DALYTRAN-MERCHANT-NAME: Synthetic Merchant Alpha
+        DALYTRAN-MERCHANT-CITY: Sampleton
+        DALYTRAN-MERCHANT-ZIP: '99901'
+        DALYTRAN-CARD-NUM: '9680294154603697'
+        DALYTRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+    CARDXREF: {base: CARDXREF}
+    ACCTDATA: {base: ACCTDATA}
+    TCATBALF: {base: TCATBALF}
+  parameters:
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults: []
+inputs:
+  program: CBTRN02C
+expected:
+  return_code: 0
+  messages:
+  - START OF EXECUTION OF PROGRAM CBTRN02C
+  - 'TCATBAL record not found for key : 00000000001020001.. Creating.'
+  - 'TRANSACTIONS PROCESSED :000000001'
+  - 'TRANSACTIONS REJECTED  :000000000'
+  - END OF EXECUTION OF PROGRAM CBTRN02C
+  file_state:
+    # The 50 loaded records plus the one created; the account's existing
+    # 01/0001 record keeps its loaded balance.
+    TCATBALF:
+      count: 51
+      contains:
+      - TRANCAT-ACCT-ID: '1'
+        TRANCAT-TYPE-CD: '01'
+        TRANCAT-CD: '1'
+        TRAN-CAT-BAL: '0.00'
+      - TRANCAT-ACCT-ID: '1'
+        TRANCAT-TYPE-CD: '02'
+        TRANCAT-CD: '1'
+        TRAN-CAT-BAL: '-50.00'
+    ACCTDATA:
+      count: 50
+      contains:
+      - ACCT-ID: '1'
+        ACCT-CURR-BAL: '144.00'
+        ACCT-CREDIT-LIMIT: '2020.00'
+        ACCT-CURR-CYC-CREDIT: '0.00'
+        ACCT-CURR-CYC-DEBIT: '-50.00'
+  datasets:
+    # TRANFILE is opened OUTPUT, so TRANSACT holds only this run's posting
+    # (GAP-STB-010).
+    TRANSACT:
+      count: 1
+      contains:
+      - TRAN-ID: '9900000000000311'
+        TRAN-TYPE-CD: '02'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: 'OPERATOR  '
+        TRAN-AMT: '-50.00'
+        TRAN-MERCHANT-ID: '900000001'
+        TRAN-MERCHANT-ZIP: '99901     '
+        TRAN-CARD-NUM: '9680294154603697'
+        TRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+        TRAN-PROC-TS: '2022-07-06-10.00.00.000000'
+    DALYREJS:
+      count: 0

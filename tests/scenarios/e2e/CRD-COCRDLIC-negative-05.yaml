@@ -1,0 +1,156 @@
+# The card list refuses a card filter that is not a 16-digit number. USER0001
+# (type U in the USRSEC fixture) signs on through CC00 and reaches the main
+# menu, whose option 3 'Credit Card List' makes COMEN01C XCTL to COCRDLIC with
+# CDEMO-PGM-CONTEXT 0 [app/cpy/COMEN02Y.cpy:37-40] [app/cbl/COMEN01C.cbl:145-155].
+# That first entry comes from another program on the CDEMO-PGM-ENTER path, so
+# COCRDLIC initializes WS-THIS-PROGCOMMAREA and, with no input to edit, takes
+# the WHEN OTHER branch: 9000-READ-FORWARD browses CARDDAT GTEQ from the blank
+# first key and fills the 7 screen rows with the first 7 cards in card-number
+# order; the 8th READNEXT succeeds, so CA-NEXT-PAGE-EXISTS and no message is set
+# [app/cbl/COCRDLIC.cbl:336-343,572-582,1123-1214]. 1400-SETUP-MESSAGE shows
+# 'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD' in INFOMSG and the program returns
+# TRANSID CCLI with CDEMO-FROM-PROGRAM COCRDLIC [app/cbl/COCRDLIC.cbl:917-919,
+# 604-619]. WS-SCREEN-DATA, the 7 rows, is the 05 group that closes
+# 01 WS-THIS-PROGCOMMAREA, so COMMON-RETURN saves the rows in the COMMAREA with
+# the page keys [app/cbl/COCRDLIC.cbl:229-260,609-612].
+#
+# ENTER with ABCDEFGHIJKLMNOP in CARDSID and the account filter left blank then
+# re-enters CCLI. CDEMO-FROM-PROGRAM is COCRDLIC, so the saved rows are
+# restored and the map is received [app/cbl/COCRDLIC.cbl:326-331,357-360,
+# 962-978]. 2210-EDIT-ACCOUNT finds the account filter blank and moves zero to
+# CDEMO-ACCT-ID without a message; 2220-EDIT-CARD finds the card filter
+# supplied, not zero and NOT NUMERIC, sets INPUT-ERROR, FLG-CARDFILTER-NOT-OK
+# and FLG-PROTECT-SELECT-ROWS-YES and, since WS-ERROR-MSG is still off from the
+# start of the task, moves 'CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT
+# NUMBER' to WS-ERROR-MSG; 2250-EDIT-ARRAY is skipped on INPUT-ERROR
+# [app/cbl/COCRDLIC.cbl:311,1003-1075]. The WHEN INPUT-ERROR branch skips
+# 9000-READ-FORWARD because a filter is NOT-OK and sends the map
+# [app/cbl/COCRDLIC.cbl:419-438]: 1200-SCREEN-ARRAY-INIT shows the rows restored
+# from the COMMAREA, so the page-1 cards stay on the screen although no browse
+# ran, with every select field protected [app/cbl/COCRDLIC.cbl:678-832].
+# 1300-SETUP-SCREEN-ATTRS sends the blank account filter as LOW-VALUES and the
+# refused card filter back as entered, and 1400-SETUP-MESSAGE leaves the
+# message as set and INFOMSG blank [app/cbl/COCRDLIC.cbl:837-930].
+#
+# The 'File Error' paths cannot interfere: no file is read in the refusing
+# task. The rows are the first 7 records of the CARDDATA fixture in key order
+# [app/data/ASCII/carddata.txt]; card numbers are digits only, so the order is
+# the same in ASCII and EBCDIC.
+#
+# Screen fields are compared at their full BMS length, trailing spaces
+# included: ERRMSG is 78 characters (the 75-byte WS-ERROR-MSG padded), INFOMSG
+# 45, ACCTSID 11, CARDSID 16, PAGENO 3 (the PIC 9(1) page number moved to
+# PIC X(3)). CURDATE and CURTIME come from the region clock, so they are
+# matchers. The baseline is derived from the source: no TPE region runs in CI.
+id: CRD-COCRDLIC-negative-05
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, selects option 3 'Credit Card List' on the main menu,
+  which lists the first 7 cards, and presses ENTER on the COCRDLIC card list
+  (CCLI) with ABCDEFGHIJKLMNOP as the card filter and the account filter blank.
+  2220-EDIT-CARD refuses the filter with 'CARD ID FILTER,IF SUPPLIED MUST BE A
+  16 DIGIT NUMBER'; the browse is skipped, so COCRDLI shows the refused filter,
+  the page-1 rows restored from the COMMAREA with their select fields
+  protected, and a blank INFOMSG.
+inventory_ids:
+- INV-CRD-015  # COCRDLIC message 'CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER' (rule)
+- INV-CRD-001  # COCRDLIC program
+- INV-MNU-003  # COMEN01 map, the menu option 3 is entered on
+- INV-CRD-004  # COCRDLI map, sent with the list and again with the refusal
+- INV-CFG-014  # CCLI transaction, under which the filter is edited
+- INV-CFG-003  # CARDDAT CSD file, browsed for the rows the refusal redisplays
+- INV-LAY-002  # COCOM01Y: CDEMO-FROM-PROGRAM makes ENTER a re-entry that receives the map
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COCRDLIC
+- INV-LAY-011  # CSSTRPFY: YYYY-STORE-PFKEY maps ENTER to CCARD-AID-ENTER
+- INV-LAY-019  # CVCRD01Y: CC-CARD-NUM, CC-CARD-NUM-N and CCARD-ERROR-MSG
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-006  # CRD end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+    CARDDATA: {base: CARDDATA}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '3'
+  # The account filter is not typed: it was sent as LOW-VALUES and stays blank.
+  - aid: ENTER
+    '@map': COCRDLI
+    fields:
+      CARDSID: ABCDEFGHIJKLMNOP
+# Screen 1 asserts only the menu it lands on; screen 2 the first list, whose
+# rows screen 3 redisplays; screen 3 the refusal.
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    ERRMSG: '                                                                              '
+  - '@map': COCRDLI
+    TRNNAME: CCLI
+    PGMNAME: COCRDLIC
+    INFOMSG: 'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD    '
+    ERRMSG: '                                                                              '
+  - '@map': COCRDLI
+    TRNNAME: CCLI
+    PGMNAME: COCRDLIC
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    PAGENO: '1  '
+    ACCTSID: '           '
+    CARDSID: 'ABCDEFGHIJKLMNOP'
+    CRDSEL1: ' '
+    ACCTNO1: '00000000050'
+    CRDNUM1: '0500024453765740'
+    CRDSTS1: 'Y'
+    CRDSEL2: ' '
+    ACCTNO2: '00000000027'
+    CRDNUM2: '0683586198171516'
+    CRDSTS2: 'Y'
+    CRDSEL3: ' '
+    ACCTNO3: '00000000002'
+    CRDNUM3: '0923877193247330'
+    CRDSTS3: 'Y'
+    CRDSEL4: ' '
+    ACCTNO4: '00000000020'
+    CRDNUM4: '0927987108636232'
+    CRDSTS4: 'Y'
+    CRDSEL5: ' '
+    ACCTNO5: '00000000012'
+    CRDNUM5: '0982496213629795'
+    CRDSTS5: 'Y'
+    CRDSEL6: ' '
+    ACCTNO6: '00000000044'
+    CRDNUM6: '1014086565224350'
+    CRDSTS6: 'Y'
+    CRDSEL7: ' '
+    ACCTNO7: '00000000037'
+    CRDNUM7: '1142167692878931'
+    CRDSTS7: 'Y'
+    INFOMSG: '                                             '
+    ERRMSG: 'CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER                          '
+  # One ERRMSG value per step: blank on the menu and on the first list, then
+  # the refusal of the card filter.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER                          '

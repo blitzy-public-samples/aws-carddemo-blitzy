@@ -1,0 +1,90 @@
+# Derived from the source, never observed (capture_platform: derived);
+# inferred-not-observed under GAP-INF-006 and GAP-INF-012. Only
+# `report.py --import-unikix <execution_id>` promotes or replaces it.
+#
+# One screen and one ERRMSG line per step, each the screen the step ends on.
+# - Step 1: sign-on routes USER0001 (type U) to COMEN01C, map COMEN01
+#   [app/cbl/COSGN00C.cbl:223-237].
+# - Step 2: option 5 'Credit Card Update' XCTLs to COCRDUPC, which enters fresh:
+#   search screen, filters blank, INFOMSG prompt, no error
+#   [app/cbl/COMEN01C.cbl:117-155] [app/cpy/COMEN02Y.cpy:49-53]
+#   [app/cbl/COCRDUPC.cbl:502-511,1082-1085,1138-1163].
+# - Step 3: both filters valid, CARDDAT read by card number, the name
+#   upper-cased in storage only, details shown with FSET
+#   [app/cbl/COCRDUPC.cbl:535-542,641-661,721-800,954-966,1107-1112,
+#   1343-1394].
+# - Step 4: the erased name reaches CCUP-NEW-CRDNAME as LOW-VALUES
+#   [app/cbl/COCRDUPC.cbl:607-612]. The new data differs from the fetched, so
+#   1200-EDIT-MAP-INPUTS sets CCUP-CHANGES-NOT-OK and 1230-EDIT-NAME finds the
+#   name blank: INPUT-ERROR, FLG-CARDNAME-BLANK and WS-PROMPT-FOR-NAME
+#   'Card name not provided' [app/cbl/COCRDUPC.cbl:181-182,668-715,806-819].
+#   Status Y, month 03 and year 2023 pass their edits and keep the message
+#   [app/cbl/COCRDUPC.cbl:845-945]. 2000-DECIDE-ACTION continues on changes
+#   not OK, so no READ UPDATE or REWRITE is issued [app/cbl/COCRDUPC.cbl:
+#   982-983]. The screen carries the new values (CCUP-CHANGES-MADE), '*' in the
+#   blank name, PROMPT-FOR-CHANGES in INFOMSG and the 75-byte WS-RETURN-MSG in
+#   the 80-byte ERRMSG [app/cbl/COCRDUPC.cbl:1082-1336] [app/bms/COCRDUP.bms].
+# GAP-DOC-023 does not apply: the UniKix copy rewrites only the alphabets-only
+# test of 1230-EDIT-NAME (line 828), which a blank name never reaches.
+# Values are whole BMS fields with their trailing spaces (COMEN01 ERRMSG 78,
+# COCRDUP ERRMSG 80, CRDNAME 50, INFOMSG 40); EXPDAY is dark and not asserted.
+# CURDATE and CURTIME come from the region clock, so they are matchers.
+#
+# The refused ENTER writes nothing: CARDDATA keeps its 50 records, and the
+# card keeps its fixture values, the embossed name in its original case
+# [app/cbl/COCRDUPC.cbl:1356-1360] [app/data/ASCII/carddata.txt:1].
+file_state:
+  CARDDATA:
+    contains:
+    - CARD-ACCT-ID: '50'
+      CARD-ACTIVE-STATUS: 'Y'
+      CARD-CVV-CD: '747'
+      CARD-EMBOSSED-NAME: 'Aniya Von                                         '
+      CARD-EXPIRAION-DATE: '2023-03-09'
+      CARD-NUM: '0500024453765740'
+    count: 50
+messages:
+- '                                                                              '
+- '                                                                                '
+- '                                                                                '
+- 'Card name not provided                                                          '
+screens:
+- '@map': 'COMEN01'
+  ERRMSG: '                                                                              '
+  OPTN005: '05. Credit Card Update                  '
+  PGMNAME: 'COMEN01C'
+  TRNNAME: 'CM00'
+- '@map': 'COCRDUP'
+  ACCTSID: '           '
+  CARDSID: '                '
+  CRDNAME: '                                                  '
+  ERRMSG: '                                                                                '
+  INFOMSG: 'Please enter Account and Card Number    '
+  PGMNAME: 'COCRDUPC'
+  TRNNAME: 'CCUP'
+- '@map': 'COCRDUP'
+  ACCTSID: '00000000050'
+  CARDSID: '0500024453765740'
+  CRDNAME: 'ANIYA VON                                         '
+  CRDSTCD: 'Y'
+  ERRMSG: '                                                                                '
+  EXPMON: '03'
+  EXPYEAR: '2023'
+  INFOMSG: 'Details of selected card shown above    '
+  PGMNAME: 'COCRDUPC'
+  TRNNAME: 'CCUP'
+- '@map': 'COCRDUP'
+  ACCTSID: '00000000050'
+  CARDSID: '0500024453765740'
+  CRDNAME: '*                                                 '
+  CRDSTCD: 'Y'
+  CURDATE: {format: '%m/%d/%y', match: run-date}
+  CURTIME: {format: '%H:%M:%S', match: run-time}
+  ERRMSG: 'Card name not provided                                                          '
+  EXPMON: '03'
+  EXPYEAR: '2023'
+  INFOMSG: 'Update card details presented above.    '
+  PGMNAME: 'COCRDUPC'
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: 'CCUP'

@@ -1,0 +1,61 @@
+id: DAT-CBACT03C-recovery-02
+level: unit
+type: recovery
+description: >-
+  CBACT03C opens XREFFILE, lists the first card cross-reference record, and the
+  second READ fails with an I/O error. 1000-XREFFILE-GET-NEXT displays 'ERROR
+  READING XREFFILE', the status through 9910-DISPLAY-IO-STATUS and 'ABENDING
+  PROGRAM', then calls CEE3ABD without parameters; 9000-XREFFILE-CLOSE and the
+  end-of-execution line are never reached
+  [app/cbl/CBACT03C.cbl:71-81,92-116,154-158,161-174]. No adapter injects a read
+  failure after a successful open (GAP-MIS-013), so the scenario stays
+  implemented-unexecuted and its baseline is derived from the source (GAP-INF-013).
+# Only the read-or-close-failure item: this case never executes, so listing the
+# program, the CVACT03Y layout or the cardxref data files here would block items
+# that DAT-CBACT03C-normal-01 verifies (one scenario lists an item only when the
+# item's verification depends on it).
+inventory_ids:
+- INV-DAT-036
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-MIS-013
+- GAP-INF-013
+- GAP-STB-001
+- GAP-DEF-001
+# CBACT03C reads its indexed XREFFILE and is compiled with the mapped options on
+# gnucobol-batch, so the case cites those two stub limitations, as every
+# scenario whose program uses a seam does.
+- GAP-STB-010
+- GAP-STB-011
+preconditions:
+  datasets:
+    CARDXREF:
+      base: CARDXREF
+  parameters:
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults:
+  # after: 1 -- the first READ returns record 1, the second fails.
+  - target: CARDXREF
+    operation: read
+    condition: io-error
+    after: 1
+inputs:
+  program: CBACT03C
+expected:
+  return_code: null
+  messages:
+  - 'START OF EXECUTION OF PROGRAM CBACT03C'
+  # Record 1 of the repository CARDXREF (card 0500024453765740, customer
+  # 000000050, account 00000000050), 50 bytes with its trailing spaces: shown
+  # once by 1000-XREFFILE-GET-NEXT after the successful READ, and again by the
+  # main loop's DISPLAY CARD-XREF-RECORD [app/cbl/CBACT03C.cbl:76-78,93-96].
+  - '050002445376574000000005000000000050              '
+  - '050002445376574000000005000000000050              '
+  - 'ERROR READING XREFFILE'
+  # An io-error is taken as IBM file status 30 (inferred, GAP-INF-013): numeric
+  # and not 9x, so 9910-DISPLAY-IO-STATUS shows it as NNNN0030.
+  - 'FILE STATUS IS: NNNN0030'
+  - 'ABENDING PROGRAM'
+  - 'CARDDEMO-ABEND CEE3ABD'

@@ -1,0 +1,194 @@
+# USER0001 fetches account 00000000001 on the COACTUP account update screen,
+# and COACTUPC presents its details with the information prompt
+# 'Update account details presented above.' (WS-INFO-MSG condition
+# PROMPT-FOR-CHANGES [app/cbl/COACTUPC.cbl:463-471]).
+#
+# Step 1: USER0001 signs on through CC00; COSGN00C routes the type U user to
+# the main menu COMEN01 (asserted by its header only; the sign-on belongs to
+# the SEC-COSGN00C scenarios).
+# Step 2: option '2' makes COMEN01C XCTL to COACTUPC, which takes its
+# fresh-entry path and sends COACTUP with an empty account number, sets
+# CDEMO-PGM-REENTER and returns with TRANSID CAUP [app/cbl/COACTUPC.cbl:964-973]
+# (the screen content is MNU-COMEN01C-alternate-02's).
+# Step 3: ENTER with ACCTSID 00000000001 starts CAUP. The COMMAREA comes back
+# with CDEMO-PGM-REENTER and ACUP-DETAILS-NOT-FETCHED, so WHEN OTHER runs
+# 1000-PROCESS-INPUTS: the account id passes 1210-EDIT-ACCOUNT and nothing
+# else is edited [app/cbl/COACTUPC.cbl:880-893,996-1003,1051-1062,1429-1446,
+# 1783-1818]. 2000-DECIDE-ACTION's ACUP-DETAILS-NOT-FETCHED branch (it shares
+# the PF12 body) runs 9000-READ-ACCT: CXACAIX by account id gives card
+# 9680294154603697 and customer 000000001, then ACCTDAT and CUSTDAT are read
+# and 9500-STORE-FETCHED-DATA keeps the values, and ACUP-SHOW-DETAILS is set
+# [app/cbl/COACTUPC.cbl:2568-2580,3608-3884]. 3202-SHOW-ORIGINAL-VALUES moves
+# the stored values to the map and 3250-SETUP-INFOMSG sets PROMPT-FOR-CHANGES
+# for ACUP-SHOW-DETAILS and moves WS-INFO-MSG to INFOMSG; WS-RETURN-MSG stays
+# blank, so ERRMSG is empty [app/cbl/COACTUPC.cbl:2698-2865,2955-2982].
+# This fetch is the shortest path to the prompt. FOUND-ACCOUNT-DATA ('Details
+# of selected account shown above') is set only on a later ENTER, and 3202 and
+# 3250 overwrite the same WS-INFO-MSG before every send [app/cbl/COACTUPC.cbl:
+# 1452,2791,2962-2963].
+#
+# The message is sent to INFOMSG, as the inventory item INV-ACT-030 says,
+# because 3250-SETUP-INFOMSG moves WS-INFO-MSG to INFOMSGO
+# [app/cbl/COACTUPC.cbl:2979].
+#
+# Expected values are derived from the source (no TPE region runs in CI):
+# - Text values are whole fields at their BMS length with trailing spaces:
+#   INFOMSG is the 40-byte WS-INFO-MSG in the 45-byte field, ERRMSG the blank
+#   75-byte WS-RETURN-MSG in the 78-byte field.
+# - Amounts are WS-EDIT-CURRENCY-9-2-F, PIC +ZZZ,ZZZ,ZZZ.99
+#   [app/cbl/COACTUPC.cbl:371]; dates are split from the YYYY-MM-DD texts;
+#   the SSN, phone numbers and zip are the parts 3202 moves
+#   [app/cbl/COACTUPC.cbl:2827-2863].
+# - The account values are repository record 00000000001 of acctdata.txt,
+#   whose ACCT-GROUP-ID is blank, so AADDGRP shows 10 spaces.
+# - CURDATE and CURTIME are the run clock through CSDAT01Y, hence the matchers
+#   and clock_mode relative.
+# The customer record 000000001 is replaced by invented data, so the screen
+# shows no repository personal data. Nothing is written on this path.
+id: ACT-COACTUPC-alternate-03
+level: e2e
+type: alternate
+description: >-
+  USER0001 signs on, chooses main menu option 2 'Account Update' and enters
+  account 00000000001 on the COACTUP screen. COACTUPC reads the account's
+  cross-reference through CXACAIX, the account from ACCTDAT and the customer
+  from CUSTDAT, shows the account and customer details, and prompts with
+  'Update account details presented above.' in the information line, with no
+  error message.
+# Primary item first, then the program, the maps asserted, the transaction the
+# fetch runs under, the CSD files it reads and the online-only copybooks
+# COACTUPC copies. The sign-on (CC00, COSGN00, COSGN00C, USRSEC) and the menu
+# option item are verified by the SEC and MNU scenarios and are not listed.
+inventory_ids:
+- INV-ACT-030  # COACTUPC message 'Update account details presented above.'
+- INV-ACT-002  # COACTUPC program
+- INV-MNU-003  # COMEN01 map, the menu the option is entered on
+- INV-ACT-004  # COACTUP map, the account update screen of steps 2 and 3
+- INV-CFG-009  # CAUP transaction, under which the fetch runs
+- INV-CFG-006  # CXACAIX CSD file, the cross-reference read by account id
+- INV-CFG-001  # ACCTDAT CSD file, the account read
+- INV-CFG-005  # CUSTDAT CSD file, the customer read
+- INV-LAY-002  # COCOM01Y copybook
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the header date and time
+- INV-LAY-007  # CSLKPCDY copybook
+- INV-LAY-008  # CSMSG01Y copybook
+- INV-LAY-009  # CSMSG02Y copybook
+- INV-LAY-010  # CSSETATY copybook, the field attribute settings
+- INV-LAY-011  # CSSTRPFY copybook, the AID mapping
+- INV-LAY-013  # CSUTLDPY copybook
+- INV-LAY-014  # CSUTLDWY copybook
+- INV-LAY-019  # CVCRD01Y copybook, the account id work fields
+tags:
+- inferred-not-observed
+# GAP-DOC-025: the UniKix copy of COACTUP.bms drops the unnamed field at row 1,
+# columns 1-9, beside the asserted TRNNAME, so a UniKix run of this scenario
+# never verifies the COACTUP map item while that entry is open.
+gap_ids:
+- GAP-INF-005  # account (ACT) end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-DOC-025
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+    ACCTDATA: {base: ACCTDATA}
+    CARDXREF: {base: CARDXREF}
+    # Customer 000000001 of account 00000000001, replaced by invented values.
+    CUSTDATA:
+      base: CUSTDATA
+      records:
+      - CUST-ID: '000000001'
+        CUST-FIRST-NAME: Testfirst
+        CUST-MIDDLE-NAME: Testmiddle
+        CUST-LAST-NAME: Testlast
+        CUST-ADDR-LINE-1: 100 Test Street
+        CUST-ADDR-LINE-2: Suite 1
+        CUST-ADDR-LINE-3: Raleigh
+        CUST-ADDR-STATE-CD: NC
+        CUST-ADDR-COUNTRY-CD: USA
+        CUST-ADDR-ZIP: '27601'
+        CUST-PHONE-NUM-1: (919)555-0101
+        CUST-PHONE-NUM-2: (919)555-0102
+        CUST-SSN: '123456789'
+        CUST-GOVT-ISSUED-ID: TESTGOVT0001
+        CUST-DOB-YYYY-MM-DD: '1961-06-08'
+        CUST-EFT-ACCOUNT-ID: '0053581756'
+        CUST-PRI-CARD-HOLDER-IND: Y
+        CUST-FICO-CREDIT-SCORE: '700'
+  parameters:
+    clock_mode: relative
+  faults: []
+# Sign-on uses the demo user and the documented demo password, which is not a
+# secret.
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: USER0001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '2'}
+    '@map': COMEN01
+  - aid: ENTER
+    fields: {ACCTSID: '00000000001'}
+    '@map': COACTUP
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    PGMNAME: COACTUPC
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COACTUPC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000001'
+    ACSTTUS: Y
+    OPNYEAR: '2014'
+    OPNMON: '11'
+    OPNDAY: '20'
+    ACRDLIM: '+      2,020.00'
+    EXPYEAR: '2025'
+    EXPMON: '05'
+    EXPDAY: '20'
+    ACSHLIM: '+      1,020.00'
+    RISYEAR: '2025'
+    RISMON: '05'
+    RISDAY: '20'
+    ACURBAL: '+        194.00'
+    ACRCYCR: '+           .00'
+    AADDGRP: '          '
+    ACRCYDB: '+           .00'
+    ACSTNUM: '000000001'
+    ACTSSN1: '123'
+    ACTSSN2: '45'
+    ACTSSN3: '6789'
+    DOBYEAR: '1961'
+    DOBMON: '06'
+    DOBDAY: '08'
+    ACSTFCO: '700'
+    ACSFNAM: 'Testfirst                '
+    ACSMNAM: 'Testmiddle               '
+    ACSLNAM: 'Testlast                 '
+    ACSADL1: '100 Test Street                                   '
+    ACSSTTE: NC
+    ACSADL2: 'Suite 1                                           '
+    ACSZIPC: '27601'
+    ACSCITY: 'Raleigh                                           '
+    ACSCTRY: USA
+    ACSPH1A: '919'
+    ACSPH1B: '555'
+    ACSPH1C: '0101'
+    ACSGOVT: 'TESTGOVT0001        '
+    ACSPH2A: '919'
+    ACSPH2B: '555'
+    ACSPH2C: '0102'
+    ACSEFTC: '0053581756'
+    ACSPFLG: Y
+    INFOMSG: 'Update account details presented above.      '
+    ERRMSG: '                                                                              '

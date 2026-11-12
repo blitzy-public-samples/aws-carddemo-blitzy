@@ -1,0 +1,321 @@
+# COACTUPC refuses a Cash Credit Limit that is not a valid signed amount: the
+# ' is not valid' predicate of 1250-EDIT-SIGNED-9V2 for the Cash Credit Limit
+# field [app/cbl/COACTUPC.cbl:1496-1501,2180-2221].
+#
+# Steps 1-3 sign on as USER0001, choose main menu option 2 and fetch account
+# 00000000001 with its customer 000000001, as ACT-COACTUPC-alternate-04 does:
+# the screen-3 values and the reads behind them are that scenario's.
+# Step 4 types 5O0.00 (a letter O between the digits) over the cash credit
+# limit and presses ENTER.
+# - 1100-RECEIVE-MAP moves the field to ACUP-NEW-CASH-CREDIT-LIMIT-X; its
+#   TEST-NUMVAL-C is not 0, so the numeric ACUP-NEW-CASH-CREDIT-LIMIT-N is not
+#   computed and keeps the spaces of INITIALIZE ACUP-NEW-DETAILS
+#   [app/cbl/COACTUPC.cbl:1047,1086-1097].
+# - 1205-COMPARE-OLD-NEW finds a change, the new cash limit differing from the
+#   old 1020.00, so 1200-EDIT-MAP-INPUTS sets ACUP-CHANGES-NOT-OK and runs the
+#   field edits in screen order [app/cbl/COACTUPC.cbl:1460-1501,1681-1700].
+#   Account Status, Open Date, Credit Limit and Expiry Date carry the fetched
+#   values and pass, so WS-RETURN-MSG is still blank when Cash Credit Limit is
+#   edited.
+# - 1250-EDIT-SIGNED-9V2: the value is neither LOW-VALUES nor spaces, and
+#   TEST-NUMVAL-C('5O0.00') is not 0, so INPUT-ERROR and
+#   FLG-SIGNED-NUMBER-NOT-OK are set and, with WS-RETURN-MSG-OFF, the message
+#   is TRIM('Cash Credit Limit') followed by ' is not valid'
+#   [app/cbl/COACTUPC.cbl:2180-2215]. Every later edit passes, and none would
+#   overwrite the message, because each composes one only while
+#   WS-RETURN-MSG-OFF holds. INPUT-ERROR keeps ACUP-CHANGES-NOT-OK
+#   [app/cbl/COACTUPC.cbl:1671-1675].
+# - 2000-DECIDE-ACTION continues on ACUP-CHANGES-NOT-OK, so neither
+#   9600-WRITE-PROCESSING nor any READ UPDATE runs [app/cbl/COACTUPC.cbl:2596-2597].
+# - 3203-SHOW-UPDATED-VALUES (ACUP-CHANGES-MADE) shows the received values: the
+#   refused cash limit as typed, from ACUP-NEW-CASH-CREDIT-LIMIT-X, and the
+#   valid amounts re-edited through +ZZZ,ZZZ,ZZZ.99 [app/cbl/COACTUPC.cbl:
+#   2718-2720,2870-2950]. 3250-SETUP-INFOMSG sets PROMPT-FOR-CHANGES for
+#   ACUP-CHANGES-NOT-OK and moves WS-RETURN-MSG to ERRMSG [app/cbl/COACTUPC.cbl:
+#   2955-2982]. 3300 unprotects the editable fields again, puts the cursor on
+#   ACSHLIM and colours it red through CSSETATY, without the '*' of a blank
+#   field [app/cbl/COACTUPC.cbl:3049-3051,3255-3258]. 3390 brightens F12=Cancel
+#   for ACUP-CHANGES-MADE and leaves F5=Save dark, since no confirmation is
+#   prompted [app/cbl/COACTUPC.cbl:3566-3583].
+#
+# Expected values are derived from the source (no TPE region runs in CI):
+# - Screen fields are compared at their full BMS length, trailing spaces kept.
+#   ERRMSG is the 30-character message in the 75-byte WS-RETURN-MSG, sent in
+#   the 78-byte ERRMSGO; INFOMSG the 40-byte WS-INFO-MSG in the 45-byte field.
+# - The tpe adapter enters a field with EraseEOF before typing and BMS pads the
+#   received input with blanks, so ACSHLIM shows 5O0.00 followed by 9 spaces in
+#   its 15 positions (PIC X(15) to the 15-byte field) [app/bms/COACTUP.bms:170-173].
+# - FKEY05 and FKEY12 keep their INITIAL text; a dark field shows as blanks in
+#   the s3270 capture.
+# - CURDATE and CURTIME come from the region clock, hence the matchers and
+#   clock_mode relative.
+# The UniKix copy of COACTUPC comments out these TEST-NUMVAL-C checks and the
+# ' is not valid' edit, so it would accept 5O0.00 (GAP-DOC-022); this scenario
+# pins the app/ behaviour, and UniKix records never verify the item.
+#
+# Customer 000000001 is replaced by invented data that passes every COACTUPC
+# edit, so no other field is refused first. Account 00000000001 and its
+# cross-reference stay as in the repository.
+id: ACT-COACTUPC-negative-041
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, chooses main-menu option 2 (Account Update), fetches
+  account 00000000001 with customer 000000001, types 5O0.00 (letter O) over
+  the cash credit limit and presses ENTER. COACTUPC refuses the value as not a
+  valid signed amount: the message line reads 'Cash Credit Limit is not
+  valid', the screen keeps the typed value with the other fields as received,
+  prompts 'Update account details presented above.' and makes F12=Cancel
+  visible. Nothing is saved: ACCTDATA and CUSTDATA still hold the fetched
+  records.
+# Primary item first, then the program, the maps asserted, the transaction of
+# steps 3 and 4, the CSD files COACTUPC reads, and the online-only copybooks it
+# copies. Sign-on (CC00, COSGN00, USRSEC) and the menu transaction are
+# verified by the SEC and MNU scenarios; the batch record copybooks and the
+# data files are verified at the lowest level that executes them.
+inventory_ids:
+- INV-ACT-099  # COACTUPC Cash Credit Limit: valid signed amount (1250-EDIT-SIGNED-9V2)
+- INV-ACT-002  # COACTUPC program
+- INV-MNU-003  # COMEN01 map, where option 2 is entered
+- INV-ACT-004  # COACTUP map, the search, detail and refused-change screens
+- INV-CFG-009  # CAUP transaction, which runs the fetch and the edits
+- INV-CFG-006  # CXACAIX CSD file: card cross-reference by account id
+- INV-CFG-001  # ACCTDAT CSD file: account master read
+- INV-CFG-005  # CUSTDAT CSD file: customer master read
+- INV-LAY-002  # COCOM01Y: the COMMAREA carrying the context and ids
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-007  # CSLKPCDY: the area-code and state/zip lookups
+- INV-LAY-008  # CSMSG01Y, copied by COACTUPC
+- INV-LAY-009  # CSMSG02Y: abend data, copied by COACTUPC
+- INV-LAY-010  # CSSETATY: the red attribute of the refused field
+- INV-LAY-011  # CSSTRPFY: the AID mapping that selects the ENTER path
+- INV-LAY-013  # CSUTLDPY: the date edits that run before the cash limit
+- INV-LAY-014  # CSUTLDWY: the date-edit work areas
+- INV-LAY-019  # CVCRD01Y: CC-ACCT-ID and the AID flags
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-005  # ACT end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+# The UniKix COACTUPC drops the TEST-NUMVAL-C checks and the ' is not valid'
+# edit this scenario refuses the value with.
+- GAP-DOC-022
+# The UniKix COACTUP.bms differs at row 1, columns 1-9, where TRNNAME stands.
+- GAP-DOC-025
+preconditions:
+  datasets:
+    ACCTDATA: {base: ACCTDATA}
+    CARDXREF: {base: CARDXREF}
+    # Customer 000000001 replaced by invented data that passes every edit, as
+    # in the other COACTUPC field-edit scenarios.
+    CUSTDATA:
+      base: CUSTDATA
+      records:
+      - CUST-ID: '000000001'
+        CUST-FIRST-NAME: Testfirst
+        CUST-MIDDLE-NAME: Testmiddle
+        CUST-LAST-NAME: Testlast
+        CUST-ADDR-LINE-1: 100 Test Street
+        CUST-ADDR-LINE-2: Suite 1
+        CUST-ADDR-LINE-3: Raleigh
+        CUST-ADDR-STATE-CD: NC
+        CUST-ADDR-COUNTRY-CD: USA
+        CUST-ADDR-ZIP: '27601'
+        CUST-PHONE-NUM-1: (919)555-0101
+        CUST-PHONE-NUM-2: (919)555-0102
+        CUST-SSN: '123456789'
+        CUST-GOVT-ISSUED-ID: TESTGOVT0001
+        CUST-DOB-YYYY-MM-DD: '1961-06-08'
+        CUST-EFT-ACCOUNT-ID: '0053581756'
+        CUST-PRI-CARD-HOLDER-IND: 'Y'
+        CUST-FICO-CREDIT-SCORE: '700'
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '2'
+  - aid: ENTER
+    '@map': COACTUP
+    fields:
+      ACCTSID: '00000000001'
+  - aid: ENTER
+    '@map': COACTUP
+    fields:
+      ACSHLIM: '5O0.00'
+expected:
+  screens:
+  # One entry per step, each the screen the step ends on.
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN002: '02. Account Update                      '
+    ERRMSG: '                                                                              '
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    PGMNAME: COACTUPC
+    ACCTSID: '           '
+    INFOMSG: 'Enter or update id of account to update      '
+    ERRMSG: '                                                                              '
+  # The fetched account and customer, editable, with the change prompt.
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COACTUPC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000001'
+    ACSTTUS: 'Y'
+    OPNYEAR: '2014'
+    OPNMON: '11'
+    OPNDAY: '20'
+    ACRDLIM: '+      2,020.00'
+    EXPYEAR: '2025'
+    EXPMON: '05'
+    EXPDAY: '20'
+    ACSHLIM: '+      1,020.00'
+    RISYEAR: '2025'
+    RISMON: '05'
+    RISDAY: '20'
+    ACURBAL: '+        194.00'
+    ACRCYCR: '+           .00'
+    AADDGRP: '          '
+    ACRCYDB: '+           .00'
+    ACSTNUM: '000000001'
+    ACTSSN1: '123'
+    ACTSSN2: '45'
+    ACTSSN3: '6789'
+    DOBYEAR: '1961'
+    DOBMON: '06'
+    DOBDAY: '08'
+    ACSTFCO: '700'
+    ACSFNAM: 'Testfirst                '
+    ACSMNAM: 'Testmiddle               '
+    ACSLNAM: 'Testlast                 '
+    ACSADL1: '100 Test Street                                   '
+    ACSSTTE: 'NC'
+    ACSADL2: 'Suite 1                                           '
+    ACSZIPC: '27601'
+    ACSCITY: 'Raleigh                                           '
+    ACSCTRY: 'USA'
+    ACSPH1A: '919'
+    ACSPH1B: '555'
+    ACSPH1C: '0101'
+    ACSGOVT: 'TESTGOVT0001        '
+    ACSPH2A: '919'
+    ACSPH2B: '555'
+    ACSPH2C: '0102'
+    ACSEFTC: '0053581756'
+    ACSPFLG: 'Y'
+    INFOMSG: 'Update account details presented above.      '
+    ERRMSG: '                                                                              '
+    FKEYS: 'ENTER=Process F3=Exit'
+    FKEY05: '       '
+    FKEY12: '          '
+  # The refused change: the typed cash limit kept, the other received values
+  # re-shown, the field-edit message, and F12=Cancel made visible.
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COACTUPC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000001'
+    ACSTTUS: 'Y'
+    OPNYEAR: '2014'
+    OPNMON: '11'
+    OPNDAY: '20'
+    ACRDLIM: '+      2,020.00'
+    EXPYEAR: '2025'
+    EXPMON: '05'
+    EXPDAY: '20'
+    ACSHLIM: '5O0.00         '
+    RISYEAR: '2025'
+    RISMON: '05'
+    RISDAY: '20'
+    ACURBAL: '+        194.00'
+    ACRCYCR: '+           .00'
+    AADDGRP: '          '
+    ACRCYDB: '+           .00'
+    ACSTNUM: '000000001'
+    ACTSSN1: '123'
+    ACTSSN2: '45'
+    ACTSSN3: '6789'
+    DOBYEAR: '1961'
+    DOBMON: '06'
+    DOBDAY: '08'
+    ACSTFCO: '700'
+    ACSFNAM: 'Testfirst                '
+    ACSMNAM: 'Testmiddle               '
+    ACSLNAM: 'Testlast                 '
+    ACSADL1: '100 Test Street                                   '
+    ACSSTTE: 'NC'
+    ACSADL2: 'Suite 1                                           '
+    ACSZIPC: '27601'
+    ACSCITY: 'Raleigh                                           '
+    ACSCTRY: 'USA'
+    ACSPH1A: '919'
+    ACSPH1B: '555'
+    ACSPH1C: '0101'
+    ACSGOVT: 'TESTGOVT0001        '
+    ACSPH2A: '919'
+    ACSPH2B: '555'
+    ACSPH2C: '0102'
+    ACSEFTC: '0053581756'
+    ACSPFLG: 'Y'
+    INFOMSG: 'Update account details presented above.      '
+    ERRMSG: 'Cash Credit Limit is not valid                                                '
+    FKEYS: 'ENTER=Process F3=Exit'
+    FKEY05: '       '
+    FKEY12: 'F12=Cancel'
+  # The refused change is never written: both files keep their 50 records,
+  # and account 00000000001 and customer 000000001 are as fetched.
+  file_state:
+    ACCTDATA:
+      count: 50
+      contains:
+      - ACCT-ID: '1'
+        ACCT-ACTIVE-STATUS: 'Y'
+        ACCT-CURR-BAL: '194.00'
+        ACCT-CREDIT-LIMIT: '2020.00'
+        ACCT-CASH-CREDIT-LIMIT: '1020.00'
+        ACCT-OPEN-DATE: '2014-11-20'
+        ACCT-EXPIRAION-DATE: '2025-05-20'
+        ACCT-REISSUE-DATE: '2025-05-20'
+        ACCT-CURR-CYC-CREDIT: '0.00'
+        ACCT-CURR-CYC-DEBIT: '0.00'
+        ACCT-GROUP-ID: '          '
+    CUSTDATA:
+      count: 50
+      contains:
+      - CUST-ID: '1'
+        CUST-FIRST-NAME: 'Testfirst                '
+        CUST-MIDDLE-NAME: 'Testmiddle               '
+        CUST-LAST-NAME: 'Testlast                 '
+        CUST-ADDR-LINE-1: '100 Test Street                                   '
+        CUST-ADDR-LINE-2: 'Suite 1                                           '
+        CUST-ADDR-LINE-3: 'Raleigh                                           '
+        CUST-ADDR-STATE-CD: 'NC'
+        CUST-ADDR-COUNTRY-CD: 'USA'
+        CUST-ADDR-ZIP: '27601     '
+        CUST-PHONE-NUM-1: '(919)555-0101  '
+        CUST-PHONE-NUM-2: '(919)555-0102  '
+        CUST-SSN: '123456789'
+        CUST-GOVT-ISSUED-ID: 'TESTGOVT0001        '
+        CUST-DOB-YYYY-MM-DD: '1961-06-08'
+        CUST-EFT-ACCOUNT-ID: '0053581756'
+        CUST-PRI-CARD-HOLDER-IND: 'Y'
+        CUST-FICO-CREDIT-SCORE: '700'

@@ -1,0 +1,50 @@
+# Derived baseline (capture_platform: derived) of CRD-COCRDUPC-alternate-01,
+# derived from app/cbl/COCRDUPC.cbl:380-560,1035-1163 and app/bms/COCRDUP.bms;
+# not observed, because no TPE region runs in CI. An imported, eligible UniKix
+# run replaces it (inferred-not-observed, GAP-INF-006, GAP-INF-012).
+#
+# Step 1: USER0001 signs on through CC00 and COSGN00C XCTLs to the main menu,
+# whose header carries CM00 and COMEN01C [app/cbl/COMEN01C.cbl:36-37,212-219].
+# Step 2: option '5' is 'Credit Card Update'; COMEN01C sets CDEMO-FROM-PROGRAM
+# to COMEN01C and CDEMO-PGM-CONTEXT to 0 and XCTLs to COCRDUPC
+# [app/cbl/COMEN01C.cbl:146-153] [app/cpy/COMEN02Y.cpy:49-53].
+# COCRDUPC leaves CDEMO-PGM-ENTER set, skips the PF3 and card-list branches and
+# takes the fresh-entry branch, which performs 3000-SEND-MAP and returns with
+# TRANSID CCUP [app/cbl/COCRDUPC.cbl:388-401,435-511,546-558].
+# 3100-SCREEN-INIT clears CCRDUPAO to LOW-VALUES and fills the titles, CCUP,
+# COCRDUPC, date and time; 3200 moves nothing while CDEMO-PGM-ENTER is set;
+# 3250 moves PROMPT-FOR-SEARCH-KEYS to INFOMSG and the blank WS-RETURN-MSG
+# (X(75), padded to 80) to ERRMSG [app/cbl/COCRDUPC.cbl:157-163,384,1052-1163].
+# No '*' is written to the key fields: that needs CDEMO-PGM-REENTER, set only
+# after the send [app/cbl/COCRDUPC.cbl:1247-1261]. The map is sent with ERASE
+# [app/cbl/COCRDUPC.cbl:1324-1336].
+#
+# Keys are exactly those the scenario's expected names. Values are whole BMS
+# fields, trailing spaces kept; LOW-VALUES show as spaces. ERRMSG's 80th
+# character is FKEYS's attribute position (row 24, column 1), read as a space.
+# FKEYS shows its BMS INITIAL; EXPDAY and FKEYSC are dark and not asserted.
+# CURDATE and CURTIME come from the region clock (CSDAT01Y MM/DD/YY, HH:MM:SS),
+# so they are the only matcher fields.
+screens:
+- '@map': COMEN01
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COCRDUP
+  ACCTSID: '           '
+  CARDSID: '                '
+  CRDNAME: '                                                  '
+  CRDSTCD: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                                '
+  EXPMON: '  '
+  EXPYEAR: '    '
+  FKEYS: ENTER=Process F3=Exit
+  INFOMSG: 'Please enter Account and Card Number    '
+  PGMNAME: COCRDUPC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CCUP

@@ -1,0 +1,143 @@
+id: USR-COUSR00C-alternate-03
+level: e2e
+type: alternate
+description: >-
+  ADMIN001 signs on through CC00, takes admin option 1 to the COUSR00C user
+  list, which shows the ten fixture users as page 1, and searches from user id
+  ZZZZZZZZ, above every USRSEC key. STARTBR browses GTEQ by default (the GTEQ
+  option is commented out), finds no key at or after ZZZZZZZZ and returns
+  NOTFND, so COUSR00C sets end of file, moves 'You are at the top of the
+  page...' to the message and sends the map with ERASE
+  [app/cbl/COUSR00C.cbl:149-232,282-284,586-606]. No row is read or cleared
+  first, so the rows, the page number and the search field go back as the
+  ENTER input returned them: every COUSR00 field is defined with FSET
+  [app/bms/COUSR00.bms:34-452], RECEIVE MAP fills COUSR0AI, and the send writes
+  it from the overlaying COUSR0AO, refreshing only the header and the message
+  [app/cbl/COUSR00C.cbl:522-581]. The error flag stays off, so the page routine
+  then issues ENDBR although no browse started, with no RESP option. On CICS
+  that raises INVREQ, whose default action abends the task (AEIP) before the
+  second send, which would have blanked the search field and shown page
+  00000000 [app/cbl/COUSR00C.cbl:325-329,687-691]. The screen asserted is the
+  NOTFND send; the abend is the suspected defect GAP-DEF-013.
+# Primary item first, then the program, the maps the steps land on, the
+# transaction the search runs under (COUSR00C returns with TRANSID CU00), the
+# CSD file browsed, and the online-only copybooks COUSR00C copies. Sign-on, the
+# admin menu and the page-1 content are covered by the scenarios that own them.
+inventory_ids:
+- INV-USR-013
+- INV-USR-001
+- INV-USR-005
+- INV-MNU-004
+- INV-CFG-023
+- INV-CFG-008
+- INV-LAY-002
+- INV-LAY-005
+- INV-LAY-006
+- INV-LAY-008
+tags:
+- inferred-not-observed
+- suspected-defect
+gap_ids:
+- GAP-INF-004
+- GAP-INF-012
+- GAP-DEF-013
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: ADMIN001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COADM01
+    fields:
+      OPTION: '1'
+  # ZZZZZZZZ sorts above every fixture key (ADMIN001-ADMIN005, USER0001-USER0005)
+  # in ASCII and in EBCDIC alike, so the browse finds nothing on either platform.
+  - aid: ENTER
+    '@map': COUSR00
+    fields:
+      USRIDIN: ZZZZZZZZ
+# Steps 1 and 2 assert only the screen each lands on; their content is pinned
+# by the scenarios of the programs that send them.
+# Screen 3 is the NOTFND send of the search task. The task ends at the ENDBR
+# that follows (GAP-DEF-013), so USRIDIN still holds the search key and PAGENUM
+# the page-1 counter the input returned; a region whose ENDBR returned normally
+# would send again with USRIDIN blank and PAGENUM 00000000. Screen values are
+# whole fields at their BMS length, trailing spaces kept: comparison never
+# trims. PAGENUM is the PIC 9(8) page counter moved to the PIC X(8) field.
+expected:
+  screens:
+  - '@map': COADM01
+    TRNNAME: CA00
+    PGMNAME: COADM01C
+  - '@map': COUSR00
+    TRNNAME: CU00
+    PGMNAME: COUSR00C
+  - '@map': COUSR00
+    TRNNAME: CU00
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COUSR00C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    PAGENUM: '00000001'
+    USRIDIN: 'ZZZZZZZZ'
+    SEL0001: ' '
+    USRID01: 'ADMIN001'
+    FNAME01: 'MARGARET            '
+    LNAME01: 'GOLD                '
+    UTYPE01: 'A'
+    SEL0002: ' '
+    USRID02: 'ADMIN002'
+    FNAME02: 'RUSSELL             '
+    LNAME02: 'RUSSELL             '
+    UTYPE02: 'A'
+    SEL0003: ' '
+    USRID03: 'ADMIN003'
+    FNAME03: 'RAYMOND             '
+    LNAME03: 'WHITMORE            '
+    UTYPE03: 'A'
+    SEL0004: ' '
+    USRID04: 'ADMIN004'
+    FNAME04: 'EMMANUEL            '
+    LNAME04: 'CASGRAIN            '
+    UTYPE04: 'A'
+    SEL0005: ' '
+    USRID05: 'ADMIN005'
+    FNAME05: 'GRANVILLE           '
+    LNAME05: 'LACHAPELLE          '
+    UTYPE05: 'A'
+    SEL0006: ' '
+    USRID06: 'USER0001'
+    FNAME06: 'LAWRENCE            '
+    LNAME06: 'THOMAS              '
+    UTYPE06: 'U'
+    SEL0007: ' '
+    USRID07: 'USER0002'
+    FNAME07: 'AJITH               '
+    LNAME07: 'KUMAR               '
+    UTYPE07: 'U'
+    SEL0008: ' '
+    USRID08: 'USER0003'
+    FNAME08: 'LAURITZ             '
+    LNAME08: 'ALME                '
+    UTYPE08: 'U'
+    SEL0009: ' '
+    USRID09: 'USER0004'
+    FNAME09: 'AVERARDO            '
+    LNAME09: 'MAZZI               '
+    UTYPE09: 'U'
+    SEL0010: ' '
+    USRID10: 'USER0005'
+    FNAME10: 'LEE                 '
+    LNAME10: 'TING                '
+    UTYPE10: 'U'
+    ERRMSG: 'You are at the top of the page...                                             '

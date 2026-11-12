@@ -1,0 +1,36 @@
+# Manifest of the derived baseline of USR-COUSR00C-boundary-01: the user list
+# with exactly the 10 fixture users, one full page that PF8 cannot leave. Only
+# unikix can run the scenario, so expected.yaml is authored from the source and
+# is inferred-not-observed (GAP-INF-004, GAP-INF-012). It names no execution_id
+# or execution_fingerprint and holds no datasets/ until report.py
+# --import-unikix promotes an eligible UniKix run.
+#
+# source_identity.units are the app/ sources the three steps execute: the COPY
+# closure (inventory_tools.copy_closure) of COSGN00C, which signs ADMIN001 on
+# and XCTLs to COADM01C; of COADM01C, whose option 1 XCTLs to COUSR00C; and of
+# COUSR00C, which fills page 1 and answers PF8 with the bottom-of-page message;
+# plus the BMS sources of their maps COSGN00, COADM01 and COUSR00. DFHAID and
+# DFHBMSCA are CICS-supplied, not app/ sources, so they are absent.
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: derived
+source_commit: c8a527784db2ef2c05fd0f3abad38f09af57f8a7
+source_identity:
+  commit: c8a527784db2ef2c05fd0f3abad38f09af57f8a7
+  tree: app
+  units:
+    app/bms/COADM01.bms: 44a3f209e7fa8445355ab7ba687b3ac6e32ef4dfec225e04f4eb2bd57e39386a
+    app/bms/COSGN00.bms: 6747ba57e45fed7e52af728a1f8688ed8fab90b93e1234ab0a0bcae32fa39056
+    app/bms/COUSR00.bms: 82a453530e4457e45f8af028b68307f7049e24fa13fedb8644007f68a9738f88
+    app/cbl/COADM01C.cbl: 69842c4dd419ed70365682d65423d2744173f3eec695b25b5ed27bd29289608d
+    app/cbl/COSGN00C.cbl: 4f901ae6b113eebae60ae1d94b30f8cb9906d031a4419770bf56980bdf97e377
+    app/cbl/COUSR00C.cbl: 831433c6ec8306038c85cb86a8307f91dca48c26ef33a997f402187cbd9f4e04
+    app/cpy-bms/COADM01.CPY: ced4c34fdb3fa4284561d83ff8e273cef2a1b45cefc36e56c34da6fec5528006
+    app/cpy-bms/COSGN00.CPY: e2a2f8f6e76e1613cbd8f0baaca87d571a49a7bc219d16a732e4e4ecd7485407
+    app/cpy-bms/COUSR00.CPY: 88c9031484d3bd2da62488c6941c431ee3b910b3feaf7918762968ba0bb9c318
+    app/cpy/COADM02Y.cpy: 71015b5a8770e9e3733023cd6a6fa66dd4d8b528739b7a31e07433f71a044bc5
+    app/cpy/COCOM01Y.cpy: 77097557ee4c365f62138328d3e280ce7aba5f81d418c6f16434f0fbb2aafa6c
+    app/cpy/COTTL01Y.cpy: 5032bfa9428354bb4a62e8c82ba1efa7dcf6b80f27544ad99a81c8a8df8ed41b
+    app/cpy/CSDAT01Y.cpy: 61dd7b01d974c13cd47f71774c613dd67996418a22fae730d09b246c0b710ad7
+    app/cpy/CSMSG01Y.cpy: ef8ce44572885d63e46a02516f992cabbbc57ea94235000fd376325750e26eda
+    app/cpy/CSUSR01Y.cpy: 37c34094dc4124bc6255e0b06a0387442f4f0dd9d51dd6623b559d370aa0d2cb

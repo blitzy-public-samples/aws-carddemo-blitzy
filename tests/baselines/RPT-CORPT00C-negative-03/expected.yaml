@@ -1,0 +1,41 @@
+# Derived baseline, inferred-not-observed (GAP-INF-009, GAP-INF-012): authored
+# from the source, never captured. USER0001 (type U) reaches COMEN01, option 9
+# transfers to CORPT00C with a zero CDEMO-PGM-CONTEXT, and its first entry sends
+# CORPT00 with a blank message line [app/cbl/COSGN00C.cbl:220-238]
+# [app/cbl/COMEN01C.cbl:145-155] [app/cbl/CORPT00C.cbl:172-181,556-560].
+# ENTER with Custom selected, the start month typed and the start day left
+# blank fails the second empty check, so CORPT00 is sent again with
+# 'Start Date - Day can NOT be empty...' and the task returns at once: no date
+# validation, no confirmation and no JOBS write [app/cbl/CORPT00C.cbl:256-272,
+# 556-591]. CORPT0AO redefines CORPT0AI, so the typed values come back as
+# entered and SDTDD, MONTHLY and YEARLY keep their blank INITIAL values
+# [app/cpy-bms/CORPT00.CPY:121] [app/bms/CORPT00.bms]. ERRMSG is the full
+# 78-byte field: blank, or the 36-character message and 42 trailing spaces.
+# CURDATE and CURTIME are the region clock, so they are matchers. The body is
+# written as harness.dump_yaml writes it, so an import rewrite stays minimal.
+screens:
+- '@map': COMEN01
+- '@map': CORPT00
+  ERRMSG: '                                                                              '
+  PGMNAME: CORPT00C
+  TRNNAME: CR00
+- '@map': CORPT00
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  CUSTOM: X
+  EDTDD: '06'
+  EDTMM: '07'
+  EDTYYYY: '2022'
+  ERRMSG: 'Start Date - Day can NOT be empty...                                          '
+  MONTHLY: ' '
+  PGMNAME: CORPT00C
+  SDTDD: '  '
+  SDTMM: '01'
+  SDTYYYY: '2022'
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CR00
+  YEARLY: ' '

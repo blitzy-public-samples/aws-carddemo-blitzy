@@ -1,0 +1,142 @@
+# A custom-range report request whose start month is not a valid month.
+# Steps 1-2 reach the empty CORPT00 screen as RPT-CORPT00C-negative-02 does:
+# USER0001 signs on through CC00, COSGN00C routes the type-U user to COMEN01C,
+# and option '9' ('Transaction Reports') zeroes CDEMO-PGM-CONTEXT and transfers
+# control with XCTL to CORPT00C [app/cbl/COMEN01C.cbl:115-156]
+# [app/cpy/COMEN02Y.cpy:74-78]. On that first entry CORPT00C sets
+# CDEMO-PGM-REENTER, clears CORPT0AO to LOW-VALUES, sends CORPT00 with its
+# header and a blank message line, and returns with TRANSID(CR00)
+# [app/cbl/CORPT00C.cbl:163-181,199-202,556-591].
+#
+# Step 3 marks CUSTOM and enters the valid range 01/01/2022 to 07/06/2022 with
+# the start month changed to 45, then presses ENTER under CR00. CORPT00C
+# receives the map and PROCESS-ENTER-KEY finds MONTHLY and YEARLY blank and
+# CUSTOM marked [app/cbl/CORPT00C.cbl:183-186,208-256]. Every date part is
+# supplied, so the six empty checks fall through to WHEN OTHER CONTINUE
+# [app/cbl/CORPT00C.cbl:258-302]. Each part is then normalized through
+# FUNCTION NUMVAL-C into WS-NUM-99 or WS-NUM-9999 (PIC 99 and PIC 9999) and
+# moved back into its input field [app/cbl/CORPT00C.cbl:74-75,305-327]; the
+# entered values are already zero-padded digits, so every field keeps its text,
+# SDTMM included as '45'. The first field check is SDTMMI IS NOT NUMERIC OR
+# SDTMMI > '12'; '45' is numeric but greater than '12', so CORPT00C moves
+# 'Start Date - Not a valid Month...' to WS-MESSAGE, sets WS-ERR-FLG, puts the
+# cursor on SDTMM and performs SEND-TRNRPT-SCREEN [app/cbl/CORPT00C.cbl:329-336].
+# That paragraph sends CORPT00 with ERASE and ends with GO TO RETURN-TO-CICS
+# [app/cbl/CORPT00C.cbl:556-591], so the task ends there: the start-day, year
+# and end-date checks, the CSUTLDTC date validation and SUBMIT-JOB-TO-INTRDR
+# are never reached [app/cbl/CORPT00C.cbl:338-436,462-535], and no report job is
+# written to the JOBS queue. The month edges 12, 13 and 00 are the cases of
+# RPT-CORPT00C-boundary-01..03; this case takes a value well outside the range.
+#
+# That nothing is submitted is pinned by the screen staying on CORPT00 with the
+# month message instead of 'Please confirm to print the Custom report...', not
+# by an empty @TDQ:JOBS: the JOBS capture (GAP-MIS-017) is verified by
+# RPT-CORPT00C-normal-01..03, and asserting it here would also hold this
+# date-field rule behind that capture.
+#
+# Expected values are derived from the source; no TPE region runs in CI.
+# - CORPT0AO redefines CORPT0AI [app/cpy-bms/CORPT00.CPY:121] and nothing
+#   between RECEIVE and SEND changes the input fields beyond the NUMVAL-C
+#   round trip, so CUSTOM and the six date parts go back as entered. MONTHLY
+#   and YEARLY come back as their blank INITIAL (FSET fields), and CONFIRM,
+#   which has no INITIAL, holds nulls that the screen shows as a space
+#   [app/bms/CORPT00.bms:80-210].
+# - Text fields are compared at their full BMS length with trailing spaces:
+#   ERRMSG is 78 bytes [app/bms/CORPT00.bms:218-221], the 33-character message
+#   followed by spaces from the 80-byte WS-MESSAGE [app/cbl/CORPT00C.cbl:39].
+# - The header is POPULATE-HEADER-INFO's: the COTTL01Y titles, CR00, CORPT00C,
+#   and CURDATE and CURTIME from the region clock in the mm/dd/yy and hh:mm:ss
+#   forms of CSDAT01Y [app/cbl/CORPT00C.cbl:609-628], hence the matchers and
+#   clock_mode relative.
+id: RPT-CORPT00C-negative-08
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, selects option 9 'Transaction Reports' on the main menu
+  and, on CORPT00, marks Custom and enters the range 45/01/2022 to 07/06/2022.
+  CORPT00C refuses the start month 45 with 'Start Date - Not a valid Month...',
+  sends CORPT00 again with the entered values and submits no report.
+# Primary item first, then the program, the maps asserted, the transaction
+# step 3 runs under, and the online-only copybooks CORPT00C copies. The sign-on
+# step's own items (COSGN00, CC00, USRSEC) and the option-9 navigation belong
+# to the SEC and MNU scenarios.
+inventory_ids:
+- INV-RPT-017  # CORPT00C message 'Start Date - Not a valid Month...' (rule)
+- INV-RPT-001  # CORPT00C program
+- INV-MNU-003  # COMEN01 map, the main menu option 9 is entered on
+- INV-RPT-002  # CORPT00 map, the screen the range is entered on and sent again
+- INV-CFG-019  # CR00 transaction, under which the ENTER is processed
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA that makes the ENTER a reentry
+- INV-LAY-005  # COTTL01Y copybook, TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y copybook, CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y copybook, copied by CORPT00C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-009  # RPT end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user USER0001; CORPT00C reads no file.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '9'
+  # The valid custom range with the start month replaced by 45. SDTMM is a NUM
+  # field, so the value is digits only.
+  - aid: ENTER
+    '@map': CORPT00
+    fields:
+      CUSTOM: 'X'
+      SDTMM: '45'
+      SDTDD: '01'
+      SDTYYYY: '2022'
+      EDTMM: '07'
+      EDTDD: '06'
+      EDTYYYY: '2022'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    ERRMSG: '                                                                              '
+  - '@map': CORPT00
+    TRNNAME: CR00
+    PGMNAME: CORPT00C
+    ERRMSG: '                                                                              '
+  - '@map': CORPT00
+    TRNNAME: CR00
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: CORPT00C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    MONTHLY: ' '
+    YEARLY: ' '
+    CUSTOM: 'X'
+    SDTMM: '45'
+    SDTDD: '01'
+    SDTYYYY: '2022'
+    EDTMM: '07'
+    EDTDD: '06'
+    EDTYYYY: '2022'
+    CONFIRM: ' '
+    ERRMSG: 'Start Date - Not a valid Month...                                             '
+  # One ERRMSG value per step: blank on the main menu and on the first
+  # Transaction Reports screen, the start-month message after ENTER.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Start Date - Not a valid Month...                                             '

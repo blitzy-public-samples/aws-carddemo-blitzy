@@ -1,0 +1,57 @@
+# Admin menu option 2 'User Add (Security)' transfers control to COUSR01C.
+# Derived from the source, never observed (no TPE region in CI):
+#   ADMIN001 is user type A, so COSGN00C XCTLs to COADM01C with
+#   CDEMO-PGM-CONTEXT zero [app/cbl/COSGN00C.cbl:224-234], and COADM01C sends
+#   its menu, whose row 2 is STRING of the option number PIC 9(02), '. ' and
+#   the 35-byte name into the 40-byte OPTN002 [app/cbl/COADM01C.cbl:226-242]
+#   [app/cpy/COADM02Y.cpy:29-32].
+#   Option 2 passes the checks and XCTLs to COUSR01C with CDEMO-PGM-CONTEXT
+#   zero [app/cbl/COADM01C.cbl:115-145], so COUSR01C sends a fresh Add User
+#   screen with its own header [app/cbl/COUSR01C.cbl:78-87,184-233]: the titles
+#   of COTTL01Y and the date and time of CSDAT01Y.
+id: MNU-COADM01C-alternate-03
+level: e2e
+type: alternate
+description: >-
+  ADMIN001 signs on, reaches the admin menu (CA00, COADM01) showing option 2
+  'User Add (Security)', enters option 2 and lands on the COUSR01C Add User
+  screen (CU01, COUSR01).
+inventory_ids:
+  - INV-MNU-025  # COADM01C option 2 User Add (Security) to COUSR01C
+  - INV-MNU-002  # COADM01C program
+  - INV-MNU-004  # COADM01 map
+  - INV-USR-006  # COUSR01 map
+  - INV-CFG-011  # CA00 transaction
+  - INV-LAY-001  # COADM02Y copybook
+  - INV-LAY-002  # COCOM01Y copybook
+  - INV-LAY-005  # COTTL01Y copybook
+  - INV-LAY-006  # CSDAT01Y copybook
+  - INV-LAY-008  # CSMSG01Y copybook
+tags:
+  - inferred-not-observed
+gap_ids:
+  - GAP-INF-003
+  - GAP-INF-012
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+    - {transid: CC00, aid: ENTER, fields: {USERID: ADMIN001, PASSWD: PASSWORD}, '@map': COSGN00}
+    - {aid: ENTER, fields: {OPTION: '2'}, '@map': COADM01}
+expected:
+  screens:
+    - '@map': COADM01
+      TRNNAME: CA00
+      PGMNAME: COADM01C
+      OPTN002: '02. User Add (Security)                 '
+    - '@map': COUSR01
+      TRNNAME: CU01
+      PGMNAME: COUSR01C
+      TITLE01: '      AWS Mainframe Modernization       '
+      TITLE02: '              CardDemo                  '
+      CURDATE: {match: run-date, format: '%m/%d/%y'}
+      CURTIME: {match: run-time, format: '%H:%M:%S'}

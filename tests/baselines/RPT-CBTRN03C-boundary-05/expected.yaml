@@ -1,0 +1,7 @@
+datasets:
+  TRANREPT: []
+messages:
+- START OF EXECUTION OF PROGRAM CBTRN03C
+- Reporting from 2022-07-01 to 2022-07-31
+- END OF EXECUTION OF PROGRAM CBTRN03C
+return_code: 0

@@ -1,0 +1,50 @@
+# Manifest of the derived baseline of TRN-COTRN02C-negative-24: USER0001 adds a
+# transaction on COTRN02 whose Proc Date 2022-02-30 has the YYYY-MM-DD form but
+# is no calendar date; CSUTLDTC, called with the mask YYYY-MM-DD, returns
+# severity 0003 and message 2508 (FC-BAD-DATE-VALUE), and COTRN02C refuses the
+# entry with 'Proc Date - Not a valid date...' without writing
+# [app/cbl/COTRN02C.cbl:389-427] [app/cbl/CSUTLDTC.cbl:61-70,103-131]. Only
+# unikix can run the scenario, so expected.yaml was authored from the source,
+# not captured, and is inferred-not-observed (GAP-INF-007, GAP-INF-012,
+# GAP-INF-001). It names no execution_id or execution_fingerprint and holds no
+# datasets/ until report.py --import-unikix promotes an eligible UniKix run.
+# derived_from is left out: the expectation comes from the source, not the
+# tech spec.
+#
+# source_identity.units are the app/ units the three steps execute, each
+# program as harness.results computes it for a program run (its COPY closure,
+# symbolic map included, and the app/cbl units it CALLs), plus the BMS sources
+# of the maps sent or received: COSGN00C signs USER0001 on and XCTLs to
+# COMEN01C [app/cbl/COSGN00C.cbl:230-237]; COMEN01C XCTLs option 8 to COTRN02C
+# [app/cpy/COMEN02Y.cpy:67-72]; COTRN02C CALLs CSUTLDTC for the Orig Date and
+# then the Proc Date it refuses [app/cbl/COTRN02C.cbl:389-427]. DFHAID and
+# DFHBMSCA are CICS-supplied, not app/ sources. source_commit is HEAD at
+# authoring; app/ is byte-identical to the suite's starting commit
+# 93ebec71ff7b59a68cedd7c501afe496a8eaa68d.
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: derived
+source_commit: 4c711953fe962dfa8b46c5fb7a80d36d0cbeb5f2
+source_identity:
+  commit: 4c711953fe962dfa8b46c5fb7a80d36d0cbeb5f2
+  tree: app
+  units:
+    app/bms/COMEN01.bms: f87af09e6f60ab198d5c05817e3007361a6d29ed957322ef25b11c5420c84b4c
+    app/bms/COSGN00.bms: 6747ba57e45fed7e52af728a1f8688ed8fab90b93e1234ab0a0bcae32fa39056
+    app/bms/COTRN02.bms: 8b46b5ae879119b9d8395b712970ebc5b8d5043efd351a47f9a31a451e073042
+    app/cbl/COMEN01C.cbl: ad5e376ac9221b21b8ce47597a5ca17fc1f39dc913793c814c6675e9b046fc09
+    app/cbl/COSGN00C.cbl: 4f901ae6b113eebae60ae1d94b30f8cb9906d031a4419770bf56980bdf97e377
+    app/cbl/COTRN02C.cbl: dc33b4c797a98d2732070a223f43cc78992c2846681163a032e376630742b1ed
+    app/cbl/CSUTLDTC.cbl: 58c165dcfc3927232c02c152c673e3dee551587b85e7fe56ca67325c980eebb6
+    app/cpy-bms/COMEN01.CPY: 21275363519e57f47c5c7842178344208f3ad773a551e74e5eeff285c775ad5c
+    app/cpy-bms/COSGN00.CPY: e2a2f8f6e76e1613cbd8f0baaca87d571a49a7bc219d16a732e4e4ecd7485407
+    app/cpy-bms/COTRN02.CPY: 1eae5b624b8e7f97c24e94a373065d5c648340e21019bd7736dc663ab0d8642d
+    app/cpy/COCOM01Y.cpy: 77097557ee4c365f62138328d3e280ce7aba5f81d418c6f16434f0fbb2aafa6c
+    app/cpy/COMEN02Y.cpy: 22b1be06734c9ae91a25c4b544f9a9c4c85ab3f281a3d3bcc0765fb17e585d85
+    app/cpy/COTTL01Y.cpy: 5032bfa9428354bb4a62e8c82ba1efa7dcf6b80f27544ad99a81c8a8df8ed41b
+    app/cpy/CSDAT01Y.cpy: 61dd7b01d974c13cd47f71774c613dd67996418a22fae730d09b246c0b710ad7
+    app/cpy/CSMSG01Y.cpy: ef8ce44572885d63e46a02516f992cabbbc57ea94235000fd376325750e26eda
+    app/cpy/CSUSR01Y.cpy: 37c34094dc4124bc6255e0b06a0387442f4f0dd9d51dd6623b559d370aa0d2cb
+    app/cpy/CVACT01Y.cpy: 81a08bad15af5664326a6f0af3650f570821c4857ffdec3a6a39f91f07dca728
+    app/cpy/CVACT03Y.cpy: ffc6079e09b28739e154bf6c1e1c36d408209faa91f6cf7008078dc596a1c370
+    app/cpy/CVTRA05Y.cpy: d7bde0e78ff608497087b9909c889ed39e347269f964bda767b92b547fbb5fec

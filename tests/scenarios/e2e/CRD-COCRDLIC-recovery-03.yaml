@@ -1,0 +1,205 @@
+# The card list cannot page back because the region file CARDDAT goes out of
+# service between two pages. USER0001 (type U) signs on through CC00 and
+# COSGN00C transfers control to the main menu COMEN01C; option 3 transfers
+# control (XCTL) to COCRDLIC with CDEMO-PGM-CONTEXT 0 [app/cbl/COMEN01C.cbl:145-155]
+# [app/cpy/COMEN02Y.cpy:36-40]. Entered from the menu, COCRDLIC forgets its own
+# COMMAREA, sets page 1 and, through WHEN OTHER, browses CARDDAT forward from
+# spaces [app/cbl/COCRDLIC.cbl:334-342,572-582]. 9000-READ-FORWARD fills the
+# seven rows, and its look-ahead READNEXT finds an eighth card, so the next page
+# exists and WS-CA-LAST-CARD-NUM holds that eighth card, 1561409106491600
+# [app/cbl/COCRDLIC.cbl:1123-1260].
+#
+# PF8 then pages down: the page number becomes 2, the browse starts at
+# 1561409106491600 and shows cards 8 to 14 of the key order, and that card
+# becomes WS-CA-FIRST-CARD-NUM [app/cbl/COCRDLIC.cbl:486-497,1170-1175]. Both
+# pages carry 'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD', since 1100-SCREEN-INIT
+# leaves no info message and a next page exists, and a blank ERRMSG
+# [app/cbl/COCRDLIC.cbl:663-670,897-930]. The filters were left blank, so ACCTSID
+# and CARDSID stay LOW-VALUES [app/cbl/COCRDLIC.cbl:839-867,1003-1069].
+#
+# CARDDAT is then made unavailable, and PF7 is pressed on page 2. COCRDLIC takes
+# the page-up branch for a page other than the first: it subtracts 1 from the
+# page number and performs 9100-READ-BACKWARDS [app/cbl/COCRDLIC.cbl:501-514].
+# Its STARTBR fails (DISABLED, RESP 84 and RESP2 50, or NOTOPEN, 19 and 60, as
+# the region takes the file out of service), and the response it captures is
+# never tested [app/cbl/COCRDLIC.cbl:1273-1280]. The first READPREV, at line 1294,
+# then has no browse to read and answers INVREQ (RESP 16, RESP2 41), so its
+# WHEN OTHER branch moves 'READ' to ERROR-OPNAME and 'CARDDAT ' to ERROR-FILE,
+# composes WS-FILE-ERROR-MESSAGE into WS-ERROR-MSG and goes to
+# 9100-READ-BACKWARDS-EXIT [app/cbl/COCRDLIC.cbl:1294-1317]. That paragraph
+# issues ENDBR without a RESP option [app/cbl/COCRDLIC.cbl:1374-1377]; it matches
+# no successful STARTBR, so CICS raises INVREQ (RESP2 35), whose default action
+# abends the task with AEIP: COCRDLIC has no HANDLE CONDITION or HANDLE ABEND.
+# The 1000-SEND-MAP after the PERFORM [app/cbl/COCRDLIC.cbl:511-512] and the
+# RETURN TRANSID(CCLI) never run, so the composed message never reaches ERRMSG.
+# The region instead reports the abend to the terminal, on CICS with DFHAC2206
+# ('Transaction CCLI failed with abend AEIP. ...') on an unformatted screen whose
+# time and applid are the region's, so only the screen's form is asserted.
+#
+# Assumption: the region answers the browse commands as the CICS API documents
+# them. The expectation is derived from the source and those responses, never
+# observed (GAP-INF-006); an imported UniKix run confirms or replaces it. The
+# UniKix copies of COCRDLIC and COCRDLI.bms equal app/'s, so no doc-conflict
+# entry applies.
+id: CRD-COCRDLIC-recovery-03
+level: e2e
+type: recovery
+description: >-
+  USER0001 signs on, selects main-menu option 3 'Credit Card List' and pages
+  down to page 2 of the card list, whose first card is 1561409106491600. The
+  region file CARDDAT is then made unavailable and PF7 is pressed. COCRDLIC's
+  backward browse fails: its STARTBR is refused, the first READPREV (line 1294)
+  answers a response other than NORMAL or DUPREC, and its error branch composes
+  'File Error: READ on CARDDAT returned RESP <resp>,RESP2 <resp2>'. The ENDBR
+  that follows has no RESP option and matches no started browse, so the task
+  abends (AEIP on CICS) before the card list is sent: the terminal shows the
+  region's unformatted abend notice instead of COCRDLI with the message.
+# The recovery message is the primary item, then the program, the map the
+# option is entered on, the map the pages are shown on, the transaction that
+# runs the paging steps, the CSD file the browse fails on, and the online-only
+# copybooks COCRDLIC copies. CSUSR01Y, CVACT02Y and the data files are left
+# out: their lowest executing level is a batch scenario.
+inventory_ids:
+- INV-CRD-019  # COCRDLIC message 'File Error: READ on CARDDAT' (9100-READ-BACKWARDS, READPREV at line 1294)
+- INV-CRD-001  # COCRDLIC program
+- INV-MNU-003  # COMEN01 map, the main menu option 3 is entered on
+- INV-CRD-004  # COCRDLI map, pages 1 and 2 of the card list
+- INV-CFG-014  # CCLI transaction, which runs COCRDLIC for PF8 and PF7
+- INV-CFG-003  # CARDDAT CSD file, browsed forward and then backward
+- INV-LAY-002  # COCOM01Y: the COMMAREA whose context and from-program select each branch
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COCRDLIC
+- INV-LAY-011  # CSSTRPFY: the AID mapping that turns PF8 and PF7 into CCARD-AID-PFK08 and -PFK07
+- INV-LAY-019  # CVCRD01Y: CC-WORK-AREA with the AID flags and the filter fields
+tags:
+- inferred-not-observed
+- suspected-defect
+gap_ids:
+- GAP-INF-006  # card list, view and update (CRD) e2e baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-MIS-011  # no confirmed region file control to make CARDDAT unavailable
+- GAP-DEF-022  # the ENDBR without RESP after a failed STARTBR abends the task, hiding the message
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user; the 50 repository cards give the two
+    # pages and the look-ahead record of each.
+    USRSEC: {base: USRSEC}
+    CARDDATA: {base: CARDDATA}
+  parameters:
+    clock_mode: relative
+  # after: 18 lets the 18 CARDDAT read requests of steps 2 and 3 succeed (each
+  # page is one STARTBR and eight READNEXTs: seven rows and the look-ahead;
+  # ENDBR is not counted) and takes the file out of service between step 3 and
+  # step 4, so the first request it meets is the STARTBR of 9100-READ-BACKWARDS.
+  # The unikix adapter's default point, after the sign-on step, would fail the
+  # forward browse of step 2 instead. An adapter without a confirmed region file
+  # control raises MissingPrerequisite under GAP-MIS-011.
+  faults:
+  - target: CARDDAT
+    operation: read
+    condition: unavailable
+    after: 18
+# PASSWORD is the README's documented demo password, not a secret: the scenario
+# schema accepts no other sign-on password.
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields: {USERID: USER0001, PASSWD: PASSWORD}
+  - aid: ENTER
+    '@map': COMEN01
+    fields: {OPTION: '3'}
+  - aid: PF8
+    '@map': COCRDLI
+    fields: {}
+  - aid: PF7
+    '@map': COCRDLI
+    fields: {}
+expected:
+  # Text fields keep their full BMS length with trailing spaces: ERRMSG is 78
+  # characters, INFOMSG 45, the titles and menu options 40, PAGENO 3 (the
+  # one-digit page number left-justified).
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN003: '03. Credit Card List                    '
+    ERRMSG: '                                                                              '
+  # Page 1: cards 1 to 7 of the key order.
+  - '@map': COCRDLI
+    TRNNAME: CCLI
+    PGMNAME: COCRDLIC
+    PAGENO: '1  '
+    ACCTSID: '           '
+    CARDSID: '                '
+    ACCTNO1: '00000000050'
+    CRDNUM1: '0500024453765740'
+    CRDSTS1: 'Y'
+    ACCTNO2: '00000000027'
+    CRDNUM2: '0683586198171516'
+    CRDSTS2: 'Y'
+    ACCTNO3: '00000000002'
+    CRDNUM3: '0923877193247330'
+    CRDSTS3: 'Y'
+    ACCTNO4: '00000000020'
+    CRDNUM4: '0927987108636232'
+    CRDSTS4: 'Y'
+    ACCTNO5: '00000000012'
+    CRDNUM5: '0982496213629795'
+    CRDSTS5: 'Y'
+    ACCTNO6: '00000000044'
+    CRDNUM6: '1014086565224350'
+    CRDSTS6: 'Y'
+    ACCTNO7: '00000000037'
+    CRDNUM7: '1142167692878931'
+    CRDSTS7: 'Y'
+    INFOMSG: 'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD    '
+    ERRMSG: '                                                                              '
+  # Page 2: cards 8 to 14, starting at the look-ahead card of page 1.
+  - '@map': COCRDLI
+    TRNNAME: CCLI
+    PGMNAME: COCRDLIC
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    PAGENO: '2  '
+    ACCTSID: '           '
+    CARDSID: '                '
+    ACCTNO1: '00000000035'
+    CRDNUM1: '1561409106491600'
+    CRDSTS1: 'Y'
+    ACCTNO2: '00000000039'
+    CRDNUM2: '2745303720002090'
+    CRDSTS2: 'Y'
+    ACCTNO3: '00000000024'
+    CRDNUM3: '2760836797107565'
+    CRDSTS3: 'Y'
+    ACCTNO4: '00000000006'
+    CRDNUM4: '2871968252812490'
+    CRDSTS4: 'Y'
+    ACCTNO5: '00000000022'
+    CRDNUM5: '2940139362300449'
+    CRDSTS5: 'Y'
+    ACCTNO6: '00000000004'
+    CRDNUM6: '2988091353094312'
+    CRDSTS6: 'Y'
+    ACCTNO7: '00000000010'
+    CRDNUM7: '3260763612337560'
+    CRDSTS7: 'Y'
+    INFOMSG: 'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD    '
+    ERRMSG: '                                                                              '
+  # Pinned as the derived abend, not as COCRDLI carrying the composed
+  # 'File Error: READ on CARDDAT ...' text: the ENDBR at
+  # 9100-READ-BACKWARDS-EXIT ends the task before the map is sent (GAP-DEF-022).
+  # The abend notice holds the region's time and applid, so its text is not
+  # asserted; an unformatted screen is.
+  - '@map': TEXT
+  # The ERRMSG of each formatted screen: blank on the menu and on both pages;
+  # the unformatted abend screen has no ERRMSG field.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - '                                                                              '

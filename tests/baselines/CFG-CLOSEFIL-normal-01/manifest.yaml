@@ -1,0 +1,36 @@
+# Manifest of the derived baseline of CFG-CLOSEFIL-normal-01: job CLOSEFIL,
+# whose one step CLCIFIL runs SDSF with five CEMT SET FIL(...) CLO commands
+# [app/jcl/CLOSEFIL.jcl:22-30]. Only unikix can run the job, so expected.yaml
+# was authored from that JCL and the CSD FILE definitions (derived_from:
+# source; the tech spec's IEFBR14 is GAP-DOC-009), not captured, and is
+# inferred-not-observed (GAP-INF-010). It names no execution_id or
+# execution_fingerprint and holds no datasets/ until report.py --import-unikix
+# promotes an eligible run, which the UniKix copy's no-op SDSF.cbl rules out
+# for these items while GAP-DOC-031 is open.
+#
+# source_identity is the UniKix copy a run executes, exactly as
+# adapters/unikix/adapter.py source_identity writes it: the zip's CLOSEFIL
+# member and its SDSF program, the catlg/bpe catalog lists every BPE job runs
+# against, fct.lst behind the @REGION-FILES inquiry, and OPENFIL, the
+# counterpart of INV-CFG-033's source. That covers every unit harness/report.py
+# requires of a record of this scenario. migrated_app/jcl/CLOSEFIL is
+# byte-identical to app/jcl/CLOSEFIL.jcl. source_commit is HEAD at authoring;
+# app/, samples/ and diagrams/ there are unchanged from the suite's starting
+# commit 93ebec71ff7b59a68cedd7c501afe496a8eaa68d.
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: derived
+derived_from: source
+source_commit: 1cb86ff9135b33aa50b652ee9dee065d47e913bd
+source_identity:
+  commit: 1cb86ff9135b33aa50b652ee9dee065d47e913bd
+  tree: unikix-copy
+  units:
+    migrated_app/catlg/bpe/BPECAT.cluster.csv: 03912b4ef4993da1be7a3290753e7b22ab3c5e3981818d84f2c2650c82c6ef88
+    migrated_app/catlg/bpe/BPECAT.gdg_base.csv: 1323157dc2bcd520c7fd9626071448fb87c0ca00c209ce75f7784bcc995c8103
+    migrated_app/catlg/bpe/BPECAT.nonvsam.csv: 83d70d3d3c431d8e67648835ba54c55ad02add126d111fbc1b401e753a93fb03
+    migrated_app/catlg/tpe/fct.lst: b8cefbe77bcb7554372f6bf5845f4ebc557739f3fc7c9d44e209c4d39589cc4a
+    migrated_app/cbl/SDSF.cbl: d01b013e55ef4f7b76044ef98fa30fa077ec8d0a6847efab7f2c466087264027
+    migrated_app/jcl/CLOSEFIL: 6a9adef38b7b67074851ac6263a5f40b9d47e51aa0e03f98ab87a201c3b6032b
+    migrated_app/jcl/OPENFIL: 32dbd75ff94959b048151b28bde52f4112ce0846011b43651e0ec197c9fad2e5
+  zip_sha256: 431f67920a1e9b980cc21a6de1a375aac0c21b62d256c584d109ff7735c436ca

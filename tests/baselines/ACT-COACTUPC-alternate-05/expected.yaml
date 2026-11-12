@@ -1,0 +1,57 @@
+# Derived baseline of scenario ACT-COACTUPC-alternate-05 (capture_platform
+# derived, tag inferred-not-observed): USER0001 signs on, takes main menu
+# option 2, and presses PF3 on the fresh COACTUP screen. Authored from the
+# source, never captured:
+# - step 1: COSGN00C routes user type U to COMEN01C, which sends COMEN01
+#   [app/cbl/COSGN00C.cbl:221-239] [app/cbl/COMEN01C.cbl:82-90];
+# - step 2: COMEN01C XCTLs to COACTUPC [app/cpy/COMEN02Y.cpy:31-35]
+#   [app/cbl/COMEN01C.cbl:145-155]; COACTUPC takes its fresh-entry path and
+#   sends COACTUP with LIT-THISTRANID CAUP, LIT-THISPGM COACTUPC and the blank
+#   X(75) WS-RETURN-MSG in the 78-byte ERRMSGO
+#   [app/cbl/COACTUPC.cbl:876,964-973,2669-2676,2979-2981];
+# - step 3: PF3 is always valid; CDEMO-TO-TRANID and CDEMO-TO-PROGRAM become
+#   CM00 and COMEN01C (the FROM fields the menu set, or LIT-MENUTRANID and
+#   LIT-MENUPGM when blank), CDEMO-PGM-ENTER is set, then SYNCPOINT and XCTL
+#   [app/cbl/COACTUPC.cbl:905-958]. COMEN01C, not re-entered, clears COMEN1AO
+#   and sends the menu with WS-TRANID CM00, WS-PGMNAME COMEN01C, the
+#   app/cpy/COTTL01Y.cpy titles, the CSDAT01Y date and time, the ten
+#   app/cpy/COMEN02Y.cpy options as '<nn>. <name>' in 40-byte fields and a
+#   blank ERRMSGO [app/cbl/COMEN01C.cbl:77-90,182-277].
+# Values are whole BMS fields (tests/inventory/layouts.yaml) with trailing
+# spaces kept; LOW-VALUES fields show as spaces. CURDATE and CURTIME come from
+# the region clock, so they are matchers. The PF3 path issues no file command,
+# so nothing is asserted on file state.
+# Open under GAP-INF-005 and GAP-INF-012; GAP-DOC-025 (the UniKix COACTUP.bms
+# row 1) applies to the asserted COACTUP TRNNAME. Only
+# `report.py --import-unikix` promotes this baseline; it is never edited by
+# hand to match a run.
+screens:
+- '@map': COMEN01
+- '@map': COACTUP
+  ERRMSG: '                                                                              '
+  PGMNAME: COACTUPC
+  TRNNAME: CAUP
+- '@map': COMEN01
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  OPTION: '  '
+  OPTN001: '01. Account View                        '
+  OPTN002: '02. Account Update                      '
+  OPTN003: '03. Credit Card List                    '
+  OPTN004: '04. Credit Card View                    '
+  OPTN005: '05. Credit Card Update                  '
+  OPTN006: '06. Transaction List                    '
+  OPTN007: '07. Transaction View                    '
+  OPTN008: '08. Transaction Add                     '
+  OPTN009: '09. Transaction Reports                 '
+  OPTN010: '10. Bill Payment                        '
+  OPTN011: '                                        '
+  OPTN012: '                                        '
+  PGMNAME: COMEN01C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CM00

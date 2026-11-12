@@ -1,0 +1,71 @@
+# Derived baseline of TRN-COTRN02C-negative-19 (capture_platform derived, tag
+# inferred-not-observed): USER0001 signs on, takes main-menu option 8
+# (Transaction Add) and enters a transaction by card 0500024453765740 with
+# every field supplied but the non-numeric Category CD 'ABCD'. Authored from
+# the source, never captured; no TPE region runs in CI:
+# - step 1: COSGN00C routes the type 'U' user to COMEN01C, which sends COMEN01
+#   headed CM00/COMEN01C with OPTN008 '08. Transaction Add'
+#   [app/cbl/COSGN00C.cbl:230-237] [app/cpy/COMEN02Y.cpy:67-72];
+# - step 2: option 8 XCTLs to COTRN02C, whose first entry sends COTRN02 headed
+#   CT02/COTRN02C with a blank ERRMSG [app/cbl/COMEN01C.cbl:115-156]
+#   [app/cbl/COTRN02C.cbl:112-130,516-534];
+# - step 3: the card branch keeps the card through the PIC 9(16)
+#   WS-CARD-NUM-N, READ CCXREF is NORMAL and XREF-ACCT-ID 00000000050 (record
+#   1 of app/data/ASCII/cardxref.txt) replaces ACTIDINI
+#   [app/cbl/COTRN02C.cbl:210-223,609-637]; every field is supplied and Type CD
+#   '01' is numeric, but TCATCDI 'ABCD' is NOT NUMERIC, so 'Category CD must be
+#   Numeric...' goes to WS-MESSAGE and SEND-TRNADD-SCREEN sends COTRN02 and
+#   RETURNs TRANSID CT02 [app/cbl/COTRN02C.cbl:235-334,516-534]. The amount,
+#   date and merchant edits, the CSUTLDTC calls, the CONFIRM evaluation and
+#   ADD-TRANSACTION never run, so TRANSACT keeps its 300 fixture records.
+# COTRN2AO redefines COTRN2AI [app/cpy-bms/COTRN02.CPY:145], so the received
+# values are sent back as typed; CONFIRM was never entered. Values are whole
+# BMS fields with trailing spaces kept [app/bms/COTRN02.bms]; ERRMSG is the
+# 80-byte WS-MESSAGE in the 78-byte ERRMSGO, and messages holds each step's
+# ERRMSG in step order. CURDATE and CURTIME come from the region clock, which
+# UniKix cannot fix (GAP-MIS-015), hence the matchers [app/cbl/COTRN02C.cbl:
+# 552-571]. Open under GAP-INF-007 (derived TRN end-to-end baselines) and
+# GAP-INF-012 (online-only copybooks); only `report.py --import-unikix`
+# replaces it with an observed outcome.
+file_state:
+  TRANSACT:
+    count: 300
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'Category CD must be Numeric...                                                '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  OPTN008: '08. Transaction Add                     '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COTRN02
+  ERRMSG: '                                                                              '
+  PGMNAME: COTRN02C
+  TRNNAME: CT02
+- '@map': COTRN02
+  ACTIDIN: '00000000050'
+  CARDNIN: '0500024453765740'
+  CONFIRM: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Category CD must be Numeric...                                                '
+  MCITY: 'Testville                '
+  MID: '800000001'
+  MNAME: 'Test Merchant                 '
+  MZIP: '27601     '
+  PGMNAME: COTRN02C
+  TCATCD: ABCD
+  TDESC: 'Test purchase                                               '
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TORIGDT: '2022-07-01'
+  TPROCDT: '2022-07-01'
+  TRNAMT: '+00000012.34'
+  TRNNAME: CT02
+  TRNSRC: 'POS TERM  '
+  TTYPCD: '01'

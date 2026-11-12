@@ -1,0 +1,13 @@
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: gnucobol-batch
+execution_fingerprint: 89564ceea8e6a325f19033d060cf849d5e6887d3a92ef56ee7857e17e2796088
+execution_id: gnucobol-batch-5f236fe2881d1979
+source_commit: 762594987fe9fa26d8d7774b7d888b0b14d81de9
+source_identity:
+  commit: 762594987fe9fa26d8d7774b7d888b0b14d81de9
+  tree: app
+  units:
+    app/ctl/REPROCT.ctl: 5c6b8f26aa53c23131265e715b53130a1a7afd88b5bd3319aeca91f3d1a55bf5
+    app/jcl/TRANBKP.jcl: 457cd00d14a1d9ac9983d92212541df3456e8428862b97cf10bab7249b9e6183
+    app/proc/REPROC.prc: 4562039d1c7b90f05cc946dd1cd1cb93571bb279740c5c9777acfa3ea23fbc9f

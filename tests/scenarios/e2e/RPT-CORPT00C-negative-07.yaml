@@ -1,0 +1,137 @@
+# A custom-range report request with the end year left empty.
+# USER0001 signs on through CC00 and reaches the main menu COMEN01; option '9'
+# is 'Transaction Reports', program CORPT00C [app/cpy/COMEN02Y.cpy:74-78], so
+# COMEN01C zeroes CDEMO-PGM-CONTEXT and transfers control with XCTL. On that
+# first entry CORPT00C sets CDEMO-PGM-REENTER, clears CORPT0AO to LOW-VALUES
+# and sends CORPT00 with its header and the blank WS-MESSAGE in ERRMSG, then
+# returns with TRANSID(CR00) and the COMMAREA [app/cbl/CORPT00C.cbl:172-181,
+# 199-202,556-591].
+#
+# Step 3 marks CUSTOM and fills every date part of the valid range 01/01/2022
+# to 07/06/2022 except the end year, then presses ENTER under CR00. CORPT00C
+# receives the map into CORPT0AI and performs PROCESS-ENTER-KEY
+# [app/cbl/CORPT00C.cbl:183-186,596-604]. MONTHLY and YEARLY keep their blank
+# INITIAL and CUSTOM holds 'X', so the custom branch runs its empty checks in
+# the order start month, day, year, end month, day, year
+# [app/cbl/CORPT00C.cbl:212-213,239,256-300]. The first five fields are
+# supplied, so the first WHEN that holds is EDTYYYYI = SPACES OR LOW-VALUES (the
+# field keeps its INITIAL of four spaces): CORPT00C moves 'End Date - Year can
+# NOT be empty...' to WS-MESSAGE, sets WS-ERR-FLG, puts the cursor on EDTYYYY
+# and performs SEND-TRNRPT-SCREEN [app/cbl/CORPT00C.cbl:294-300]. That
+# paragraph rebuilds the header from COTTL01Y and CSDAT01Y, moves the message
+# to ERRMSG, sends CORPT00 with ERASE and goes to RETURN-TO-CICS, which ends the
+# task [app/cbl/CORPT00C.cbl:556-591,609-628]. The NUMVAL-C conversions, the
+# field checks, the CSUTLDTC date validation and SUBMIT-JOB-TO-INTRDR are never
+# reached [app/cbl/CORPT00C.cbl:305-535], so no confirmation is asked and no
+# report job is written to the JOBS queue.
+#
+# That nothing is submitted is pinned by the screen staying on CORPT00 with the
+# end-year message instead of 'Please confirm to print the Custom report...' or
+# 'Custom report submitted for printing ...', not through @TDQ:JOBS: the JOBS
+# capture (GAP-MIS-017) belongs to RPT-CORPT00C-normal-01..03, and asserting it
+# here would hold this validation case behind that capture as well.
+#
+# Expected values are derived from the source; no TPE region runs in CI.
+id: RPT-CORPT00C-negative-07
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, selects main-menu option 9 (Transaction Reports) and, on
+  the CORPT00 screen (CR00), asks for a custom report from 01/01/2022 to 07/06
+  with the end year left empty. CORPT00C refuses the request with 'End Date -
+  Year can NOT be empty...', redisplays the entered values with the end year
+  still blank, and asks for no confirmation and submits no report job.
+# Primary item first, then the program, the maps asserted, the transaction
+# step 3 runs under, and the online-only copybooks CORPT00C copies. Sign-on
+# and the menu (CC00, CM00, COSGN00, USRSEC, option 9) are verified by the SEC
+# and MNU scenarios.
+inventory_ids:
+- INV-RPT-016  # CORPT00C message 'End Date - Year can NOT be empty...' (rule)
+- INV-RPT-001  # CORPT00C program
+- INV-MNU-003  # COMEN01 map, where option 9 is entered
+- INV-RPT-002  # CORPT00 map, the empty screen and the refused request
+- INV-CFG-019  # CR00 transaction, under which the request is processed
+- INV-LAY-002  # COCOM01Y: the COMMAREA that makes step 3 a re-entry
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by CORPT00C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-009  # RPT end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user USER0001; CORPT00C reads no file.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '9'
+  # The valid custom range with EDTYYYY left as sent.
+  - aid: ENTER
+    '@map': CORPT00
+    fields:
+      CUSTOM: 'X'
+      SDTMM: '01'
+      SDTDD: '01'
+      SDTYYYY: '2022'
+      EDTMM: '07'
+      EDTDD: '06'
+# Screen values are whole fields at their BMS length, trailing spaces kept:
+# comparison never trims. CORPT0AO redefines CORPT0AI
+# [app/cpy-bms/CORPT00.CPY:121] and nothing on this path touches the input
+# fields between RECEIVE and SEND, so the entered values come back as received;
+# EDTYYYY, never typed into, shows its blank INITIAL '    '
+# [app/bms/CORPT00.bms:188-193], MONTHLY and YEARLY theirs, and CONFIRM, which
+# has none, shows as a space. ERRMSG is the 78-byte ERRMSGO
+# [app/bms/CORPT00.bms:218-221]: the 35-character message followed by spaces
+# from the 80-byte WS-MESSAGE [app/cbl/CORPT00C.cbl:39]. CURDATE and CURTIME
+# come from the region clock, in the MM/DD/YY and HH:MM:SS forms
+# POPULATE-HEADER-INFO builds [app/cbl/CORPT00C.cbl:609-628], hence the
+# matchers and clock_mode relative.
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    ERRMSG: '                                                                              '
+  - '@map': CORPT00
+    TRNNAME: CR00
+    PGMNAME: CORPT00C
+    ERRMSG: '                                                                              '
+  - '@map': CORPT00
+    TRNNAME: CR00
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: CORPT00C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    MONTHLY: ' '
+    YEARLY: ' '
+    CUSTOM: 'X'
+    SDTMM: '01'
+    SDTDD: '01'
+    SDTYYYY: '2022'
+    EDTMM: '07'
+    EDTDD: '06'
+    EDTYYYY: '    '
+    CONFIRM: ' '
+    ERRMSG: 'End Date - Year can NOT be empty...                                           '
+  # One ERRMSG value per step: blank on the main menu and on the first
+  # CORPT00 screen, the end-year message after ENTER.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'End Date - Year can NOT be empty...                                           '

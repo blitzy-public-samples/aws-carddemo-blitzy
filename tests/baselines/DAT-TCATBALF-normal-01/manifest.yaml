@@ -1,0 +1,11 @@
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: gnucobol-batch
+execution_fingerprint: 10af39e7371b2a341b0b083c819c0262e8be1ef0fe6829f06c587f71e10c52a5
+execution_id: gnucobol-batch-2196e7dca2648514
+source_commit: 762594987fe9fa26d8d7774b7d888b0b14d81de9
+source_identity:
+  commit: 762594987fe9fa26d8d7774b7d888b0b14d81de9
+  tree: app
+  units:
+    app/jcl/TCATBALF.jcl: fa89dbfa8c34cb43c20298f6851c3aa1635556d3469ba7eac5859abe2305556e

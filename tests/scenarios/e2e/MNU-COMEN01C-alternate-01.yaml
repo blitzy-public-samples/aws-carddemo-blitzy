@@ -1,0 +1,76 @@
+# Menu option 1 of COMEN01C: 'Account View' transfers control to COACTVWC.
+# USER0001 (type U in the USRSEC fixture) signs on through CC00; COSGN00C sets
+# CDEMO-PGM-CONTEXT to 0 and XCTLs to COMEN01C [app/cbl/COSGN00C.cbl:221-240],
+# whose first entry sends the menu with a blank message and returns TRANSID CM00
+# [app/cbl/COMEN01C.cbl:86-90,107-110,182-194]. The menu text of option 1 is
+# '01. Account View' built from COMEN02Y [app/cbl/COMEN01C.cbl:241-250]
+# [app/cpy/COMEN02Y.cpy:25-29]. Option '1' is numeric, within the 10 options and
+# of user type U, and its program COACTVWC does not begin 'DUMMY', so COMEN01C
+# XCTLs to it with CDEMO-PGM-CONTEXT 0 [app/cbl/COMEN01C.cbl:117-155].
+# COACTVWC, called from COMEN01C and not re-entered, initializes the COMMAREA,
+# takes the CDEMO-PGM-ENTER path and sends COACTVW with its account-id prompt and
+# no error, reading no file [app/cbl/COACTVWC.cbl:282-286,353-360,431-535,577-591].
+# Screen fields are compared at their full BMS length, trailing spaces included:
+# ERRMSG is 78 blanks on both maps, OPTN001, TITLE01 and TITLE02 are 40 characters,
+# INFOMSG 45. CURDATE and CURTIME come from the region clock, so they are matchers.
+# The UniKix copy of COACTVW.bms lacks the unnamed field at row 1, columns 1-9,
+# beside TRNNAME (GAP-DOC-025).
+id: MNU-COMEN01C-alternate-01
+level: e2e
+type: alternate
+description: >-
+  USER0001 signs on, reaches the COMEN01C main menu (CM00) with option 1 shown
+  as 'Account View' and no message, selects option 1, and lands on the
+  COACTVWC account view screen (CAVW) with its prompt 'Enter or update id of
+  account to display' and no error message.
+inventory_ids:
+- INV-MNU-009  # COMEN01C option 1 Account View to COACTVWC (navigation rule)
+- INV-MNU-001  # COMEN01C program
+- INV-MNU-003  # COMEN01 map
+- INV-ACT-003  # COACTVW map, the screen the XCTL lands on
+- INV-CFG-018  # CM00 transaction, which runs the option selection
+- INV-LAY-002  # COCOM01Y: the COMMAREA COMEN01C passes on the XCTL
+- INV-LAY-003  # COMEN02Y: the option table (number, name, program, user type)
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COMEN01C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-003  # MNU end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-DOC-025  # the UniKix COACTVW.bms differs from app/ at row 1, columns 1-9
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '1'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    OPTN001: '01. Account View                        '
+    ERRMSG: '                                                                              '
+  - '@map': COACTVW
+    TRNNAME: CAVW
+    PGMNAME: COACTVWC
+    INFOMSG: 'Enter or update id of account to display     '
+    ERRMSG: '                                                                              '

@@ -1,0 +1,190 @@
+# Boundary case of the COCRDUPC expiry-month range edit: 13, one above the
+# upper edge, is refused. 1250-EDIT-EXPIRY-MON moves the received month to
+# CARD-MONTH-CHECK, which CARD-MONTH-CHECK-N redefines as PIC 9(2) with
+# VALID-MONTH VALUES 1 THRU 12; 13 is outside it, so the edit sets
+# CARD-EXPIRY-MONTH-NOT-VALID [app/cbl/COCRDUPC.cbl:92-95,197-198,877-907].
+# The other month edges are the sibling boundary cases: 0 refused, 1 and 12
+# accepted; boundary-05 to -08 cover the year edges.
+#
+# Steps 1-3 reach the fetched card:
+# - Step 2: COMEN01C transfers control to COCRDUPC (option 5) with itself as
+#   the calling program and the program context reset to enter
+#   [app/cpy/COMEN02Y.cpy:49-53] [app/cbl/COMEN01C.cbl:146-155]. COCRDUPC
+#   takes the fresh-entry branch, sends the empty search screen with
+#   'Please enter Account and Card Number' and returns with CCUP and
+#   CDEMO-PGM-REENTER [app/cbl/COCRDUPC.cbl:388-394,502-511,1141-1142].
+# - Step 3 runs WHEN OTHER: 1210-EDIT-ACCOUNT and 1220-EDIT-CARD accept the
+#   filters, 2000-DECIDE-ACTION reads CARDDAT by the card number alone (READ
+#   without UPDATE), sets FOUND-CARDS-FOR-ACCOUNT and CCUP-SHOW-DETAILS, and the
+#   record (line 1 of app/data/ASCII/carddata.txt: account 00000000050, CVV
+#   747, 'Aniya Von', expiry 2023-03-09, status Y) is shown with the name
+#   upper-cased. The name, status, month and year fields are sent unprotected
+#   with their MDT on, so step 4 receives all of them
+#   [app/cbl/COCRDUPC.cbl:721-800,954-966,1107-1112,1145-1146,1181-1190,
+#   1343-1394].
+# Step 4 types 13 over the expiry month (shown as 03) and presses ENTER:
+# - 1100-RECEIVE-MAP takes the received values as the new details, and the
+#   upper-cased new card data differs from the old in the month, so
+#   1200-EDIT-MAP-INPUTS sets CCUP-CHANGES-NOT-OK and runs the field edits in
+#   screen order [app/cbl/COCRDUPC.cbl:578-635,668-708].
+# - 1230-EDIT-NAME accepts 'ANIYA VON' (letters and a space only) and
+#   1240-EDIT-CARDSTATUS accepts Y. 1250-EDIT-EXPIRY-MON finds '13' supplied
+#   but not VALID-MONTH: it sets INPUT-ERROR and FLG-CARDEXPMON-NOT-OK and,
+#   WS-RETURN-MSG being still blank, sets the message. 1260-EDIT-EXPIRY-YEAR
+#   accepts 2023 (VALID-YEAR, 1950 THRU 2099) [app/cbl/COCRDUPC.cbl:96-99,
+#   806-944].
+# - INPUT-ERROR keeps CCUP-CHANGES-NOT-OK, on which 2000-DECIDE-ACTION
+#   continues, so 9200-WRITE-PROCESSING (the only READ UPDATE and REWRITE)
+#   does not run [app/cbl/COCRDUPC.cbl:710-714,982-983].
+# - 3200 shows the received values (WHEN CCUP-CHANGES-MADE), the month as
+#   typed; 3250 sets PROMPT-FOR-CHANGES and moves the message to ERRMSG; 3300
+#   keeps the fields editable and puts the cursor, coloured red, on EXPMON.
+#   PROMPT-FOR-CONFIRMATION is not set, so F5=Save F12=Cancel (FKEYSC) stays
+#   dark [app/cbl/COCRDUPC.cbl:1113-1123,1147-1148,1161-1163,1182-1190,
+#   1227-1229,1287-1290,1315-1317].
+#
+# Expected values are derived from the source (no TPE region runs in CI):
+# - Screen fields are compared at their full BMS length, trailing spaces
+#   kept: the 75-byte WS-RETURN-MSG fills the 80-byte ERRMSG and the 40-byte
+#   WS-INFO-MSG the 40-byte INFOMSG.
+# - The tpe adapter enters a field with EraseEOF before typing; '13' fills the
+#   2-byte EXPMON. EXPDAY (DRK) and FKEYSC (ASKIP,DRK) are captured as blanks;
+#   colour and cursor position are not in the s3270 text capture.
+# - CURDATE and CURTIME come from the region clock, hence the matchers and
+#   clock_mode relative.
+# - The UniKix copy rewrites the alphabets-only name test this case passes
+#   through (GAP-DOC-023, which lists only the name message); both versions
+#   accept 'ANIYA VON', so the outcome here does not depend on that change.
+id: CRD-COCRDUPC-boundary-04
+level: e2e
+type: boundary
+description: >-
+  USER0001 signs on, selects main-menu option 5 (Credit Card Update), fetches
+  card 0500024453765740 of account 00000000050 on the COCRDUPC screen (CCUP),
+  types 13 over the expiry month and presses ENTER. 13 is one above the upper
+  edge of 1 to 12, so COCRDUPC refuses the change: it shows the received
+  values again, editable, the month as typed, 'Card expiry month must be
+  between 1 and 12' in the message line and the change prompt 'Update card
+  details presented above.', with F5=Save kept dark. Nothing is saved: CARDDATA
+  still holds the card as loaded.
+# Primary item first, then the program, the maps asserted, the transaction of
+# steps 3 and 4, the CSD file COCRDUPC reads, and the online-only copybooks it
+# copies. Sign-on (CC00, COSGN00, USRSEC) and the menu transaction are
+# verified by the SEC and MNU scenarios, the information messages by their own
+# CRD scenarios, and the batch record copybooks and the data files at the
+# lowest level that executes them.
+inventory_ids:
+- INV-CRD-063  # COCRDUPC message 'Card expiry month must be between 1 and 12'
+- INV-CRD-003  # COCRDUPC program
+- INV-MNU-003  # COMEN01 map, where option 5 is entered
+- INV-CRD-006  # COCRDUP map, the search, detail and refused-change screens
+- INV-CFG-015  # CCUP transaction, which runs the fetch and the field edits
+- INV-CFG-003  # CARDDAT CSD file: card master read by card number
+- INV-LAY-002  # COCOM01Y: the COMMAREA carrying the context and filters
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COCRDUPC
+- INV-LAY-009  # CSMSG02Y: abend data, copied by COCRDUPC
+- INV-LAY-011  # CSSTRPFY: the AID mapping that selects the ENTER path
+- INV-LAY-019  # CVCRD01Y: CC-ACCT-ID, CC-CARD-NUM and the AID flags
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-006  # CRD end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    CARDDATA: {base: CARDDATA}
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+# PASSWORD is the documented demo password of README.md, not a secret.
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '5'
+  - aid: ENTER
+    '@map': COCRDUP
+    fields:
+      ACCTSID: '00000000050'
+      CARDSID: '0500024453765740'
+  - aid: ENTER
+    '@map': COCRDUP
+    fields:
+      EXPMON: '13'
+expected:
+  screens:
+  # One entry per step, each the screen the step ends on.
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN005: '05. Credit Card Update                  '
+    ERRMSG: '                                                                              '
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    PGMNAME: COCRDUPC
+    ACCTSID: '           '
+    CARDSID: '                '
+    INFOMSG: 'Please enter Account and Card Number    '
+    ERRMSG: '                                                                                '
+  # The fetched card, editable, with its name upper-cased.
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COCRDUPC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000050'
+    CARDSID: '0500024453765740'
+    CRDNAME: 'ANIYA VON                                         '
+    CRDSTCD: 'Y'
+    EXPMON: '03'
+    EXPYEAR: '2023'
+    EXPDAY: '  '
+    INFOMSG: 'Details of selected card shown above    '
+    ERRMSG: '                                                                                '
+    FKEYS: 'ENTER=Process F3=Exit'
+    FKEYSC: '                  '
+  # The refused change: the received values again, the month as received,
+  # the range message and the change prompt, with F5=Save F12=Cancel dark.
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COCRDUPC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000050'
+    CARDSID: '0500024453765740'
+    CRDNAME: 'ANIYA VON                                         '
+    CRDSTCD: 'Y'
+    EXPMON: '13'
+    EXPYEAR: '2023'
+    EXPDAY: '  '
+    INFOMSG: 'Update card details presented above.    '
+    ERRMSG: 'Card expiry month must be between 1 and 12                                      '
+    FKEYS: 'ENTER=Process F3=Exit'
+    FKEYSC: '                  '
+  # The change is refused, so the card is not rewritten: CARDDATA keeps its 50
+  # records and the card its loaded values, the name in its original case and
+  # the expiry month 03.
+  file_state:
+    CARDDATA:
+      count: 50
+      contains:
+      - CARD-NUM: '0500024453765740'
+        CARD-ACCT-ID: '50'
+        CARD-CVV-CD: '747'
+        CARD-EMBOSSED-NAME: 'Aniya Von                                         '
+        CARD-EXPIRAION-DATE: '2023-03-09'
+        CARD-ACTIVE-STATUS: 'Y'

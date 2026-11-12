@@ -1,0 +1,158 @@
+# Transaction add with the category code left blank, second of the COTRN02C
+# empty-field series (Type CD, Category CD, Source, Description, Amount, Orig
+# Date, Proc Date, Merchant ID, Merchant Name, Merchant City, Merchant Zip:
+# negative-07 to negative-17).
+#
+# Steps 1-2 reach the empty Add Transaction screen: USER0001 (user type U)
+# signs on through CC00 and COSGN00C transfers control to the main menu
+# COMEN01C [app/cbl/COSGN00C.cbl:230-237]. Option 8 of COMEN02Y is
+# 'Transaction Add', program COTRN02C [app/cpy/COMEN02Y.cpy:67-72], so COMEN01C
+# transfers control to it with the program context reset
+# [app/cbl/COMEN01C.cbl:115-156]. Entered without the reenter flag and with no
+# transaction selected, COTRN02C sets the flag, moves LOW-VALUES to COTRN2AO,
+# sends COTRN02 with WS-MESSAGE still spaces and returns with TRANSID CT02
+# [app/cbl/COTRN02C.cbl:119-130,516-534].
+#
+# The ENTER of step 3 runs CT02 again. COTRN02C receives COTRN2A and performs
+# PROCESS-ENTER-KEY [app/cbl/COTRN02C.cbl:131-135,164-167]:
+# - VALIDATE-INPUT-KEY-FIELDS takes the card branch, because the account id is
+#   blank: the card number is numeric, goes back to CARDNINI through
+#   WS-CARD-NUM-N PIC 9(16) unchanged, and READ CCXREF by card is NORMAL, so
+#   XREF-ACCT-ID (PIC 9(11)) of record 1 of the CARDXREF fixture,
+#   00000000050, moves to ACTIDINI and the error flag stays off
+#   [app/cbl/COTRN02C.cbl:210-223,609-637] [app/cpy/CVACT03Y.cpy:5-7].
+# - VALIDATE-INPUT-DATA-FIELDS checks the empties in series order. Type CD 01
+#   is supplied, and the second WHEN finds TCATCDI equal to SPACES or
+#   LOW-VALUES (the erased field arrives with no data, so either value takes
+#   this branch): it sets the error flag, moves 'Category CD can NOT be
+#   empty...' to WS-MESSAGE, puts the cursor on TCATCD and performs
+#   SEND-TRNADD-SCREEN [app/cbl/COTRN02C.cbl:250-262].
+# - SEND-TRNADD-SCREEN sends COTRN02 with ERASE and ends the task with RETURN
+#   TRANSID CT02 [app/cbl/COTRN02C.cbl:516-534]. The later checks and the
+#   EVALUATE of CONFIRM never run, so CONFIRM Y does not reach
+#   ADD-TRANSACTION and TRANSACT is neither browsed nor written
+#   [app/cbl/COTRN02C.cbl:169-174,442-466].
+# COTRN2AO redefines COTRN2AI and is not cleared on this path, so every value
+# just received is sent back as received, with the account id the
+# cross-reference supplied and the category code still blank
+# [app/cpy-bms/COTRN02.CPY].
+#
+# Screen values are whole fields at their BMS length with trailing spaces kept,
+# because comparison never trims: BMS pads each received field with blanks to
+# its length. ERRMSG is WS-MESSAGE (X(80)) cut to ERRMSGO (X(78)); CURDATE and
+# CURTIME come from the region clock, so they are matchers and the clock is
+# relative. expected.messages is not asserted: it carries the ERRMSG of every
+# step, which the screens below already assert. The baseline is derived from
+# the source: no TPE region runs in CI.
+id: TRN-COTRN02C-negative-08
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, chooses main-menu option 8 (Transaction Add) and submits
+  the add screen with ENTER for repository card 0500024453765740, every data
+  field filled in except the category code, and CONFIRM Y. COTRN02C looks up
+  the card, fills in account 00000000050, refuses the add before any TRANSACT
+  access and shows map COTRN02 again with its header (CT02, COTRN02C, the
+  titles, the run date and time), the entered values, the blank category code
+  and 'Category CD can NOT be empty...' in ERRMSG [app/cbl/COTRN02C.cbl:258-262].
+  TRANSACT still holds only its 300 fixture records.
+# Primary item first, then the program, the maps the screens assert (COMEN01,
+# COTRN02), the transaction step 3 enters (CT02, the TRANSID COTRN02C returned
+# with), the CSD file the card lookup reads (CCXREF), and the online-only
+# copybooks COTRN02C copies. The TRANSACT CSD file is not listed: this path
+# never reaches it, and its unchanged content only shows that no add happened.
+# CVTRA05Y and CVACT03Y are batch-level copybooks verified elsewhere, and the
+# sign-on and menu items belong to their own scenarios.
+inventory_ids:
+- INV-TRN-037  # COTRN02C message 'Category CD can NOT be empty...' (rule)
+- INV-TRN-003  # COTRN02C program
+- INV-MNU-003  # COMEN01 map, where option 8 is entered
+- INV-TRN-006  # COTRN02 map, the add screen of steps 2 and 3
+- INV-CFG-022  # CT02 transaction, under which the ENTER of step 3 runs COTRN02C
+- INV-CFG-004  # CCXREF CSD file, read by card number before the data checks
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA that makes the ENTER a reentry
+- INV-LAY-005  # COTTL01Y copybook, TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y copybook, CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y copybook, copied by COTRN02C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-007  # TRN end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user USER0001.
+    USRSEC: {base: USRSEC}
+    # The region's CCXREF file (and its CXACAIX path); record 1 is card
+    # 0500024453765740 for account 00000000050.
+    CARDXREF: {base: CARDXREF}
+    # TRANSACT holds no repository data of its own (datasets.yaml source
+    # 'built'), so it is built from the 300 DALYTRAN records, as for every
+    # online TRN scenario.
+    TRANSACT: {base: DALYTRAN}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - {transid: CC00, aid: ENTER, fields: {USERID: USER0001, PASSWD: PASSWORD}, '@map': COSGN00}
+  - {aid: ENTER, fields: {OPTION: '8'}, '@map': COMEN01}
+  # The valid field set of the TRN-COTRN02C scenarios with the category code
+  # left blank: the empty value erases the field, so COTRN02C receives no
+  # category code. ACTIDIN is left blank, so the card number selects the
+  # cross-reference. CONFIRM Y means the empty category alone stops the add.
+  - aid: ENTER
+    '@map': COTRN02
+    fields:
+      CARDNIN: '0500024453765740'
+      TTYPCD: '01'
+      TCATCD: ''
+      TRNSRC: POS TERM
+      TDESC: Test purchase
+      TRNAMT: '+00000012.34'
+      TORIGDT: '2022-07-01'
+      TPROCDT: '2022-07-01'
+      MID: '800000001'
+      MNAME: Test Merchant
+      MCITY: Testville
+      MZIP: '27601'
+      CONFIRM: 'Y'
+expected:
+  screens:
+  # One entry per step, each the screen the step ends on.
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN008: '08. Transaction Add                     '
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: CT02
+    PGMNAME: COTRN02C
+    TCATCD: '    '
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: CT02
+    PGMNAME: COTRN02C
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time, format: '%H:%M:%S'}
+    ACTIDIN: '00000000050'
+    CARDNIN: '0500024453765740'
+    TTYPCD: '01'
+    TCATCD: '    '
+    TRNSRC: 'POS TERM  '
+    TDESC: 'Test purchase                                               '
+    TRNAMT: '+00000012.34'
+    TORIGDT: '2022-07-01'
+    TPROCDT: '2022-07-01'
+    MID: '800000001'
+    MNAME: 'Test Merchant                 '
+    MCITY: 'Testville                '
+    MZIP: '27601     '
+    CONFIRM: 'Y'
+    ERRMSG: 'Category CD can NOT be empty...                                               '
+  file_state:
+    # COTRN02C's only TRANSACT change is the WRITE of a new key, so the 300
+    # fixture records, and no added transaction, are the unchanged file.
+    TRANSACT: {count: 300}

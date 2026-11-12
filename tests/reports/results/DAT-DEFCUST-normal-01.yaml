@@ -1,0 +1,23 @@
+adapter: gnucobol-batch
+baseline_version: 1.0.0
+decoded:
+  file_state:
+    '@CATALOG':
+    - AWS.CUSTDATA.CLUSTER CLUSTER -
+  messages:
+  - STEP STEP05 RC 0008
+  - STEP STEP05 RC 0000
+  return_code: 8
+evidence_path: tests/reports/results/DAT-DEFCUST-normal-01.yaml
+execution_fingerprint: 222a2918acbadd502b625056d68a792034df559c98b42835eeb1c6d3e735b199
+execution_id: gnucobol-batch-540be8b5ae218d03
+gap_id: null
+reason: null
+scenario_digest: 686cf7b0460ce4478258befe92ed615f1a7d6228fc99dbe2a65e5a406ee02002
+scenario_id: DAT-DEFCUST-normal-01
+source_identity:
+  commit: 5e233f7fcf4b35b5fbeb2e336ce61d6d04febfa4
+  tree: app
+  units:
+    app/jcl/DEFCUST.jcl: 488bddaab9561e741bff7569c17413bed9fc833e17b658dbbe94ca663de980b3
+status: passed

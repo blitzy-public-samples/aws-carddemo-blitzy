@@ -1,0 +1,134 @@
+id: USR-COUSR00C-alternate-04
+level: e2e
+type: alternate
+description: >-
+  ADMIN001 signs on, takes admin option 1 to the COUSR00C user list, and
+  searches from user id USER0003. On ENTER, COUSR00C starts a USRSEC browse at
+  that key, clears the ten rows and reads forward. Only USER0003, USER0004 and
+  USER0005 follow in the ten-user fixture, so the fourth READNEXT returns
+  ENDFILE. That branch sets 'You have reached the bottom of the page...' in
+  WS-MESSAGE and sends the map [app/cbl/COUSR00C.cbl:282-306,619-640]. The task
+  then counts the partly filled page as page 1, ends the browse, blanks the
+  search field and sends the map again. WS-MESSAGE is not reset between the two
+  sends, so the final screen keeps the message, with the three rows above seven
+  blank ones [app/cbl/COUSR00C.cbl:317-329,522-544]. The unfiltered first page
+  of step 2 reaches end of file on its eleventh read, so it ends with the same
+  message; USR-COUSR00C-boundary-01 pins that ten-user case.
+# Primary item first, then the program, the maps the steps enter on and land
+# on, the transaction the search runs under (COUSR00C returns with TRANSID
+# CU00), the CSD file browsed, and the online-only copybooks COUSR00C copies.
+# Sign-on and the admin menu are covered by the SEC and MNU scenarios that own
+# them.
+inventory_ids:
+- INV-USR-015
+- INV-USR-001
+- INV-USR-005
+- INV-MNU-004
+- INV-CFG-023
+- INV-CFG-008
+- INV-LAY-002
+- INV-LAY-005
+- INV-LAY-006
+- INV-LAY-008
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-004
+- GAP-INF-012
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: ADMIN001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COADM01
+    fields:
+      OPTION: '1'
+  - aid: ENTER
+    '@map': COUSR00
+    fields:
+      USRIDIN: USER0003
+# Steps 1 and 2 assert only the screen each lands on. Their content is pinned by
+# the scenarios of the programs that send them.
+# Screen 3 is the second SEND of the search task. The first SEND, from the
+# ENDFILE branch, still holds USER0003 in USRIDIN; the second holds spaces, and
+# every other field is the same in both. Screen values are whole fields at
+# their BMS length, trailing spaces kept. PAGENUM is the PIC 9(8) page counter
+# moved to the PIC X(8) field.
+expected:
+  screens:
+  - '@map': COADM01
+    TRNNAME: CA00
+    PGMNAME: COADM01C
+  - '@map': COUSR00
+    TRNNAME: CU00
+    PGMNAME: COUSR00C
+  - '@map': COUSR00
+    TRNNAME: CU00
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COUSR00C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    PAGENUM: '00000001'
+    USRIDIN: '        '
+    SEL0001: ' '
+    USRID01: 'USER0003'
+    FNAME01: 'LAURITZ             '
+    LNAME01: 'ALME                '
+    UTYPE01: 'U'
+    SEL0002: ' '
+    USRID02: 'USER0004'
+    FNAME02: 'AVERARDO            '
+    LNAME02: 'MAZZI               '
+    UTYPE02: 'U'
+    SEL0003: ' '
+    USRID03: 'USER0005'
+    FNAME03: 'LEE                 '
+    LNAME03: 'TING                '
+    UTYPE03: 'U'
+    SEL0004: ' '
+    USRID04: '        '
+    FNAME04: '                    '
+    LNAME04: '                    '
+    UTYPE04: ' '
+    SEL0005: ' '
+    USRID05: '        '
+    FNAME05: '                    '
+    LNAME05: '                    '
+    UTYPE05: ' '
+    SEL0006: ' '
+    USRID06: '        '
+    FNAME06: '                    '
+    LNAME06: '                    '
+    UTYPE06: ' '
+    SEL0007: ' '
+    USRID07: '        '
+    FNAME07: '                    '
+    LNAME07: '                    '
+    UTYPE07: ' '
+    SEL0008: ' '
+    USRID08: '        '
+    FNAME08: '                    '
+    LNAME08: '                    '
+    UTYPE08: ' '
+    SEL0009: ' '
+    USRID09: '        '
+    FNAME09: '                    '
+    LNAME09: '                    '
+    UTYPE09: ' '
+    SEL0010: ' '
+    USRID10: '        '
+    FNAME10: '                    '
+    LNAME10: '                    '
+    UTYPE10: ' '
+    ERRMSG: 'You have reached the bottom of the page...                                    '

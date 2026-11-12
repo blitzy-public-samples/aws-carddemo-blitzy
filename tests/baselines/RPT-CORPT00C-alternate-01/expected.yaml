@@ -1,0 +1,45 @@
+# Derived from source (capture_platform: derived), never observed: USER0001
+# opens Transaction Reports (menu option 9), marks MONTHLY with X and presses
+# ENTER with CONFIRM empty. CORPT00C names the report 'Monthly', finds CONFIRM
+# spaces or LOW-VALUES and STRINGs 'Please confirm to print the Monthly
+# report...' into WS-MESSAGE (cleared at task start), then SEND-TRNRPT-SCREEN
+# resends CORPT00 from CORPT0AO, which redefines the received CORPT0AI, and
+# ends the task with GO TO RETURN-TO-CICS before any WRITEQ TD to JOBS
+# [app/cbl/CORPT00C.cbl:165-181,212-238,462-474,556-591,609-628]
+# [app/cbl/COMEN01C.cbl:115-156] [app/cpy/COMEN02Y.cpy:74-78]
+# [app/cpy/COTTL01Y.cpy:17-22]. Fields are whole at their BMS width with
+# trailing spaces kept (ERRMSG 78, TITLE01/TITLE02 40), because screens
+# compare exactly. CURDATE and CURTIME come from the region clock, so they are
+# matchers. Only report.py --import-unikix replaces this with an observed
+# outcome.
+screens:
+- '@map': COMEN01
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': CORPT00
+  CONFIRM: ' '
+  ERRMSG: '                                                                              '
+  MONTHLY: ' '
+  PGMNAME: CORPT00C
+  TRNNAME: CR00
+- '@map': CORPT00
+  CONFIRM: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  CUSTOM: ' '
+  EDTDD: '  '
+  EDTMM: '  '
+  EDTYYYY: '    '
+  ERRMSG: 'Please confirm to print the Monthly report...                                 '
+  MONTHLY: X
+  PGMNAME: CORPT00C
+  SDTDD: '  '
+  SDTMM: '  '
+  SDTYYYY: '    '
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CR00
+  YEARLY: ' '

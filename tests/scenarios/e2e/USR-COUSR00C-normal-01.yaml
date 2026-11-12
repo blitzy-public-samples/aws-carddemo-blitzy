@@ -1,0 +1,135 @@
+id: USR-COUSR00C-normal-01
+level: e2e
+type: normal
+description: >-
+  ADMIN001 signs on through transaction CC00 and reaches the admin menu
+  COADM01, then enters option 1. COADM01C right-justifies the option to 01 and
+  transfers control to COUSR00C with CDEMO-PGM-CONTEXT zero
+  [app/cbl/COADM01C.cbl:115-145] [app/cpy/COADM02Y.cpy:24-27]. COUSR00C,
+  entered for the first time, clears its output map, browses USRSEC from
+  LOW-VALUES and fills rows 1 to 10 with the user id, first name, last name
+  and type of the first ten records in key order
+  [app/cbl/COUSR00C.cbl:110-119,149-232,282-331,384-441]. USRSEC holds exactly
+  the ten DUSRSECJ users [app/jcl/DUSRSECJ.jcl:35-44], so the page number
+  becomes 1 and the look-ahead READNEXT meets end of file: it leaves 'You have
+  reached the bottom of the page...' in WS-MESSAGE, which every later send of
+  the task shows in ERRMSG [app/cbl/COUSR00C.cbl:308-329,631-640,522-526]. The
+  task sends COUSR00 three times (at end of file, after the browse, and on
+  return to MAIN-PARA) and the map frees the keyboard; the last send is the
+  screen asserted.
+# Primary item first, then the program, the maps the steps are entered on and
+# land on (COSGN00, COADM01, COUSR00), the transactions the steps enter (CC00
+# by transid, CA00 as the transaction COADM01C returns with), the CSD file
+# browsed, and the online-only copybooks COUSR00C copies. CU00 (INV-CFG-023) is
+# deliberately not listed: COUSR00C is reached by XCTL and only names CU00 on
+# its RETURN, so no step enters that transaction definition, and an item is
+# listed only by the scenarios its verification depends on. COADM01C's own
+# items are covered by the COADM01C (MNU) scenarios.
+inventory_ids:
+- INV-USR-021
+- INV-USR-001
+- INV-SEC-002
+- INV-MNU-004
+- INV-USR-005
+- INV-CFG-016
+- INV-CFG-011
+- INV-CFG-008
+- INV-LAY-002
+- INV-LAY-005
+- INV-LAY-006
+- INV-LAY-008
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-004
+- GAP-INF-012
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: ADMIN001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COADM01
+    fields:
+      OPTION: '1'
+# Screen values are whole fields at their BMS length, trailing spaces kept:
+# comparison never trims. Fields a program leaves at LOW-VALUES show their BMS
+# INITIAL (' ' for SEL0001-SEL0010) or, without one, spaces (OPTION).
+# PAGENUM is the PIC 9(08) page counter moved to the 8-byte field.
+expected:
+  screens:
+  - '@map': COADM01
+    TRNNAME: CA00
+    PGMNAME: COADM01C
+    OPTN001: '01. User List (Security)                '
+    OPTION: '  '
+    ERRMSG: '                                                                              '
+  - '@map': COUSR00
+    TRNNAME: CU00
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COUSR00C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    PAGENUM: '00000001'
+    USRIDIN: '        '
+    SEL0001: ' '
+    USRID01: ADMIN001
+    FNAME01: 'MARGARET            '
+    LNAME01: 'GOLD                '
+    UTYPE01: A
+    SEL0002: ' '
+    USRID02: ADMIN002
+    FNAME02: 'RUSSELL             '
+    LNAME02: 'RUSSELL             '
+    UTYPE02: A
+    SEL0003: ' '
+    USRID03: ADMIN003
+    FNAME03: 'RAYMOND             '
+    LNAME03: 'WHITMORE            '
+    UTYPE03: A
+    SEL0004: ' '
+    USRID04: ADMIN004
+    FNAME04: 'EMMANUEL            '
+    LNAME04: 'CASGRAIN            '
+    UTYPE04: A
+    SEL0005: ' '
+    USRID05: ADMIN005
+    FNAME05: 'GRANVILLE           '
+    LNAME05: 'LACHAPELLE          '
+    UTYPE05: A
+    SEL0006: ' '
+    USRID06: USER0001
+    FNAME06: 'LAWRENCE            '
+    LNAME06: 'THOMAS              '
+    UTYPE06: U
+    SEL0007: ' '
+    USRID07: USER0002
+    FNAME07: 'AJITH               '
+    LNAME07: 'KUMAR               '
+    UTYPE07: U
+    SEL0008: ' '
+    USRID08: USER0003
+    FNAME08: 'LAURITZ             '
+    LNAME08: 'ALME                '
+    UTYPE08: U
+    SEL0009: ' '
+    USRID09: USER0004
+    FNAME09: 'AVERARDO            '
+    LNAME09: 'MAZZI               '
+    UTYPE09: U
+    SEL0010: ' '
+    USRID10: USER0005
+    FNAME10: 'LEE                 '
+    LNAME10: 'TING                '
+    UTYPE10: U
+    ERRMSG: 'You have reached the bottom of the page...                                    '

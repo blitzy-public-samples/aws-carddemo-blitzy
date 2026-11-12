@@ -1,0 +1,104 @@
+# Derived baseline of scenario TRN-COTRN02C-alternate-04: USER0001 signs on,
+# takes main-menu option 8 to the Add Transaction screen, enters card
+# 0500024453765740 and presses PF5 while TRANSACT holds the invented records
+# 0000000000000001 and 0000000000000002.
+# Authored from the source, never captured:
+# - app/cbl/COSGN00C.cbl:230-237 (type U -> COMEN01C) and
+#   app/cbl/COMEN01C.cbl:115-156,236-264 with app/cpy/COMEN02Y.cpy:67-72
+#   (OPTN008 is '08. Transaction Add' in 40 characters; option 8 XCTLs to
+#   COTRN02C with the program context reset);
+# - app/cbl/COTRN02C.cbl:119-130,516-528 (first entry: LOW-VALUES map, no
+#   transaction selected, blank ERRMSG);
+# - app/cbl/COTRN02C.cbl:146-147,471-495 (PF5: COPY-LAST-TRAN-DATA). The card
+#   path of VALIDATE-INPUT-KEY-FIELDS reads CCXREF, so ACTIDIN becomes
+#   00000000050, the account of record 1 of app/data/ASCII/cardxref.txt
+#   [193-223,609-623]. STARTBR at HIGH-VALUES and READPREV give the highest key,
+#   0000000000000002 [642-706], whose fields move into the input fields cut to
+#   each BMS length: TRAN-AMT through WS-TRAN-AMT-E (+99999999.99) gives
+#   +00000045.67, the PIC 9(04) category 1 gives 0001, the 26-byte timestamps
+#   keep their dates, and the description, merchant name and city keep their
+#   first 60, 30 and 25 characters [480-492] [app/cpy/CVTRA05Y.cpy:4-18];
+# - app/cbl/COTRN02C.cbl:164-188,195-209,235-437: PROCESS-ENTER-KEY takes the
+#   account path through CXACAIX (card 0500024453765740 again, the only card of
+#   account 50), every copied value passes the data edits, NUMVAL-C leaves the
+#   amount unchanged, and the blank CONFIRM gives 'Confirm to add this
+#   transaction...' (WS-MESSAGE X(80) into ERRMSGO X(78)); ADD-TRANSACTION is
+#   not performed, so TRANSACT keeps both records unchanged.
+# Both records belong to the entered card, so the outcome does not settle
+# whether PF5 copies the last transaction of the file or of the card
+# (GAP-UNC-015). Open until a UniKix run is imported: GAP-INF-007 (derived TRN
+# end-to-end baselines) and GAP-INF-012 (online-only copybooks). Only
+# `report.py --import-unikix` promotes it; it is never edited to match a run.
+# One screen per step, each the screen shown after the step's AID; messages
+# holds each step's ERRMSG. Text is full BMS field width with trailing spaces.
+# CURDATE and CURTIME come from the region clock, so they are matchers.
+# TRANSACT is in primary-key order, decoded with CVTRA05Y; its FILLER is not
+# asserted.
+file_state:
+  TRANSACT:
+    records:
+    - TRAN-AMT: '-12.50'
+      TRAN-CARD-NUM: '0500024453765740'
+      TRAN-CAT-CD: '2'
+      TRAN-DESC: 'Test first transaction                                                                              '
+      TRAN-ID: '0000000000000001'
+      TRAN-MERCHANT-CITY: 'Firstville                                        '
+      TRAN-MERCHANT-ID: '800000001'
+      TRAN-MERCHANT-NAME: 'First Shop                                        '
+      TRAN-MERCHANT-ZIP: '27601     '
+      TRAN-ORIG-TS: '2022-06-01 09:00:00.000000'
+      TRAN-PROC-TS: '2022-06-02 09:00:00.000000'
+      TRAN-SOURCE: 'OPERATOR  '
+      TRAN-TYPE-CD: '02'
+    - TRAN-AMT: '45.67'
+      TRAN-CARD-NUM: '0500024453765740'
+      TRAN-CAT-CD: '1'
+      TRAN-DESC: 'Test last transaction                                                                               '
+      TRAN-ID: '0000000000000002'
+      TRAN-MERCHANT-CITY: 'Testburg                                          '
+      TRAN-MERCHANT-ID: '800000002'
+      TRAN-MERCHANT-NAME: 'Test Shop                                         '
+      TRAN-MERCHANT-ZIP: '27602     '
+      TRAN-ORIG-TS: '2022-06-15 10:00:00.000000'
+      TRAN-PROC-TS: '2022-06-16 10:00:00.000000'
+      TRAN-SOURCE: 'POS TERM  '
+      TRAN-TYPE-CD: '01'
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'Confirm to add this transaction...                                            '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  OPTN008: '08. Transaction Add                     '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COTRN02
+  ERRMSG: '                                                                              '
+  PGMNAME: COTRN02C
+  TRNNAME: CT02
+- '@map': COTRN02
+  ACTIDIN: '00000000050'
+  CARDNIN: '0500024453765740'
+  CONFIRM: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Confirm to add this transaction...                                            '
+  MCITY: 'Testburg                 '
+  MID: '800000002'
+  MNAME: 'Test Shop                     '
+  MZIP: '27602     '
+  PGMNAME: COTRN02C
+  TCATCD: '0001'
+  TDESC: 'Test last transaction                                       '
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TORIGDT: '2022-06-15'
+  TPROCDT: '2022-06-16'
+  TRNAMT: '+00000045.67'
+  TRNNAME: CT02
+  TRNSRC: 'POS TERM  '
+  TTYPCD: '01'

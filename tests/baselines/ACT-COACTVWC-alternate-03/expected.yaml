@@ -1,0 +1,66 @@
+# Derived baseline (capture_platform: derived) of ACT-COACTVWC-alternate-03,
+# authored from the source because no TPE region runs in CI; an imported,
+# eligible UniKix run replaces it.
+#
+# CAVW entered directly, with no COMMAREA and no sign-on: COACTVWC initializes
+# CARDDEMO-COMMAREA (CDEMO-PGM-ENTER), sends its own map COACTVW, sets
+# CDEMO-PGM-REENTER and returns with TRANSID CAVW; it never checks sign-on
+# [app/cbl/COACTVWC.cbl:282-286,353-360,394-406,577-591] (GAP-UNC-010, pinned
+# as the source has it, never corrected).
+#
+# The one screen is the reply to the step's ENTER on that map, because the
+# driver captures each step after its AID: the fresh direct-entry screen is
+# never compared. ENTER re-enters COACTVWC with its COMMAREA; the account id
+# (FSET) arrives empty, so 2210-EDIT-ACCOUNT flags the filter blank and the
+# cross-field edit sets 'No input received' [app/cbl/COACTVWC.cbl:282-292,
+# 361-367,596-664]. The resent map shows '*' in ACCTSID for a blank filter on
+# re-entry, the prompt in INFOMSG, and every account and customer field at
+# LOW-VALUES, read as spaces, since nothing was read [app/cbl/COACTVWC.cbl:
+# 431-571] [app/cpy/COTTL01Y.cpy:18-22].
+#
+# Values are whole BMS fields with trailing spaces kept. CURDATE and CURTIME
+# come from the region clock (CSDAT01Y MM/DD/YY, HH:MM:SS), so they are
+# matchers. The unnamed LENGTH=9 field at row 1, columns 1-9, which the UniKix
+# copy of the map removes, is not asserted (GAP-DOC-025).
+screens:
+- '@map': COACTVW
+  AADDGRP: '          '
+  ACCTSID: '*          '
+  ACRCYCR: '               '
+  ACRCYDB: '               '
+  ACRDLIM: '               '
+  ACSADL1: '                                                  '
+  ACSADL2: '                                                  '
+  ACSCITY: '                                                  '
+  ACSCTRY: '   '
+  ACSEFTC: '          '
+  ACSFNAM: '                         '
+  ACSGOVT: '                    '
+  ACSHLIM: '               '
+  ACSLNAM: '                         '
+  ACSMNAM: '                         '
+  ACSPFLG: ' '
+  ACSPHN1: '             '
+  ACSPHN2: '             '
+  ACSSTTE: '  '
+  ACSTDOB: '          '
+  ACSTFCO: '   '
+  ACSTNUM: '         '
+  ACSTSSN: '            '
+  ACSTTUS: ' '
+  ACSZIPC: '     '
+  ACURBAL: '               '
+  ADTOPEN: '          '
+  AEXPDT: '          '
+  AREISDT: '          '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'No input received                                                             '
+  INFOMSG: 'Enter or update id of account to display     '
+  PGMNAME: COACTVWC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CAVW

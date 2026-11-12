@@ -1,0 +1,44 @@
+# Derived baseline (capture_platform: derived in manifest.yaml) for
+# TRN-COTRN01C-alternate-02, authored from the source because only unikix can
+# run the scenario. The scenario is tagged inferred-not-observed (GAP-INF-007,
+# GAP-INF-012); `report.py --import-unikix <execution_id>` replaces this file
+# on eligible evidence.
+#
+# CT01 entered directly, with no COMMAREA: COTRN01C finds EIBCALEN = 0 and
+# XCTLs to COSGN00C passing CARDDEMO-COMMAREA, so the transaction view screen
+# COTRN01 is never sent [app/cbl/COTRN01C.cbl:94-96,197-208]. COSGN00C starts
+# with EIBCALEN > 0 and EIBAID ENTER and treats the entry as a sign-on attempt
+# that sends map COSGN00, which is the step's input screen
+# [app/cbl/COSGN00C.cbl:80-88,108-157].
+#
+# The asserted screen is the one after the step's ENTER, pressed on that
+# sign-on screen with nothing typed. COSGN00C finds USERIDI spaces or
+# LOW-VALUES and sends COSGN00 again with 'Please enter User ID ...', under the
+# header POPULATE-HEADER-INFO builds: CC00, COSGN00C, the COTTL01Y titles, and
+# the run date and time [app/cbl/COSGN00C.cbl:36-37,117-122,145-157,177-196].
+# The ERRMSG and messages values are pinned even though the first COSGN00C
+# entry's ERRMSG (a MAPFAIL on the unformatted 'CT01' input) is uncertain,
+# because they come from the second entry, and the second entry's result does
+# not depend on the first's. They are kept because the scenario's expected
+# names them: an expected.yaml holds exactly the keys the scenario asserts,
+# and comparison fails on any key the baseline lacks.
+#
+# Values are at their full BMS width, with trailing spaces kept: TRNNAME 4,
+# PGMNAME 8, TITLE01 and TITLE02 40, USERID 8, ERRMSG 78 [app/bms/COSGN00.bms].
+# CURDATE and CURTIME come from the region clock, so they are matchers.
+messages:
+- 'Please enter User ID ...                                                      '
+screens:
+- '@map': COSGN00
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    format: '%H:%M:%S '
+    match: run-time
+  ERRMSG: 'Please enter User ID ...                                                      '
+  PGMNAME: COSGN00C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CC00
+  USERID: '        '

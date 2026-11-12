@@ -1,0 +1,11 @@
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: gnucobol-batch
+execution_fingerprint: ba681f2caf1a95920947ac16899aad5ba8d23daf7941c1fdfe8528c8c7c54056
+execution_id: gnucobol-batch-cbe7571a5ea8fdc2
+source_commit: 762594987fe9fa26d8d7774b7d888b0b14d81de9
+source_identity:
+  commit: 762594987fe9fa26d8d7774b7d888b0b14d81de9
+  tree: app
+  units:
+    app/jcl/DEFGDGB.jcl: 4e515d5e5fa999382ff2852897ec21a14ff707133fef2e2246976aac789285c0

@@ -1,0 +1,90 @@
+# DUSRSECJ rebuilds the user security file from the ten users coded in-stream in
+# the job [app/jcl/DUSRSECJ.jcl:23-88]:
+# - PREDEL (IEFBR14) allocates the sequential user file with DISP=(MOD,DELETE,DELETE)
+#   and so deletes it [app/jcl/DUSRSECJ.jcl:23-26]. USRSEC-PS is present beforehand,
+#   built from the repository data file, so the delete acts on an existing dataset
+#   and the STEP01 allocation with DISP=(NEW,CATLG,DELETE) finds none in its way.
+# - STEP01 (IEBGENER) writes the ten in-stream lines, each padded with spaces to
+#   LRECL=80, as the new sequential user file [app/jcl/DUSRSECJ.jcl:32-50].
+# - STEP02 (IDCAMS) deletes the user security KSDS, resets MAXCC to 0 and defines
+#   it again with KEYS(8,0) and RECORDSIZE(80,80) [app/jcl/DUSRSECJ.jcl:58-74].
+#   USRSEC is present beforehand holding only the invented user STALE001, so the
+#   DELETE finds the cluster and the reload cannot merge with old content.
+# - STEP03 (IDCAMS) REPROs the sequential file into the empty KSDS
+#   [app/jcl/DUSRSECJ.jcl:80-87].
+# Every step ends with return code 0, and utility output goes to the evidence
+# only, so the messages are the four step lines. USRSEC then holds exactly the ten
+# job users in key order, ADMIN001-ADMIN005 of type A before USER0001-USER0005 of
+# type U, all with password PASSWORD, decoded through CSUSR01Y; STALE001 is gone.
+# The tech spec says the job loads ADMIN001 and USER0001 only (GAP-DOC-010).
+# The users are data: nothing signs on in this scenario. STALE001 is invented and
+# carries no password, since no step ever reads it as a credential.
+# Expected text values are full field width with their trailing spaces. No value
+# depends on the clock; the clock is relative because unikix can run the job but
+# cannot fix its clock (GAP-MIS-015).
+id: DAT-DUSRSECJ-normal-01
+level: integration
+type: normal
+description: >-
+  DUSRSECJ deletes the existing sequential user file, writes the ten in-stream
+  users to a new one, deletes and redefines the user security KSDS and loads it
+  from the sequential file. Every step ends with return code 0; the KSDS holds
+  ADMIN001-ADMIN005 (type A) and USER0001-USER0005 (type U) with password
+  PASSWORD in key order, the user it held before is gone, and the sequential
+  file holds the ten in-stream lines padded to 80 bytes.
+inventory_ids:
+- INV-DAT-013  # DUSRSECJ job
+- INV-LAY-012  # CSUSR01Y copybook, the layout the USRSEC records are decoded through
+- INV-DTA-021  # EBCDIC user security data file, the source of the USRSEC-PS precondition
+tags: []
+gap_ids:
+- GAP-STB-005  # IDCAMS DELETE, DEFINE CLUSTER and REPRO emulated
+- GAP-STB-007  # IEFBR14, IEBGENER and DISP emulated
+- GAP-STB-009  # catalog emulated
+- GAP-STB-010  # Berkeley DB indexed file in place of the VSAM KSDS
+- GAP-DOC-010  # the tech spec names two users; the job loads ten
+- GAP-DOC-018  # the tech spec does not describe the EBCDIC user security data file
+preconditions:
+  datasets:
+    USRSEC-PS: {base: USRSEC-PS}
+    USRSEC:
+      records:
+      - {SEC-USR-ID: STALE001, SEC-USR-FNAME: STALEFIRST, SEC-USR-LNAME: STALELAST, SEC-USR-TYPE: U}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  job: DUSRSECJ
+expected:
+  return_code: 0
+  messages:
+  - STEP PREDEL RC 0000
+  - STEP STEP01 RC 0000
+  - STEP STEP02 RC 0000
+  - STEP STEP03 RC 0000
+  datasets:
+    USRSEC:
+      records:
+      - {SEC-USR-ID: ADMIN001, SEC-USR-FNAME: 'MARGARET            ', SEC-USR-LNAME: 'GOLD                ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: 'A', SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: ADMIN002, SEC-USR-FNAME: 'RUSSELL             ', SEC-USR-LNAME: 'RUSSELL             ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: 'A', SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: ADMIN003, SEC-USR-FNAME: 'RAYMOND             ', SEC-USR-LNAME: 'WHITMORE            ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: 'A', SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: ADMIN004, SEC-USR-FNAME: 'EMMANUEL            ', SEC-USR-LNAME: 'CASGRAIN            ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: 'A', SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: ADMIN005, SEC-USR-FNAME: 'GRANVILLE           ', SEC-USR-LNAME: 'LACHAPELLE          ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: 'A', SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: USER0001, SEC-USR-FNAME: 'LAWRENCE            ', SEC-USR-LNAME: 'THOMAS              ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: 'U', SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: USER0002, SEC-USR-FNAME: 'AJITH               ', SEC-USR-LNAME: 'KUMAR               ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: 'U', SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: USER0003, SEC-USR-FNAME: 'LAURITZ             ', SEC-USR-LNAME: 'ALME                ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: 'U', SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: USER0004, SEC-USR-FNAME: 'AVERARDO            ', SEC-USR-LNAME: 'MAZZI               ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: 'U', SEC-USR-FILLER: '                       '}
+      - {SEC-USR-ID: USER0005, SEC-USR-FNAME: 'LEE                 ', SEC-USR-LNAME: 'TING                ', SEC-USR-PWD: PASSWORD, SEC-USR-TYPE: 'U', SEC-USR-FILLER: '                       '}
+    # Each record is the whole 80-byte SEC-USER-DATA group: an in-stream line padded with spaces.
+    USRSEC-PS:
+      records:
+      - SEC-USER-DATA: 'ADMIN001MARGARET            GOLD                PASSWORDA                       '
+      - SEC-USER-DATA: 'ADMIN002RUSSELL             RUSSELL             PASSWORDA                       '
+      - SEC-USER-DATA: 'ADMIN003RAYMOND             WHITMORE            PASSWORDA                       '
+      - SEC-USER-DATA: 'ADMIN004EMMANUEL            CASGRAIN            PASSWORDA                       '
+      - SEC-USER-DATA: 'ADMIN005GRANVILLE           LACHAPELLE          PASSWORDA                       '
+      - SEC-USER-DATA: 'USER0001LAWRENCE            THOMAS              PASSWORDU                       '
+      - SEC-USER-DATA: 'USER0002AJITH               KUMAR               PASSWORDU                       '
+      - SEC-USER-DATA: 'USER0003LAURITZ             ALME                PASSWORDU                       '
+      - SEC-USER-DATA: 'USER0004AVERARDO            MAZZI               PASSWORDU                       '
+      - SEC-USER-DATA: 'USER0005LEE                 TING                PASSWORDU                       '

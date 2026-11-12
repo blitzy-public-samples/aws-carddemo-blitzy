@@ -1,0 +1,37 @@
+# Derived from source (capture_platform: derived), never observed. ENTER with a
+# blank account id on COACTVW: 2210-EDIT-ACCOUNT sets WS-PROMPT-FOR-ACCT, then
+# the cross-field edit of 2200-EDIT-MAP-INPUTS overwrites it with 'No input
+# received' before the map is re-sent, with ACCTSID marked '*'
+# [app/cbl/COACTVWC.cbl:528-565,622-685]. Fields are at full BMS width with
+# trailing spaces kept; messages holds the ERRMSG of every step.
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'No input received                                                             '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  OPTN001: '01. Account View                        '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COACTVW
+  ERRMSG: '                                                                              '
+  INFOMSG: 'Enter or update id of account to display     '
+  PGMNAME: COACTVWC
+  TRNNAME: CAVW
+- '@map': COACTVW
+  ACCTSID: '*          '
+  ACSTNUM: '         '
+  ACSTTUS: ' '
+  ACURBAL: '               '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'No input received                                                             '
+  INFOMSG: 'Enter or update id of account to display     '
+  PGMNAME: COACTVWC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CAVW

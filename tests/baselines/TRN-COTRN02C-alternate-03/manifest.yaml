@@ -1,0 +1,34 @@
+# Derived baseline of TRN-COTRN02C-alternate-03. Only unikix can run the
+# scenario, so expected.yaml is authored from the source and is
+# inferred-not-observed (GAP-INF-007, GAP-INF-012). It names no execution_id
+# or execution_fingerprint and holds no datasets/ until an eligible UniKix run
+# is imported (report.py --import-unikix).
+#
+# source_identity.units are the app/ sources the expected screen is derived
+# from, each program with its COPY closure (DFHAID and DFHBMSCA are
+# CICS-supplied): COTRN02C, entered without a COMMAREA, XCTLs to COSGN00C
+# [app/cbl/COTRN02C.cbl:115-117,500-511]; COSGN00C renders the sign-on screen
+# with the COSGN00 map. app/bms/COTRN02.bms is left out because the COTRN02
+# map is never sent on this path, and the COPY closure that
+# harness.results.source_identity builds counts only COPY members.
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: derived
+source_commit: c2a375a27bfa481f38398763610bdaf73c1fb44c
+source_identity:
+  commit: c2a375a27bfa481f38398763610bdaf73c1fb44c
+  tree: app
+  units:
+    app/bms/COSGN00.bms: 6747ba57e45fed7e52af728a1f8688ed8fab90b93e1234ab0a0bcae32fa39056
+    app/cbl/COSGN00C.cbl: 4f901ae6b113eebae60ae1d94b30f8cb9906d031a4419770bf56980bdf97e377
+    app/cbl/COTRN02C.cbl: dc33b4c797a98d2732070a223f43cc78992c2846681163a032e376630742b1ed
+    app/cpy-bms/COSGN00.CPY: e2a2f8f6e76e1613cbd8f0baaca87d571a49a7bc219d16a732e4e4ecd7485407
+    app/cpy-bms/COTRN02.CPY: 1eae5b624b8e7f97c24e94a373065d5c648340e21019bd7736dc663ab0d8642d
+    app/cpy/COCOM01Y.cpy: 77097557ee4c365f62138328d3e280ce7aba5f81d418c6f16434f0fbb2aafa6c
+    app/cpy/COTTL01Y.cpy: 5032bfa9428354bb4a62e8c82ba1efa7dcf6b80f27544ad99a81c8a8df8ed41b
+    app/cpy/CSDAT01Y.cpy: 61dd7b01d974c13cd47f71774c613dd67996418a22fae730d09b246c0b710ad7
+    app/cpy/CSMSG01Y.cpy: ef8ce44572885d63e46a02516f992cabbbc57ea94235000fd376325750e26eda
+    app/cpy/CSUSR01Y.cpy: 37c34094dc4124bc6255e0b06a0387442f4f0dd9d51dd6623b559d370aa0d2cb
+    app/cpy/CVACT01Y.cpy: 81a08bad15af5664326a6f0af3650f570821c4857ffdec3a6a39f91f07dca728
+    app/cpy/CVACT03Y.cpy: ffc6079e09b28739e154bf6c1e1c36d408209faa91f6cf7008078dc596a1c370
+    app/cpy/CVTRA05Y.cpy: d7bde0e78ff608497087b9909c889ed39e347269f964bda767b92b547fbb5fec

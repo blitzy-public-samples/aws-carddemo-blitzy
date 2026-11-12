@@ -1,0 +1,157 @@
+# The card list finds no card for the account filter. USER0001 (type U in the
+# USRSEC fixture) signs on through CC00 and reaches the main menu, whose option
+# 3 'Credit Card List' makes COMEN01C XCTL to COCRDLIC with CDEMO-PGM-CONTEXT 0
+# and CDEMO-FROM-PROGRAM COMEN01C [app/cbl/COMEN01C.cbl:145-157]
+# [app/cpy/COMEN02Y.cpy:37-41].
+#
+# That first entry starts afresh: INITIALIZE WS-THIS-PROGCOMMAREA, then
+# SET CA-FIRST-PAGE, so WS-CA-SCREEN-NUM is already 1 before any page is
+# shown [app/cbl/COCRDLIC.cbl:237-238,336-343]. No map is received, because
+# CDEMO-FROM-PROGRAM is not COCRDLIC [app/cbl/COCRDLIC.cbl:356-361]; WHEN OTHER
+# browses CARDDAT from WS-CA-FIRST-CARD-NUM (spaces) with no filter and sends
+# page 1: the first seven cards in key order, the prompt 'TYPE S FOR DETAIL, U
+# TO UPDATE ANY RECORD' and no error, since an eighth card exists
+# [app/cbl/COCRDLIC.cbl:572-582,895-931,1123-1213]. The listing step is needed
+# because COCRDLIC reads the account filter only from a COCRDLI screen it has
+# sent itself; it keeps WS-CA-SCREEN-NUM 1 in the COMMAREA it returns with
+# TRANSID CCLI [app/cbl/COCRDLIC.cbl:604-620].
+#
+# ENTER with ACCTSID 99999999999 re-enters CCLI. 2210-EDIT-ACCOUNT accepts the
+# 11 digits as a valid filter [app/cbl/COCRDLIC.cbl:1002-1028]; no row is
+# selected, so I-SELECTED stays 0 and neither selection branch is taken (the
+# subscript-0 reference reads the sign byte of the COMP-3 select counter, which
+# is neither 'S' nor 'U') [app/cbl/COCRDLIC.cbl:69-76,1097,516-569]. WHEN OTHER
+# reads forward again from the first card of page 1; 9500-FILTER-RECORDS
+# excludes every card, since the fixture's accounts run 00000000001 to
+# 00000000050 [app/cbl/COCRDLIC.cbl:1382-1394]. At ENDFILE with no row and
+# screen number 1, 'NO MORE RECORDS TO SHOW' is moved first and SET
+# WS-NO-RECORDS-FOUND then replaces it in WS-ERROR-MSG
+# [app/cbl/COCRDLIC.cbl:121-122,1233-1245]. 1400-SETUP-MESSAGE moves the error
+# to ERRMSG and, because WS-NO-RECORDS-FOUND is set, leaves INFOMSG as the
+# spaces 1100-SCREEN-INIT put there [app/cbl/COCRDLIC.cbl:669-671,924-931].
+#
+# Screen fields are compared at their full BMS length, trailing spaces
+# included: ERRMSG is 78 characters (the 75-byte WS-ERROR-MSG padded), INFOMSG
+# 45, ACCTSID 11, CARDSID 16, PAGENO 3 (the one-digit screen number moved to
+# PAGENOO PIC X(3)). Fields a program leaves at LOW-VALUES show as spaces.
+# CURDATE and CURTIME come from the region clock, so they are matchers. The
+# UniKix copy of COCRDLIC and COCRDLI.bms equals app/ apart from whitespace.
+# The baseline is derived from the source: no TPE region runs in CI.
+id: CRD-COCRDLIC-negative-01
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, selects option 3 'Credit Card List' on the main menu and
+  receives page 1 of the unfiltered card list from COCRDLIC (CCLI). Entering
+  the account filter 99999999999, which no card of the CARDDATA fixture
+  carries, makes COCRDLIC read CARDDAT to end of file without a match on
+  screen 1, so it shows 'NO RECORDS FOUND FOR THIS SEARCH CONDITION.' in
+  ERRMSG, seven empty rows, the filter echoed in ACCTSID and no INFOMSG prompt.
+inventory_ids:
+- INV-CRD-009  # COCRDLIC message 'NO RECORDS FOUND FOR THIS SEARCH CONDITION.' (rule)
+- INV-CRD-001  # COCRDLIC program
+- INV-MNU-003  # COMEN01 map, the menu option 3 is entered on
+- INV-CRD-004  # COCRDLI map, sent with page 1 and again with the empty result
+- INV-CFG-014  # CCLI transaction, under which the filter is processed
+- INV-CFG-003  # CARDDAT CSD file, browsed by both COCRDLIC tasks
+- INV-LAY-002  # COCOM01Y: CDEMO-FROM-PROGRAM and CDEMO-PGM-CONTEXT steer entry and re-entry
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COCRDLIC
+- INV-LAY-011  # CSSTRPFY: YYYY-STORE-PFKEY maps ENTER to CCARD-AID-ENTER
+- INV-LAY-019  # CVCRD01Y: CCARD-AID and CC-ACCT-ID
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-006  # CRD end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+    CARDDATA: {base: CARDDATA}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '3'
+  - aid: ENTER
+    '@map': COCRDLI
+    fields:
+      ACCTSID: '99999999999'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN003: '03. Credit Card List                    '
+    ERRMSG: '                                                                              '
+  # Page 1 of the unfiltered list: only the first row is asserted, as the card
+  # the second browse starts from; the page content is INV-CRD-025's own item.
+  - '@map': COCRDLI
+    TRNNAME: CCLI
+    PGMNAME: COCRDLIC
+    PAGENO: '1  '
+    ACCTSID: '           '
+    CARDSID: '                '
+    CRDSEL1: ' '
+    ACCTNO1: '00000000050'
+    CRDNUM1: '0500024453765740'
+    CRDSTS1: 'Y'
+    INFOMSG: 'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD    '
+    ERRMSG: '                                                                              '
+  - '@map': COCRDLI
+    TRNNAME: CCLI
+    PGMNAME: COCRDLIC
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    PAGENO: '1  '
+    ACCTSID: '99999999999'
+    CARDSID: '                '
+    CRDSEL1: ' '
+    ACCTNO1: '           '
+    CRDNUM1: '                '
+    CRDSTS1: ' '
+    CRDSEL2: ' '
+    ACCTNO2: '           '
+    CRDNUM2: '                '
+    CRDSTS2: ' '
+    CRDSEL3: ' '
+    ACCTNO3: '           '
+    CRDNUM3: '                '
+    CRDSTS3: ' '
+    CRDSEL4: ' '
+    ACCTNO4: '           '
+    CRDNUM4: '                '
+    CRDSTS4: ' '
+    CRDSEL5: ' '
+    ACCTNO5: '           '
+    CRDNUM5: '                '
+    CRDSTS5: ' '
+    CRDSEL6: ' '
+    ACCTNO6: '           '
+    CRDNUM6: '                '
+    CRDSTS6: ' '
+    CRDSEL7: ' '
+    ACCTNO7: '           '
+    CRDNUM7: '                '
+    CRDSTS7: ' '
+    INFOMSG: '                                             '
+    ERRMSG: 'NO RECORDS FOUND FOR THIS SEARCH CONDITION.                                   '
+  # One ERRMSG value per step: blank on the menu and on page 1, then the
+  # no-records message of the filtered search.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'NO RECORDS FOUND FOR THIS SEARCH CONDITION.                                   '

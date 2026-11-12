@@ -1,0 +1,33 @@
+id: DAT-CBCUS01C-normal-01
+level: unit
+type: normal
+description: >-
+  CBCUS01C lists the repository customer file in CUST-ID order. The baseline pins
+  the 102 DISPLAY lines as observed: the start line; for each of the 50 customers
+  the whole 500-byte CUSTOMER-RECORD, displayed once by 1000-CUSTFILE-GET-NEXT after
+  the successful READ and again by the main loop, so every record is shown twice;
+  then the end line; return code 0 [app/cbl/CBCUS01C.cbl:71-87,92-116]. Each record
+  line keeps its trailing spaces, the 168-byte FILLER included, because decoded
+  comparison is exact.
+inventory_ids:
+- INV-DAT-037  # CBCUS01C record listing in key order (report)
+- INV-DAT-004  # CBCUS01C program
+- INV-LAY-020  # CVCUS01Y copybook
+- INV-DTA-004  # custdata.txt, the fixture source
+- INV-DTA-014  # EBCDIC customer data file, the fixture's cross-check counterpart
+tags: []
+gap_ids:
+- GAP-STB-010  # Berkeley DB indexed file in place of the VSAM KSDS
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
+preconditions:
+  datasets:
+    CUSTDATA: {base: CUSTDATA}
+  parameters:
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults: []
+inputs:
+  program: CBCUS01C
+expected:
+  return_code: 0
+  messages: baseline

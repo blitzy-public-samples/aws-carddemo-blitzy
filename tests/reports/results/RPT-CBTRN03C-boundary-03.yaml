@@ -1,0 +1,54 @@
+adapter: gnucobol-batch
+baseline_version: 1.0.0
+decoded:
+  datasets:
+    TRANREPT:
+    - 'DALYREPT                              Daily Transaction Report                 Date Range: 2022-07-01 to 2022-07-31                  '
+    - '                                                                                                                                     '
+    - 'Transaction ID   Account ID  Transaction Type   Tran Category                      Tran Source            Amount                     '
+    - '-------------------------------------------------------------------------------------------------------------------------------------'
+    - '9900000000000531 00000000001 01-Purchase        0001-Regular Sales Draft           POS TERM                 1.00                     '
+    - '9900000000000532 00000000001 01-Purchase        0001-Regular Sales Draft           POS TERM                 1.00                     '
+    - '9900000000000533 00000000001 01-Purchase        0001-Regular Sales Draft           POS TERM                 1.00                     '
+    - '9900000000000534 00000000001 01-Purchase        0001-Regular Sales Draft           POS TERM                 1.00                     '
+    - '9900000000000535 00000000001 01-Purchase        0001-Regular Sales Draft           POS TERM                 1.00                     '
+    - '9900000000000536 00000000001 01-Purchase        0001-Regular Sales Draft           POS TERM                 1.00                     '
+    - '9900000000000537 00000000001 01-Purchase        0001-Regular Sales Draft           POS TERM                 1.00                     '
+    - '9900000000000538 00000000001 01-Purchase        0001-Regular Sales Draft           POS TERM                 1.00                     '
+    - '9900000000000539 00000000001 01-Purchase        0001-Regular Sales Draft           POS TERM                 1.00                     '
+    - '9900000000000540 00000000001 01-Purchase        0001-Regular Sales Draft           POS TERM                 1.00                     '
+    - '9900000000000541 00000000001 01-Purchase        0001-Regular Sales Draft           POS TERM                 1.00                     '
+    - '9900000000000542 00000000001 01-Purchase        0001-Regular Sales Draft           POS TERM                 1.00                     '
+    - '9900000000000543 00000000001 01-Purchase        0001-Regular Sales Draft           POS TERM                 1.00                     '
+    - '9900000000000544 00000000001 01-Purchase        0001-Regular Sales Draft           POS TERM                 1.00                     '
+    - '9900000000000545 00000000001 01-Purchase        0001-Regular Sales Draft           POS TERM                 1.00                     '
+    - '9900000000000546 00000000001 01-Purchase        0001-Regular Sales Draft           POS TERM                 1.00                     '
+    - 'Page Total ......................................................................................+         16.00                     '
+    - '-------------------------------------------------------------------------------------------------------------------------------------'
+    - 'DALYREPT                              Daily Transaction Report                 Date Range: 2022-07-01 to 2022-07-31                  '
+    - '                                                                                                                                     '
+    - 'Transaction ID   Account ID  Transaction Type   Tran Category                      Tran Source            Amount                     '
+    - '-------------------------------------------------------------------------------------------------------------------------------------'
+    - '9900000000000547 00000000001 01-Purchase        0001-Regular Sales Draft           POS TERM                 1.00                     '
+    - 'Page Total ......................................................................................+          2.00                     '
+    - '-------------------------------------------------------------------------------------------------------------------------------------'
+    - 'Grand Total......................................................................................+         18.00                     '
+  return_code: 0
+evidence_path: tests/reports/results/RPT-CBTRN03C-boundary-03.yaml
+execution_fingerprint: 617706e4e70a2adb6f5d59524e4d26bfe41397d7937c344186141c201eaa3fc6
+execution_id: gnucobol-batch-b4e69b9ab69e3c03
+gap_id: null
+reason: null
+scenario_digest: ead276e626d97124d15b45b3b93845cc198c56c2e485d934202d3454e408c378
+scenario_id: RPT-CBTRN03C-boundary-03
+source_identity:
+  commit: ae9cb473e65a42d2da3b5c323ecb29cae395d7b6
+  tree: app
+  units:
+    app/cbl/CBTRN03C.cbl: c9c5428073cbe19c1cd19fc066ed99972560c209a80b4aea3bae3cc5e20a3536
+    app/cpy/CVACT03Y.cpy: ffc6079e09b28739e154bf6c1e1c36d408209faa91f6cf7008078dc596a1c370
+    app/cpy/CVTRA03Y.cpy: fb15dbc4a6924cbddce0704932f9e61c067ac10004cd00839dff0ed7c7bb0667
+    app/cpy/CVTRA04Y.cpy: 89803bc13a06347e1f3d8a599a5383b87235b203dce9f18a486bc233186479f8
+    app/cpy/CVTRA05Y.cpy: d7bde0e78ff608497087b9909c889ed39e347269f964bda767b92b547fbb5fec
+    app/cpy/CVTRA07Y.cpy: 72ba597b1a40e1e6cf908e15da9e6a818a0ab899ef1d27d15edeb074963102fa
+status: passed

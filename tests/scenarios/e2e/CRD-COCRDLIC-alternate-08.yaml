@@ -1,0 +1,147 @@
+# USER0001 opens the credit card list from the main menu and enters U against
+# row 2; COCRDLIC transfers control to the card update program COCRDUPC, which
+# fetches that card and shows it for update.
+# - Step 1: CC00 sends the COSGN00 sign-on map; USER0001 (type U) is routed to
+#   the main menu COMEN01C, map COMEN01 [app/cbl/COSGN00C.cbl:223-237].
+# - Step 2: option 3 is the COMEN02Y entry 'Credit Card List', program
+#   COCRDLIC; COMEN01C sets the program context to 0 and XCTLs to it
+#   [app/cbl/COMEN01C.cbl:115-157] [app/cpy/COMEN02Y.cpy:37-41]. Entered from
+#   the menu, COCRDLIC clears its own COMMAREA, receives no map and takes the
+#   WHEN OTHER branch: a browse of CARDDAT GTEQ from the cleared first-card key,
+#   so page 1 holds the first seven cards in card-number order and the rows are
+#   kept in WS-SCREEN-DATA inside the COMMAREA it returns with TRANSID CCLI
+#   [app/cbl/COCRDLIC.cbl:252-261,336-342,572-582,604-619,1123-1200]. Row 2 is
+#   card 0683586198171516 of account 00000000027, status Y, the second key of
+#   the CARDDATA fixture. Each filled row's select field is sent FSET and
+#   unprotected [app/cbl/COCRDLIC.cbl:762-773]. Only the identification fields
+#   and the selected row are asserted: the list content and its information
+#   message are other COCRDLIC scenarios' items.
+# - Step 3: U in CRDSEL2 comes back on RECEIVE as WS-EDIT-SELECT(2); the filters
+#   are blank, one action is present, so 2250-EDIT-ARRAY sets I-SELECTED to 2
+#   [app/cbl/COCRDLIC.cbl:962-976,1003-1121]. ENTER with UPDATE-REQUESTED-ON(2)
+#   and CDEMO-FROM-PROGRAM COCRDLIC moves the row's account and card number to
+#   CDEMO-ACCT-ID and CDEMO-CARD-NUM, sets the context to enter, the last mapset
+#   to COCRDLI, and XCTLs to LIT-CARDUPDPGM COCRDUPC [app/cbl/COCRDLIC.cbl:544-569].
+#   COCRDUPC, entered with CDEMO-PGM-ENTER from COCRDLIC, takes the branch that
+#   fetches the card for update: it sets reenter, keys the READ of CARDDAT on the
+#   passed card number, upper-cases CARD-EMBOSSED-NAME in its record area, sets
+#   CCUP-SHOW-DETAILS and sends COCRDUP with ERASE
+#   [app/cbl/COCRDUPC.cbl:482-497,1343-1415]. The screen carries TRNNAME CCUP,
+#   PGMNAME COCRDUPC, the passed account and card, the fetched name, status and
+#   expiry month and year, 'Details of selected card shown above' in INFOMSG and
+#   a blank ERRMSG [app/cbl/COCRDUPC.cbl:1052-1163].
+# The name is shown as WARD JONES although carddata.txt holds 'Ward Jones': the
+# INSPECT CONVERTING runs on the record area only, and the READ is not an update,
+# so CARDDATA keeps its 50 records unchanged [app/cbl/COCRDUPC.cbl:1356-1358].
+# COCRDUPC moves the bytes past the passed CARDDEMO-COMMAREA into its own
+# COMMAREA area [app/cbl/COCRDUPC.cbl:396-400], although COCRDLIC passes only
+# CARDDEMO-COMMAREA; the derived outcome takes CCUP-CHANGE-ACTION there to be
+# none of C, L and F, which would send the task back to the list instead
+# [app/cbl/COCRDUPC.cbl:435-440] (GAP-INF-006 settles it).
+# EXPDAY receives the expiry day 13 but is a dark (DRK) field
+# [app/bms/COCRDUP.bms:142-146], so it is not part of the displayed screen and is
+# not asserted. Text values are whole fields at their BMS length with trailing
+# spaces kept: CRDNAME 50, INFOMSG 40 (the 36-byte text padded), ERRMSG 80
+# (WS-RETURN-MSG, blank, padded). CURDATE and CURTIME come from the region clock,
+# so they are matchers and the clock is relative.
+id: CRD-COCRDLIC-alternate-08
+level: e2e
+type: alternate
+description: >-
+  USER0001 opens the credit card list (CCLI) from the main menu and enters U
+  against row 2, card 0683586198171516 of account 00000000027; COCRDLIC
+  transfers control to COCRDUPC, which reads the card from CARDDAT and shows map
+  COCRDUP with TRNNAME CCUP, the account and card numbers, name WARD JONES,
+  status Y, expiry 07/2025 and 'Details of selected card shown above'. No file
+  is changed.
+# Primary item first, then the program, the maps the steps are entered on and
+# land on, the transaction the selection runs (COCRDLIC returns with TRANSID
+# CCLI), the CSD file the list browses and COCRDUPC reads, and the online-only
+# copybooks COCRDLIC copies. Sign-on (CC00, COSGN00, USRSEC), the COMEN01C
+# option, the COCRDUPC program and its 'Details of selected card shown above'
+# message are verified by their own scenarios; here they are asserted only as
+# the state the selection must reach. Batch copybooks and data-file items are
+# not listed.
+inventory_ids:
+- INV-CRD-023  # COCRDLIC list selection U -> COCRDUPC (rule)
+- INV-CRD-001  # COCRDLIC program
+- INV-MNU-003  # COMEN01 map, the main menu option 3 is entered on
+- INV-CRD-004  # COCRDLI map, the list the selection is entered on
+- INV-CRD-006  # COCRDUP map, the screen the selection lands on
+- INV-CFG-014  # CCLI transaction, the list's pseudo-conversation
+- INV-CFG-003  # CARDDAT CSD file, browsed by COCRDLIC and read by COCRDUPC
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carrying the selected account and card
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the screen date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COCRDLIC
+- INV-LAY-011  # CSSTRPFY copybook, the AID mapping that turns ENTER into CCARD-AID-ENTER
+- INV-LAY-019  # CVCRD01Y copybook, the work area holding the AID and the passed keys
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-006  # derived CRD end-to-end baselines, never observed on a TPE region
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    USRSEC:
+      base: USRSEC
+    CARDDATA:
+      base: CARDDATA
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+    '@map': COSGN00
+  - aid: ENTER
+    fields:
+      OPTION: '3'
+    '@map': COMEN01
+  - aid: ENTER
+    fields:
+      CRDSEL2: U
+    '@map': COCRDLI
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: 'CM00'
+    PGMNAME: 'COMEN01C'
+  - '@map': COCRDLI
+    TRNNAME: 'CCLI'
+    PGMNAME: 'COCRDLIC'
+    ACCTNO2: '00000000027'
+    CRDNUM2: '0683586198171516'
+    CRDSTS2: 'Y'
+  - '@map': COCRDUP
+    TRNNAME: 'CCUP'
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: 'COCRDUPC'
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000027'
+    CARDSID: '0683586198171516'
+    CRDNAME: 'WARD JONES                                        '
+    CRDSTCD: 'Y'
+    EXPMON: '07'
+    EXPYEAR: '2025'
+    INFOMSG: 'Details of selected card shown above    '
+    ERRMSG: '                                                                                '
+  # Fetching the card for update reads it without UPDATE and writes nothing:
+  # CARDDATA keeps its 50 records, the selected card as loaded, its name in
+  # its original case.
+  file_state:
+    CARDDATA:
+      count: 50
+      contains:
+      - CARD-NUM: '0683586198171516'
+        CARD-ACCT-ID: '27'
+        CARD-CVV-CD: '567'
+        CARD-EMBOSSED-NAME: 'Ward Jones                                        '
+        CARD-EXPIRAION-DATE: '2025-07-13'
+        CARD-ACTIVE-STATUS: 'Y'

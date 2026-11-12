@@ -1,0 +1,283 @@
+# Two terminals update card 0500024453765740 from the same fetch; the second
+# save is refused because the first one rewrote the card in between.
+#
+# Steps 0-3 (session 1) and 4-8 (session 2) each sign on as USER0001, choose
+# main-menu option 5 (Credit Card Update, COCRDUPC [app/cpy/COMEN02Y.cpy:49-53]),
+# fetch account 00000000050 with card 0500024453765740 and change only the
+# embossed name. COMEN01C transfers control with the program context reset to
+# enter [app/cbl/COMEN01C.cbl:147-155], so COCRDUPC initializes the COMMAREA and
+# sends the empty search screen [app/cbl/COCRDUPC.cbl:388-394,502-511,1141-1142].
+# The fetch reads CARDDAT by card number and keeps the card, its name
+# upper-cased, as CCUP-OLD-DETAILS in the COMMAREA [app/cbl/COCRDUPC.cbl:954-966,
+# 1343-1394]. Every detail field goes out with its modified-data tag set
+# (DFHBMFSE or DFHBMPRF, and EXPDAY is DRK,FSET in the map), so each RECEIVE
+# MAP returns the whole card [app/cbl/COCRDUPC.cbl:1168-1207]
+# [app/bms/COCRDUP.bms:142-146]. ENTER with a new name passes the name,
+# status, month and year edits, so the screen shows the received values and
+# 'Changes validated.Press F5 to save' with F5=Save F12=Cancel brightened
+# [app/cbl/COCRDUPC.cbl:668-714,1113-1123,1149-1150,1191-1199,1315-1317].
+# The step order is the scenario: session 2 saves (step 8) between session 1's
+# fetch (step 2) and its save (step 9). Session 2's PF5 re-reads the card for
+# update, finds it equal to its fetched copy, rewrites it and shows 'Changes
+# committed to database' [app/cbl/COCRDUPC.cbl:988-1000,1151-1152,1420-1492].
+# Session 1's PF5 re-reads the card now named TEST HOLDER TWO against its
+# fetched ANIYA VON, so 9300-CHECK-CHANGE-IN-REC sets
+# DATA-WAS-CHANGED-BEFORE-UPDATE, moves the re-read card into CCUP-OLD-DETAILS
+# and leaves 9200 before the REWRITE; 2000-DECIDE-ACTION then sets
+# CCUP-SHOW-DETAILS [app/cbl/COCRDUPC.cbl:997-998,1453-1456,1498-1519]. The
+# refused screen therefore shows the card as session 2 left it, unprotected
+# for review, with 'Details of selected card shown above' and the message in
+# ERRMSG [app/cbl/COCRDUPC.cbl:1107-1112,1145-1146,1163,1181-1190]. COACTUPC's
+# counterpart redisplays its stale fetch instead (GAP-DEF-017).
+#
+# Both names pass 1230-EDIT-NAME: they hold only letters and spaces, the
+# field is typed after EraseEOF and BMS pads it with blanks (the default
+# JUSTIFY=(LEFT,BLANK)), so the converted check field is all spaces
+# [app/cbl/COCRDUPC.cbl:806-840]. The UniKix copy tests it with = SPACES OR
+# LOW-VALUES instead of a zero TRIM length (GAP-DOC-023); either form accepts
+# these names. Card 0500024453765740 is record 1 of the CARDDATA fixture
+# (account 00000000050, 'Aniya Von', expiry 2023-03-09, status Y).
+# Screen values are whole fields at their BMS length, trailing spaces kept;
+# LOW-VALUES and dark (DRK) fields, EXPDAY and the unbrightened FKEYSC, read
+# as spaces. CURDATE and CURTIME come from the region clock, so they are
+# matchers.
+id: CRD-COCRDUPC-alternate-02
+level: e2e
+type: alternate
+description: >-
+  Concurrent change on the card update screen. Two sessions signed on as
+  USER0001 fetch card 0500024453765740 of account 00000000050 in COCRDUPC;
+  session 1 validates the name TEST HOLDER ONE, then session 2 validates TEST
+  HOLDER TWO and saves it with PF5 ('Changes committed to database'). Session
+  1's PF5 re-reads the card for update, finds it changed since its fetch,
+  writes nothing and shows 'Record changed by some one else. Please review'
+  with the card as it now stands (TEST HOLDER TWO). CARDDAT keeps session 2's
+  name.
+# Primary item first, then the program, the maps asserted, the transaction the
+# COCRDUPC steps run under, the CSD file COCRDUPC reads and rewrites, the card
+# REWRITE whose record file_state asserts, and the online-only copybooks
+# COCRDUPC copies. Sign-on and the menu option (CC00, CM00, COSGN00, USRSEC)
+# are verified by the SEC and MNU scenarios; the information messages asserted
+# on the screens belong to their own COCRDUPC scenarios; the batch record
+# copybooks and the data files are verified at the lowest level that executes
+# them.
+inventory_ids:
+- INV-CRD-068  # COCRDUPC message 'Record changed by some one else. Please review'
+- INV-CRD-003  # COCRDUPC program
+- INV-MNU-003  # COMEN01 map, where option 5 is entered
+- INV-CRD-006  # COCRDUP map
+- INV-CFG-015  # CCUP transaction
+- INV-CFG-003  # CARDDAT CSD file: card read, read for update and rewrite
+- INV-CRD-079  # COCRDUPC card REWRITE: session 2's record in file_state
+- INV-LAY-002  # COCOM01Y: the COMMAREA carrying the context and filters
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COCRDUPC
+- INV-LAY-009  # CSMSG02Y: abend data, copied by COCRDUPC
+- INV-LAY-011  # CSSTRPFY: the AID mapping of ENTER and PF5
+- INV-LAY-019  # CVCRD01Y: CC-ACCT-ID, CC-CARD-NUM and the AID flags
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-006  # CRD end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-DOC-023  # the UniKix COCRDUPC rewrites the name test both saves pass
+preconditions:
+  datasets:
+    CARDDATA: {base: CARDDATA}
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+    sessions: 2
+  # The concurrent change needs no fault: session 2's save is the change.
+  faults: []
+# Sign-on uses the README's demo user and password in both sessions.
+inputs:
+  steps:
+  - session: 1
+    transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - session: 1
+    aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '5'
+  - session: 1
+    aid: ENTER
+    '@map': COCRDUP
+    fields:
+      ACCTSID: '00000000050'
+      CARDSID: '0500024453765740'
+  - session: 1
+    aid: ENTER
+    '@map': COCRDUP
+    fields:
+      CRDNAME: TEST HOLDER ONE
+  - session: 2
+    transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - session: 2
+    aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '5'
+  - session: 2
+    aid: ENTER
+    '@map': COCRDUP
+    fields:
+      ACCTSID: '00000000050'
+      CARDSID: '0500024453765740'
+  - session: 2
+    aid: ENTER
+    '@map': COCRDUP
+    fields:
+      CRDNAME: TEST HOLDER TWO
+  - session: 2
+    aid: PF5
+    '@map': COCRDUP
+  - session: 1
+    aid: PF5
+    '@map': COCRDUP
+expected:
+  screens:
+  # 0, session 1: signed on, main menu.
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+  # 1, session 1: COCRDUPC's fresh entry asks for the search keys.
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    PGMNAME: COCRDUPC
+    ACCTSID: '           '
+    CARDSID: '                '
+    CRDNAME: '                                                  '
+    INFOMSG: 'Please enter Account and Card Number    '
+    ERRMSG: '                                                                                '
+    FKEYSC: '                  '
+  # 2, session 1: the fetched card, its embossed name upper-cased.
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    PGMNAME: COCRDUPC
+    ACCTSID: '00000000050'
+    CARDSID: '0500024453765740'
+    CRDNAME: 'ANIYA VON                                         '
+    CRDSTCD: 'Y'
+    EXPMON: '03'
+    EXPYEAR: '2023'
+    INFOMSG: 'Details of selected card shown above    '
+    ERRMSG: '                                                                                '
+    FKEYSC: '                  '
+  # 3, session 1: the new name validated, waiting for PF5.
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    PGMNAME: COCRDUPC
+    ACCTSID: '00000000050'
+    CARDSID: '0500024453765740'
+    CRDNAME: 'TEST HOLDER ONE                                   '
+    CRDSTCD: 'Y'
+    EXPMON: '03'
+    EXPYEAR: '2023'
+    INFOMSG: 'Changes validated.Press F5 to save      '
+    ERRMSG: '                                                                                '
+    FKEYSC: 'F5=Save F12=Cancel'
+  # 4, session 2: signed on, main menu.
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+  # 5, session 2: fresh entry.
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    PGMNAME: COCRDUPC
+    ACCTSID: '           '
+    CARDSID: '                '
+    CRDNAME: '                                                  '
+    INFOMSG: 'Please enter Account and Card Number    '
+    ERRMSG: '                                                                                '
+    FKEYSC: '                  '
+  # 6, session 2: the same fetch; session 1 has saved nothing.
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    PGMNAME: COCRDUPC
+    ACCTSID: '00000000050'
+    CARDSID: '0500024453765740'
+    CRDNAME: 'ANIYA VON                                         '
+    CRDSTCD: 'Y'
+    EXPMON: '03'
+    EXPYEAR: '2023'
+    INFOMSG: 'Details of selected card shown above    '
+    ERRMSG: '                                                                                '
+    FKEYSC: '                  '
+  # 7, session 2: its new name validated.
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    PGMNAME: COCRDUPC
+    ACCTSID: '00000000050'
+    CARDSID: '0500024453765740'
+    CRDNAME: 'TEST HOLDER TWO                                   '
+    CRDSTCD: 'Y'
+    EXPMON: '03'
+    EXPYEAR: '2023'
+    INFOMSG: 'Changes validated.Press F5 to save      '
+    ERRMSG: '                                                                                '
+    FKEYSC: 'F5=Save F12=Cancel'
+  # 8, session 2: saved; the received values stay on the screen and F5=Save
+  # F12=Cancel goes dark again.
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    PGMNAME: COCRDUPC
+    ACCTSID: '00000000050'
+    CARDSID: '0500024453765740'
+    CRDNAME: 'TEST HOLDER TWO                                   '
+    CRDSTCD: 'Y'
+    EXPMON: '03'
+    EXPYEAR: '2023'
+    INFOMSG: 'Changes committed to database           '
+    ERRMSG: '                                                                                '
+    FKEYSC: '                  '
+  # 9, session 1: the save is refused. The detail fields hold the card re-read
+  # for update, session 2's TEST HOLDER TWO, not session 1's own TEST HOLDER ONE;
+  # F5=Save is no longer offered.
+  - '@map': COCRDUP
+    TRNNAME: CCUP
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COCRDUPC
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000050'
+    CARDSID: '0500024453765740'
+    CRDNAME: 'TEST HOLDER TWO                                   '
+    CRDSTCD: 'Y'
+    EXPMON: '03'
+    EXPYEAR: '2023'
+    EXPDAY: '  '
+    INFOMSG: 'Details of selected card shown above    '
+    ERRMSG: 'Record changed by some one else. Please review                                  '
+    FKEYS: 'ENTER=Process F3=Exit'
+    FKEYSC: '                  '
+  file_state:
+    # Session 2's rewrite stands and session 1 wrote nothing: the card holds
+    # TEST HOLDER TWO with the expiry and status both sessions fetched. The
+    # REWRITE takes CARD-CVV-CD from CCUP-NEW-CVV-CD, which 1100-RECEIVE-MAP
+    # initializes to spaces and nothing fills, through a PIC 9(03)
+    # redefinition, so the digits written depend on how the compiler moves
+    # non-numeric data; INITIALIZE skips the record's FILLER
+    # [app/cbl/COCRDUPC.cbl:314-321,586,1461-1475]. Neither is asserted.
+    # Values are in decoded form: CARD-ACCT-ID is the number 50, text keeps
+    # its trailing spaces.
+    CARDDATA:
+      count: 50
+      contains:
+      - CARD-NUM: '0500024453765740'
+        CARD-ACCT-ID: '50'
+        CARD-EMBOSSED-NAME: 'TEST HOLDER TWO                                   '
+        CARD-EXPIRAION-DATE: '2023-03-09'
+        CARD-ACTIVE-STATUS: 'Y'

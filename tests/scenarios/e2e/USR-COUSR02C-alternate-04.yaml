@@ -1,0 +1,91 @@
+# Direct entry of transaction CU02 without a COMMAREA. COUSR02C finds
+# EIBCALEN = 0, moves 'COSGN00C' to CDEMO-TO-PROGRAM and performs
+# RETURN-TO-PREV-SCREEN, which sets CDEMO-FROM-TRANID 'CU02',
+# CDEMO-FROM-PROGRAM 'COUSR02C' and CDEMO-PGM-CONTEXT 0 and issues
+# XCTL PROGRAM('COSGN00C') COMMAREA(CARDDEMO-COMMAREA)
+# [app/cbl/COUSR02C.cbl:36-37,90-92,250-261]. The update-user screen COUSR02 is
+# never sent and USRSEC is never read by COUSR02C.
+#
+# The XCTL passes a COMMAREA, so COSGN00C starts with EIBCALEN > 0 and EIBAID
+# still ENTER: it takes the entry as a sign-on attempt, performs
+# PROCESS-ENTER-KEY and issues RECEIVE MAP COSGN0A with RESP
+# [app/cbl/COSGN00C.cbl:80-88,108-115]. The input is the unformatted 'CU02'
+# typed on a cleared screen, which carries no set-buffer-address order, so BMS
+# maps nothing (MAPFAIL, absorbed by RESP) and USERIDI keeps the
+# working-storage content of a fresh task, spaces or LOW-VALUES. COSGN00C
+# therefore sends the sign-on screen with 'Please enter User ID ...' and
+# returns with TRANSID CC00 and the COMMAREA
+# [app/cbl/COSGN00C.cbl:98-102,117-122,145-157]. That is the input screen the
+# step expects ('@map': COSGN00): had CU02 shown any other map, the adapter
+# would capture that screen and the comparison would fail on @map.
+#
+# The step's ENTER is then pressed on that sign-on screen with no field
+# entered. CC00 restarts COSGN00C with the COMMAREA; USERID is FSET but empty,
+# so USERIDI is again spaces or LOW-VALUES and the same message is sent, with
+# no USRSEC read because the error flag is on [app/cbl/COSGN00C.cbl:117-139].
+#
+# Screen values are whole fields at their BMS length, trailing spaces kept,
+# because comparison never trims. ERRMSG is WS-MESSAGE (X(80)) cut to the
+# 78-character ERRMSGO, and the adapter copies that ERRMSG value into the
+# message list. PASSWD is a dark (DRK) field: its buffer holds the BMS INITIAL
+# '________', but it is hidden and the screen capture shows it as blanks
+# [app/bms/COSGN00.bms:175-180]. APPLID and SYSID name the region (EXEC CICS
+# ASSIGN). None of the three is asserted.
+id: USR-COUSR02C-alternate-04
+level: e2e
+type: alternate
+description: >-
+  Transaction CU02 (update a user) is entered directly on a cleared screen,
+  with no prior sign-on. COUSR02C, started without a COMMAREA, never shows its
+  update-user screen: it transfers control to the sign-on program COSGN00C.
+  The user sees the sign-on screen with its header (transaction CC00, program
+  COSGN00C, the two titles, the run date and time), an empty user id and
+  'Please enter User ID ...', because COUSR02C passes a COMMAREA and COSGN00C
+  treats the entry as an empty sign-on attempt. Pressing ENTER on it with
+  nothing typed shows the same screen and message.
+# Primary item first, then the program, the map the entry lands on, the
+# transaction entered, and the online-only copybooks COUSR02C copies. CC00,
+# USRSEC, COSGN00C and its 'Please enter User ID ...' item are verified by the
+# SEC scenarios; the COUSR02 map is never shown here.
+inventory_ids:
+- INV-USR-047  # COUSR02C entry without COMMAREA returns to sign-on (rule)
+- INV-USR-003  # COUSR02C program
+- INV-SEC-002  # COSGN00 map, the screen the XCTL lands on
+- INV-CFG-025  # CU02 transaction, entered directly
+- INV-LAY-002  # COCOM01Y copybook, CDEMO-TO-PROGRAM and the COMMAREA passed with the XCTL
+- INV-LAY-005  # COTTL01Y copybook, copied by COUSR02C
+- INV-LAY-006  # CSDAT01Y copybook, copied by COUSR02C
+- INV-LAY-008  # CSMSG01Y copybook, copied by COUSR02C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-004  # the USR end-to-end baselines are derived, never observed
+- GAP-INF-012  # the online-only copybooks are covered only through derived e2e baselines
+preconditions:
+  # USRSEC is loaded so that the region starts from its fixture state, although
+  # this path never reads it. Nothing is written, so no file_state is asserted.
+  datasets:
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  # No sign-on: the scenario tests entry without a COMMAREA.
+  steps:
+  - {transid: CU02, aid: ENTER, fields: {}, '@map': COSGN00}
+expected:
+  screens:
+  - '@map': COSGN00
+    TRNNAME: CC00
+    PGMNAME: COSGN00C
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    # CSDAT01Y gives CURDATE as mm/dd/yy. CURTIME is the 8-character hh:mm:ss
+    # moved to the 9-character CURTIMEO, which pads it with one space
+    # [app/cbl/COSGN00C.cbl:177-196].
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time, format: '%H:%M:%S '}
+    USERID: '        '
+    ERRMSG: 'Please enter User ID ...                                                      '
+  messages:
+  - 'Please enter User ID ...                                                      '

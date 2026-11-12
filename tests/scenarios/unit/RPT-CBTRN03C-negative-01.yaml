@@ -1,0 +1,82 @@
+# The card-lookup abend of CBTRN03C. Its one transaction lies inside the
+# DATEPARM window, so the loop displays the record and, because the card differs
+# from WS-CURR-CARD-NUM (spaces at the start), reads the cross-reference by card
+# number [app/cbl/CBTRN03C.cbl:170-187]. The invented card 9999000033339999
+# matches no card of app/data, so the READ takes INVALID KEY: the program
+# displays the card, moves 23 to IO-STATUS for the status display and abends
+# through CEE3ABD [app/cbl/CBTRN03C.cbl:484-492,626-646]. The type 01 and
+# category 0001 exist in TRANTYPE and TRANCATG, so only the card lookup can
+# fail; the abend comes before 1100-WRITE-TRANSACTION-REPORT writes the headers,
+# so the report holds no line. The record line is the whole 350-byte TRAN-RECORD
+# that DISPLAY writes, its trailing spaces included. The libcob implicit-CLOSE
+# warnings that follow the abend marker go to the raw evidence only.
+id: RPT-CBTRN03C-negative-01
+level: unit
+type: negative
+description: >-
+  CBTRN03C reads one in-window transaction whose card is absent from the card
+  cross-reference: it displays the record, 'INVALID CARD NUMBER : ' with the
+  card and file status 23, then abends through CEE3ABD before writing any
+  report line.
+inventory_ids:
+- INV-RPT-042  # CBTRN03C abend on INVALID KEY lookup of card, type or category (recovery)
+- INV-RPT-003  # CBTRN03C program
+- INV-DTA-003  # cardxref.txt, the CARDXREF fixture source
+- INV-DTA-013  # its EBCDIC cross-check counterpart
+- INV-DTA-009  # trantype.txt, the TRANTYPE fixture source
+- INV-DTA-020  # its EBCDIC cross-check counterpart
+- INV-DTA-008  # trancatg.txt, the TRANCATG fixture source
+- INV-DTA-019  # its EBCDIC cross-check counterpart
+# Untagged by design: GAP-DEF-001 (the parameterless CALL 'CEE3ABD' that ends
+# every CB* abend path) is cited as the gap this abend passes through;
+# suspected-defect marks the cases that pin a program's own defect.
+tags: []
+gap_ids:
+- GAP-MIS-001  # DATEPARM is supplied as a parameter file
+- GAP-STB-001  # CEE3ABD stub: no abend code, dump or LE condition handling
+- GAP-DEF-001  # the parameterless CALL 'CEE3ABD'
+- GAP-STB-010  # Berkeley DB indexed files in place of VSAM KSDS
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
+preconditions:
+  datasets:
+    TRANSACT-DALY:
+      records:
+      - TRAN-ID: '9900000000000571'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '0001'
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic unknown card
+        TRAN-AMT: '10.00'
+        TRAN-MERCHANT-ID: '999000571'
+        TRAN-MERCHANT-NAME: Synthetic Merchant 571
+        TRAN-MERCHANT-CITY: Synthetic City
+        TRAN-MERCHANT-ZIP: '99999'
+        TRAN-CARD-NUM: '9999000033339999'
+        TRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+        TRAN-PROC-TS: '2022-07-05-10.00.00.000000'
+    CARDXREF:
+      base: CARDXREF
+    TRANTYPE:
+      base: TRANTYPE
+    TRANCATG:
+      base: TRANCATG
+  parameters:
+    DATEPARM: '2022-07-01 2022-07-31'
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults: []
+inputs:
+  program: CBTRN03C
+expected:
+  return_code: null
+  messages:
+  - START OF EXECUTION OF PROGRAM CBTRN03C
+  - Reporting from 2022-07-01 to 2022-07-31
+  - '9900000000000571010001POS TERM  Synthetic unknown card                                                                              0000000100{999000571Synthetic Merchant 571                            Synthetic City                                    99999     99990000333399992022-07-05 09:15:00.0000002022-07-05-10.00.00.000000                    '
+  - 'INVALID CARD NUMBER : 9999000033339999'
+  - 'FILE STATUS IS: NNNN0023'
+  - ABENDING PROGRAM
+  - CARDDEMO-ABEND CEE3ABD
+  datasets:
+    TRANREPT:
+      records: []

@@ -1,0 +1,200 @@
+# The XREFFILE job rebuilds the card cross-reference KSDS and its account-id
+# alternate index from the sequential copy [app/jcl/XREFFILE.jcl:22-103]:
+# - STEP05 deletes the cluster and the alternate index; each DELETE is followed
+#   by IF MAXCC LE 08 THEN SET MAXCC = 0, so a missing entry (condition code 8)
+#   leaves the step at RC 0 [app/jcl/XREFFILE.jcl:22-31];
+# - STEP10 defines the cluster, KEYS(16 0) RECORDSIZE(50 50) [app/jcl/XREFFILE.jcl:36-53];
+# - STEP15 REPROs the sequential copy into it [app/jcl/XREFFILE.jcl:57-65];
+# - STEP20 defines the alternate index on XREF-ACCT-ID, KEYS(11,25)
+#   NONUNIQUEKEY UPGRADE [app/jcl/XREFFILE.jcl:69-83];
+# - STEP25 defines the path over it and STEP30 builds it with BLDINDEX
+#   [app/jcl/XREFFILE.jcl:87-103].
+#
+# CARDXREF-PS is the 50 repository records of app/data/ASCII/cardxref.txt, each
+# 36-character line padded with spaces to the 50-byte CVACT03Y record, followed
+# by two invented records on account 00000000001 (customer 000000001): cards
+# 9900000000000001 and 9900000000000002. The repository holds one card per
+# account, so these give account 1 three cards with its repository card
+# 9680294154603697 and make it the one duplicate of the NONUNIQUEKEY alternate
+# key. Both sort above the highest repository card, 9805583408996588, so the
+# REPRO input stays in ascending primary-key order.
+# CARDXREF exists before the job with one invented record (card
+# 9999999999999902, customer 999999902, account 99999999902) that the input
+# does not hold: its absence afterwards shows that STEP05 and STEP10 recreate
+# the cluster rather than REPRO merging into the old one. The cluster exists
+# without an alternate index, so STEP05's second DELETE finds nothing and its
+# condition code 8 is reset.
+#
+# Expected values were observed on gnucobol-batch (GnuCOBOL 3.2 with the
+# IDCAMS replacement, GAP-STB-005, and Berkeley DB files, GAP-STB-010). IDCAMS
+# writes only SYSPRINT, so messages hold just the step lines. CARDXREF is
+# compared in card-number (primary-key) order and @AIX:CXACAIX, the records
+# read through the CXACAIX path [app/csd/CARDDEMO.CSD:63-65], in account-id
+# order. Account 1's three cards come back in card-number order
+# (9680294154603697, 9900000000000001, 9900000000000002), as observed, so the
+# duplicate order is pinned.
+#
+# Only the job item is listed. The AIX, PATH and BLDINDEX JCL-semantics item is
+# listed by DAT-XREFFILE-alternate-01, which only unikix runs; listing it here
+# would remove gnucobol-batch's capability (scenarios.jcl_semantics_items).
+# Nothing here depends on the clock, and the scenario declares clock_mode
+# relative because unikix can run it without clock control (GAP-MIS-015).
+id: DAT-XREFFILE-normal-01
+level: integration
+type: normal
+description: >-
+  XREFFILE deletes and redefines the card cross-reference KSDS, loads the 50
+  repository records and two invented cards on account 1 into it, and builds
+  the account-id alternate index and path: every step ends with RC 0, the
+  stale pre-existing record is gone, the KSDS holds the 52 records in
+  card-number order, and the path reads them in account-id order, account 1's
+  three cards in card-number order.
+inventory_ids:
+- INV-DAT-025  # XREFFILE job
+tags: []
+gap_ids:
+- GAP-STB-005  # IDCAMS replacement: DELETE, DEFINE CLUSTER/AIX/PATH, REPRO, BLDINDEX, IF MAXCC
+- GAP-STB-009  # catalog emulation: the cluster, AIX and path entries the job deletes and defines
+- GAP-STB-010  # Berkeley DB indexed files in place of the VSAM KSDS, AIX and path
+preconditions:
+  datasets:
+    # Two invented records (no real person, account or card) on account 1: the
+    # alternate key XREF-ACCT-ID is NONUNIQUEKEY and the repository has one card
+    # per account, so these give account 1 three cards and pin the duplicate
+    # order in @AIX:CXACAIX.
+    CARDXREF-PS:
+      base: CARDXREF-PS
+      records:
+      - {XREF-CARD-NUM: '9900000000000001', XREF-CUST-ID: '000000001', XREF-ACCT-ID: '00000000001'}
+      - {XREF-CARD-NUM: '9900000000000002', XREF-CUST-ID: '000000001', XREF-ACCT-ID: '00000000001'}
+    CARDXREF:
+      records:
+      - {XREF-CARD-NUM: '9999999999999902', XREF-CUST-ID: '999999902', XREF-ACCT-ID: '99999999902'}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  job: XREFFILE
+expected:
+  return_code: 0
+  messages:
+  - STEP STEP05 RC 0000
+  - STEP STEP10 RC 0000
+  - STEP STEP15 RC 0000
+  - STEP STEP20 RC 0000
+  - STEP STEP25 RC 0000
+  - STEP STEP30 RC 0000
+  file_state:
+    # The 50 repository records and the two invented cards on account 1, in
+    # card-number order; the stale invented card 9999999999999902 is absent.
+    CARDXREF:
+      records:
+      - {XREF-CARD-NUM: '0500024453765740', XREF-CUST-ID: '50', XREF-ACCT-ID: '50'}
+      - {XREF-CARD-NUM: '0683586198171516', XREF-CUST-ID: '27', XREF-ACCT-ID: '27'}
+      - {XREF-CARD-NUM: '0923877193247330', XREF-CUST-ID: '2', XREF-ACCT-ID: '2'}
+      - {XREF-CARD-NUM: '0927987108636232', XREF-CUST-ID: '20', XREF-ACCT-ID: '20'}
+      - {XREF-CARD-NUM: '0982496213629795', XREF-CUST-ID: '12', XREF-ACCT-ID: '12'}
+      - {XREF-CARD-NUM: '1014086565224350', XREF-CUST-ID: '44', XREF-ACCT-ID: '44'}
+      - {XREF-CARD-NUM: '1142167692878931', XREF-CUST-ID: '37', XREF-ACCT-ID: '37'}
+      - {XREF-CARD-NUM: '1561409106491600', XREF-CUST-ID: '35', XREF-ACCT-ID: '35'}
+      - {XREF-CARD-NUM: '2745303720002090', XREF-CUST-ID: '39', XREF-ACCT-ID: '39'}
+      - {XREF-CARD-NUM: '2760836797107565', XREF-CUST-ID: '24', XREF-ACCT-ID: '24'}
+      - {XREF-CARD-NUM: '2871968252812490', XREF-CUST-ID: '6', XREF-ACCT-ID: '6'}
+      - {XREF-CARD-NUM: '2940139362300449', XREF-CUST-ID: '22', XREF-ACCT-ID: '22'}
+      - {XREF-CARD-NUM: '2988091353094312', XREF-CUST-ID: '4', XREF-ACCT-ID: '4'}
+      - {XREF-CARD-NUM: '3260763612337560', XREF-CUST-ID: '10', XREF-ACCT-ID: '10'}
+      - {XREF-CARD-NUM: '3766281984155154', XREF-CUST-ID: '41', XREF-ACCT-ID: '41'}
+      - {XREF-CARD-NUM: '3940246016141489', XREF-CUST-ID: '19', XREF-ACCT-ID: '19'}
+      - {XREF-CARD-NUM: '3999169246375885', XREF-CUST-ID: '3', XREF-ACCT-ID: '3'}
+      - {XREF-CARD-NUM: '4011500891777367', XREF-CUST-ID: '13', XREF-ACCT-ID: '13'}
+      - {XREF-CARD-NUM: '4385271476627819', XREF-CUST-ID: '34', XREF-ACCT-ID: '34'}
+      - {XREF-CARD-NUM: '4534784102713951', XREF-CUST-ID: '36', XREF-ACCT-ID: '36'}
+      - {XREF-CARD-NUM: '4859452612877065', XREF-CUST-ID: '7', XREF-ACCT-ID: '7'}
+      - {XREF-CARD-NUM: '5407099850479866', XREF-CUST-ID: '21', XREF-ACCT-ID: '21'}
+      - {XREF-CARD-NUM: '5656830544981216', XREF-CUST-ID: '46', XREF-ACCT-ID: '46'}
+      - {XREF-CARD-NUM: '5671184478505844', XREF-CUST-ID: '18', XREF-ACCT-ID: '18'}
+      - {XREF-CARD-NUM: '5787351228879339', XREF-CUST-ID: '47', XREF-ACCT-ID: '47'}
+      - {XREF-CARD-NUM: '5975117516616077', XREF-CUST-ID: '42', XREF-ACCT-ID: '42'}
+      - {XREF-CARD-NUM: '6009619150674526', XREF-CUST-ID: '5', XREF-ACCT-ID: '5'}
+      - {XREF-CARD-NUM: '6349250331648509', XREF-CUST-ID: '15', XREF-ACCT-ID: '15'}
+      - {XREF-CARD-NUM: '6503535181795992', XREF-CUST-ID: '48', XREF-ACCT-ID: '48'}
+      - {XREF-CARD-NUM: '6509230362553816', XREF-CUST-ID: '30', XREF-ACCT-ID: '30'}
+      - {XREF-CARD-NUM: '6723000463207764', XREF-CUST-ID: '28', XREF-ACCT-ID: '28'}
+      - {XREF-CARD-NUM: '6727055190616014', XREF-CUST-ID: '16', XREF-ACCT-ID: '16'}
+      - {XREF-CARD-NUM: '6832676047698087', XREF-CUST-ID: '33', XREF-ACCT-ID: '33'}
+      - {XREF-CARD-NUM: '7026637615032277', XREF-CUST-ID: '31', XREF-ACCT-ID: '31'}
+      - {XREF-CARD-NUM: '7058267261837752', XREF-CUST-ID: '43', XREF-ACCT-ID: '43'}
+      - {XREF-CARD-NUM: '7094142751055551', XREF-CUST-ID: '32', XREF-ACCT-ID: '32'}
+      - {XREF-CARD-NUM: '7251508149188883', XREF-CUST-ID: '29', XREF-ACCT-ID: '29'}
+      - {XREF-CARD-NUM: '7379335634661142', XREF-CUST-ID: '45', XREF-ACCT-ID: '45'}
+      - {XREF-CARD-NUM: '7427684863423209', XREF-CUST-ID: '11', XREF-ACCT-ID: '11'}
+      - {XREF-CARD-NUM: '7443870988897530', XREF-CUST-ID: '38', XREF-ACCT-ID: '38'}
+      - {XREF-CARD-NUM: '8040580410348680', XREF-CUST-ID: '26', XREF-ACCT-ID: '26'}
+      - {XREF-CARD-NUM: '8112545834239735', XREF-CUST-ID: '23', XREF-ACCT-ID: '23'}
+      - {XREF-CARD-NUM: '8262593602473076', XREF-CUST-ID: '49', XREF-ACCT-ID: '49'}
+      - {XREF-CARD-NUM: '8517866958206008', XREF-CUST-ID: '14', XREF-ACCT-ID: '14'}
+      - {XREF-CARD-NUM: '8931369351894783', XREF-CUST-ID: '8', XREF-ACCT-ID: '8'}
+      - {XREF-CARD-NUM: '9056297931664011', XREF-CUST-ID: '25', XREF-ACCT-ID: '25'}
+      - {XREF-CARD-NUM: '9349107475869214', XREF-CUST-ID: '17', XREF-ACCT-ID: '17'}
+      - {XREF-CARD-NUM: '9501733721429893', XREF-CUST-ID: '9', XREF-ACCT-ID: '9'}
+      - {XREF-CARD-NUM: '9680294154603697', XREF-CUST-ID: '1', XREF-ACCT-ID: '1'}
+      - {XREF-CARD-NUM: '9805583408996588', XREF-CUST-ID: '40', XREF-ACCT-ID: '40'}
+      - {XREF-CARD-NUM: '9900000000000001', XREF-CUST-ID: '1', XREF-ACCT-ID: '1'}
+      - {XREF-CARD-NUM: '9900000000000002', XREF-CUST-ID: '1', XREF-ACCT-ID: '1'}
+    # The same records read through the account-id path, in account-id order.
+    # Account 1 is the one duplicate alternate key: its three cards come first,
+    # in the observed order (card-number order).
+    '@AIX:CXACAIX':
+      records:
+      - {XREF-CARD-NUM: '9680294154603697', XREF-CUST-ID: '1', XREF-ACCT-ID: '1'}
+      - {XREF-CARD-NUM: '9900000000000001', XREF-CUST-ID: '1', XREF-ACCT-ID: '1'}
+      - {XREF-CARD-NUM: '9900000000000002', XREF-CUST-ID: '1', XREF-ACCT-ID: '1'}
+      - {XREF-CARD-NUM: '0923877193247330', XREF-CUST-ID: '2', XREF-ACCT-ID: '2'}
+      - {XREF-CARD-NUM: '3999169246375885', XREF-CUST-ID: '3', XREF-ACCT-ID: '3'}
+      - {XREF-CARD-NUM: '2988091353094312', XREF-CUST-ID: '4', XREF-ACCT-ID: '4'}
+      - {XREF-CARD-NUM: '6009619150674526', XREF-CUST-ID: '5', XREF-ACCT-ID: '5'}
+      - {XREF-CARD-NUM: '2871968252812490', XREF-CUST-ID: '6', XREF-ACCT-ID: '6'}
+      - {XREF-CARD-NUM: '4859452612877065', XREF-CUST-ID: '7', XREF-ACCT-ID: '7'}
+      - {XREF-CARD-NUM: '8931369351894783', XREF-CUST-ID: '8', XREF-ACCT-ID: '8'}
+      - {XREF-CARD-NUM: '9501733721429893', XREF-CUST-ID: '9', XREF-ACCT-ID: '9'}
+      - {XREF-CARD-NUM: '3260763612337560', XREF-CUST-ID: '10', XREF-ACCT-ID: '10'}
+      - {XREF-CARD-NUM: '7427684863423209', XREF-CUST-ID: '11', XREF-ACCT-ID: '11'}
+      - {XREF-CARD-NUM: '0982496213629795', XREF-CUST-ID: '12', XREF-ACCT-ID: '12'}
+      - {XREF-CARD-NUM: '4011500891777367', XREF-CUST-ID: '13', XREF-ACCT-ID: '13'}
+      - {XREF-CARD-NUM: '8517866958206008', XREF-CUST-ID: '14', XREF-ACCT-ID: '14'}
+      - {XREF-CARD-NUM: '6349250331648509', XREF-CUST-ID: '15', XREF-ACCT-ID: '15'}
+      - {XREF-CARD-NUM: '6727055190616014', XREF-CUST-ID: '16', XREF-ACCT-ID: '16'}
+      - {XREF-CARD-NUM: '9349107475869214', XREF-CUST-ID: '17', XREF-ACCT-ID: '17'}
+      - {XREF-CARD-NUM: '5671184478505844', XREF-CUST-ID: '18', XREF-ACCT-ID: '18'}
+      - {XREF-CARD-NUM: '3940246016141489', XREF-CUST-ID: '19', XREF-ACCT-ID: '19'}
+      - {XREF-CARD-NUM: '0927987108636232', XREF-CUST-ID: '20', XREF-ACCT-ID: '20'}
+      - {XREF-CARD-NUM: '5407099850479866', XREF-CUST-ID: '21', XREF-ACCT-ID: '21'}
+      - {XREF-CARD-NUM: '2940139362300449', XREF-CUST-ID: '22', XREF-ACCT-ID: '22'}
+      - {XREF-CARD-NUM: '8112545834239735', XREF-CUST-ID: '23', XREF-ACCT-ID: '23'}
+      - {XREF-CARD-NUM: '2760836797107565', XREF-CUST-ID: '24', XREF-ACCT-ID: '24'}
+      - {XREF-CARD-NUM: '9056297931664011', XREF-CUST-ID: '25', XREF-ACCT-ID: '25'}
+      - {XREF-CARD-NUM: '8040580410348680', XREF-CUST-ID: '26', XREF-ACCT-ID: '26'}
+      - {XREF-CARD-NUM: '0683586198171516', XREF-CUST-ID: '27', XREF-ACCT-ID: '27'}
+      - {XREF-CARD-NUM: '6723000463207764', XREF-CUST-ID: '28', XREF-ACCT-ID: '28'}
+      - {XREF-CARD-NUM: '7251508149188883', XREF-CUST-ID: '29', XREF-ACCT-ID: '29'}
+      - {XREF-CARD-NUM: '6509230362553816', XREF-CUST-ID: '30', XREF-ACCT-ID: '30'}
+      - {XREF-CARD-NUM: '7026637615032277', XREF-CUST-ID: '31', XREF-ACCT-ID: '31'}
+      - {XREF-CARD-NUM: '7094142751055551', XREF-CUST-ID: '32', XREF-ACCT-ID: '32'}
+      - {XREF-CARD-NUM: '6832676047698087', XREF-CUST-ID: '33', XREF-ACCT-ID: '33'}
+      - {XREF-CARD-NUM: '4385271476627819', XREF-CUST-ID: '34', XREF-ACCT-ID: '34'}
+      - {XREF-CARD-NUM: '1561409106491600', XREF-CUST-ID: '35', XREF-ACCT-ID: '35'}
+      - {XREF-CARD-NUM: '4534784102713951', XREF-CUST-ID: '36', XREF-ACCT-ID: '36'}
+      - {XREF-CARD-NUM: '1142167692878931', XREF-CUST-ID: '37', XREF-ACCT-ID: '37'}
+      - {XREF-CARD-NUM: '7443870988897530', XREF-CUST-ID: '38', XREF-ACCT-ID: '38'}
+      - {XREF-CARD-NUM: '2745303720002090', XREF-CUST-ID: '39', XREF-ACCT-ID: '39'}
+      - {XREF-CARD-NUM: '9805583408996588', XREF-CUST-ID: '40', XREF-ACCT-ID: '40'}
+      - {XREF-CARD-NUM: '3766281984155154', XREF-CUST-ID: '41', XREF-ACCT-ID: '41'}
+      - {XREF-CARD-NUM: '5975117516616077', XREF-CUST-ID: '42', XREF-ACCT-ID: '42'}
+      - {XREF-CARD-NUM: '7058267261837752', XREF-CUST-ID: '43', XREF-ACCT-ID: '43'}
+      - {XREF-CARD-NUM: '1014086565224350', XREF-CUST-ID: '44', XREF-ACCT-ID: '44'}
+      - {XREF-CARD-NUM: '7379335634661142', XREF-CUST-ID: '45', XREF-ACCT-ID: '45'}
+      - {XREF-CARD-NUM: '5656830544981216', XREF-CUST-ID: '46', XREF-ACCT-ID: '46'}
+      - {XREF-CARD-NUM: '5787351228879339', XREF-CUST-ID: '47', XREF-ACCT-ID: '47'}
+      - {XREF-CARD-NUM: '6503535181795992', XREF-CUST-ID: '48', XREF-ACCT-ID: '48'}
+      - {XREF-CARD-NUM: '8262593602473076', XREF-CUST-ID: '49', XREF-ACCT-ID: '49'}
+      - {XREF-CARD-NUM: '0500024453765740', XREF-CUST-ID: '50', XREF-ACCT-ID: '50'}

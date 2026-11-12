@@ -1,0 +1,49 @@
+# A blank date: the DTCIN call passes ten spaces as LS-DATE with the mask
+# YYYY-MM-DD. CSUTLDTC hands CEEDAYS both Vstrings at their full length 10, so
+# the trailing spaces are part of the date [app/cbl/CSUTLDTC.cbl:105-120]. The
+# CEEDAYS stub trims them, finds no date text left and returns the severity-3
+# token for message 09CB (decimal 2507), which CSUTLDTC maps to 'Insufficient'
+# and moves to RETURN-CODE [app/cbl/CSUTLDTC.cbl:122-132,98]. Whether a real
+# CEEDAYS answers a blank date the same way is inferred (GAP-INF-001), so the
+# token is pinned as the stub returns it.
+#
+# The DTCDRV line pins the 80-byte result byte for byte: bytes 46-47 hold
+# x'000A', the binary Vstring length that MOVE WS-DATE-TO-TEST TO WS-DATE copies
+# ahead of the date, shown as '..' in RESULT and 000A in HEX. RC=0003 is the
+# RETURN-CODE CSUTLDTC leaves; return_code 0 is DTCDRV's own exit status.
+id: UTL-CSUTLDTC-negative-04
+level: unit
+type: negative
+description: >-
+  CSUTLDTC is called with a blank date (ten spaces) and the mask YYYY-MM-DD.
+  CEEDAYS reports insufficient data (message 2507, severity 3), so the result
+  reads '0003Mesg Code: 2507 Insufficient' with the blank test date and the
+  mask, and RETURN-CODE is 3.
+inventory_ids:
+- INV-UTL-003
+- INV-UTL-001
+- INV-UTL-002
+- INV-UTL-004
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-STB-002
+- GAP-INF-001
+- GAP-STB-004
+- GAP-STB-011
+preconditions:
+  datasets: {}
+  parameters:
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults: []
+inputs:
+  program: CSUTLDTC
+  param_files:
+    # One call: DATE X(10) of ten spaces, then MASK X(10); padded to 80 bytes.
+    DTCIN:
+    - '          YYYY-MM-DD'
+expected:
+  return_code: 0
+  messages:
+  - 'DTCDRV DATE=           MASK=YYYY-MM-DD RC=0003 RESULT=0003Mesg Code: 2507 Insufficient    TstDate: ..         Mask used:YYYY-MM-DD     HEX=303030334D65736720436F64653A203235303720496E73756666696369656E7420202020547374446174653A20000A2020202020202020204D61736B20757365643A595959592D4D4D2D444420202020'

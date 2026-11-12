@@ -1,0 +1,80 @@
+# Derived baseline of scenario USR-COUSR03C-normal-01: ADMIN001 signs on,
+# takes admin option 4 and deletes the invented user TESTU002 on COUSR03
+# (transaction CU03): ENTER fetches the user, PF5 deletes it. TESTU002 is
+# invented data and never signs on. Authored from the source, never captured:
+# - app/cbl/COSGN00C.cbl:221-237 (type A routed to COADM01C);
+# - app/cbl/COADM01C.cbl:75-90,115-145,172-184 with app/cpy/COADM02Y.cpy:39-42
+#   (first-entry admin menu with a blank ERRMSG; option 4 XCTLs to COUSR03C
+#   with CDEMO-PGM-CONTEXT 0);
+# - app/cbl/COUSR03C.cbl:86-105 (first entry: the shorter COMMAREA pads
+#   CDEMO-CU03-USR-SELECTED with spaces, so COUSR3AO is LOW-VALUES and the
+#   empty screen is sent), 142-169 and 267-286 (fetch: 'Press PF5 key to
+#   delete this user ...', then the record's names and type), 174-192,
+#   305-322 and 349-356 (delete: fields blanked, then 'User ' SEC-USR-ID
+#   delimited by space ' has been deleted ...'), 213-262 (header from
+#   app/cpy/COTTL01Y.cpy and app/cpy/CSDAT01Y.cpy), with app/bms/COUSR03.bms.
+# Open under GAP-INF-004 (derived USR end-to-end baselines) and GAP-INF-012
+# (online-only copybooks); only `report.py --import-unikix` promotes it.
+# One screen per step, each the one the step's task leaves: the fetch and the
+# delete each send COUSR03 twice with ERASE, and only the last send stands.
+# Values are whole BMS fields with trailing spaces; ERRMSG is the first 78
+# bytes of the 80-byte WS-MESSAGE, and LOW-VALUES fields show as spaces.
+# CURDATE and CURTIME come from the region clock, which UniKix cannot fix,
+# hence the matchers. messages holds each step's ERRMSG, as the TPE driver
+# copies it. USRSEC is not asserted, because the scenario's expected names no
+# file_state: the record's removal is USR-COUSR03C-normal-02's assertion.
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'Press PF5 key to delete this user ...                                         '
+- 'User TESTU002 has been deleted ...                                            '
+screens:
+- '@map': COADM01
+  ERRMSG: '                                                                              '
+  PGMNAME: COADM01C
+  TRNNAME: CA00
+- '@map': COUSR03
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  FNAME: '                    '
+  LNAME: '                    '
+  PGMNAME: COUSR03C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CU03
+  USRIDIN: '        '
+  USRTYPE: ' '
+- '@map': COUSR03
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'Press PF5 key to delete this user ...                                         '
+  FNAME: 'TESTFIRST           '
+  LNAME: 'TESTLAST            '
+  PGMNAME: COUSR03C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CU03
+  USRIDIN: TESTU002
+  USRTYPE: U
+- '@map': COUSR03
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'User TESTU002 has been deleted ...                                            '
+  FNAME: '                    '
+  LNAME: '                    '
+  PGMNAME: COUSR03C
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CU03
+  USRIDIN: '        '
+  USRTYPE: ' '

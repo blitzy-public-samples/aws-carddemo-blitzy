@@ -1,0 +1,11 @@
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: gnucobol-batch
+execution_fingerprint: 61da64b8c72f932d61ff59e6dd887f7ce4d7a15244154d1cdbd9341025ead412
+execution_id: gnucobol-batch-883796c824840a4a
+source_commit: 762594987fe9fa26d8d7774b7d888b0b14d81de9
+source_identity:
+  commit: 762594987fe9fa26d8d7774b7d888b0b14d81de9
+  tree: app
+  units:
+    app/jcl/DISCGRP.jcl: ef70df333b0acbf77f977df607cbaa559d18d8d0213eac93e478f2f0d4b447bb

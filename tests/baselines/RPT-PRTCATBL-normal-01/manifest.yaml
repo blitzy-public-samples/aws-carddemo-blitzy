@@ -1,0 +1,13 @@
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: gnucobol-batch
+execution_fingerprint: ed9657f69898f25c6066c1398e44df29271cbee1ac667b96a23e773e9585a529
+execution_id: gnucobol-batch-42f9453e7244cbdd
+source_commit: b301367779f1872f84377d9948b1c4bd2634bfc8
+source_identity:
+  commit: b301367779f1872f84377d9948b1c4bd2634bfc8
+  tree: app
+  units:
+    app/ctl/REPROCT.ctl: 5c6b8f26aa53c23131265e715b53130a1a7afd88b5bd3319aeca91f3d1a55bf5
+    app/jcl/PRTCATBL.jcl: 24ba68991b615b24b642ec9365b7a06376f8a813368f6656fcbbb2f4fb2031a2
+    app/proc/REPROC.prc: 4562039d1c7b90f05cc946dd1cd1cb93571bb279740c5c9777acfa3ea23fbc9f

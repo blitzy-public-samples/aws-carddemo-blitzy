@@ -1,0 +1,224 @@
+# COTRN02C refuses to add a transaction whose generated id already exists and
+# shows 'Tran ID already exist...' (the DUPREC branch of WRITE-TRANSACT-FILE).
+#
+# COTRN02C never takes a transaction id from the user: it generates one as the
+# highest TRAN-ID on TRANSACT plus 1, so the duplicate key cannot be typed. The
+# one input-driven way to it is the 16-digit limit of that calculation, which
+# this scenario pins: TRANSACT holds two invented records, keyed
+# 0000000000000000 and 9999999999999999.
+#
+# Steps 1-2 reach the empty Add Transaction screen as the other TRN-COTRN02C
+# scenarios do: USER0001 (type U) is routed to COMEN01C, and option 8
+# 'Transaction Add' transfers control to COTRN02C with the program context
+# reset, so COTRN02C sets the re-enter flag, finds no transaction selected and
+# sends COTRN02 with a blank ERRMSG [app/cbl/COSGN00C.cbl:230-237]
+# [app/cbl/COMEN01C.cbl:115-156] [app/cpy/COMEN02Y.cpy:67-72]
+# [app/cbl/COTRN02C.cbl:115-130,516-534].
+# Step 3 enters the valid field set of the TRN-COTRN02C scenarios, by card
+# number only, with CONFIRM Y, under the CT02 that step 2 returned with:
+# - ACTIDIN is blank, so VALIDATE-INPUT-KEY-FIELDS takes the card branch: the
+#   numeric card goes back through WS-CARD-NUM-N unchanged, READ CCXREF by card
+#   is NORMAL, and XREF-ACCT-ID 00000000050 (record 1 of the CARDXREF fixture)
+#   replaces ACTIDINI [app/cbl/COTRN02C.cbl:210-223,609-623].
+# - Every data field is supplied and passes its check; NUMVAL-C and the
+#   +99999999.99 edit put +00000012.34 back into TRNAMTI, and CSUTLDTC accepts
+#   both dates with mask YYYY-MM-DD [app/cbl/COTRN02C.cbl:235-437].
+# - CONFIRM Y performs ADD-TRANSACTION: STARTBR at HIGH-VALUES and READPREV
+#   return the highest key, 9999999999999999, which is moved to WS-TRAN-ID-N
+#   PIC 9(16) [app/cbl/COTRN02C.cbl:57,442-448,642-697].
+# - ADD 1 TO WS-TRAN-ID-N has no ON SIZE ERROR phrase [app/cbl/COTRN02C.cbl:449].
+#   The sum 10000000000000000 needs 17 digits; under Enterprise COBOL a size
+#   error without ON SIZE ERROR stores the result with truncation to the
+#   receiving PICTURE, so the high-order 1 is lost and WS-TRAN-ID-N holds
+#   0000000000000000. INITIALIZE TRAN-RECORD and the screen moves build the
+#   record with that TRAN-ID [app/cbl/COTRN02C.cbl:450-466].
+# - The WRITE keyed by 0000000000000000 finds the first fixture record and
+#   ends DUPREC: WS-ERR-FLG is set, 'Tran ID already exist...' goes to
+#   WS-MESSAGE, the cursor goes to ACTIDIN and COTRN02 is sent again
+#   [app/cbl/COTRN02C.cbl:711-741]. INITIALIZE-ALL-FIELDS runs only on the
+#   NORMAL branch, so nothing is cleared.
+# - SEND MAP sends COTRN2AO, which REDEFINES the received COTRN2AI
+#   [app/cpy-bms/COTRN02.CPY:145], so every entry field shows what the program
+#   left in it: the input as entered, ACTIDIN with the looked-up account and
+#   TRNAMT in its edited form [app/cbl/COTRN02C.cbl:516-534].
+# TRANSACT keeps exactly its two records, unchanged.
+#
+# Expected values are derived from the source; no TPE region runs in CI. A
+# runtime that raised a size condition or abended at the ADD instead would show
+# a different outcome, which an imported UniKix run settles. Text values are
+# whole fields at their BMS or record length with trailing spaces, since BMS
+# pads each received field with blanks. CURDATE and CURTIME come from the
+# region clock, so they are matchers and the clock is relative.
+id: TRN-COTRN02C-negative-28
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, chooses main-menu option 8 (Transaction Add) and adds a
+  12.34 purchase for card 0500024453765740 with CONFIRM Y while TRANSACT holds
+  only the transactions 0000000000000000 and 9999999999999999. The highest key
+  plus 1 overflows the 16-digit WS-TRAN-ID-N and truncates to
+  0000000000000000, the WRITE finds that key taken, and COTRN02C keeps the
+  entered fields on COTRN02 with 'Tran ID already exist...' while TRANSACT is
+  left unchanged.
+# Primary item first, then the program, the maps asserted, the transaction step
+# 3 runs under, the CSD files COTRN02C reads and writes, and the online-only
+# copybooks it copies. The next-TRAN-ID calculation is listed because this is
+# the one scenario that pins it at its 16-digit limit, where the truncated sum
+# is what produces the duplicate key. Sign-on and the menu (CC00, CM00,
+# COSGN00, USRSEC, the option-8 navigation) are verified by the SEC and MNU
+# scenarios; CXACAIX is not read, because the card number selects the
+# cross-reference; the batch record copybooks and data files are verified at
+# the lowest level that executes them.
+inventory_ids:
+- INV-TRN-062  # COTRN02C message 'Tran ID already exist...'
+- INV-TRN-003  # COTRN02C program
+- INV-MNU-003  # COMEN01 map, where option 8 is entered
+- INV-TRN-006  # COTRN02 map, the add screen of steps 2 and 3
+- INV-TRN-067  # COTRN02C next TRAN-ID (calculation), truncated at 16 digits
+- INV-CFG-022  # CT02 transaction, under which COTRN02C receives the add
+- INV-CFG-004  # CCXREF CSD file, read by card number
+- INV-CFG-007  # TRANSACT CSD file, browsed backwards and written
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carrying the program context
+- INV-LAY-005  # COTTL01Y copybook, the screen titles
+- INV-LAY-006  # CSDAT01Y copybook, the screen date and time
+- INV-LAY-008  # CSMSG01Y copybook, copied by COTRN02C
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-007  # TRN end-to-end baselines derived, never observed on a TPE region
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    CARDXREF: {base: CARDXREF}
+    # Two invented transactions for the repository card: the lowest and the
+    # highest key a 16-digit TRAN-ID can hold.
+    TRANSACT:
+      records:
+      - TRAN-ID: '0000000000000000'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic purchase 0
+        TRAN-AMT: '15.00'
+        TRAN-MERCHANT-ID: '900000000'
+        TRAN-MERCHANT-NAME: Synthetic Merchant
+        TRAN-MERCHANT-CITY: Testville
+        TRAN-MERCHANT-ZIP: '27601'
+        TRAN-CARD-NUM: '0500024453765740'
+        TRAN-ORIG-TS: '2022-06-01 10:00:00.000000'
+        TRAN-PROC-TS: '2022-06-01-10.00.00.000000'
+      - TRAN-ID: '9999999999999999'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic purchase high key
+        TRAN-AMT: '25.00'
+        TRAN-MERCHANT-ID: '900000099'
+        TRAN-MERCHANT-NAME: Synthetic Merchant
+        TRAN-MERCHANT-CITY: Testville
+        TRAN-MERCHANT-ZIP: '27601'
+        TRAN-CARD-NUM: '0500024453765740'
+        TRAN-ORIG-TS: '2022-06-30 10:00:00.000000'
+        TRAN-PROC-TS: '2022-06-30-10.00.00.000000'
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '8'
+  # ACTIDIN is left blank, so the card number selects the cross-reference.
+  - aid: ENTER
+    '@map': COTRN02
+    fields:
+      CARDNIN: '0500024453765740'
+      TTYPCD: '01'
+      TCATCD: '0001'
+      TRNSRC: POS TERM
+      TDESC: Test purchase
+      TRNAMT: '+00000012.34'
+      TORIGDT: '2022-07-01'
+      TPROCDT: '2022-07-01'
+      MID: '800000001'
+      MNAME: Test Merchant
+      MCITY: Testville
+      MZIP: '27601'
+      CONFIRM: 'Y'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN008: '08. Transaction Add                     '
+    ERRMSG: '                                                                              '
+  - '@map': COTRN02
+    TRNNAME: CT02
+    PGMNAME: COTRN02C
+    ERRMSG: '                                                                              '
+  # The refused add: the fields stay as COTRN02C left them, nothing is cleared.
+  - '@map': COTRN02
+    TRNNAME: CT02
+    TITLE01: '      AWS Mainframe Modernization       '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    PGMNAME: COTRN02C
+    TITLE02: '              CardDemo                  '
+    CURTIME: {match: run-time}
+    ACTIDIN: '00000000050'
+    CARDNIN: '0500024453765740'
+    TTYPCD: '01'
+    TCATCD: '0001'
+    TRNSRC: 'POS TERM  '
+    TDESC: 'Test purchase                                               '
+    TRNAMT: '+00000012.34'
+    TORIGDT: '2022-07-01'
+    TPROCDT: '2022-07-01'
+    MID: '800000001'
+    MNAME: 'Test Merchant                 '
+    MCITY: 'Testville                '
+    MZIP: '27601     '
+    CONFIRM: 'Y'
+    ERRMSG: 'Tran ID already exist...                                                      '
+  # The ERRMSG of each step: the menu and the empty add screen carry none.
+  messages:
+  - '                                                                              '
+  - '                                                                              '
+  - 'Tran ID already exist...                                                      '
+  file_state:
+    # The two fixture records, unchanged; no record is written.
+    TRANSACT:
+      records:
+      - TRAN-ID: '0000000000000000'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: 'POS TERM  '
+        TRAN-DESC: 'Synthetic purchase 0                                                                                '
+        TRAN-AMT: '15.00'
+        TRAN-MERCHANT-ID: '900000000'
+        TRAN-MERCHANT-NAME: 'Synthetic Merchant                                '
+        TRAN-MERCHANT-CITY: 'Testville                                         '
+        TRAN-MERCHANT-ZIP: '27601     '
+        TRAN-CARD-NUM: '0500024453765740'
+        TRAN-ORIG-TS: '2022-06-01 10:00:00.000000'
+        TRAN-PROC-TS: '2022-06-01-10.00.00.000000'
+      - TRAN-ID: '9999999999999999'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: '1'
+        TRAN-SOURCE: 'POS TERM  '
+        TRAN-DESC: 'Synthetic purchase high key                                                                         '
+        TRAN-AMT: '25.00'
+        TRAN-MERCHANT-ID: '900000099'
+        TRAN-MERCHANT-NAME: 'Synthetic Merchant                                '
+        TRAN-MERCHANT-CITY: 'Testville                                         '
+        TRAN-MERCHANT-ZIP: '27601     '
+        TRAN-CARD-NUM: '0500024453765740'
+        TRAN-ORIG-TS: '2022-06-30 10:00:00.000000'
+        TRAN-PROC-TS: '2022-06-30-10.00.00.000000'

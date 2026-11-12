@@ -1,0 +1,147 @@
+id: DAT-CARDFILE-normal-01
+level: integration
+type: normal
+description: >-
+  The CARDFILE job reloads the card master from its sequential copy and rebuilds the
+  account-id alternate index [app/jcl/CARDFILE.jcl:22-124]. CLCIFIL and OPCIFIL close and
+  reopen the region files CARDDAT and CARDAIX through SDSF CEMT commands; they are not
+  exercised here (a no-op RC 0 on gnucobol-batch, GAP-STB-008; the no-op SDSF.cbl on the
+  UniKix copy, GAP-DOC-031), so only their step lines are asserted. STEP05 deletes the
+  existing cluster and alternate index, each DELETE followed by IF MAXCC LE 08 THEN SET
+  MAXCC = 0; STEP10 defines the KSDS with KEYS(16 0) and RECORDSIZE(150 150); STEP15 REPROs
+  the 52 input records into it, the 50 carddata.txt records followed by two invented cards
+  on account 1; STEP40 defines the alternate index KEYS(11 16) NONUNIQUEKEY UPGRADE, STEP50
+  the path over it and STEP60 builds it with BLDINDEX. The card master exists before the
+  run holding one invented card that the input lacks, so the delete and define are
+  observable: afterwards the cluster holds exactly the 52 input records in CARD-NUM order
+  (CVACT02Y) and the stale invented card is gone. Read through the path, the same 52
+  records come back in CARD-ACCT-ID order, accounts 1 to 50; carddata.txt gives every
+  card its own account, so the two invented cards make account 1 the one duplicate
+  alternate key, and its three cards come back in CARD-NUM order (9680294154603697,
+  9900000000000001, 9900000000000002), as observed. Every step ends RC 0. The baseline
+  holds every record of both observations; the inline values pin the step lines, the
+  record counts, the first record of the CARD-NUM order, the last repository card and
+  the two invented cards after it, and account 1's three cards in their observed order
+  followed by the last record of the CARD-ACCT-ID order.
+inventory_ids:
+- INV-DAT-006
+tags: []
+gap_ids:
+- GAP-STB-005
+- GAP-STB-008
+- GAP-STB-009
+- GAP-STB-010
+- GAP-DOC-031
+preconditions:
+  datasets:
+    # The alternate key CARD-ACCT-ID is NONUNIQUEKEY, but carddata.txt has one
+    # card per account. These two invented cards (no real person or card) give
+    # account 1 three cards with its repository card 9680294154603697, so the
+    # order of duplicates read through CARDAIX is pinned. Their numbers sort
+    # above the highest repository card, 9805583408996588, so the REPRO input,
+    # synthetic records after the base ones, stays in ascending key order.
+    CARDDATA-PS:
+      base: CARDDATA-PS
+      records:
+      - CARD-NUM: '9900000000000001'
+        CARD-ACCT-ID: '00000000001'
+        CARD-CVV-CD: '101'
+        CARD-EMBOSSED-NAME: 'Synthetic Duplicate One'
+        CARD-EXPIRAION-DATE: '2030-01-31'
+        CARD-ACTIVE-STATUS: 'Y'
+      - CARD-NUM: '9900000000000002'
+        CARD-ACCT-ID: '00000000001'
+        CARD-CVV-CD: '202'
+        CARD-EMBOSSED-NAME: 'Synthetic Duplicate Two'
+        CARD-EXPIRAION-DATE: '2030-02-28'
+        CARD-ACTIVE-STATUS: 'Y'
+    # The card master as a previous load left it, holding one invented card (no
+    # real person, account or card) that carddata.txt lacks: only a DELETE and
+    # DEFINE before the REPRO removes it.
+    CARDDATA:
+      records:
+      - CARD-NUM: '9999999999999901'
+        CARD-ACCT-ID: '99999999901'
+        CARD-CVV-CD: '999'
+        CARD-EMBOSSED-NAME: 'Stale Synthetic Card'
+        CARD-EXPIRAION-DATE: '2099-12-31'
+        CARD-ACTIVE-STATUS: 'N'
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  job: CARDFILE
+expected:
+  return_code: 0
+  messages:
+  - STEP CLCIFIL RC 0000
+  - STEP STEP05 RC 0000
+  - STEP STEP10 RC 0000
+  - STEP STEP15 RC 0000
+  - STEP STEP40 RC 0000
+  - STEP STEP50 RC 0000
+  - STEP STEP60 RC 0000
+  - STEP OPCIFIL RC 0000
+  datasets:
+    # The 52 input records in CARD-NUM order, the stale invented card absent:
+    # the first, the last repository card and the two invented cards after it
+    # inline, every one in the baseline.
+    CARDDATA:
+      count: 52
+      contains:
+      - CARD-NUM: '0500024453765740'
+        CARD-ACCT-ID: '50'
+        CARD-CVV-CD: '747'
+        CARD-EMBOSSED-NAME: 'Aniya Von                                         '
+        CARD-EXPIRAION-DATE: '2023-03-09'
+        CARD-ACTIVE-STATUS: 'Y'
+      - CARD-NUM: '9805583408996588'
+        CARD-ACCT-ID: '40'
+        CARD-CVV-CD: '908'
+        CARD-EMBOSSED-NAME: 'Davon Emmerich                                    '
+        CARD-EXPIRAION-DATE: '2023-10-27'
+        CARD-ACTIVE-STATUS: 'Y'
+      - CARD-NUM: '9900000000000001'
+        CARD-ACCT-ID: '1'
+        CARD-CVV-CD: '101'
+        CARD-EMBOSSED-NAME: 'Synthetic Duplicate One                           '
+        CARD-EXPIRAION-DATE: '2030-01-31'
+        CARD-ACTIVE-STATUS: 'Y'
+      - CARD-NUM: '9900000000000002'
+        CARD-ACCT-ID: '1'
+        CARD-CVV-CD: '202'
+        CARD-EMBOSSED-NAME: 'Synthetic Duplicate Two                           '
+        CARD-EXPIRAION-DATE: '2030-02-28'
+        CARD-ACTIVE-STATUS: 'Y'
+  file_state:
+    # The same 52 records read through the path, in CARD-ACCT-ID order
+    # (accounts 1 to 50). Account 1 is the one duplicate alternate key: its
+    # three cards come first, in the observed order (CARD-NUM order), then the
+    # last record, account 50, inline.
+    '@AIX:CARDAIX':
+      count: 52
+      contains:
+      - CARD-NUM: '9680294154603697'
+        CARD-ACCT-ID: '1'
+        CARD-CVV-CD: '45'
+        CARD-EMBOSSED-NAME: 'Immanuel Kessler                                  '
+        CARD-EXPIRAION-DATE: '2025-05-20'
+        CARD-ACTIVE-STATUS: 'Y'
+      - CARD-NUM: '9900000000000001'
+        CARD-ACCT-ID: '1'
+        CARD-CVV-CD: '101'
+        CARD-EMBOSSED-NAME: 'Synthetic Duplicate One                           '
+        CARD-EXPIRAION-DATE: '2030-01-31'
+        CARD-ACTIVE-STATUS: 'Y'
+      - CARD-NUM: '9900000000000002'
+        CARD-ACCT-ID: '1'
+        CARD-CVV-CD: '202'
+        CARD-EMBOSSED-NAME: 'Synthetic Duplicate Two                           '
+        CARD-EXPIRAION-DATE: '2030-02-28'
+        CARD-ACTIVE-STATUS: 'Y'
+      - CARD-NUM: '0500024453765740'
+        CARD-ACCT-ID: '50'
+        CARD-CVV-CD: '747'
+        CARD-EMBOSSED-NAME: 'Aniya Von                                         '
+        CARD-EXPIRAION-DATE: '2023-03-09'
+        CARD-ACTIVE-STATUS: 'Y'

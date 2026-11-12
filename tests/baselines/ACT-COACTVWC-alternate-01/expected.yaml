@@ -1,0 +1,68 @@
+# Derived baseline of scenario ACT-COACTVWC-alternate-01 (capture_platform:
+# derived): USER0001 signs on, selects main menu option 1 'Account View' and
+# lands on COACTVW with the prompt 'Enter or update id of account to display'
+# [app/cbl/COACTVWC.cbl:113-114]. Authored from the source, never captured;
+# open until a UniKix run is imported (GAP-INF-005, GAP-INF-012).
+# One screen per step, each the screen shown after the step's AID.
+# Step 1: COSGN00C XCTLs a type-U user to COMEN01C [app/cbl/COSGN00C.cbl:221-240],
+# whose first entry sends COMEN1A and returns TRANSID CM00
+# [app/cbl/COMEN01C.cbl:86-90,107-110,182-193].
+# Step 2: option 1 runs COACTVWC with CDEMO-PGM-CONTEXT 0
+# [app/cbl/COMEN01C.cbl:127-155] [app/cpy/COMEN02Y.cpy:25-29]. COACTVWC
+# initializes WS-MISC-STORAGE, so the account filter and both FOUND flags are
+# blank on either branch of its COMMAREA test, takes CDEMO-PGM-ENTER and sends
+# CACTVWA with ERASE and no file read [app/cbl/COACTVWC.cbl:268-293,353-360,
+# 431-535,577-591]: header from COTTL01Y [app/cpy/COTTL01Y.cpy:18-22], ACCTSID
+# and every account and customer field left LOW-VALUES (none has an INITIAL,
+# so each shows as spaces), the 40-byte prompt in the 45-byte INFOMSG and the
+# blank WS-RETURN-MSG in the 78-byte ERRMSG.
+# Values are at full BMS field width with their trailing spaces
+# [app/bms/COACTVW.bms]. CURDATE and CURTIME come from the region clock, so
+# they are run-date and run-time matchers. Only named fields are asserted, so
+# the unnamed row 1, columns 1-9 field the UniKix COACTVW.bms lacks is not
+# (GAP-DOC-025).
+screens:
+- '@map': COMEN01
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COACTVW
+  AADDGRP: '          '
+  ACCTSID: '           '
+  ACRCYCR: '               '
+  ACRCYDB: '               '
+  ACRDLIM: '               '
+  ACSADL1: '                                                  '
+  ACSADL2: '                                                  '
+  ACSCITY: '                                                  '
+  ACSCTRY: '   '
+  ACSEFTC: '          '
+  ACSFNAM: '                         '
+  ACSGOVT: '                    '
+  ACSHLIM: '               '
+  ACSLNAM: '                         '
+  ACSMNAM: '                         '
+  ACSPFLG: ' '
+  ACSPHN1: '             '
+  ACSPHN2: '             '
+  ACSSTTE: '  '
+  ACSTDOB: '          '
+  ACSTFCO: '   '
+  ACSTNUM: '         '
+  ACSTSSN: '            '
+  ACSTTUS: ' '
+  ACSZIPC: '     '
+  ACURBAL: '               '
+  ADTOPEN: '          '
+  AEXPDT: '          '
+  AREISDT: '          '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: '                                                                              '
+  INFOMSG: 'Enter or update id of account to display     '
+  PGMNAME: COACTVWC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CAVW

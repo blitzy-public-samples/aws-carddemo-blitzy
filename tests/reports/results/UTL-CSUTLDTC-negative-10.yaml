@@ -1,0 +1,19 @@
+adapter: gnucobol-batch
+baseline_version: 1.0.0
+decoded:
+  messages:
+  - 'DTCDRV DATE=2022-07-18 MASK=YYYY-MM-DD RC=0003 RESULT=0003Mesg Code: 2517 Invalid month   TstDate: ..2022-07- Mask used:YYYY-MM-DD     HEX=303030334D65736720436F64653A203235313720496E76616C6964206D6F6E7468202020547374446174653A20000A323032322D30372D204D61736B20757365643A595959592D4D4D2D444420202020'
+  return_code: 0
+evidence_path: tests/reports/results/UTL-CSUTLDTC-negative-10.yaml
+execution_fingerprint: 0ed2c1e1a68dc075d8fa2b66de066675109e5e6a65075415e3b096d07d9a7a1d
+execution_id: gnucobol-batch-feca5235fa2e025f
+gap_id: null
+reason: null
+scenario_digest: 441f6d2482bbb41c40d48565413692cb199763e34589f5a5ad8b9f8045bdfb38
+scenario_id: UTL-CSUTLDTC-negative-10
+source_identity:
+  commit: ab3f66e8e82d6a0f204d218435c52b0662a2f5df
+  tree: app
+  units:
+    app/cbl/CSUTLDTC.cbl: 58c165dcfc3927232c02c152c673e3dee551587b85e7fe56ca67325c980eebb6
+status: passed

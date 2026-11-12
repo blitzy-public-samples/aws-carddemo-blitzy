@@ -1,0 +1,161 @@
+# COACTVWC's HANDLE ABEND routine, reached by an abend while the account
+# master is read for account 00000000001.
+#
+# Step 1: USER0001 (type U in the USRSEC fixture) signs on through CC00 and
+# COSGN00C XCTLs to COMEN01C [app/cbl/COSGN00C.cbl:221-240].
+# Step 2: option '1' makes COMEN01C XCTL to COACTVWC with CDEMO-PGM-CONTEXT 0
+# [app/cbl/COMEN01C.cbl:145-155]. COACTVWC registers ABEND-ROUTINE with
+# HANDLE ABEND at the start of every task [app/cbl/COACTVWC.cbl:264-266], takes
+# the CDEMO-PGM-ENTER path, sends COACTVW with its account-id prompt and
+# returns TRANSID CAVW [app/cbl/COACTVWC.cbl:353-360,394-406].
+# Step 3: CAVW re-enters COACTVWC; the account id is numeric and non-zero, so
+# 9000-READ-ACCT runs [app/cbl/COACTVWC.cbl:596-681,687-700]. The CXACAIX read
+# finds account 00000000001's single card in the CARDXREF fixture
+# [app/cbl/COACTVWC.cbl:723-771]; the ACCTDAT read that follows abends under
+# the fault [app/cbl/COACTVWC.cbl:774-784], so CUSTDAT is never read and its
+# CSD file item is not listed.
+#
+# ABEND-ROUTINE [app/cbl/COACTVWC.cbl:916-936] moves 'UNEXPECTED ABEND
+# OCCURRED.' to ABEND-MSG only when ABEND-MSG equals LOW-VALUES. ABEND-DATA is
+# its own 01 level [app/cbl/COACTVWC.cbl:238] whose fields CSMSG02Y declares
+# with VALUE SPACES [app/cpy/CSMSG02Y.cpy:21-29], and nothing in COACTVWC moves
+# to ABEND-MSG or ABEND-CODE, so the test is false and the default text is not
+# moved (GAP-DEF-014). The routine moves LIT-THISPGM 'COACTVWC' to
+# ABEND-CULPRIT, sends the 134 bytes of ABEND-DATA (ABEND-CODE X(4),
+# ABEND-CULPRIT X(8), ABEND-REASON X(50), ABEND-MSG X(72)) with SEND FROM ...
+# NOHANDLE, cancels the handler and abends the task with ABCODE 9999.
+#
+# Priority decision: the message INV-ACT-024 names is expected absent. The
+# test plan expected 'UNEXPECTED ABEND OCCURRED.' on this screen, but a derived
+# baseline pins what the source does, and the source never moves the text; the
+# question is registered as GAP-DEF-014 and the code under app/ is never fixed.
+#
+# The screen is derived, never observed (GAP-INF-005). The SEND names no map,
+# no ERASE and no CTLCHAR [app/cbl/COACTVWC.cbl:924-928], so it is a 3270
+# Write, not an Erase/Write: the default WCC resets the modified data tags and
+# restores the keyboard, and with no buffer address the 134 bytes are written
+# from the cursor. Step 2's SEND MAP ... CURSOR put the cursor on ACCTSID's
+# first position, row 5, column 39 [app/cbl/COACTVWC.cbl:545-552,583-589]
+# [app/bms/COACTVW.bms:84-90]. The eleventh digit typed in step 3 fills the
+# field, the autoskip stopper after it [app/bms/COACTVW.bms:91-92] passes the
+# cursor on, and ACCTSID, the map's only unprotected field, takes it back.
+# The bytes cover row 5, column 39 to row 7, column 12
+# [app/bms/COACTVW.bms:84-127]. ACCTSID shows the four blank code bytes and
+# COACTVW, the culprit's last C replaces the stopper's attribute at row 5,
+# column 50, and the 122 blanks of reason and message blank ACSTTUS, ADTOPEN
+# and ACRDLIM. Every position and field attribute outside them keeps what
+# step 2 sent, so the screen stays formatted in COACTVW's format, with TRNNAME,
+# PGMNAME and INFOMSG unchanged. The blanks also overwrite the statics
+# 'Active Y/N: ', 'Opened:', 'Credit Limit        :' and the 'Expi' of
+# 'Expiry:', so the screen matches no map of tests/inventory/layouts.yaml and
+# the unikix adapter reports it under GAP-MIS-005.
+# What the region shows for the ABEND ABCODE('9999') that follows
+# [app/cbl/COACTVWC.cbl:930-935] cannot be derived from app/: CICS writes its
+# abend notice over the existing screen, at the bottom, and the UniKix zip
+# documents no notice, so ERRMSG on row 23 is not asserted. Terminal evidence
+# from a UniKix region settles it (GAP-INF-005, GAP-MIS-014).
+#
+# No mechanism forces an abend in the TPE region, so the fault makes the
+# scenario implemented-unexecuted (MissingPrerequisite, GAP-MIS-014); in CI no
+# TPE region runs and it is blocked. The UniKix copy of COACTVW.bms lacks the
+# unnamed field at row 1, columns 1-9 (GAP-DOC-025); the UniKix copy of
+# ABEND-ROUTINE and CSMSG02Y is the same as app/'s.
+id: ACT-COACTVWC-recovery-05
+level: e2e
+type: recovery
+description: >-
+  USER0001 signs on, selects main menu option 1 'Account View' and enters
+  account 00000000001 on the COACTVWC screen (CAVW). The card cross-reference
+  read through CXACAIX succeeds, and the account master read on ACCTDAT
+  abends. COACTVWC's HANDLE ABEND routine names itself as the culprit, writes
+  the abend data, without erasing, over the account-view screen from the
+  cursor in the account-number field, and abends the task with code 9999.
+  Because ABEND-MSG starts as spaces rather than LOW-VALUES, the default
+  'UNEXPECTED ABEND OCCURRED.' is not moved: the account number shows the four
+  blank code bytes and COACTVW, and the blank reason and message blank the
+  rest of rows 5-6 and the start of row 7.
+# Primary item first, then the program, the maps asserted, the transaction
+# step 3 runs under, the CSD files the account lookup reads, and the
+# online-only copybooks COACTVWC copies. Sign-on and the menu programs are
+# verified by the SEC and MNU scenarios; the batch record copybooks and the
+# data files are verified at the lowest level that executes them.
+inventory_ids:
+- INV-ACT-024  # COACTVWC message 'UNEXPECTED ABEND OCCURRED.' (ABEND-ROUTINE, recovery)
+- INV-ACT-001  # COACTVWC program
+- INV-MNU-003  # COMEN01 map, where option 1 is entered
+- INV-ACT-003  # COACTVW map, where the account id is entered
+- INV-CFG-010  # CAVW transaction, under which the lookup abends
+- INV-CFG-006  # CXACAIX CSD file: card cross-reference read by account id
+- INV-CFG-001  # ACCTDAT CSD file: the account master read that abends
+- INV-LAY-002  # COCOM01Y: the COMMAREA carrying the context into CAVW
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COACTVWC
+- INV-LAY-009  # CSMSG02Y: ABEND-DATA, the area the abend routine sends
+- INV-LAY-011  # CSSTRPFY: the AID mapping that selects the ENTER path
+- INV-LAY-019  # CVCRD01Y: CC-ACCT-ID and the AID flags
+tags:
+- inferred-not-observed
+- suspected-defect
+gap_ids:
+- GAP-INF-005  # ACT end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+- GAP-MIS-005  # the derived step-3 screen is formatted but matches no single map
+- GAP-MIS-014  # no mechanism forces an abend in the TPE region
+- GAP-DEF-014  # the LOW-VALUES test never moves the default abend message
+- GAP-DOC-025  # the UniKix COACTVW.bms differs from app/ at row 1, columns 1-9
+preconditions:
+  datasets:
+    ACCTDATA: {base: ACCTDATA}
+    CUSTDATA: {base: CUSTDATA}
+    CARDXREF: {base: CARDXREF}
+    # COSGN00C reads the sign-on user USER0001 from USRSEC.
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults:
+  # The first ACCTDAT read of the task abends instead of returning a response.
+  - {target: ACCTDAT, operation: read, condition: abend}
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '1'
+  - aid: ENTER
+    '@map': COACTVW
+    fields:
+      ACCTSID: '00000000001'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    ERRMSG: '                                                                              '
+  - '@map': COACTVW
+    TRNNAME: CAVW
+    PGMNAME: COACTVWC
+    INFOMSG: 'Enter or update id of account to display     '
+    ERRMSG: '                                                                              '
+  # Step 3 writes ABEND-DATA over step 2's screen from the cursor at row 5,
+  # column 39, without erasing it [app/cbl/COACTVWC.cbl:924-928]: ACCTSID
+  # holds the four blank code bytes and COACTVW, and the blank reason and
+  # message blank ACSTTUS, ADTOPEN and ACRDLIM. Had ABEND-MSG been LOW-VALUES,
+  # 'UNEXPECTED ABEND OCCURRED.' would land on row 6, columns 21-46, and
+  # ADTOPEN would read '   UNEXPEC' (GAP-DEF-014). TRNNAME, PGMNAME and
+  # INFOMSG keep step 2's values. ERRMSG is not asserted: the region's notice
+  # for the 9999 abend may be written on row 23.
+  - '@map': COACTVW
+    TRNNAME: CAVW
+    PGMNAME: COACTVWC
+    ACCTSID: '    COACTVW'
+    ACSTTUS: ' '
+    ADTOPEN: '          '
+    ACRDLIM: '               '
+    INFOMSG: 'Enter or update id of account to display     '

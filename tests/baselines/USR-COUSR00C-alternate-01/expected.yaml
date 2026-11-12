@@ -1,0 +1,146 @@
+# Derived baseline of USR-COUSR00C-alternate-01: PF7 on page 1 of the user
+# list. Not observed; authored from app/cbl/COUSR00C.cbl:110-144,230-330,522-581,
+# app/cbl/COADM01C.cbl:115-145,226-260, app/bms/COUSR00.bms (every field FSET,
+# so PF7 resends the received rows), app/cpy/COADM02Y.cpy, app/cpy/COTTL01Y.cpy,
+# app/cpy/CSDAT01Y.cpy and the USRSEC fixture (AWS.M2.CARDDEMO.USRSEC.PS, cp037,
+# 10 users in key order). Only report.py --import-unikix replaces it with an
+# observed outcome: GAP-INF-004 (derived USR end-to-end baselines) and
+# GAP-INF-012 (online-only copybooks). Screens are whole fields at their BMS
+# length, trailing spaces kept; CURDATE and CURTIME come from the region clock
+# and are matchers. Canonical harness.dump_yaml layout.
+messages:
+- '                                                                              '
+- 'You have reached the bottom of the page...                                    '
+- 'You are already at the top of the page...                                     '
+screens:
+- '@map': COADM01
+  ERRMSG: '                                                                              '
+  OPTN001: '01. User List (Security)                '
+  PGMNAME: COADM01C
+  TRNNAME: CA00
+- '@map': COUSR00
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'You have reached the bottom of the page...                                    '
+  FNAME01: 'MARGARET            '
+  FNAME02: 'RUSSELL             '
+  FNAME03: 'RAYMOND             '
+  FNAME04: 'EMMANUEL            '
+  FNAME05: 'GRANVILLE           '
+  FNAME06: 'LAWRENCE            '
+  FNAME07: 'AJITH               '
+  FNAME08: 'LAURITZ             '
+  FNAME09: 'AVERARDO            '
+  FNAME10: 'LEE                 '
+  LNAME01: 'GOLD                '
+  LNAME02: 'RUSSELL             '
+  LNAME03: 'WHITMORE            '
+  LNAME04: 'CASGRAIN            '
+  LNAME05: 'LACHAPELLE          '
+  LNAME06: 'THOMAS              '
+  LNAME07: 'KUMAR               '
+  LNAME08: 'ALME                '
+  LNAME09: 'MAZZI               '
+  LNAME10: 'TING                '
+  PAGENUM: '00000001'
+  PGMNAME: COUSR00C
+  SEL0001: ' '
+  SEL0002: ' '
+  SEL0003: ' '
+  SEL0004: ' '
+  SEL0005: ' '
+  SEL0006: ' '
+  SEL0007: ' '
+  SEL0008: ' '
+  SEL0009: ' '
+  SEL0010: ' '
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CU00
+  USRID01: ADMIN001
+  USRID02: ADMIN002
+  USRID03: ADMIN003
+  USRID04: ADMIN004
+  USRID05: ADMIN005
+  USRID06: USER0001
+  USRID07: USER0002
+  USRID08: USER0003
+  USRID09: USER0004
+  USRID10: USER0005
+  USRIDIN: '        '
+  UTYPE01: A
+  UTYPE02: A
+  UTYPE03: A
+  UTYPE04: A
+  UTYPE05: A
+  UTYPE06: U
+  UTYPE07: U
+  UTYPE08: U
+  UTYPE09: U
+  UTYPE10: U
+- '@map': COUSR00
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  ERRMSG: 'You are already at the top of the page...                                     '
+  FNAME01: 'MARGARET            '
+  FNAME02: 'RUSSELL             '
+  FNAME03: 'RAYMOND             '
+  FNAME04: 'EMMANUEL            '
+  FNAME05: 'GRANVILLE           '
+  FNAME06: 'LAWRENCE            '
+  FNAME07: 'AJITH               '
+  FNAME08: 'LAURITZ             '
+  FNAME09: 'AVERARDO            '
+  FNAME10: 'LEE                 '
+  LNAME01: 'GOLD                '
+  LNAME02: 'RUSSELL             '
+  LNAME03: 'WHITMORE            '
+  LNAME04: 'CASGRAIN            '
+  LNAME05: 'LACHAPELLE          '
+  LNAME06: 'THOMAS              '
+  LNAME07: 'KUMAR               '
+  LNAME08: 'ALME                '
+  LNAME09: 'MAZZI               '
+  LNAME10: 'TING                '
+  PAGENUM: '00000001'
+  PGMNAME: COUSR00C
+  SEL0001: ' '
+  SEL0002: ' '
+  SEL0003: ' '
+  SEL0004: ' '
+  SEL0005: ' '
+  SEL0006: ' '
+  SEL0007: ' '
+  SEL0008: ' '
+  SEL0009: ' '
+  SEL0010: ' '
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CU00
+  USRID01: ADMIN001
+  USRID02: ADMIN002
+  USRID03: ADMIN003
+  USRID04: ADMIN004
+  USRID05: ADMIN005
+  USRID06: USER0001
+  USRID07: USER0002
+  USRID08: USER0003
+  USRID09: USER0004
+  USRID10: USER0005
+  USRIDIN: '        '
+  UTYPE01: A
+  UTYPE02: A
+  UTYPE03: A
+  UTYPE04: A
+  UTYPE05: A
+  UTYPE06: U
+  UTYPE07: U
+  UTYPE08: U
+  UTYPE09: U
+  UTYPE10: U

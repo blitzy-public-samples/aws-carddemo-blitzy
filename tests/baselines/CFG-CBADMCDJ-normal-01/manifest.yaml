@@ -1,0 +1,9 @@
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: derived
+source_commit: 1cb86ff9135b33aa50b652ee9dee065d47e913bd
+source_identity:
+  commit: 1cb86ff9135b33aa50b652ee9dee065d47e913bd
+  tree: app
+  units:
+    app/jcl/CBADMCDJ.jcl: 364243e503e92d38af82e86459677c92a6cb03c0ecc25c6f81ca29b32780f678

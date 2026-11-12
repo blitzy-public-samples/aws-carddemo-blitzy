@@ -1,0 +1,58 @@
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'File Error: READ     on ACCTDAT   returned RESP 000000084 ,RESP2 000000050    '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  OPTN002: '02. Account Update                      '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': COACTUP
+  ACCTSID: '           '
+  ERRMSG: '                                                                              '
+  INFOMSG: 'Enter or update id of account to update      '
+  PGMNAME: COACTUPC
+  TRNNAME: CAUP
+- '@map': COACTUP
+  ACCTSID: '00000000001'
+  ACSADL1: '618 Deshaun Route                                 '
+  ACSADL2: 'Apt. 802                                          '
+  ACSCITY: 'Altenwerthshire                                   '
+  ACSCTRY: USA
+  ACSEFTC: 0053581756
+  ACSFNAM: 'Immanuel                 '
+  ACSGOVT: 00000000000049368437
+  ACSLNAM: 'Kessler                  '
+  ACSMNAM: 'Madeline                 '
+  ACSPFLG: Y
+  ACSPH1A: '908'
+  ACSPH1B: '119'
+  ACSPH1C: '8310'
+  ACSPH2A: '373'
+  ACSPH2B: '693'
+  ACSPH2C: '8684'
+  ACSSTTE: NC
+  ACSTFCO: '274'
+  ACSTNUM: '000000001'
+  ACSZIPC: '12546'
+  ACTSSN1: '020'
+  ACTSSN2: '97'
+  ACTSSN3: '3888'
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  DOBDAY: 08
+  DOBMON: '06'
+  DOBYEAR: '1961'
+  ERRMSG: 'File Error: READ     on ACCTDAT   returned RESP 000000084 ,RESP2 000000050    '
+  FKEY05: '       '
+  FKEY12: '          '
+  FKEYS: ENTER=Process F3=Exit
+  INFOMSG: 'Update account details presented above.      '
+  PGMNAME: COACTUPC
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CAUP

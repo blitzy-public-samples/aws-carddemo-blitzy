@@ -1,0 +1,184 @@
+datasets:
+  TRANSACT-COMBINED:
+  - TRAN-AMT: '120.50'
+    TRAN-CARD-NUM: '0500024453765740'
+    TRAN-CAT-CD: '1'
+    TRAN-DESC: 'Synthetic purchase                                                                                  '
+    TRAN-ID: '9000000000000001'
+    TRAN-MERCHANT-CITY: 'Testville                                         '
+    TRAN-MERCHANT-ID: '900000001'
+    TRAN-MERCHANT-NAME: 'Synthetic Merchant                                '
+    TRAN-MERCHANT-ZIP: '00000     '
+    TRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+    TRAN-PROC-TS: 2022-07-05-10.00.00.000000
+    TRAN-RECORD.FILLER#1: '                    '
+    TRAN-SOURCE: 'POS TERM  '
+    TRAN-TYPE-CD: '01'
+  - TRAN-AMT: '0.87'
+    TRAN-CARD-NUM: 0923877193247330
+    TRAN-CAT-CD: '5'
+    TRAN-DESC: 'Int. for a/c 00000000002                                                                            '
+    TRAN-ID: '9000000000000002'
+    TRAN-MERCHANT-CITY: '                                                  '
+    TRAN-MERCHANT-ID: '0'
+    TRAN-MERCHANT-NAME: '                                                  '
+    TRAN-MERCHANT-ZIP: '          '
+    TRAN-ORIG-TS: 2022-07-05-11.00.00.000000
+    TRAN-PROC-TS: 2022-07-05-11.00.00.000000
+    TRAN-RECORD.FILLER#1: '                    '
+    TRAN-SOURCE: 'System    '
+    TRAN-TYPE-CD: '01'
+  - TRAN-AMT: '3.40'
+    TRAN-CARD-NUM: 0683586198171516
+    TRAN-CAT-CD: '5'
+    TRAN-DESC: 'Int. for a/c 00000000027                                                                            '
+    TRAN-ID: '9000000000000003'
+    TRAN-MERCHANT-CITY: '                                                  '
+    TRAN-MERCHANT-ID: '0'
+    TRAN-MERCHANT-NAME: '                                                  '
+    TRAN-MERCHANT-ZIP: '          '
+    TRAN-ORIG-TS: 2022-07-05-11.00.00.000000
+    TRAN-PROC-TS: 2022-07-05-11.00.00.000000
+    TRAN-RECORD.FILLER#1: '                    '
+    TRAN-SOURCE: 'System    '
+    TRAN-TYPE-CD: '01'
+  - TRAN-AMT: '-75.00'
+    TRAN-CARD-NUM: 0683586198171516
+    TRAN-CAT-CD: '2'
+    TRAN-DESC: 'Synthetic payment                                                                                   '
+    TRAN-ID: '9000000000000004'
+    TRAN-MERCHANT-CITY: 'Testville                                         '
+    TRAN-MERCHANT-ID: '900000002'
+    TRAN-MERCHANT-NAME: 'Synthetic Bank                                    '
+    TRAN-MERCHANT-ZIP: '00000     '
+    TRAN-ORIG-TS: '2022-07-05 09:30:00.000000'
+    TRAN-PROC-TS: 2022-07-05-10.00.00.000000
+    TRAN-RECORD.FILLER#1: '                    '
+    TRAN-SOURCE: 'OPERATOR  '
+    TRAN-TYPE-CD: '02'
+  - TRAN-AMT: '1.25'
+    TRAN-CARD-NUM: '0500024453765740'
+    TRAN-CAT-CD: '5'
+    TRAN-DESC: 'Int. for a/c 00000000050                                                                            '
+    TRAN-ID: '9000000000000005'
+    TRAN-MERCHANT-CITY: '                                                  '
+    TRAN-MERCHANT-ID: '0'
+    TRAN-MERCHANT-NAME: '                                                  '
+    TRAN-MERCHANT-ZIP: '          '
+    TRAN-ORIG-TS: 2022-07-05-11.00.00.000000
+    TRAN-PROC-TS: 2022-07-05-11.00.00.000000
+    TRAN-RECORD.FILLER#1: '                    '
+    TRAN-SOURCE: 'System    '
+    TRAN-TYPE-CD: '01'
+  - TRAN-AMT: '-19.99'
+    TRAN-CARD-NUM: 0923877193247330
+    TRAN-CAT-CD: '1'
+    TRAN-DESC: 'Synthetic refund                                                                                    '
+    TRAN-ID: '9000000000000006'
+    TRAN-MERCHANT-CITY: 'Testville                                         '
+    TRAN-MERCHANT-ID: '900000001'
+    TRAN-MERCHANT-NAME: 'Synthetic Merchant                                '
+    TRAN-MERCHANT-ZIP: '00000     '
+    TRAN-ORIG-TS: '2022-07-05 09:45:00.000000'
+    TRAN-PROC-TS: 2022-07-05-10.00.00.000000
+    TRAN-RECORD.FILLER#1: '                    '
+    TRAN-SOURCE: 'OPERATOR  '
+    TRAN-TYPE-CD: '05'
+file_state:
+  '@CATALOG':
+  - AWS.M2.CARDDEMO.SYSTRAN GDG -
+  - AWS.M2.CARDDEMO.SYSTRAN GENERATION G0001V00
+  - AWS.M2.CARDDEMO.TRANSACT.BKUP GDG -
+  - AWS.M2.CARDDEMO.TRANSACT.BKUP GENERATION G0001V00
+  - AWS.M2.CARDDEMO.TRANSACT.COMBINED GDG -
+  - AWS.M2.CARDDEMO.TRANSACT.COMBINED GENERATION G0001V00
+  - AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS CLUSTER -
+  TRANSACT:
+  - TRAN-AMT: '120.50'
+    TRAN-CARD-NUM: '0500024453765740'
+    TRAN-CAT-CD: '1'
+    TRAN-DESC: 'Synthetic purchase                                                                                  '
+    TRAN-ID: '9000000000000001'
+    TRAN-MERCHANT-CITY: 'Testville                                         '
+    TRAN-MERCHANT-ID: '900000001'
+    TRAN-MERCHANT-NAME: 'Synthetic Merchant                                '
+    TRAN-MERCHANT-ZIP: '00000     '
+    TRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+    TRAN-PROC-TS: 2022-07-05-10.00.00.000000
+    TRAN-RECORD.FILLER#1: '                    '
+    TRAN-SOURCE: 'POS TERM  '
+    TRAN-TYPE-CD: '01'
+  - TRAN-AMT: '0.87'
+    TRAN-CARD-NUM: 0923877193247330
+    TRAN-CAT-CD: '5'
+    TRAN-DESC: 'Int. for a/c 00000000002                                                                            '
+    TRAN-ID: '9000000000000002'
+    TRAN-MERCHANT-CITY: '                                                  '
+    TRAN-MERCHANT-ID: '0'
+    TRAN-MERCHANT-NAME: '                                                  '
+    TRAN-MERCHANT-ZIP: '          '
+    TRAN-ORIG-TS: 2022-07-05-11.00.00.000000
+    TRAN-PROC-TS: 2022-07-05-11.00.00.000000
+    TRAN-RECORD.FILLER#1: '                    '
+    TRAN-SOURCE: 'System    '
+    TRAN-TYPE-CD: '01'
+  - TRAN-AMT: '3.40'
+    TRAN-CARD-NUM: 0683586198171516
+    TRAN-CAT-CD: '5'
+    TRAN-DESC: 'Int. for a/c 00000000027                                                                            '
+    TRAN-ID: '9000000000000003'
+    TRAN-MERCHANT-CITY: '                                                  '
+    TRAN-MERCHANT-ID: '0'
+    TRAN-MERCHANT-NAME: '                                                  '
+    TRAN-MERCHANT-ZIP: '          '
+    TRAN-ORIG-TS: 2022-07-05-11.00.00.000000
+    TRAN-PROC-TS: 2022-07-05-11.00.00.000000
+    TRAN-RECORD.FILLER#1: '                    '
+    TRAN-SOURCE: 'System    '
+    TRAN-TYPE-CD: '01'
+  - TRAN-AMT: '-75.00'
+    TRAN-CARD-NUM: 0683586198171516
+    TRAN-CAT-CD: '2'
+    TRAN-DESC: 'Synthetic payment                                                                                   '
+    TRAN-ID: '9000000000000004'
+    TRAN-MERCHANT-CITY: 'Testville                                         '
+    TRAN-MERCHANT-ID: '900000002'
+    TRAN-MERCHANT-NAME: 'Synthetic Bank                                    '
+    TRAN-MERCHANT-ZIP: '00000     '
+    TRAN-ORIG-TS: '2022-07-05 09:30:00.000000'
+    TRAN-PROC-TS: 2022-07-05-10.00.00.000000
+    TRAN-RECORD.FILLER#1: '                    '
+    TRAN-SOURCE: 'OPERATOR  '
+    TRAN-TYPE-CD: '02'
+  - TRAN-AMT: '1.25'
+    TRAN-CARD-NUM: '0500024453765740'
+    TRAN-CAT-CD: '5'
+    TRAN-DESC: 'Int. for a/c 00000000050                                                                            '
+    TRAN-ID: '9000000000000005'
+    TRAN-MERCHANT-CITY: '                                                  '
+    TRAN-MERCHANT-ID: '0'
+    TRAN-MERCHANT-NAME: '                                                  '
+    TRAN-MERCHANT-ZIP: '          '
+    TRAN-ORIG-TS: 2022-07-05-11.00.00.000000
+    TRAN-PROC-TS: 2022-07-05-11.00.00.000000
+    TRAN-RECORD.FILLER#1: '                    '
+    TRAN-SOURCE: 'System    '
+    TRAN-TYPE-CD: '01'
+  - TRAN-AMT: '-19.99'
+    TRAN-CARD-NUM: 0923877193247330
+    TRAN-CAT-CD: '1'
+    TRAN-DESC: 'Synthetic refund                                                                                    '
+    TRAN-ID: '9000000000000006'
+    TRAN-MERCHANT-CITY: 'Testville                                         '
+    TRAN-MERCHANT-ID: '900000001'
+    TRAN-MERCHANT-NAME: 'Synthetic Merchant                                '
+    TRAN-MERCHANT-ZIP: '00000     '
+    TRAN-ORIG-TS: '2022-07-05 09:45:00.000000'
+    TRAN-PROC-TS: 2022-07-05-10.00.00.000000
+    TRAN-RECORD.FILLER#1: '                    '
+    TRAN-SOURCE: 'OPERATOR  '
+    TRAN-TYPE-CD: '05'
+messages:
+- STEP STEP05R RC 0000
+- STEP STEP10 RC 0000
+return_code: 0

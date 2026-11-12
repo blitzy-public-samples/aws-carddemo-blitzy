@@ -1,0 +1,307 @@
+# The page-size boundary of CBTRN03C met by a card change. WS-LINE-COUNTER
+# counts every line written: the four header lines take it to 4 and the first
+# card's 15 detail lines to 19. The 16th record changes the card, so
+# 1120-WRITE-ACCOUNT-TOTALS writes the account total and a separator and takes
+# the counter to 21 before the MOD(WS-LINE-COUNTER, 20) = 0 test runs for the
+# next detail line [app/cbl/CBTRN03C.cbl:181-188,274-290,306-316]. The test
+# never sees 20, so no page total and no header lines are written: the
+# second card's three detail lines follow the separator on the same page. At
+# end of file READ ... INTO leaves the last record in TRAN-RECORD, its 2.00 is
+# added a second time, and the page total (15.00 + 6.00 + 2.00 = 23.00), a
+# separator and the grand total (23.00) close the report with no final
+# account total [app/cbl/CBTRN03C.cbl:197-203,293-304,318-322]. The skipped
+# break and the end-of-file totals are pinned as observed, never fixed
+# (GAP-DEF-012).
+#
+# The 18 TRANSACT-DALY records are invented, already sorted by card as the
+# TRANREPT SORT step would leave them: transaction ids 9900000000000551 to
+# 9900000000000568 match no repository transaction. The cards are the
+# repository's [app/data/ASCII/cardxref.txt:3,49], so the detail lines carry
+# accounts 00000000002 and 00000000001, type 01 'Purchase' and category 0001
+# 'Regular Sales Draft' [app/data/ASCII/trantype.txt:1]
+# [app/data/ASCII/trancatg.txt:1]. Every processing date, 2022-07-05, lies
+# inside the DATEPARM window. Report lines are the whole 133-byte records,
+# trailing spaces included; the record lines of expected.messages are the
+# whole 350-byte TRAN-RECORD as DISPLAY writes it, TRAN-AMT overpunch-signed.
+# The two end-of-file DISPLAY lines show TRAN-AMT 2.00 and WS-PAGE-TOTAL 21.00,
+# taken before the second addition, as the GnuCOBOL runtime displays signed
+# numerics: the digits followed by the sign (GAP-STB-011).
+#
+# The copybook items listed are the CBTRN03C layouts these assertions decode
+# through: the TRAN-RECORD the records are encoded with and DISPLAY shows,
+# the CVTRA07Y line shapes, and the cross-reference, type and category
+# records whose fields fill the detail lines.
+id: RPT-CBTRN03C-boundary-04
+level: unit
+type: boundary
+description: >-
+  CBTRN03C reports 15 transactions of one card and then 3 of another. The card
+  change at line counter 19 writes the account total and a separator, which
+  take the counter to 21, so the page break the 20-line page size calls for
+  never happens: the second card's detail lines follow on the same page, and
+  the report ends with the end-of-file page total 23.00, which counts the last
+  amount twice, a separator and the grand total 23.00, with no final account
+  total. Return code 0.
+inventory_ids:
+- INV-RPT-039  # CBTRN03C page break (report)
+- INV-RPT-003  # CBTRN03C program
+- INV-RPT-040  # CBTRN03C account totals (report)
+- INV-RPT-041  # CBTRN03C end-of-file totals (report)
+- INV-LAY-025  # CVTRA05Y copybook: TRAN-RECORD
+- INV-LAY-027  # CVTRA07Y copybook: the report line shapes
+- INV-LAY-018  # CVACT03Y copybook: the cross-reference record
+- INV-LAY-023  # CVTRA03Y copybook: the transaction type record
+- INV-LAY-024  # CVTRA04Y copybook: the transaction category record
+- INV-DTA-003  # cardxref.txt, the CARDXREF fixture source
+- INV-DTA-013  # EBCDIC CARDXREF data file, its cross-check counterpart
+- INV-DTA-009  # trantype.txt, the TRANTYPE fixture source
+- INV-DTA-020  # EBCDIC TRANTYPE data file, its cross-check counterpart
+- INV-DTA-008  # trancatg.txt, the TRANCATG fixture source
+- INV-DTA-019  # EBCDIC TRANCATG data file, its cross-check counterpart
+tags:
+- suspected-defect
+gap_ids:
+- GAP-DEF-012  # account-total lines count toward the page counter, so a break is skipped
+- GAP-MIS-001  # DATEPARM supplied as a parameter: no job or data file creates it
+- GAP-STB-010  # Berkeley DB indexed files in place of the VSAM KSDS
+- GAP-STB-011  # GnuCOBOL compile and runtime options in place of Enterprise COBOL and LE
+preconditions:
+  datasets:
+    CARDXREF: {base: CARDXREF}
+    TRANTYPE: {base: TRANTYPE}
+    TRANCATG: {base: TRANCATG}
+    TRANSACT-DALY:
+      records:
+      - TRAN-ID: '9900000000000551'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: 1
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic purchase
+        TRAN-AMT: '1.00'
+        TRAN-CARD-NUM: '0923877193247330'
+        TRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+        TRAN-PROC-TS: '2022-07-05-10.00.00.000000'
+      - TRAN-ID: '9900000000000552'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: 1
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic purchase
+        TRAN-AMT: '1.00'
+        TRAN-CARD-NUM: '0923877193247330'
+        TRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+        TRAN-PROC-TS: '2022-07-05-10.00.00.000000'
+      - TRAN-ID: '9900000000000553'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: 1
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic purchase
+        TRAN-AMT: '1.00'
+        TRAN-CARD-NUM: '0923877193247330'
+        TRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+        TRAN-PROC-TS: '2022-07-05-10.00.00.000000'
+      - TRAN-ID: '9900000000000554'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: 1
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic purchase
+        TRAN-AMT: '1.00'
+        TRAN-CARD-NUM: '0923877193247330'
+        TRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+        TRAN-PROC-TS: '2022-07-05-10.00.00.000000'
+      - TRAN-ID: '9900000000000555'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: 1
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic purchase
+        TRAN-AMT: '1.00'
+        TRAN-CARD-NUM: '0923877193247330'
+        TRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+        TRAN-PROC-TS: '2022-07-05-10.00.00.000000'
+      - TRAN-ID: '9900000000000556'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: 1
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic purchase
+        TRAN-AMT: '1.00'
+        TRAN-CARD-NUM: '0923877193247330'
+        TRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+        TRAN-PROC-TS: '2022-07-05-10.00.00.000000'
+      - TRAN-ID: '9900000000000557'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: 1
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic purchase
+        TRAN-AMT: '1.00'
+        TRAN-CARD-NUM: '0923877193247330'
+        TRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+        TRAN-PROC-TS: '2022-07-05-10.00.00.000000'
+      - TRAN-ID: '9900000000000558'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: 1
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic purchase
+        TRAN-AMT: '1.00'
+        TRAN-CARD-NUM: '0923877193247330'
+        TRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+        TRAN-PROC-TS: '2022-07-05-10.00.00.000000'
+      - TRAN-ID: '9900000000000559'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: 1
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic purchase
+        TRAN-AMT: '1.00'
+        TRAN-CARD-NUM: '0923877193247330'
+        TRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+        TRAN-PROC-TS: '2022-07-05-10.00.00.000000'
+      - TRAN-ID: '9900000000000560'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: 1
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic purchase
+        TRAN-AMT: '1.00'
+        TRAN-CARD-NUM: '0923877193247330'
+        TRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+        TRAN-PROC-TS: '2022-07-05-10.00.00.000000'
+      - TRAN-ID: '9900000000000561'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: 1
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic purchase
+        TRAN-AMT: '1.00'
+        TRAN-CARD-NUM: '0923877193247330'
+        TRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+        TRAN-PROC-TS: '2022-07-05-10.00.00.000000'
+      - TRAN-ID: '9900000000000562'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: 1
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic purchase
+        TRAN-AMT: '1.00'
+        TRAN-CARD-NUM: '0923877193247330'
+        TRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+        TRAN-PROC-TS: '2022-07-05-10.00.00.000000'
+      - TRAN-ID: '9900000000000563'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: 1
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic purchase
+        TRAN-AMT: '1.00'
+        TRAN-CARD-NUM: '0923877193247330'
+        TRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+        TRAN-PROC-TS: '2022-07-05-10.00.00.000000'
+      - TRAN-ID: '9900000000000564'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: 1
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic purchase
+        TRAN-AMT: '1.00'
+        TRAN-CARD-NUM: '0923877193247330'
+        TRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+        TRAN-PROC-TS: '2022-07-05-10.00.00.000000'
+      - TRAN-ID: '9900000000000565'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: 1
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic purchase
+        TRAN-AMT: '1.00'
+        TRAN-CARD-NUM: '0923877193247330'
+        TRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+        TRAN-PROC-TS: '2022-07-05-10.00.00.000000'
+      - TRAN-ID: '9900000000000566'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: 1
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic purchase
+        TRAN-AMT: '2.00'
+        TRAN-CARD-NUM: '9680294154603697'
+        TRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+        TRAN-PROC-TS: '2022-07-05-10.00.00.000000'
+      - TRAN-ID: '9900000000000567'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: 1
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic purchase
+        TRAN-AMT: '2.00'
+        TRAN-CARD-NUM: '9680294154603697'
+        TRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+        TRAN-PROC-TS: '2022-07-05-10.00.00.000000'
+      - TRAN-ID: '9900000000000568'
+        TRAN-TYPE-CD: '01'
+        TRAN-CAT-CD: 1
+        TRAN-SOURCE: POS TERM
+        TRAN-DESC: Synthetic purchase
+        TRAN-AMT: '2.00'
+        TRAN-CARD-NUM: '9680294154603697'
+        TRAN-ORIG-TS: '2022-07-05 09:15:00.000000'
+        TRAN-PROC-TS: '2022-07-05-10.00.00.000000'
+  parameters:
+    DATEPARM: '2022-07-01 2022-07-31'
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults: []
+inputs:
+  program: CBTRN03C
+expected:
+  return_code: 0
+  datasets:
+    TRANREPT:
+      records:
+      # The four header lines: WS-LINE-COUNTER 4
+      - 'DALYREPT                              Daily Transaction Report                 Date Range: 2022-07-01 to 2022-07-31                  '
+      - '                                                                                                                                     '
+      - 'Transaction ID   Account ID  Transaction Type   Tran Category                      Tran Source            Amount                     '
+      - '-------------------------------------------------------------------------------------------------------------------------------------'
+      # The first card's 15 detail lines: counter 5 to 19
+      - '9900000000000551 00000000002 01-Purchase        0001-Regular Sales Draft           POS TERM                 1.00                     '
+      - '9900000000000552 00000000002 01-Purchase        0001-Regular Sales Draft           POS TERM                 1.00                     '
+      - '9900000000000553 00000000002 01-Purchase        0001-Regular Sales Draft           POS TERM                 1.00                     '
+      - '9900000000000554 00000000002 01-Purchase        0001-Regular Sales Draft           POS TERM                 1.00                     '
+      - '9900000000000555 00000000002 01-Purchase        0001-Regular Sales Draft           POS TERM                 1.00                     '
+      - '9900000000000556 00000000002 01-Purchase        0001-Regular Sales Draft           POS TERM                 1.00                     '
+      - '9900000000000557 00000000002 01-Purchase        0001-Regular Sales Draft           POS TERM                 1.00                     '
+      - '9900000000000558 00000000002 01-Purchase        0001-Regular Sales Draft           POS TERM                 1.00                     '
+      - '9900000000000559 00000000002 01-Purchase        0001-Regular Sales Draft           POS TERM                 1.00                     '
+      - '9900000000000560 00000000002 01-Purchase        0001-Regular Sales Draft           POS TERM                 1.00                     '
+      - '9900000000000561 00000000002 01-Purchase        0001-Regular Sales Draft           POS TERM                 1.00                     '
+      - '9900000000000562 00000000002 01-Purchase        0001-Regular Sales Draft           POS TERM                 1.00                     '
+      - '9900000000000563 00000000002 01-Purchase        0001-Regular Sales Draft           POS TERM                 1.00                     '
+      - '9900000000000564 00000000002 01-Purchase        0001-Regular Sales Draft           POS TERM                 1.00                     '
+      - '9900000000000565 00000000002 01-Purchase        0001-Regular Sales Draft           POS TERM                 1.00                     '
+      # The card change at counter 19: account total and separator take it to 21,
+      # so MOD(21, 20) is not 0 and no page total or header lines follow
+      - 'Account Total....................................................................................+         15.00                     '
+      - '-------------------------------------------------------------------------------------------------------------------------------------'
+      # The second card's 3 detail lines, still on the first page: counter 22 to 24
+      - '9900000000000566 00000000001 01-Purchase        0001-Regular Sales Draft           POS TERM                 2.00                     '
+      - '9900000000000567 00000000001 01-Purchase        0001-Regular Sales Draft           POS TERM                 2.00                     '
+      - '9900000000000568 00000000001 01-Purchase        0001-Regular Sales Draft           POS TERM                 2.00                     '
+      # End of file: the last 2.00 added again, page total 23.00 and a separator,
+      # then the grand total 23.00; no final account total
+      - 'Page Total ......................................................................................+         23.00                     '
+      - '-------------------------------------------------------------------------------------------------------------------------------------'
+      - 'Grand Total......................................................................................+         23.00                     '
+  messages:
+  - START OF EXECUTION OF PROGRAM CBTRN03C
+  - Reporting from 2022-07-01 to 2022-07-31
+  - '9900000000000551010001POS TERM  Synthetic purchase                                                                                  0000000010{000000000                                                                                                              09238771932473302022-07-05 09:15:00.0000002022-07-05-10.00.00.000000                    '
+  - '9900000000000552010001POS TERM  Synthetic purchase                                                                                  0000000010{000000000                                                                                                              09238771932473302022-07-05 09:15:00.0000002022-07-05-10.00.00.000000                    '
+  - '9900000000000553010001POS TERM  Synthetic purchase                                                                                  0000000010{000000000                                                                                                              09238771932473302022-07-05 09:15:00.0000002022-07-05-10.00.00.000000                    '
+  - '9900000000000554010001POS TERM  Synthetic purchase                                                                                  0000000010{000000000                                                                                                              09238771932473302022-07-05 09:15:00.0000002022-07-05-10.00.00.000000                    '
+  - '9900000000000555010001POS TERM  Synthetic purchase                                                                                  0000000010{000000000                                                                                                              09238771932473302022-07-05 09:15:00.0000002022-07-05-10.00.00.000000                    '
+  - '9900000000000556010001POS TERM  Synthetic purchase                                                                                  0000000010{000000000                                                                                                              09238771932473302022-07-05 09:15:00.0000002022-07-05-10.00.00.000000                    '
+  - '9900000000000557010001POS TERM  Synthetic purchase                                                                                  0000000010{000000000                                                                                                              09238771932473302022-07-05 09:15:00.0000002022-07-05-10.00.00.000000                    '
+  - '9900000000000558010001POS TERM  Synthetic purchase                                                                                  0000000010{000000000                                                                                                              09238771932473302022-07-05 09:15:00.0000002022-07-05-10.00.00.000000                    '
+  - '9900000000000559010001POS TERM  Synthetic purchase                                                                                  0000000010{000000000                                                                                                              09238771932473302022-07-05 09:15:00.0000002022-07-05-10.00.00.000000                    '
+  - '9900000000000560010001POS TERM  Synthetic purchase                                                                                  0000000010{000000000                                                                                                              09238771932473302022-07-05 09:15:00.0000002022-07-05-10.00.00.000000                    '
+  - '9900000000000561010001POS TERM  Synthetic purchase                                                                                  0000000010{000000000                                                                                                              09238771932473302022-07-05 09:15:00.0000002022-07-05-10.00.00.000000                    '
+  - '9900000000000562010001POS TERM  Synthetic purchase                                                                                  0000000010{000000000                                                                                                              09238771932473302022-07-05 09:15:00.0000002022-07-05-10.00.00.000000                    '
+  - '9900000000000563010001POS TERM  Synthetic purchase                                                                                  0000000010{000000000                                                                                                              09238771932473302022-07-05 09:15:00.0000002022-07-05-10.00.00.000000                    '
+  - '9900000000000564010001POS TERM  Synthetic purchase                                                                                  0000000010{000000000                                                                                                              09238771932473302022-07-05 09:15:00.0000002022-07-05-10.00.00.000000                    '
+  - '9900000000000565010001POS TERM  Synthetic purchase                                                                                  0000000010{000000000                                                                                                              09238771932473302022-07-05 09:15:00.0000002022-07-05-10.00.00.000000                    '
+  - '9900000000000566010001POS TERM  Synthetic purchase                                                                                  0000000020{000000000                                                                                                              96802941546036972022-07-05 09:15:00.0000002022-07-05-10.00.00.000000                    '
+  - '9900000000000567010001POS TERM  Synthetic purchase                                                                                  0000000020{000000000                                                                                                              96802941546036972022-07-05 09:15:00.0000002022-07-05-10.00.00.000000                    '
+  - '9900000000000568010001POS TERM  Synthetic purchase                                                                                  0000000020{000000000                                                                                                              96802941546036972022-07-05 09:15:00.0000002022-07-05-10.00.00.000000                    '
+  # End of file [app/cbl/CBTRN03C.cbl:198-199]
+  - TRAN-AMT 00000000200+
+  - WS-PAGE-TOTAL00000002100+
+  - END OF EXECUTION OF PROGRAM CBTRN03C

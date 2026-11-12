@@ -1,0 +1,38 @@
+datasets:
+  SYSTRAN:
+  - TRAN-AMT: '15.00'
+    TRAN-CARD-NUM: '9999000022220903'
+    TRAN-CAT-CD: '5'
+    TRAN-DESC: "Int. for a/c 00000000903\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+    TRAN-ID: '2022071800000001'
+    TRAN-MERCHANT-CITY: '                                                  '
+    TRAN-MERCHANT-ID: '0'
+    TRAN-MERCHANT-NAME: '                                                  '
+    TRAN-MERCHANT-ZIP: '          '
+    TRAN-ORIG-TS: 2022-07-06-10.00.00.000000
+    TRAN-PROC-TS: 2022-07-06-10.00.00.000000
+    TRAN-RECORD.FILLER#1: "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+    TRAN-SOURCE: 'System    '
+    TRAN-TYPE-CD: '01'
+file_state:
+  ACCTDATA:
+  - ACCOUNT-RECORD.FILLER#1: '                                                                                                                                                                                  '
+    ACCT-ACTIVE-STATUS: Y
+    ACCT-ADDR-ZIP: '90210     '
+    ACCT-CASH-CREDIT-LIMIT: '1000.00'
+    ACCT-CREDIT-LIMIT: '5000.00'
+    ACCT-CURR-BAL: '300.00'
+    ACCT-CURR-CYC-CREDIT: '0.00'
+    ACCT-CURR-CYC-DEBIT: '0.00'
+    ACCT-EXPIRAION-DATE: '2027-03-01'
+    ACCT-GROUP-ID: 'NOGROUP01 '
+    ACCT-ID: '903'
+    ACCT-OPEN-DATE: '2015-03-01'
+    ACCT-REISSUE-DATE: '2025-03-01'
+messages:
+- START OF EXECUTION OF PROGRAM CBACT04C
+- '000000009030100010000012000{                      '
+- DISCLOSURE GROUP RECORD MISSING
+- TRY WITH DEFAULT GROUP CODE
+- END OF EXECUTION OF PROGRAM CBACT04C
+return_code: 0

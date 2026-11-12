@@ -1,0 +1,36 @@
+# The count boundary of the CBACT03C listing: CARDXREF exists but holds no
+# record. OPEN INPUT succeeds, the first READ returns status 10 and ends the
+# loop, so only the start and end lines are displayed
+# [app/cbl/CBACT03C.cbl:71-87,92-116]. CARDXREF is declared with an empty record
+# list rather than left out: leaving it out is the open-failure case
+# (DAT-CBACT03C-recovery-01).
+id: DAT-CBACT03C-boundary-01
+level: unit
+type: boundary
+description: >-
+  CBACT03C reads an empty card cross-reference KSDS: it displays the start and
+  end of execution lines with no record lines between them and ends with return
+  code 0.
+inventory_ids:
+- INV-DAT-034
+- INV-DAT-003
+- INV-LAY-018
+tags: []
+gap_ids:
+- GAP-STB-010
+- GAP-STB-011
+preconditions:
+  datasets:
+    CARDXREF:
+      records: []
+  parameters:
+    clock: '2022-07-06 10:00:00.00'
+    clock_mode: fixed
+  faults: []
+inputs:
+  program: CBACT03C
+expected:
+  return_code: 0
+  messages:
+  - START OF EXECUTION OF PROGRAM CBACT03C
+  - END OF EXECUTION OF PROGRAM CBACT03C

@@ -1,0 +1,122 @@
+# Account Update search submitted with no account number. USER0001 signs on
+# through CC00 and reaches the main menu; option '2' 'Account Update' makes
+# COMEN01C transfer control to COACTUPC [app/cpy/COMEN02Y.cpy:31-35]
+# [app/cbl/COMEN01C.cbl:115-156], which takes its fresh-entry path: it sends
+# COACTUP with a blank account number and the search prompt, then returns
+# TRANSID CAUP with CDEMO-PGM-REENTER and ACUP-DETAILS-NOT-FETCHED set
+# [app/cbl/COACTUPC.cbl:964-973,1007-1019].
+#
+# The third step erases the account number field and presses ENTER. COACTUPC
+# reloads its COMMAREA, finds neither PF3, a fresh entry nor a finished update,
+# and runs 1000-PROCESS-INPUTS [app/cbl/COACTUPC.cbl:880-893,996-1003].
+# 1100-RECEIVE-MAP moves LOW-VALUES to CC-ACCT-ID when ACCTSIDI is '*' or
+# spaces and the received field otherwise, which for an erased field is
+# LOW-VALUES too, so an entered '*' is the same request as an empty field
+# [app/cbl/COACTUPC.cbl:1051-1062]. With the details not fetched,
+# 1200-EDIT-MAP-INPUTS edits only the search key: 1210-EDIT-ACCOUNT sets
+# INPUT-ERROR and FLG-ACCTFILTER-BLANK and puts 'Account number not provided'
+# in WS-RETURN-MSG, and 1200 then overwrites it by setting
+# NO-SEARCH-CRITERIA-RECEIVED [app/cbl/COACTUPC.cbl:1429-1446,1783-1796].
+# 2000-DECIDE-ACTION reads the account only when the filter is valid, so no
+# CXACAIX, ACCTDAT or CUSTDAT read is issued and no CSD file is listed
+# [app/cbl/COACTUPC.cbl:2568-2580].
+#
+# Expected values are derived from the source (no TPE region runs in CI):
+# - ERRMSG is the 78-byte ERRMSGO: the 17-character message and 61 spaces
+#   (WS-RETURN-MSG X(75) moved to X(78)) [app/cbl/COACTUPC.cbl:479,2981].
+# - INFOMSG keeps the search prompt, PROMPT-FOR-SEARCH-KEYS, because the
+#   details are still not fetched: 39 characters and 6 spaces of the 45-byte
+#   INFOMSGO [app/cbl/COACTUPC.cbl:468-469,2955-2979].
+# - ACCTSID shows '*' and 10 spaces: with FLG-ACCTFILTER-BLANK on a reentry,
+#   3300-SETUP-SCREEN-ATTRS moves '*' to ACCTSIDO and colours it red
+#   [app/cbl/COACTUPC.cbl:3180-3184]; the colour is not captured.
+# - The header is 3100-SCREEN-INIT's: the COTTL01Y titles, CAUP, COACTUPC,
+#   CURDATE as mm/dd/yy of the run date and CURTIME as hh:mm:ss, both from the
+#   region clock, hence matchers [app/cbl/COACTUPC.cbl:2668-2692].
+# Text fields are compared at their full BMS length with trailing spaces.
+id: ACT-COACTUPC-negative-002
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, chooses main-menu option 2 'Account Update' and presses
+  ENTER on the COACTUP Account Update screen with the account number left
+  empty. COACTUPC sends COACTUP again with 'No input received' in ERRMSG, the
+  search prompt kept in INFOMSG and '*' marking the account number field, and
+  reads no account, cross-reference or customer record.
+# Primary item first, then the program, the menu map option 2 is entered on,
+# the Account Update map, the transaction the search runs under, and the
+# online-only copybooks COACTUPC copies (CVCRD01Y holds CC-ACCT-ID). The
+# sign-on step only establishes the session: CC00, COSGN00, COSGN00C and the
+# USRSEC read are verified by the SEC-COSGN00C scenarios.
+inventory_ids:
+- INV-ACT-038  # COACTUPC message 'No input received' (rule)
+- INV-ACT-002  # COACTUPC program
+- INV-MNU-003  # COMEN01 map, option 2 is entered on it
+- INV-ACT-004  # COACTUP map, the Account Update screen
+- INV-CFG-009  # CAUP transaction, under which the empty search is processed
+- INV-LAY-002  # COCOM01Y copybook, the COMMAREA carrying CDEMO-PGM-REENTER
+- INV-LAY-005  # COTTL01Y copybook, TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y copybook, CURDATE and CURTIME
+- INV-LAY-007  # CSLKPCDY copybook
+- INV-LAY-008  # CSMSG01Y copybook
+- INV-LAY-009  # CSMSG02Y copybook
+- INV-LAY-010  # CSSETATY copybook
+- INV-LAY-011  # CSSTRPFY copybook, the AID mapping of YYYY-STORE-PFKEY
+- INV-LAY-013  # CSUTLDPY copybook
+- INV-LAY-014  # CSUTLDWY copybook
+- INV-LAY-019  # CVCRD01Y copybook, CC-ACCT-ID
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-005  # ACT end-to-end baselines derived from the source, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+# The UniKix copy of COACTUP.bms drops the unnamed field at row 1, columns
+# 1-9, where TRNNAME is asserted, so a UniKix run never verifies the COACTUP
+# map item while that entry is open.
+- GAP-DOC-025
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user. The account, customer and
+    # cross-reference data are loaded so that the absent read follows from the
+    # empty search key, not from missing records.
+    USRSEC: {base: USRSEC}
+    ACCTDATA: {base: ACCTDATA}
+    CUSTDATA: {base: CUSTDATA}
+    CARDXREF: {base: CARDXREF}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    fields: {USERID: USER0001, PASSWD: PASSWORD}
+    '@map': COSGN00
+  - aid: ENTER
+    fields: {OPTION: '2'}
+    '@map': COMEN01
+  # The empty value erases the account number field before ENTER.
+  - aid: ENTER
+    fields: {ACCTSID: ''}
+    '@map': COACTUP
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    PGMNAME: COACTUPC
+    ACCTSID: '           '
+    INFOMSG: 'Enter or update id of account to update      '
+    ERRMSG: '                                                                              '
+  - '@map': COACTUP
+    TRNNAME: CAUP
+    PGMNAME: COACTUPC
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    ACCTSID: '*          '
+    INFOMSG: 'Enter or update id of account to update      '
+    ERRMSG: 'No input received                                                             '

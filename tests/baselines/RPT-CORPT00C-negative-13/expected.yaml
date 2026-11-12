@@ -1,0 +1,40 @@
+# The end-year check IF EDTYYYYI IS NOT NUMERIC never holds: NUMVAL-C has
+# already put the four digits of PIC 9999 WS-NUM-9999 ('0012' for the typed
+# '1-2-') back into EDTYYYYI [app/cbl/CORPT00C.cbl:75,325-327,373]. Year 0012
+# draws CSUTLDTC message 2513, which CORPT00C tolerates, so the request stops
+# at the confirmation prompt, as the scenario expects, and never at
+# 'End Date - Not a valid Year...' [app/cbl/CORPT00C.cbl:408-426,464-473].
+messages:
+- '                                                                              '
+- '                                                                              '
+- 'Please confirm to print the Custom report...                                  '
+screens:
+- '@map': COMEN01
+  ERRMSG: '                                                                              '
+  PGMNAME: COMEN01C
+  TRNNAME: CM00
+- '@map': CORPT00
+  ERRMSG: '                                                                              '
+  PGMNAME: CORPT00C
+  TRNNAME: CR00
+- '@map': CORPT00
+  CONFIRM: ' '
+  CURDATE:
+    format: '%m/%d/%y'
+    match: run-date
+  CURTIME:
+    match: run-time
+  CUSTOM: X
+  EDTDD: '06'
+  EDTMM: '07'
+  EDTYYYY: '0012'
+  ERRMSG: 'Please confirm to print the Custom report...                                  '
+  MONTHLY: ' '
+  PGMNAME: CORPT00C
+  SDTDD: '01'
+  SDTMM: '01'
+  SDTYYYY: '2022'
+  TITLE01: '      AWS Mainframe Modernization       '
+  TITLE02: '              CardDemo                  '
+  TRNNAME: CR00
+  YEARLY: ' '

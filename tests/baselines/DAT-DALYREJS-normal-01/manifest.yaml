@@ -1,0 +1,11 @@
+baseline_version: 1.0.0
+capture_date: '2026-11-11'
+capture_platform: gnucobol-batch
+execution_fingerprint: ba805c97114a622283600f10ec5ee9762c9bc3e431e916482872cee3e67e8f8e
+execution_id: gnucobol-batch-27d1254f6f476d39
+source_commit: 762594987fe9fa26d8d7774b7d888b0b14d81de9
+source_identity:
+  commit: 762594987fe9fa26d8d7774b7d888b0b14d81de9
+  tree: app
+  units:
+    app/jcl/DALYREJS.jcl: 2ea635d82002b7b2292b107598032f9e4963f4b9a9135f418f67343c594c29f3

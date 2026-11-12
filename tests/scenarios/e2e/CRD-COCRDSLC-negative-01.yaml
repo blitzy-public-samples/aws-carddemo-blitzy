@@ -1,0 +1,133 @@
+# COCRDSLC shows '   Displaying requested details' for a card chosen on the card
+# list. USER0001 signs on through CC00 and reaches the main menu, whose option 3
+# makes COMEN01C XCTL to COCRDLIC [app/cpy/COMEN02Y.cpy:37-41]. Entered from the
+# menu, COCRDLIC starts afresh: WHEN OTHER browses CARDDAT forward from a blank
+# key with no account or card filter and no user-type filter, so the first row
+# is the lowest card key of the CARDDATA fixture, card 0500024453765740 of
+# account 00000000050 (line 1 of app/data/ASCII/carddata.txt). The rows live in
+# WS-THIS-PROGCOMMAREA, so they come back with the COMMAREA of the next task
+# [app/cbl/COCRDLIC.cbl:229-260,336-343,572-582,1123-1187].
+#
+# ENTER with 'S' in CRDSEL1 re-enters CCLI. The account and card filters are
+# blank, exactly one row is selected, so I-SELECTED is 1, and COCRDLIC XCTLs to
+# COCRDSLC with CDEMO-PGM-ENTER, CDEMO-FROM-PROGRAM 'COCRDLIC', CDEMO-LAST-MAPSET
+# 'COCRDLI' and the row's account and card number in CDEMO-ACCT-ID and
+# CDEMO-CARD-NUM [app/cbl/COCRDLIC.cbl:357-362,1003-1115,517-541].
+# COCRDSLC keeps that COMMAREA (it comes from neither the menu nor a zero
+# length) and takes the list path WHEN CDEMO-PGM-ENTER AND CDEMO-FROM-PROGRAM =
+# 'COCRDLIC', which skips the input edits of a typed search: it reads CARDDAT
+# by the card number, the READ is NORMAL, and FOUND-CARDS-FOR-ACCOUNT sets
+# WS-INFO-MSG [app/cbl/COCRDSLC.cbl:129-130,268-279,339-348,736-754].
+# COCRDLIC passes only CARDDEMO-COMMAREA, so the move of COCRDSLC's own COMMAREA
+# tail reads past the length received [app/cbl/COCRDSLC.cbl:276-278]; nothing
+# reads CA-FROM-PROGRAM or CA-FROM-TRANID afterwards, so no outcome depends on it.
+#
+# 1200-SETUP-SCREEN-VARS shows the account and card ids, the embossed name, the
+# expiry month and year split from CARD-EXPIRAION-DATE 2023-03-09, and the
+# status, then moves the blank WS-RETURN-MSG to ERRMSG and WS-INFO-MSG to
+# INFOMSG [app/cbl/COCRDSLC.cbl:457-497]. Coming from the list, 1300 protects
+# ACCTSID and CARDSID, which still display their values
+# [app/cbl/COCRDSLC.cbl:505-512].
+#
+# The type follows the plan's message rule: the literal is neither a listed
+# success word nor a prompt, so it is negative; normal-01 holds the card detail
+# content item reached by a typed search.
+#
+# Screen fields are compared at their full BMS length, trailing spaces kept:
+# INFOMSG is the 40-byte WS-INFO-MSG with its three leading spaces, CRDNAME the
+# 50-byte CARD-EMBOSSED-NAME, ERRMSG 80 on COCRDSL and 78 on COMEN01 and
+# COCRDLI. CURDATE and CURTIME come from the region clock, so they are
+# matchers. The baseline is derived from the source: no TPE region runs in CI.
+id: CRD-COCRDSLC-negative-01
+level: e2e
+type: negative
+description: >-
+  USER0001 signs on, selects main-menu option 3 (Credit Card List) and enters S
+  beside the first card listed, card 0500024453765740 of account 00000000050.
+  COCRDLIC transfers to COCRDSLC (CCDL), which reads the card from CARDDAT and
+  shows its account, card number, embossed name 'Aniya Von', active status Y
+  and expiry 03/2023 with the information message '   Displaying requested
+  details' and no error.
+# Primary item first, then the program, the maps asserted, the transactions the
+# list and the view run under, the CSD file COCRDSLC reads, and the online-only
+# copybooks COCRDSLC copies. Sign-on, the menu option and the list selection
+# itself (CC00, CM00, USRSEC, INV-MNU-011, INV-CRD-022) are verified by their
+# own scenarios; batch record copybooks and data files are verified at the
+# lowest level that executes them.
+inventory_ids:
+- INV-CRD-026  # COCRDSLC message '   Displaying requested details' (rule)
+- INV-CRD-002  # COCRDSLC program
+- INV-MNU-003  # COMEN01 map, where option 3 is entered
+- INV-CRD-004  # COCRDLI map, where the card is selected
+- INV-CRD-005  # COCRDSL map, the card detail screen
+- INV-CFG-014  # CCLI transaction, under which the selection is processed
+- INV-CFG-013  # CCDL transaction, COCRDSLC's own
+- INV-CFG-003  # CARDDAT CSD file: the card read by card number
+- INV-LAY-002  # COCOM01Y: the COMMAREA carrying the context, account and card ids
+- INV-LAY-005  # COTTL01Y: TITLE01 and TITLE02
+- INV-LAY-006  # CSDAT01Y: CURDATE and CURTIME
+- INV-LAY-008  # CSMSG01Y, copied by COCRDSLC
+- INV-LAY-009  # CSMSG02Y: abend data, copied by COCRDSLC
+- INV-LAY-011  # CSSTRPFY: YYYY-STORE-PFKEY maps ENTER to CCARD-AID-ENTER
+- INV-LAY-019  # CVCRD01Y: CC-ACCT-ID and CC-CARD-NUM, the read key
+tags:
+- inferred-not-observed
+gap_ids:
+- GAP-INF-006  # CRD end-to-end baselines derived, never observed
+- GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
+preconditions:
+  datasets:
+    # COSGN00C reads the sign-on user USER0001 from USRSEC; COCRDLIC lists and
+    # COCRDSLC reads the cards of CARDDATA.
+    USRSEC: {base: USRSEC}
+    CARDDATA: {base: CARDDATA}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+  - transid: CC00
+    aid: ENTER
+    '@map': COSGN00
+    fields:
+      USERID: USER0001
+      PASSWD: PASSWORD
+  - aid: ENTER
+    '@map': COMEN01
+    fields:
+      OPTION: '3'
+  - aid: ENTER
+    '@map': COCRDLI
+    fields:
+      CRDSEL1: 'S'
+expected:
+  screens:
+  - '@map': COMEN01
+    TRNNAME: CM00
+    PGMNAME: COMEN01C
+    OPTN003: '03. Credit Card List                    '
+    ERRMSG: '                                                                              '
+  # The list the selection is made on: row 1 holds the card COCRDSLC then shows.
+  - '@map': COCRDLI
+    TRNNAME: CCLI
+    PGMNAME: COCRDLIC
+    ACCTNO1: '00000000050'
+    CRDNUM1: '0500024453765740'
+    CRDSTS1: 'Y'
+    INFOMSG: 'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD    '
+    ERRMSG: '                                                                              '
+  - '@map': COCRDSL
+    TRNNAME: CCDL
+    PGMNAME: COCRDSLC
+    TITLE01: '      AWS Mainframe Modernization       '
+    TITLE02: '              CardDemo                  '
+    CURDATE: {match: run-date, format: '%m/%d/%y'}
+    CURTIME: {match: run-time}
+    ACCTSID: '00000000050'
+    CARDSID: '0500024453765740'
+    CRDNAME: 'Aniya Von                                         '
+    CRDSTCD: 'Y'
+    EXPMON: '03'
+    EXPYEAR: '2023'
+    INFOMSG: '   Displaying requested details         '
+    ERRMSG: '                                                                                '

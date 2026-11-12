@@ -1,0 +1,54 @@
+id: MNU-COMEN01C-alternate-07
+level: e2e
+type: alternate
+description: >-
+  USER0001 signs on (COSGN00C routes a type U user to COMEN01C
+  [app/cbl/COSGN00C.cbl:235-239]) and selects main-menu option 7 'Transaction
+  View'. The option is numeric, within CDEMO-MENU-OPT-COUNT 10 and of user type
+  U [app/cpy/COMEN02Y.cpy:61-65], so COMEN01C clears CDEMO-PGM-CONTEXT and
+  transfers control to COTRN01C [app/cbl/COMEN01C.cbl:127-155]. COTRN01C is
+  entered for the first time with no selected transaction id in its COMMAREA,
+  so it reads no TRANSACT record and sends its empty COTRN1A view screen with
+  its own header [app/cbl/COTRN01C.cbl:99-109]. The menu screen's header comes
+  from COTTL01Y and CSDAT01Y, and its option line 7 is built from the COMEN02Y
+  table [app/cbl/COMEN01C.cbl:212-277]. The expected outcome is derived from
+  the source, not observed.
+inventory_ids:
+  - INV-MNU-015
+  - INV-MNU-001
+  - INV-MNU-003
+  - INV-TRN-005
+  - INV-CFG-018
+  - INV-LAY-002
+  - INV-LAY-003
+  - INV-LAY-005
+  - INV-LAY-006
+  - INV-LAY-008
+tags:
+  - inferred-not-observed
+gap_ids:
+  - GAP-INF-003
+  - GAP-INF-012
+preconditions:
+  datasets:
+    USRSEC: {base: USRSEC}
+  parameters:
+    clock_mode: relative
+  faults: []
+inputs:
+  steps:
+    - {transid: CC00, aid: ENTER, fields: {USERID: USER0001, PASSWD: PASSWORD}, '@map': COSGN00}
+    - {aid: ENTER, fields: {OPTION: '7'}, '@map': COMEN01}
+expected:
+  screens:
+    - '@map': COMEN01
+      TRNNAME: CM00
+      PGMNAME: COMEN01C
+      TITLE01: '      AWS Mainframe Modernization       '
+      TITLE02: '              CardDemo                  '
+      CURDATE: {match: run-date, format: '%m/%d/%y'}
+      CURTIME: {match: run-time}
+      OPTN007: '07. Transaction View                    '
+    - '@map': COTRN01
+      TRNNAME: CT01
+      PGMNAME: COTRN01C
