@@ -1,0 +1,464 @@
+# Apply Blitzy branding to frontend UI
+
+## Summary
+
+This change applies Blitzy branding to the Next.js frontend in `frontend/`. It
+changes presentation only: the MUI theme, typography, colors, logo, favicon,
+header, and sign-on branding. Business logic, routing, API calls, role checks,
+data handling, the backend, the batch package, and the legacy `app/` tree are
+unchanged.
+
+- The MUI theme in `frontend/src/app/theme.ts` maps the Brand Inputs palette and
+  remains the single source of every brand color. No page or component file
+  contains a brand hex value.
+- Inter replaces Roboto. `next/font/google` downloads it at build time and the
+  app serves it from its own origin.
+- The header is a white surface with black text, a 1px `#D9D9D9` bottom border,
+  the Blitzy logo, and the title `Blitzy`.
+- The sign-on page shows the Blitzy logo above the heading `Blitzy Sign On`.
+- The browser tab shows the Blitzy icon (`icon.svg`) and the title `Blitzy`.
+- Accessibility adjustments, still presentation only: a 2px `#5B39F3` keyboard
+  focus ring (white on filled alerts), darker error text (`error.dark`),
+  placeholder hints in `text.secondary` `#666666`, press ripples that keep
+  labels at AA contrast while held, and forced-colors markers on the selected
+  menu option and page. A themed 404 page replaces Next's unstyled built-in
+  one, with the same text.
+
+Base commit for every comparison in this document:
+`cb634428783e7b08a83594f8c39a9ba8f74740a6`.
+
+## Changed files
+
+Status is relative to the base commit: `A` added, `M` modified, `D` deleted.
+
+| Status | File | Purpose |
+| --- | --- | --- |
+| A | `blitzy/documentation/branding-pr-description.md` | This pull request description. |
+| A | `blitzy/screenshots/branding/after_header.png` | Header after branding (1280 × 65). |
+| A | `blitzy/screenshots/branding/after_home_menu.png` | Home page `/menu` after branding (1280 × 800). |
+| A | `blitzy/screenshots/branding/after_reports.png` | Reports page `/reports` after branding (1280 × 800). |
+| A | `blitzy/screenshots/branding/after_signon.png` | Sign-on page after branding (1280 × 800). |
+| A | `blitzy/screenshots/branding/before_header.png` | Header before branding (1280 × 64). |
+| A | `blitzy/screenshots/branding/before_home_menu.png` | Home page `/menu` before branding (1280 × 800). |
+| A | `blitzy/screenshots/branding/before_signon.png` | Sign-on page before branding (1280 × 800). |
+| M | `docs/architecture.md` | Lists `BrandLogo` among the shared frontend components. |
+| M | `frontend/Dockerfile` | Comment only: `public/` now holds the brand logo. |
+| M | `frontend/__tests__/components/AppShell.test.tsx` | Brand-name assertions expect `Blitzy`. |
+| M | `frontend/__tests__/pages/signon.test.tsx` | Heading assertion matches `Blitzy Sign On`. |
+| A | `frontend/public/blitzy-logo.svg` | Blitzy logo, the exact Brand Inputs SVG. |
+| D | `frontend/src/app/favicon.ico` | Removed; `icon.svg` replaces it. |
+| A | `frontend/src/app/icon.svg` | Browser tab icon (the same SVG), App Router icon convention. |
+| M | `frontend/src/app/layout.tsx` | Loads Inter as `--font-inter`; sets the page title and description. |
+| A | `frontend/src/app/not-found.tsx` | Themed 404 page in place of Next's built-in one; same text and title. |
+| M | `frontend/src/app/signon/page.tsx` | Adds the 48px logo above the heading; heading text `Blitzy Sign On`. |
+| M | `frontend/src/app/theme.ts` | Brand palette, Inter; the component overrides under Brand values applied. |
+| M | `frontend/src/components/AppShell.tsx` | `APP_TITLE` is `Blitzy`; adds the 28px logo to the left of the title. |
+| A | `frontend/src/components/BrandLogo.tsx` | Shared logo component used by the header and the sign-on page. |
+| M | `frontend/src/components/ErrorAlert.tsx` | Comment only: corrects the info Alert contrast figure to ≈6.88:1. |
+
+The two test files change only the asserted strings. No test logic changed, and
+no test was skipped or deleted. `frontend/next.config.js` is unchanged.
+
+`not-found.tsx` renders the same `404` heading, `This page could not be found.`
+message and `404: This page could not be found.` tab title as Next's built-in
+404 page. The built-in page's inline styles forced a white body (black under an
+OS dark mode) and the system font; the themed page uses the theme's canvas and
+Inter like every other route.
+
+## Brand values applied
+
+Every value below is read from the merged source. Brand Inputs is the only
+source for brand values.
+
+### Theme palette (`frontend/src/app/theme.ts`)
+
+| Token | Before | After |
+| --- | --- | --- |
+| `palette.primary.main` | `#1976d2` | `#5B39F3` |
+| `palette.primary.contrastText` | `#ffffff` | `#FFFFFF` |
+| `palette.primary.light` | `#42a5f5` | Derived by MUI from `#5B39F3`: `#7B60F5` |
+| `palette.primary.dark` | `#1565c0` | Derived by MUI from `#5B39F3`: `#3F27AA` |
+| `palette.secondary.main` | `#9c27b0` | `#333333` |
+| `palette.secondary.contrastText` | `#ffffff` | `#FFFFFF` |
+| `palette.secondary.light` | `#ba68c8` | Derived by MUI from `#333333`: `#5B5B5B` |
+| `palette.secondary.dark` | `#7b1fa2` | Derived by MUI from `#333333`: `#232323` |
+| `palette.background.default` | `#ffffff` | `#F2F0FE` |
+| `palette.background.paper` | `#ffffff` | `#FFFFFF` |
+| `palette.text.primary` | `rgba(0, 0, 0, 0.87)` | `#000000` |
+| `palette.text.secondary` | `rgba(0, 0, 0, 0.6)` | `#666666` |
+| `palette.divider` | MUI default `rgba(0, 0, 0, 0.12)` | `#D9D9D9` |
+
+The theme sets only `main` and `contrastText` for primary and secondary.
+`createTheme` derives `light` (main lightened 20%) and `dark` (main darkened
+30%), so hover and emphasis shades stay on-brand.
+
+These values are unchanged: `error` `#d32f2f`, `warning` `#ed6c02`, `info`
+`#0288d1`, `success` `#2e7d32`, the `grey` scale, `text.disabled`
+`rgba(0, 0, 0, 0.38)`, the 8px spacing unit, `shape.borderRadius` 4,
+`layout.drawerWidth` 240, breakpoints, shadows, and the typography variant scale.
+
+### Typography
+
+| Item | Value |
+| --- | --- |
+| Loader (`layout.tsx`) | `Inter` from `next/font/google` |
+| Loader options | `subsets: ['latin']`, `display: 'swap'`, `variable: '--font-inter'` |
+| Loader fallback | `system-ui`, `-apple-system`, `'Segoe UI'`, `Helvetica`, `Arial`, `sans-serif` |
+| CSS variable | `--font-inter`, defined on `<html>` through `inter.variable` |
+| Font file at runtime | A `.woff2` file under `/_next/static/media/`, served from the app's own origin |
+
+`typography.fontFamily` in `theme.ts` lists Inter first, then the system
+sans-serif fallback stack:
+
+```text
+var(--font-inter), system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif
+```
+
+The Roboto import, the `--font-roboto` variable, and the `Roboto` family name are
+gone from `frontend/src`.
+
+### Component overrides (`theme.ts` `components`)
+
+| Override | Property | Value |
+| --- | --- | --- |
+| `MuiAppBar` root | `backgroundColor` | `background.paper` (`#FFFFFF`) |
+| `MuiAppBar` root | `color` | `text.primary` (`#000000`) |
+| `MuiAppBar` root | `borderBottom` | `1px solid` `divider` (`#D9D9D9`) |
+| `MuiButtonBase` root `.Mui-focusVisible` | `outline` | `2px solid` `primary.main` (`#5B39F3`) |
+| `MuiButtonBase` root `.Mui-focusVisible` | `outlineOffset` | `2px` |
+| `MuiButton`, `MuiIconButton` | `defaultProps.disableFocusRipple` | `true` |
+| `MuiButton` contained | Press ripple | Beneath the label, black (`common.black`) |
+| `MuiButton` outlined and text, palette color, ripple mounted | `color` | The color's `dark` (primary `#3F27AA`) |
+| `MuiButton` outlined and text, palette color | Ripple child `backgroundColor` | The color's `dark` at alpha 0.5 |
+| `MuiPaginationItem` root `.Mui-selected` | Press ripple | Beneath the page number, black (`common.black`) |
+| `MuiAlert` filled, `.MuiAlert-action .Mui-focusVisible` | `outlineColor` | `currentColor` (the alert's white text) |
+| `MuiAlert` filled, `.MuiAlert-action .MuiButtonBase-root` | Press ripple | Beneath the icon, black (`common.black`) |
+| `MuiListItemButton`, `MuiMenuItem` root `.Mui-focusVisible` | `outlineOffset` | `-2px` (ring drawn inside the row) |
+| `MuiListItemButton` selected, forced colors | `borderInlineStart` | `theme.spacing(0.5)` (4px) solid `currentColor` |
+| `MuiListItemButton` selected, forced colors | `paddingInlineStart` | `theme.spacing(1.5)` (12px) |
+| `MuiMenuItem` selected, forced colors | `borderInlineStart` | `theme.spacing(0.5)` (4px) solid `currentColor` |
+| `MuiMenuItem` selected, forced colors | `paddingInlineStart` | `theme.spacing(1.5)` (12px) |
+| `MuiPaginationItem` selected, forced colors | `backgroundColor`, `color` | `Highlight`, `HighlightText` |
+| `MuiPaginationItem` selected, forced colors | `forcedColorAdjust` | `none` |
+| `MuiPaginationItem` selected, forced colors, `.Mui-focusVisible` | `outlineColor` | `Highlight` |
+| `MuiPaginationItem` selected, forced colors | Ripple child `backgroundColor` | `Highlight` |
+| `MuiTableCell` root | `borderBottomColor` | `divider` (`#D9D9D9`) |
+| `MuiTypography` variant | `color="text.secondary"` | `text.secondary` (`#666666`) |
+| `MuiFormLabel` root and asterisk `.Mui-error` | `color` | `error.dark` (`#932020`) |
+| `MuiFormHelperText` root `.Mui-error` | `color` | `error.dark` (`#932020`) |
+| `MuiInputBase` input `::placeholder` | `color`, `opacity` | `text.secondary` (`#666666`), `1` |
+| `MuiInputBase` input under an unshrunk label, `:focus::placeholder` | `opacity` | `1` |
+
+The "selected, forced colors" rows style `.Mui-selected` inside
+`@media (forced-colors: active)`; the pagination `backgroundColor`, `color`,
+and `forcedColorAdjust` rows also cover the hovered and the focused selected
+page. The mode paints a Canvas backplate behind the text it forces, which hid
+the white `HighlightText` number on the `Highlight` fill, so the selected page
+opts out of forcing. Its colors are then used as authored, so its focus ring,
+otherwise `#5B39F3`, and its press ripple, otherwise black, take `Highlight`
+too, and the page renders only system colors. A "Press ripple" row means the
+control gets `isolation: isolate`, its `.MuiTouchRipple-root` gets
+`z-index: -1`, and its ripple child is black, so the ripple paints over the
+fill and under the label.
+The outlined and text rows skip `color="inherit"` buttons; "ripple mounted"
+covers the press and the ripple's fade-out. The `::placeholder` row also covers
+the `-webkit-`, `-moz-`, and `-ms-` placeholder pseudo-elements that MUI styles.
+
+`AppShell.tsx` passes no `color` prop to the AppBar, so the theme override
+applies without any change to the AppBar element. The focus, press-ripple,
+selection, error-text, and placeholder overrides are explained under
+[Contrast adjustments](#contrast-adjustments).
+
+### Product name, metadata, logo, and favicon
+
+| Surface | Value | File under `frontend/` |
+| --- | --- | --- |
+| Header title (`APP_TITLE`) | `Blitzy` | `src/components/AppShell.tsx` |
+| Sign-on heading (`h1`) | `Blitzy Sign On` | `src/app/signon/page.tsx` |
+| Page title (`metadata.title`) | `Blitzy` | `src/app/layout.tsx` |
+| Page description | The Brand Inputs string shown after this table | `src/app/layout.tsx` |
+| Logo asset | `/blitzy-logo.svg`, alt text `Blitzy logo`, width `auto` | `public/blitzy-logo.svg` |
+| Logo in the header | 28px tall (`theme.spacing(3.5)`), left of the title | `src/components/BrandLogo.tsx` |
+| Logo on the sign-on page | 48px tall (`theme.spacing(6)`), above the heading | `src/components/BrandLogo.tsx` |
+| Favicon | `<link rel="icon" href="/icon.svg?…" type="image/svg+xml">` | `src/app/icon.svg` |
+
+The page description, exactly as served in `<meta name="description">`. The
+code span's source lines are wrapped for line length; Markdown joins them with a
+single space, so the rendered text is the exact string.
+
+`Blitzy: Build enterprise software in days with our autonomous AI platform.
+Automate up to 80% of development. Infinite code context. Accelerate your roadmap by 5x.`
+
+`blitzy-logo.svg` and `icon.svg` are byte-identical to the Brand Inputs SVG,
+which uses the single fill `#5B39F3`.
+
+## Hard-coded colors replaced
+
+A scan of every `.ts` and `.tsx` file under `frontend/src/` at the base commit
+found the six MUI default primary and secondary values only in
+`frontend/src/app/theme.ts`, the theme-definition file. **No page or component
+file contained one**, so no page or component file needed a replacement.
+
+For the four `light` and `dark` tokens, the literal is removed and MUI derives
+the new value from the brand `main`.
+
+| File | Old value | Theme token | New value |
+| --- | --- | --- | --- |
+| `frontend/src/app/theme.ts` | `#1976d2` | `primary.main` | `#5B39F3` |
+| `frontend/src/app/theme.ts` | `#42a5f5` | `primary.light` | `#7B60F5` (derived) |
+| `frontend/src/app/theme.ts` | `#1565c0` | `primary.dark` | `#3F27AA` (derived) |
+| `frontend/src/app/theme.ts` | `#9c27b0` | `secondary.main` | `#333333` |
+| `frontend/src/app/theme.ts` | `#ba68c8` | `secondary.light` | `#5B5B5B` (derived) |
+| `frontend/src/app/theme.ts` | `#7b1fa2` | `secondary.dark` | `#232323` (derived) |
+
+None of the six values remains anywhere in `frontend/src`. Error, warning, info,
+success, and grey values are unchanged. Test files are outside the scan; two
+comments in `frontend/__tests__/testUtils.tsx` still mention `#1976d2` as
+historical context and affect nothing at runtime.
+
+In the running app, a scan of the computed colors of every element and
+pseudo-element, and of every loaded CSS rule, found none of the six colors on
+`/signon`, `/menu`, `/reports`, `/admin`, or `/cards`.
+
+## Contrast adjustments
+
+Every brand value is unchanged, and so is `error.main`. Five adjustments were
+made; the logo SVG is unaltered.
+
+1. **Error text.** `error.main` `#d32f2f` measures 4.43:1 on the `#F2F0FE`
+   canvas, below the 4.5:1 text minimum (4.98:1 on white). Error labels,
+   required asterisks, and helper text now use `palette.error.dark` `#932020`,
+   which MUI derives from `#d32f2f`; no palette value was added or changed. It
+   measures 7.56:1 on the canvas and 8.51:1 on white. `error.main` stays on
+   non-text surfaces: error input outlines (`rgb(211, 47, 47)`), error buttons,
+   and alerts and snackbars (white on `#d32f2f`, 4.98:1).
+2. **Keyboard focus.** MUI's `ButtonBase` removes the native outline, so focus
+   showed only as low-contrast tints and ripples: 1.32:1 for a drawer link,
+   1.37:1 for the selected one, about 2.1:1 for the header buttons, and 1.8:1 for
+   the contained `SIGN ON` ripple, which also dropped its white label to 3.53:1.
+   Every `ButtonBase` control (buttons, icon buttons, nav and menu items,
+   pagination) now draws a 2px `#5B39F3` outline on keyboard focus, inset on
+   full-width nav and menu rows and white on filled alerts (item 4). Buttons and
+   icon buttons no longer play the focus ripple, so a focused `SIGN ON` keeps its
+   resting fill and its label stays 6.32:1. In forced-colors mode the outline
+   stays (Chrome's emulation forces its color to `rgba(5, 0, 73, 0.8)`, 11.30:1
+   on the white Canvas). Selected items lose their fill there, which left the
+   selected page and menu option looking like every other once focus moved on
+   (1:1 against the Canvas). The selected nav item and menu option now get a
+   4px start-edge bar (black, 21:1 on the white menu surface), and the selected
+   page takes the system `Highlight` fill with `HighlightText` (in Chrome's
+   emulation `rgba(5, 0, 73, 0.8)` with white text, 11.31:1 against the Canvas),
+   hovered or focused too. Forced, that white number also got the mode's white
+   Canvas backplate (1:1), so the selected page sets
+   `forced-color-adjust: none`: its number renders white on the `#37336D` fill,
+   11.31:1, and its focus ring and press ripple use `Highlight` as well. Each
+   marker holds while focus is on another item and is distinct from the focus
+   ring.
+3. **Placeholder hints.** MUI draws input placeholders in the text color at 0.42
+   opacity, which with the brand `#000000` text renders `rgb(148, 148, 148)`:
+   3.03:1 on paper and 3.00:1 on the canvas, below the 4.5:1 text minimum. Every
+   input placeholder, including the `-99999999.99` format hints on
+   `/accounts/update`, now uses `palette.text.secondary` `#666666` at full
+   opacity: 5.74:1 on paper and 5.10:1 on the canvas. MUI still hides a
+   placeholder while its field is empty and unfocused under an unshrunk label;
+   only the opacity of its focused re-show changed, from 0.42 to 1.
+4. **Focus on filled alerts.** `ErrorAlert` renders a filled alert whose close
+   button drew the 2px `#5B39F3` ring on the severity fill: 1.27:1 on error
+   `#d32f2f`, 1.23:1 on success `#2e7d32`, 1.09:1 on the info fill `info.dark`
+   `rgb(1, 95, 146)`, and 2.03:1 on warning `#ed6c02`. Focused controls in a
+   filled alert's action area now draw the ring in the alert's white text
+   color: 4.98:1, 5.13:1, 6.88:1, and 3.11:1. No current call site renders a
+   warning alert. The ring keeps its 2px solid style and 2px offset.
+5. **Pressed state.** MUI's press ripple is a 0.3-opacity wash of the label
+   color painted over the label. On a solid fill a white label washes out its
+   own fill: a held `SIGN ON` measured white on `#8C74F6`, 3.53:1, with a touch
+   or a mouse press, and the held selected page on `/cards` 3.53:1. From the
+   rendered fills, a held contained error button and the filled error alert's
+   close icon drop to 3.18:1 and the success alert's close icon to 2.92:1. On
+   outlined and text buttons the wash drops a held `CLEAR` on the canvas to
+   3.53:1 and, from the rendered row fill, an outlined error `DELETE` in a
+   hovered `/users` row to 2.89:1.
+   Contained buttons, the selected page and filled-alert actions now draw a
+   black ripple beneath the label, so the fill darkens under a label that stays
+   white: held `SIGN ON` 10.12:1 (13.77:1 hovered), the held selected page
+   10.12:1, the held error alert close icon 8.51:1. Outlined and text buttons
+   in a palette color take that color's `dark` shade for the label while a
+   ripple is mounted, and draw the ripple in that shade at alpha 0.5, a 15%
+   wash: held `CLEAR` 6.91:1 (6.50:1 hovered), held `DELETE` 6.01:1 in a
+   hovered row (5.68:1 with the button hovered too). `color="inherit"` buttons
+   and the brand values are unchanged, and focus still plays no ripple.
+
+Ratios measured in the running app with the WCAG 2.x relative-luminance formula:
+
+| Foreground | Background | Where measured | Ratio | AA threshold |
+| --- | --- | --- | --- | --- |
+| Text primary `#000000` | Paper `#FFFFFF` | Header, drawer, cards | 21.00:1 | 4.5:1 |
+| Text primary `#000000` | Canvas `#F2F0FE` | Page headings on `/menu` and `/reports` | 18.67:1 | 4.5:1 |
+| Text primary `#000000` | Selected drawer item `rgba(91, 57, 243, 0.08)` on paper | Drawer | 18.57:1 | 4.5:1 |
+| Text secondary `#666666` | Paper `#FFFFFF` | Field labels | 5.74:1 | 4.5:1 |
+| Text secondary `#666666` | Canvas `#F2F0FE` | Helper text on `/reports` | 5.10:1 | 4.5:1 |
+| Primary `#5B39F3` text | Paper `#FFFFFF` | Focused field label on `/signon` | 6.32:1 | 4.5:1 |
+| contrastText `#FFFFFF` | Primary `#5B39F3` | `SIGN ON`, `GENERATE`, and `SEARCH` buttons | 6.32:1 | 4.5:1 |
+| Focused outline `#5B39F3` | Paper `#FFFFFF` | Focused text field | 6.32:1 | 3:1 |
+| Focus ring `#5B39F3` | Paper `#FFFFFF` | Focused `SIGN ON`, header brand, and `LOGOUT` | 6.32:1 | 3:1 |
+| contrastText `#FFFFFF` | Primary `#5B39F3` | Focused `SIGN ON` label (no focus ripple) | 6.32:1 | 4.5:1 |
+| Focus ring `#5B39F3` | Focused row `rgba(0, 0, 0, 0.12)` on paper | Drawer | 4.80:1 | 3:1 |
+| Focus ring `#5B39F3` | Focused selected row `rgba(91, 57, 243, 0.2)` on paper | Drawer | 4.60:1 | 3:1 |
+| Forced-colors ring `rgba(5, 0, 73, 0.8)` | Canvas `#FFFFFF` | Drawer, Chrome forced colors | 11.30:1 | 3:1 |
+| Error text `#932020` | Paper `#FFFFFF` | Error label, asterisk, and helper text on `/signon` | 8.51:1 | 4.5:1 |
+| Error outline `#d32f2f` | Paper `#FFFFFF` | User ID field in error on `/signon` | 4.98:1 | 3:1 |
+| Placeholder `#666666` | Paper `#FFFFFF` | Empty, focused Credit Limit on `/accounts/update` | 5.74:1 | 4.5:1 |
+| Focus ring `#FFFFFF` | Error alert `#d32f2f` | Alert close button, empty submit on `/signon` | 4.98:1 | 3:1 |
+| Focus ring `#FFFFFF` | Info alert `rgb(1, 95, 146)` | Alert close button, Fetch on `/users/update` | 6.88:1 | 3:1 |
+| contrastText `#FFFFFF` | Held fill `#3F27A9` (was `#8C74F6`, 3.53:1) | `SIGN ON`, touch or mouse | 10.12:1 | 4.5:1 |
+| contrastText `#FFFFFF` | Held fill `#2C1B76`, hovered | `SIGN ON`, mouse | 13.77:1 | 4.5:1 |
+| contrastText `#FFFFFF` | Held fill `#3F27A9` (was `#8C74F6`, 3.53:1) | Selected page on `/cards` | 10.12:1 | 4.5:1 |
+| `primary.dark` `#3F27AA` | Held wash `#D7D2F1` on canvas (was 3.53:1) | `CLEAR` on `/cards` | 6.91:1 | 4.5:1 |
+| `primary.dark` `#3F27AA` | Held wash `#D1CBF1`, hovered, on canvas | `CLEAR` on `/cards`, mouse | 6.50:1 | 4.5:1 |
+| `error.dark` `#932020` | Held wash `#E6D5D5` in a hovered row | `DELETE` on `/users` | 6.01:1 | 4.5:1 |
+| `error.dark` `#932020` | Held wash `#E4CECE`, row and button hovered | `DELETE` on `/users`, mouse | 5.68:1 | 4.5:1 |
+| Close icon `#FFFFFF` | Held error alert close, `#932020` | Failed sign-on on `/signon` | 8.51:1 | 3:1 |
+| Selected page `Highlight` | Canvas `#FFFFFF` | `/cards`, forced colors, focus on page 2 | 11.31:1 | 3:1 |
+| `HighlightText` `#FFFFFF` | Selected page `#37336D` (was a white backplate, 1:1) | Forced colors | 11.31:1 | 4.5:1 |
+| `HighlightText` `#FFFFFF` | Held selected page `#2A2664` | `/cards`, forced colors | 13.46:1 | 4.5:1 |
+| Ring `Highlight` `rgba(5, 0, 73, 0.8)` | Canvas `#FFFFFF` | Focused selected page, forced colors | 11.31:1 | 3:1 |
+| Selected option bar `#000000` | Menu surface `#FFFFFF` | Report Type on `/reports`, forced colors | 21.00:1 | 3:1 |
+
+Computed for states and pairings that the captured pages do not render:
+
+| Foreground | Background | Ratio |
+| --- | --- | --- |
+| contrastText `#FFFFFF` | `primary.dark` `#3F27AA` (contained-button hover) | 10.09:1 |
+| Primary `#5B39F3` | Canvas `#F2F0FE` | 5.62:1 |
+| `#333333` | Paper `#FFFFFF` | 12.63:1 |
+| Focus ring `#5B39F3` | Canvas `#F2F0FE` (focused `SEARCH`, `CLEAR`, pagination) | 5.62:1 |
+| Error text `#932020` | Canvas `#F2F0FE` | 7.56:1 |
+| `error.main` `#d32f2f`, the former error text | Canvas `#F2F0FE` | 4.43:1 |
+| contrastText `#FFFFFF` | `error.main` `#d32f2f` (error buttons, alerts, snackbars) | 4.98:1 |
+| Placeholder `#666666` | Canvas `#F2F0FE` | 5.10:1 |
+| The former placeholder `rgb(148, 148, 148)` | Paper `#FFFFFF` | 3.03:1 |
+| Focus ring `#FFFFFF` | Success alert `#2e7d32` | 5.13:1 |
+| Focus ring `#FFFFFF` | Warning alert `#ed6c02` (no current call site) | 3.11:1 |
+| contrastText `#FFFFFF` | Held contained error button, black ripple on `#d32f2f` (was 3.18:1) | 8.43:1 |
+| Close icon `#FFFFFF` | Held success alert close, black ripple on `#2e7d32` (was 2.92:1) | 8.52:1 |
+| Close icon `#FFFFFF` | Held info alert close, black ripple on `rgb(1, 95, 146)` (was 3.56:1) | 10.58:1 |
+| `secondary.dark` `#232323` | Held outlined or text secondary button, hovered, on canvas | 9.79:1 |
+| `error.dark` `#932020` | Held outlined error button, hovered, on canvas (no current call site) | 5.55:1 |
+
+The divider `#D9D9D9` measures 1.41:1 on paper and 1.25:1 on the canvas. It is
+used only for decorative separators (dividers, the drawer edge, table rows, and
+the header bottom border), not for text or for boundaries needed to identify a
+control. Outlined text fields keep the MUI default border `rgba(0, 0, 0, 0.23)`
+(rendered `rgb(196, 196, 196)`, 1.74:1 on paper); this change leaves that border
+as it was. Each focus indicator listed above meets the 3:1 minimum against the
+color next to it, with and without forced colors: the `#5B39F3` rings measure
+4.60:1 or more, and the white rings on filled alerts 3.11:1 to 6.88:1. The
+forced-colors selection markers measure 11.31:1 and 21.00:1.
+
+## Verification
+
+- `npm run type-check`, `npm run lint:ci`, and the Jest suite pass: 27 of 27
+  suites and 401 of 401 tests.
+- `npm run build` succeeds, and the route list includes `/icon.svg`.
+- The tab title is `Blitzy` on every page except the 404 page, whose title is
+  `404: This page could not be found.`, as with Next's built-in 404 page. The
+  only icon link points to `/icon.svg` with type `image/svg+xml` and returns 200.
+  `/favicon.ico` returns 404.
+- The console shows no messages on `/signon` or `/menu`, either on first load or
+  after a hard reload.
+- Every font and image request goes to the app's own origin. The only
+  cross-origin requests go to the backend API origin. The date-picker icon on
+  `/reports` is Chrome's built-in inline `data:` image, not a network request.
+- On `/signon`, `/menu`, and `/reports`:
+  - the body background is `rgb(242, 240, 254)`;
+  - visible text renders in Inter;
+  - primary contained buttons are `rgb(91, 57, 243)` with white text.
+- On `/menu`, `/reports`, `/admin`, and `/cards`, the AppBar is
+  `rgb(255, 255, 255)` with `rgb(0, 0, 0)` text and a
+  `1px solid rgb(217, 217, 217)` bottom border.
+- The logo renders 48px tall on `/signon` and 28px tall in the header on `/menu`
+  and `/reports`.
+- Keyboard focus on `SIGN ON`, the header brand, `LOGOUT`, and the drawer items
+  computes a `2px solid rgb(91, 57, 243)` outline, offset `2px` on buttons and
+  `-2px` on drawer rows, and a focused button has no ripple element.
+- With `forced-colors: active` emulated, focused drawer items keep a 2px solid
+  outline, and the selected item has a `4px solid` start border with `12px`
+  start padding (`16px` on the other items).
+- With `forced-colors: active` emulated, after focusing the selected page 1 on
+  `/cards` and pressing Tab to page 2, page 1 computes a `rgba(5, 0, 73, 0.8)`
+  background with `rgb(255, 255, 255)` text and `forced-color-adjust: none`,
+  page 2 only its outline, and page 3 a transparent background; hovered or
+  focused, page 1 keeps that fill. In a full-viewport capture at device pixel
+  ratio 3, page 1's number is `#FFFFFF` on a `#37336D` fill with no backplate,
+  11.31:1 (11.17:1 on the antialiased core at ratio 1), and the fill is 11.31:1
+  against the Canvas. Shift+Tab back to page 1 computes the same
+  `2px solid rgba(5, 0, 73, 0.8)` outline as page 2's, with a Canvas gap
+  between it and the fill. Held 1.3s, page 1 computes a `rgba(5, 0, 73, 0.8)`
+  ripple child and its number measures 13.46:1. No property of the selected
+  page or its ripple computes a non-system color.
+  On `/reports`, with Monthly selected and focus moved to Yearly by ArrowDown,
+  Monthly keeps a `4px solid rgb(0, 0, 0)` start border and `12px` start
+  padding, hovered too; Yearly and Custom have none.
+- Holding `SIGN ON` 1.3s with a touch or a mouse press, and the selected page
+  on `/cards`, computes `isolation: isolate`, a ripple root at `z-index: -1`
+  and a `rgb(0, 0, 0)` ripple child. Holding `CLEAR` on `/cards` computes a
+  `rgb(63, 39, 170)` label and a `rgba(63, 39, 170, 0.5)` ripple child, and
+  `DELETE` on `/users` `rgb(147, 32, 32)` and `rgba(147, 32, 32, 0.5)`. The
+  held screenshots' pixels give the pressed ratios under Contrast adjustments,
+  with Chrome's default `hover: none` and again with hover enabled. Keyboard
+  focus on `SIGN ON` still computes the `2px solid rgb(91, 57, 243)` outline
+  with no ripple element.
+- After an empty sign-on submit, the User ID label, asterisk, and helper text
+  compute `rgb(147, 32, 32)`; the field outline stays `rgb(211, 47, 47)`.
+- Keyboard focus on the close button of the filled error alert on `/signon` and
+  of the filled info alert on `/users/update` computes a
+  `2px solid rgb(255, 255, 255)` outline on `rgb(211, 47, 47)` and
+  `rgb(1, 95, 146)`; `FETCH` on `/users/update` keeps the `rgb(91, 57, 243)` ring.
+- On `/accounts/update`, an empty, focused money field computes a `::placeholder`
+  color of `rgb(102, 102, 102)` at opacity `1`. An empty, unfocused one keeps
+  its placeholder hidden (opacity `0`) under its unshrunk label, and its outline
+  stays `rgba(0, 0, 0, 0.23)`.
+- Signed in, an unknown route renders the themed 404 page inside the header and
+  drawer, on the `rgb(242, 240, 254)` canvas, with the heading in Inter and no
+  inline font or background style.
+
+## Screenshots
+
+All screenshots use a 1280 × 800 viewport. The home page is `/menu`, the page a
+regular user reaches after sign-on, captured signed in as a seed regular user.
+The header shots capture the AppBar element alone. The after header is 1px
+taller because of the new bottom border.
+
+### Sign-on page
+
+Before:
+
+![Sign-on page before branding](../screenshots/branding/before_signon.png)
+
+After:
+
+![Sign-on page after branding](../screenshots/branding/after_signon.png)
+
+### Home page (`/menu`)
+
+Before:
+
+![Home page before branding](../screenshots/branding/before_home_menu.png)
+
+After:
+
+![Home page after branding](../screenshots/branding/after_home_menu.png)
+
+### Header
+
+Before:
+
+![Header before branding](../screenshots/branding/before_header.png)
+
+After:
+
+![Header after branding](../screenshots/branding/after_header.png)
+
+### Reports page (`/reports`, after)
+
+![Reports page after branding](../screenshots/branding/after_reports.png)

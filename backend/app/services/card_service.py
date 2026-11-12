@@ -1,0 +1,913 @@
+"""Card service.
+
+Ported 1:1 from legacy CICS online programs COCRDLIC (card list, CCLI; <=7 rows
+per page per F-004), COCRDSLC (card view, CCDL) and COCRDUPC (card update, CCUP).
+COCRDUPC's READ-UPDATE -> before-image check -> REWRITE is reproduced with a
+locking read via GetForUpdate (SELECT ... FOR UPDATE) followed by comparing the
+CLIENT-ECHOED before-image against the locked current row before the REWRITE
+(see note). Record layout: CVACT02Y. cvv_cd is never returned; card_num is
+masked. Card detail/update are keyed by card number (the frozen AAP 0.5.5
+GET/PUT /cards/{cardNum} contract); the earlier by-account helper methods were
+removed (QA findings C07/C08). See §0.5.1, §0.5.5, §0.7.4, §0.7.8, §0.8.1.
+
+Design notes (verified against the dependency contracts):
+
+* Data access is delegated entirely to :class:`app.repositories.CardRepository`
+  (the single ``cards`` boundary). This service owns the business rules, the
+  field edits (ported verbatim from the COBOL PROCEDURE DIVISION), and the
+  per-request unit-of-work commit; the repository never commits.
+* ``list`` and ``view`` are strictly READ-ONLY -- they never commit. Only
+  ``UpdateCard`` mutates and owns the ``commit`` / ``rollback`` boundary.
+* Sensitive-data rules (AAP 0.7.8) are enforced structurally: every response is
+  built through :class:`app.schemas.CardRead` / :class:`app.schemas.CardSummary`,
+  which expose no ``cvv_cd`` field and mask ``card_num`` to its last four digits
+  via a Pydantic ``field_serializer``. The service never returns raw ORM
+  attributes and never assigns a new ``cvv_cd`` on update (it is preserved).
+* Concurrency: like ``account_service``, the update path takes a row lock via
+  :meth:`app.repositories.CardRepository.GetForUpdate`
+  (``SELECT ... FOR UPDATE``). COCRDUPC's 9200/9300 READ-UPDATE -> change
+  check -> REWRITE is reproduced as: the row is read UNDER A ROW LOCK
+  (``GetForUpdate`` with ``populate_existing`` so the locked read reflects the
+  true current state), then the CLIENT-ECHOED before-image
+  (``CardUpdate.before_image`` -- the values the operator last read) is compared
+  to the locked current values, and any difference means a concurrent
+  modification and is rejected (HTTP 409). Sourcing the before-image from the
+  client echo (rather than a server read taken at the start of the PUT) is what
+  lets the check detect a GET -> intervening-commit -> PUT stale overwrite (QA
+  finding C06). Holding the lock from the read through the commit prevents any
+  concurrent write between the check and the commit, so no lost update can occur
+  (QA finding M-10, AAP 0.7.4).
+
+Ochs conventions (AAP 0.8.2 / 0.8.3): the class and its methods use PascalCase,
+local variables use camelCase, module-level constants are ALL_UPPERCASE, and the
+data-carrying field names (``card_num``, ``cvv_cd``, ...) stay snake_case to
+match the DTO / ORM contract. Methods stay small (<=~20 lines) and take at most
+four parameters (excluding ``self``); the list call groups its inputs into a
+single :class:`CardListParams` object to honour that limit.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import date
+from typing import TYPE_CHECKING
+
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.exceptions import (
+    ConflictError,
+    DomainValidationError,
+    NotFoundError,
+    OptimisticLockError,
+)
+from app.repositories import CardRepository
+from app.repositories.card_repo import MAX_SCREEN_LINES
+from app.schemas import (
+    CardBeforeImage,
+    CardRead,
+    CardSummary,
+    CardUpdate,
+    PaginatedResponse,
+    PaginationParams,
+)
+from app.utils import date_utils, validators
+
+if TYPE_CHECKING:  # Imported for type hints only; no runtime dependency needed.
+    from app.models.card import Card
+    from app.models.user import User
+
+# ---------------------------------------------------------------------------
+# Field labels fed to the shared validators (kept identical to the labels the
+# legacy screens used so the reusable edits read naturally). ALL_UPPERCASE per
+# the Ochs Rule (AAP 0.8.2).
+# ---------------------------------------------------------------------------
+CARD_NUM_FIELD_LABEL = "Card number"
+CARD_NAME_FIELD_LABEL = "Card name"
+CARD_STATUS_FIELD_LABEL = "Card Active Status"
+
+# Legacy calendar-month bounds for the expiry edit (COCRDUPC 1250-EDIT-EXPIRY-MON,
+# 88-level VALID-MONTH VALUES 1 THRU 12). A real ``datetime.date`` always honours
+# this range; the guard preserves the distinct legacy month message for parity.
+MIN_MONTH = 1
+MAX_MONTH = 12
+
+# Lowest page ordinal (mirrors app.schemas.common.MIN_PAGE); used to derive
+# ``has_previous`` for the browse envelope.
+MIN_PAGE = 1
+
+# Role code for an administrator -- a faithful port of the COCOM01Y
+# CDEMO-USER-TYPE 88-level ``CDEMO-USRTYP-ADMIN VALUE 'A'``. COCRDLIC (header
+# L4-7) lists every card for an admin but confines a regular user to the cards
+# of the account carried in their session context.
+ADMIN_USER_TYPE = "A"
+
+# ---------------------------------------------------------------------------
+# Verbatim operator messages (VALUE literals lifted character-for-character from
+# COCRDSLC / COCRDUPC). Never reword, re-case, or re-punctuate: the golden-master
+# parity tests compare these exactly (AAP 0.8.1). The bracketed COBOL line
+# references are the source of each literal.
+# ---------------------------------------------------------------------------
+MSG_CARD_NUM_NOT_PROVIDED = "Card number not provided"                       # COCRDSLC L141
+MSG_CARD_NUM_INVALID = "Card number if supplied must be a 16 digit number"   # COCRDSLC L149
+MSG_CARD_NOT_FOUND = "Did not find cards for this search condition"          # COCRDSLC L154
+MSG_CARD_NAME_NOT_PROVIDED = "Card name not provided"                        # COCRDUPC L182
+MSG_CARD_NAME_NOT_ALPHA = "Card name can only contain alphabets and spaces"  # COCRDUPC WS-NAME-MUST-BE-ALPHA
+MSG_CARD_STATUS_INVALID = "Card Active Status must be Y or N"                 # COCRDUPC L196
+MSG_CARD_EXPIRY_MONTH_INVALID = "Card expiry month must be between 1 and 12"  # COCRDUPC CARD-EXPIRY-MONTH-NOT-VALID
+MSG_CARD_EXPIRY_YEAR_INVALID = "Invalid card expiry year"                    # COCRDUPC L200
+MSG_NO_CHANGE_DETECTED = "No change detected with respect to values fetched."  # COCRDUPC L188
+MSG_COULD_NOT_LOCK = "Could not lock record for update"                      # COCRDUPC L206
+MSG_RECORD_CHANGED = "Record changed by some one else. Please review"        # COCRDUPC L208
+MSG_UPDATE_FAILED = "Update of record failed"                                # COCRDUPC L210
+
+__all__ = ["CardListParams", "CardService"]
+
+
+class CardListParams(PaginationParams):
+    """Inputs for the card browse (COCRDLIC, ``CCLI``) as a single object.
+
+    Grouping the browse inputs into one object keeps
+    :meth:`CardService.ListCards` at the Ochs four-parameter maximum. It extends
+    :class:`app.schemas.common.PaginationParams` (reusing its validated ``page``
+    and ``page_size`` fields, whose default page size of seven already matches
+    F-004) and adds the two card-specific browse anchors:
+
+    Attributes:
+        acct_id: Optional owning-account filter. When supplied, the browse is
+            restricted to that account's cards (the legacy CARD-ACCT-ID
+            alternate-index path in COCRDLIC 9500-FILTER-RECORDS). ``None``
+            browses across all accounts.
+        card_num: Optional exact card-number filter (the COCRDLIC card-number
+            search anchor CC-CARD-NUM). A 16-digit PAN identifies at most one
+            card, so when supplied the browse returns that single card as a
+            one-row page (subject to any ``acct_id`` filter and role scoping),
+            or an empty page when no such card exists. ``None`` applies no
+            card-number filter. Exposed as the ``?card_num=`` query parameter
+            so the COCRDLI card-number search field is functional (QA C3).
+        start_card_num: Optional keyset anchor for page-forward browsing. When
+            supplied, the browse resumes at the first card number greater than
+            or equal to it, mirroring the legacy ``STARTBR ... GTEQ`` position
+            used by the PF8 page-forward key. ``None`` starts at the first card.
+    """
+
+    acct_id: str | None = None
+    card_num: str | None = None
+    start_card_num: str | None = None
+
+
+@dataclass(frozen=True)
+class _CardImage:
+    """Immutable before/after snapshot of the concurrency-relevant card fields.
+
+    Captures the editable fields COCRDUPC's 9300-CHECK-CHANGE-IN-REC compares
+    (embossed name, expiration date, and active status) so the optimistic
+    before-image comparison operates on a stable copy that later ORM mutation
+    cannot disturb. Field names stay snake_case to match the ORM/DTO contract
+    (AAP 0.8.3). The legacy CVV field is intentionally absent (QA finding C-03,
+    AAP 0.7.8): the CVV is no longer persisted, so it is neither snapshotted nor
+    compared here. This structure is module-internal and is never serialized.
+    """
+
+    embossed_name: str
+    expiration_date: date | None
+    active_status: str
+
+
+class CardService:
+    """Business logic for credit-card list, view, and update.
+
+    Ports three legacy CICS online programs 1:1 (Minimal Change Clause,
+    AAP 0.8.1):
+
+    * :meth:`ListCards` -- COCRDLIC (``CCLI``), the <=7-rows-per-page browse
+      (F-004).
+    * :meth:`GetCard` -- COCRDSLC (``CCDL``), the read-only detail view.
+    * :meth:`UpdateCard` -- COCRDUPC (``CCUP``), the optimistic before-image
+      update.
+
+    The service holds no mutable state beyond its repository handle, so a single
+    instance is safe to share across requests; the caller supplies the
+    per-request :class:`~sqlalchemy.ext.asyncio.AsyncSession` (unit of work) to
+    every method.
+    """
+
+    def __init__(self) -> None:
+        """Wire the service to its single data-access collaborator."""
+        self.cardRepository = CardRepository()
+
+    async def ListCards(
+        self,
+        session: AsyncSession,
+        params: PaginationParams | CardListParams,
+        currentUser: "User | None" = None,
+    ) -> PaginatedResponse[CardSummary]:
+        """List cards for one screen page, at most seven rows (COCRDLIC, F-004).
+
+        Reproduces the COCRDLIC forward browse with a truthful paginated
+        envelope: an authoritative ``COUNT(*)`` supplies ``total_items`` (scoped
+        to ``acct_id`` when one is given) and the ordered rows are sliced by a
+        ``(page - 1) * page_size`` offset, so every card is reachable by walking
+        the pages in sequence and ``total_items`` / ``total_pages`` / ``has_next``
+        are exact rather than a look-ahead estimate. The page size is clamped to
+        :data:`MAX_SCREEN_LINES` (7) so a page can never exceed the F-004 limit
+        regardless of the requested size. This method is READ-ONLY and never
+        commits.
+
+        Role-based scoping (COCRDLIC header L4-7): an administrator
+        (``user_type == ADMIN_USER_TYPE``) browses ALL cards, honouring the
+        optional ``acct_id`` filter when one is supplied; a regular user is
+        confined to the cards of the account in their session context. Because
+        the legacy program always carried a COMMAREA account for a non-admin, a
+        regular user who supplies no account anchor is never shown all cards --
+        the browse returns an empty page instead. ``currentUser`` is optional
+        and defaults to ``None`` (no scoping), preserving the original unscoped
+        behaviour for internal / administrative callers and existing tests.
+
+        Args:
+            session: Active async unit-of-work session.
+            params: Browse inputs. A :class:`CardListParams` (or plain
+                :class:`~app.schemas.common.PaginationParams`) carrying the
+                optional ``acct_id`` filter and the ``page`` / ``page_size``
+                offset window. (``start_card_num`` is accepted for backward
+                compatibility but the offset browse does not consult it.)
+            currentUser: The authenticated user whose role drives the scoping
+                described above; ``None`` disables role scoping.
+
+        Returns:
+            A :class:`~app.schemas.common.PaginatedResponse` of
+            :class:`~app.schemas.CardSummary` rows (card number masked, no CVV),
+            with page metadata and an authoritative ``has_next`` probe result.
+        """
+        pageSize = self._ResolvePageSize(params.page_size)
+        pageNumber = params.page
+        acctId = self._NormalizeFilter(getattr(params, "acct_id", None))
+        cardNum = self._NormalizeFilter(getattr(params, "card_num", None))
+        if self._IsRegularUnscoped(currentUser, acctId):
+            # Non-admin without an account context: COCRDLIC never lists all
+            # cards for a regular user (header L4-7), so the browse is empty.
+            return self._BuildPage([], pageNumber, pageSize, 0)
+        if cardNum is not None:
+            # Exact card-number search anchor (COCRDLIC CC-CARD-NUM). A 16-digit
+            # PAN identifies at most one card, so the browse returns that single
+            # card as a one-row page when it also satisfies any account filter,
+            # else an empty page. This makes the COCRDLI card-number search
+            # field functional rather than a silent no-op (QA C3).
+            return await self._ListByCardNum(session, cardNum, acctId, params)
+        # Authoritative grand total for a truthful envelope: COCRDLIC browses
+        # the whole file, so the modern list reports the real matching-row
+        # count (scoped to the account when one is supplied) instead of a
+        # look-ahead estimate.
+        totalItems = await self.cardRepository.CountCards(session, acctId=acctId)
+        # Offset window: fetch the ordered rows up to and including this page,
+        # then slice out the requested page. ``card_num`` ordering is stable, so
+        # every row is reachable by walking the pages in sequence. Card volumes
+        # are small (one account, or the whole modest file), so materialising
+        # ``pageNumber * pageSize`` ordered rows stays inexpensive.
+        fetchLimit = pageNumber * pageSize
+        fetchedRows = await self._FetchOffsetWindow(session, acctId, fetchLimit)
+        startIndex = (pageNumber - MIN_PAGE) * pageSize
+        pageRows = fetchedRows[startIndex : startIndex + pageSize]
+        pageItems = [self._BuildSummary(card) for card in pageRows]
+        return self._BuildPage(pageItems, pageNumber, pageSize, totalItems)
+
+    async def _FetchOffsetWindow(
+        self,
+        session: AsyncSession,
+        acctId: str | None,
+        fetchLimit: int,
+    ) -> "list[Card]":
+        """Fetch the ordered card rows up to ``fetchLimit`` for the offset browse.
+
+        Selects the correct repository read for the requested scope: an
+        account-scoped browse uses the ``CARD-ACCT-ID`` alternate index, while an
+        unscoped browse (admin / internal caller) walks every account. The rows
+        are ordered by ``card_num`` so the caller can slice out the requested
+        page deterministically.
+
+        Args:
+            session: Active async unit-of-work session.
+            acctId: The account filter, or ``None`` for an unscoped browse.
+            fetchLimit: The number of ordered rows to materialise (``page *
+                page_size``), covering every row up to and including this page.
+
+        Returns:
+            The ordered card rows for the offset window (never committed).
+        """
+        if acctId is not None:
+            # Account-scoped browse via the CARD-ACCT-ID alternate index.
+            return await self.cardRepository.ListByAcctId(
+                session,
+                acctId,
+                limit=fetchLimit,
+            )
+        # Unscoped browse across every account (admin / internal caller).
+        return await self.cardRepository.ListCards(
+            session,
+            acctId=None,
+            startCardNum=None,
+            limit=fetchLimit,
+        )
+
+    @staticmethod
+    def _NormalizeFilter(rawFilter: str | None) -> str | None:
+        """Collapse a blank browse filter to ``None`` (no filter).
+
+        A search ``TextField`` that the operator left empty arrives as an empty
+        (or whitespace-only) query-string value; treating that as ``None``
+        means "no filter" rather than "match the empty string", so an untouched
+        search box browses normally (QA C3). A non-blank value is stripped of
+        surrounding whitespace and returned unchanged.
+
+        Args:
+            rawFilter: The raw filter value from the browse params (``acct_id``
+                or ``card_num``), possibly ``None`` or blank.
+
+        Returns:
+            The stripped filter value, or ``None`` when it was absent or blank.
+        """
+        if rawFilter is None:
+            return None
+        strippedFilter = rawFilter.strip()
+        if not strippedFilter:
+            return None
+        return strippedFilter
+
+    async def _ListByCardNum(
+        self,
+        session: AsyncSession,
+        cardNum: str,
+        acctId: str | None,
+        params: PaginationParams | CardListParams,
+    ) -> PaginatedResponse[CardSummary]:
+        """Return the single-card page for an exact card-number search (C3).
+
+        A 16-digit PAN is a primary key, so the COCRDLIC card-number search
+        anchor matches at most one card. This performs the keyed read and, when
+        the row exists AND satisfies any concurrent ``acct_id`` filter, returns
+        it as an authoritative one-row page (``total_items == 1``); otherwise it
+        returns a truthful empty page. The lookup is a parameterised
+        keyed read (injection-safe, Ochs security rule); an unparsable or
+        non-matching search term simply yields no rows rather than an error, so
+        the search box degrades gracefully. This method is READ-ONLY.
+
+        Args:
+            session: Active async unit-of-work session.
+            cardNum: The already-normalized (non-blank) card-number search term.
+            acctId: An optional concurrent account filter the card must also
+                satisfy; ``None`` applies no account constraint.
+            params: The browse window supplying ``page`` / ``page_size`` (the
+                page size is clamped to the F-004 seven-row cap).
+
+        Returns:
+            A :class:`~app.schemas.common.PaginatedResponse` carrying the single
+            matching :class:`~app.schemas.CardSummary` (masked, no CVV) on the
+            first page, or an empty page when nothing matches.
+        """
+        pageNumber = params.page
+        pageSize = self._ResolvePageSize(params.page_size)
+        cardRecord = await self.cardRepository.GetByCardNum(session, cardNum)
+        if cardRecord is None or (
+            acctId is not None and cardRecord.acct_id != acctId
+        ):
+            return self._BuildPage([], pageNumber, pageSize, 0)
+        # The single match lives on page one; any later page is empty even
+        # though the authoritative total remains one (truthful envelope).
+        pageRows = [cardRecord] if pageNumber == MIN_PAGE else []
+        pageItems = [self._BuildSummary(card) for card in pageRows]
+        return self._BuildPage(pageItems, pageNumber, pageSize, 1)
+
+    @staticmethod
+    def _IsRegularUnscoped(
+        currentUser: "User | None",
+        acctId: str | None,
+    ) -> bool:
+        """Return True when a non-admin user browses without an account scope.
+
+        Ports the COCRDLIC role gate (header L4-7). An administrator
+        (``user_type == ADMIN_USER_TYPE``) is never restricted, and a ``None``
+        ``currentUser`` disables scoping entirely (internal callers). For a
+        regular user the browse must be confined to an account: when no
+        ``acctId`` anchor is present the legacy program would still be scoped to
+        its COMMAREA account rather than list everything, so the modern browse
+        yields nothing.
+
+        Args:
+            currentUser: The authenticated user, or ``None`` to disable scoping.
+            acctId: The owning-account anchor resolved from the browse params.
+
+        Returns:
+            True only when ``currentUser`` is a non-admin and ``acctId`` is
+            ``None`` (an unscoped regular browse); False otherwise.
+        """
+        if currentUser is None:
+            return False
+        if getattr(currentUser, "user_type", None) == ADMIN_USER_TYPE:
+            return False
+        return acctId is None
+
+    @staticmethod
+    def _ResolvePageSize(pageSize: int) -> int:
+        """Clamp a requested page size to the F-004 maximum of seven rows.
+
+        COCRDLIC never displays more than ``WS-MAX-SCREEN-LINES`` (7) card rows
+        per page; a larger requested window is capped so the business rule holds
+        regardless of the caller's request.
+
+        Args:
+            pageSize: The requested page size (already >= 1 via
+                :class:`~app.schemas.common.PaginationParams` validation).
+
+        Returns:
+            ``pageSize`` when it is within the limit, otherwise
+            :data:`MAX_SCREEN_LINES`.
+        """
+        if pageSize > MAX_SCREEN_LINES:
+            return MAX_SCREEN_LINES
+        return pageSize
+
+    @staticmethod
+    def _BuildSummary(card: "Card") -> CardSummary:
+        """Project one ORM card row onto its masked list-row DTO.
+
+        Building the summary through :meth:`CardSummary.model_validate` applies
+        the schema's ``field_serializer`` (card number masked to the last four
+        digits) and guarantees no ``cvv_cd`` is ever carried into the response
+        (AAP 0.7.8).
+
+        Args:
+            card: The ORM :class:`~app.models.card.Card` row to project.
+
+        Returns:
+            A :class:`~app.schemas.CardSummary` for the browse grid.
+        """
+        return CardSummary.model_validate(card)
+
+    def _BuildPage(
+        self,
+        pageItems: list[CardSummary],
+        pageNumber: int,
+        pageSize: int,
+        totalItems: int,
+    ) -> PaginatedResponse[CardSummary]:
+        """Assemble the paginated browse envelope from an authoritative total.
+
+        ``total_items`` is the exact ``COUNT(*)`` of matching card rows, so
+        ``total_pages`` (a ceiling division) and ``has_next`` (whether a page
+        follows this one) are precise rather than a look-ahead estimate. A page
+        requested beyond the last one yields an empty ``items`` list while still
+        reporting the true totals. Integer arithmetic only (no floating point,
+        AAP 0.7.1).
+
+        Args:
+            pageItems: The masked summaries for this page (already sliced).
+            pageNumber: The 1-based page ordinal being returned.
+            pageSize: The effective (clamped) page size.
+            totalItems: The authoritative total count of matching card rows.
+
+        Returns:
+            A fully populated :class:`~app.schemas.common.PaginatedResponse`.
+        """
+        totalPages = (totalItems + pageSize - 1) // pageSize if totalItems > 0 else 0
+        return PaginatedResponse[CardSummary](
+            items=pageItems,
+            page=pageNumber,
+            page_size=pageSize,
+            total_items=totalItems,
+            total_pages=totalPages,
+            has_next=pageNumber < totalPages,
+            has_previous=pageNumber > MIN_PAGE,
+        )
+
+    # ------------------------------------------------------------------ #
+    # METHOD 2 -- card view (COCRDSLC, tx CCDL). READ-ONLY.               #
+    # ------------------------------------------------------------------ #
+    async def GetCard(self, session: AsyncSession, cardNum: str) -> CardRead:
+        """Return one card's detail by card number (COCRDSLC, tx CCDL).
+
+        Reproduces the COCRDSLC detail read: edit the supplied card number
+        exactly as ``1000-EDIT-INPUTS`` did (blank rejected, then the 16-digit
+        numeric edit), perform the keyed read, and surface the legacy
+        not-found message when no row matches. The response is a
+        :class:`~app.schemas.card.CardRead`, so ``card_num`` is masked and
+        ``cvv_cd`` is never serialized (AAP 0.7.8). This is a pure read: it
+        never opens a write or commits.
+
+        Args:
+            session: The active async database session (unit of work).
+            cardNum: The 16-digit card-number key from ``GET /cards/{cardNum}``.
+
+        Returns:
+            The masked, cvv-free :class:`~app.schemas.card.CardRead` detail.
+
+        Raises:
+            DomainValidationError: When ``cardNum`` is blank
+                (``'Card number not provided'``, COCRDSLC L141) or not a valid
+                16-digit number (``'Card number if supplied must be a 16 digit
+                number'``, COCRDSLC L149).
+            NotFoundError: When no card carries that number
+                (``'Did not find cards for this search condition'``,
+                COCRDSLC L154).
+        """
+        normalizedCardNum = self._ValidateCardNum(cardNum)
+        cardRecord = await self.cardRepository.GetByCardNum(session, normalizedCardNum)
+        if cardRecord is None:
+            raise NotFoundError(MSG_CARD_NOT_FOUND)
+        # CardRead masks card_num and omits cvv_cd via its schema; never bypass
+        # the schema by returning raw ORM attributes (AAP 0.7.8).
+        return CardRead.model_validate(cardRecord)
+
+    # ------------------------------------------------------------------ #
+    # METHOD 3 -- card update (COCRDUPC, tx CCUP). Optimistic before-     #
+    # image check (AAP 0.7.4). Service owns the unit-of-work / commit.    #
+    # ------------------------------------------------------------------ #
+    async def UpdateCard(
+        self,
+        session: AsyncSession,
+        cardNum: str,
+        cardUpdate: CardUpdate,
+    ) -> CardRead:
+        """Update the editable card fields (COCRDUPC, tx CCUP).
+
+        Ports COCRDUPC's ``2000-DECIDE-ACTION`` -> ``9200-WRITE-PROCESSING`` ->
+        ``9300-CHECK-CHANGE-IN-REC`` in order:
+
+        1. Edit the card number (``_ValidateCardNum``).
+        2. Edit the submitted fields (``_EditUpdateFields``): the embossed name
+           must be non-blank alphabetic (``1230-EDIT-NAME``), the active status
+           must be ``Y``/``N`` (``1240-EDIT-CARDSTATUS``), and the expiry must
+           carry a valid month and year (``1250``/``1260``).
+        3. Lock the current row with ``SELECT ... FOR UPDATE``
+           (``CardRepository.GetForUpdate`` via :meth:`_LockCurrent`); a missing
+           row is the legacy not-found condition. The lock -- the modern
+           equivalent of the COBOL ``READ CARDDAT ... UPDATE`` (AAP 0.7.4) -- is
+           held through the commit, so it prevents any concurrent transaction
+           from writing between the check and the commit (no lost update; QA
+           finding M-10).
+        4. Optimistic before-image check UNDER THE ROW LOCK (``9300``): compare
+           the CLIENT-ECHOED before-image (``cardUpdate.before_image`` -- the
+           values the operator last read) against the freshly-locked current
+           row. Any difference means another actor committed a change AFTER the
+           client read and BEFORE this update, raising the legacy ``'Record
+           changed by some one else. Please review'`` (L208). Echoing the
+           client's last-read image is what lets the check detect a
+           GET -> intervening-commit -> PUT stale overwrite; the previous
+           implementation snapshotted the row from a server-side read at the
+           START of the PUT, so the before-image always equaled the current row
+           and a stale write went undetected (QA finding C06).
+        5. No-change short-circuit: if the submitted values equal the current
+           locked values (name compared case-insensitively, mirroring the legacy
+           ``UPPER-CASE`` compare) there is nothing to write, so the legacy
+           ``'No change detected with respect to values fetched.'`` (L188) is
+           surfaced and no commit occurs.
+        6. Apply the new name/expiry/status, then flush and commit (the service
+           owns the unit-of-work). No CVV is involved: the card row carries no
+           ``cvv_cd`` at all -- it is never persisted (C-03, AAP 0.7.8).
+        7. Return the masked, cvv-free detail (legacy ``'Changes committed to
+           database'``, L169).
+
+        Args:
+            session: The active async database session (unit of work).
+            cardNum: The 16-digit card-number key from ``PUT /cards/{cardNum}``.
+            cardUpdate: The validated new field values plus the required
+                client-echoed ``before_image`` optimistic-lock token (no
+                ``cvv_cd``; see class docstring).
+
+        Returns:
+            The masked, cvv-free :class:`~app.schemas.card.CardRead` reflecting
+            the committed row.
+
+        Raises:
+            DomainValidationError: On a card-number, field-edit, or no-change
+                condition (verbatim legacy messages).
+            NotFoundError: When no card carries that number
+                (``'Did not find cards for this search condition'``).
+            OptimisticLockError: When the before-image check detects a
+                concurrent modification (``'Record changed by some one else.
+                Please review'``).
+            ConflictError: When the locking read fails
+                (``'Could not lock record for update'``) or the commit fails
+                (``'Update of record failed'``).
+        """
+        normalizedCardNum = self._ValidateCardNum(cardNum)
+        self._EditUpdateFields(cardUpdate)
+        lockedRecord = await self._LockCurrent(session, normalizedCardNum)
+        currentImage = self._Snapshot(lockedRecord)
+        self._CheckBeforeImage(currentImage, self._ExtractBeforeImage(cardUpdate))
+        if self._IsNoChange(cardUpdate, currentImage):
+            raise DomainValidationError(MSG_NO_CHANGE_DETECTED)
+        self._ApplyUpdate(lockedRecord, cardUpdate)
+        await self._Persist(session, lockedRecord)
+        return CardRead.model_validate(lockedRecord)
+
+    # ------------------------------------------------------------------ #
+    # Shared card-number edit (COCRDSLC/COCRDUPC 1000-EDIT-INPUTS).       #
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _ValidateCardNum(cardNum: str) -> str:
+        """Edit and normalize the card-number key (blank -> 16-digit numeric).
+
+        The validator is used only to DETECT validity; the raised message is
+        the verbatim legacy operator text, not the validator's generic wording.
+
+        Args:
+            cardNum: The raw card-number key from the request path.
+
+        Returns:
+            The stripped, validated 16-digit card number.
+
+        Raises:
+            DomainValidationError: Blank (``'Card number not provided'``) or not
+                a 16-digit number (``'Card number if supplied must be a 16 digit
+                number'``).
+        """
+        normalizedCardNum = cardNum.strip() if cardNum else ""
+        if not normalizedCardNum:
+            raise DomainValidationError(MSG_CARD_NUM_NOT_PROVIDED)
+        editResult = validators.ValidateNumericId(
+            CARD_NUM_FIELD_LABEL, normalizedCardNum, validators.CARD_NUM_LENGTH,
+        )
+        if not editResult.isValid:
+            raise DomainValidationError(MSG_CARD_NUM_INVALID)
+        return normalizedCardNum
+
+    # ------------------------------------------------------------------ #
+    # Field edits (COCRDUPC 1230/1240/1250/1260-EDIT-*).                  #
+    # ------------------------------------------------------------------ #
+    def _EditUpdateFields(self, cardUpdate: CardUpdate) -> None:
+        """Run every submitted-field edit in the legacy screen order.
+
+        Args:
+            cardUpdate: The submitted new field values.
+
+        Raises:
+            DomainValidationError: On the first failing edit (verbatim message).
+        """
+        self._EditName(cardUpdate.embossed_name)
+        self._EditStatus(cardUpdate.active_status)
+        self._EditExpiry(cardUpdate.expiration_date)
+
+    @staticmethod
+    def _EditName(embossedName: str) -> None:
+        """Edit the embossed name (COCRDUPC ``1230-EDIT-NAME``).
+
+        Blank is rejected before the alphabetic edit so the two legacy messages
+        stay distinct (``'Card name not provided'`` vs the alpha message).
+
+        Args:
+            embossedName: The submitted embossed name.
+
+        Raises:
+            DomainValidationError: Blank (``'Card name not provided'``) or with a
+                non-alphabetic character
+                (``'Card name can only contain alphabets and spaces'``).
+        """
+        candidateName = embossedName.strip() if embossedName else ""
+        if not candidateName:
+            raise DomainValidationError(MSG_CARD_NAME_NOT_PROVIDED)
+        nameResult = validators.ValidateAlpha(CARD_NAME_FIELD_LABEL, candidateName)
+        if not nameResult.isValid:
+            raise DomainValidationError(MSG_CARD_NAME_NOT_ALPHA)
+
+    @staticmethod
+    def _EditStatus(activeStatus: str) -> None:
+        """Edit the active-status flag (COCRDUPC ``1240-EDIT-CARDSTATUS``).
+
+        Args:
+            activeStatus: The submitted active-status flag.
+
+        Raises:
+            DomainValidationError: When not exactly ``Y`` or ``N``
+                (``'Card Active Status must be Y or N'``).
+        """
+        statusResult = validators.ValidateYesNo(CARD_STATUS_FIELD_LABEL, activeStatus)
+        if not statusResult.isValid:
+            raise DomainValidationError(MSG_CARD_STATUS_INVALID)
+
+    @staticmethod
+    def _EditExpiry(expirationDate: date | None) -> None:
+        """Edit the expiry month/year (COCRDUPC ``1250``/``1260-EDIT-EXPIRY``).
+
+        The month must be 1-12 and the composed ``YYYY-MM-DD`` date must pass
+        the shared legacy date edit (which enforces the valid century/year
+        window). A ``None`` expiry is treated as an invalid year.
+
+        Args:
+            expirationDate: The submitted expiry date (already coerced to a
+                :class:`datetime.date` by the schema).
+
+        Raises:
+            DomainValidationError: Invalid month
+                (``'Card expiry month must be between 1 and 12'``) or invalid
+                year (``'Invalid card expiry year'``).
+        """
+        if expirationDate is None:
+            raise DomainValidationError(MSG_CARD_EXPIRY_YEAR_INVALID)
+        if expirationDate.month < MIN_MONTH or expirationDate.month > MAX_MONTH:
+            raise DomainValidationError(MSG_CARD_EXPIRY_MONTH_INVALID)
+        composedDate = date_utils.FormatLegacyDate(expirationDate)
+        dateResult = date_utils.ValidateDate(composedDate)
+        if not dateResult.isValid:
+            raise DomainValidationError(MSG_CARD_EXPIRY_YEAR_INVALID)
+
+    # ------------------------------------------------------------------ #
+    # Before-image snapshot + comparisons (COCRDUPC 9300-CHECK-CHANGE).   #
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _Snapshot(card: "Card") -> _CardImage:
+        """Capture an immutable before/after image of a card's edited fields.
+
+        The scalar values are copied into a frozen :class:`_CardImage`, so the
+        snapshot is unaffected by any later in-place mutation or refresh of the
+        ORM row (that independence is what makes the before/after compare sound).
+
+        Args:
+            card: The attached ORM card row to snapshot.
+
+        Returns:
+            A frozen :class:`_CardImage` of ``embossed_name``,
+            ``expiration_date`` and ``active_status``.
+        """
+        return _CardImage(
+            embossed_name=card.embossed_name,
+            expiration_date=card.expiration_date,
+            active_status=card.active_status,
+        )
+
+    @staticmethod
+    def _NormalizeName(embossedName: str | None) -> str:
+        """Fold a name for case-insensitive compare (legacy ``UPPER-CASE``).
+
+        Args:
+            embossedName: A raw embossed-name value (possibly ``None``).
+
+        Returns:
+            The upper-cased, stripped name (empty string for ``None``).
+        """
+        if embossedName is None:
+            return ""
+        return embossedName.strip().upper()
+
+    def _IsNoChange(self, cardUpdate: CardUpdate, currentImage: _CardImage) -> bool:
+        """Return whether the submitted values match the current row (no-op).
+
+        Mirrors the legacy NEW-vs-OLD comparison that precedes the write: the
+        name is compared case-insensitively (``UPPER-CASE`` in COCRDUPC), the
+        expiry and status directly. The comparison is against the freshly-locked
+        CURRENT row (the values now in the database), so if the submission is
+        identical to what is stored there is nothing to write. There is no
+        ``cvv_cd`` in play at all -- the card row never carries one (never
+        persisted; C-03) -- so it is excluded from this compare.
+
+        Args:
+            cardUpdate: The submitted new field values.
+            currentImage: Snapshot of the freshly-locked current row.
+
+        Returns:
+            True when nothing changed and the update should short-circuit.
+        """
+        sameName = self._NormalizeName(cardUpdate.embossed_name) == self._NormalizeName(
+            currentImage.embossed_name,
+        )
+        sameExpiry = cardUpdate.expiration_date == currentImage.expiration_date
+        sameStatus = cardUpdate.active_status == currentImage.active_status
+        return sameName and sameExpiry and sameStatus
+
+    @staticmethod
+    def _ExtractBeforeImage(cardUpdate: CardUpdate) -> "CardBeforeImage":
+        """Return the client-echoed before-image carried on the update payload.
+
+        Implements the client side of the COCRDUPC optimistic-lock contract
+        (AAP 0.7.4, QA finding C06): ``CardUpdate.before_image`` is a *required*
+        echo of the editable card fields the caller last read.
+        :meth:`_CheckBeforeImage` compares it against the freshly-locked row, so
+        a stale write (the client read old values, another actor committed
+        newer ones, the client then submits based on the old values) is rejected
+        instead of silently overwriting the concurrent change. This mirrors
+        ``account_service._ExtractBeforeImage``.
+
+        Args:
+            cardUpdate: The validated update payload (carries ``before_image``).
+
+        Returns:
+            The :class:`~app.schemas.card.CardBeforeImage` the client echoed.
+        """
+        return cardUpdate.before_image
+
+    def _CheckBeforeImage(
+        self, currentImage: _CardImage, beforeImage: "CardBeforeImage"
+    ) -> None:
+        """Enforce the optimistic before-image check (COCRDUPC ``9300``).
+
+        Compares the freshly-locked current row against the CLIENT-ECHOED
+        before-image -- the values the operator last read (``cardUpdate.
+        before_image``), NOT a server-side snapshot taken at the start of the
+        PUT. This is what lets the check detect a GET -> intervening-commit ->
+        PUT stale overwrite (QA finding C06): if any field the client last read
+        differs from the current committed row, another unit of work changed it
+        in the interim. The name is folded case-insensitively (legacy
+        ``UPPER-CASE``); ``active_status`` is compared directly;
+        ``expiration_date`` is compared only when the client echoed it (the
+        column is nullable, so an unsent value must not manufacture a false
+        conflict). The legacy CVV comparison is dropped because the CVV is no
+        longer persisted (QA finding C-03).
+
+        Args:
+            currentImage: Snapshot of the freshly-locked current row.
+            beforeImage: The client-echoed :class:`~app.schemas.card.CardBeforeImage`.
+
+        Raises:
+            OptimisticLockError: When any compared field differs
+                (``'Record changed by some one else. Please review'``).
+        """
+        nameChanged = self._NormalizeName(currentImage.embossed_name) != self._NormalizeName(
+            beforeImage.embossed_name,
+        )
+        statusChanged = currentImage.active_status != beforeImage.active_status
+        expiryEchoed = "expiration_date" in beforeImage.model_fields_set
+        expiryChanged = (
+            expiryEchoed
+            and currentImage.expiration_date != beforeImage.expiration_date
+        )
+        if nameChanged or statusChanged or expiryChanged:
+            raise OptimisticLockError(MSG_RECORD_CHANGED)
+
+    # ------------------------------------------------------------------ #
+    # Concurrency locking re-read + apply + persist (COCRDUPC 9200-WRITE  #
+    # -PROC, READ CARDDAT ... UPDATE).                                    #
+    # ------------------------------------------------------------------ #
+    async def _LockCurrent(self, session: AsyncSession, cardNum: str) -> "Card":
+        """Read the row FOR UPDATE, locking it for the rewrite (READ...UPDATE).
+
+        Issues a genuine ``SELECT ... FOR UPDATE`` via
+        :meth:`app.repositories.CardRepository.GetForUpdate` (QA findings M-10 /
+        C06). The lock is the FIRST database access of the update flow -- the
+        current row and its lock are acquired together -- so the before-image
+        check and the write both operate on the same locked, freshly-read image.
+        Holding the acquired row lock from here through the commit serializes
+        concurrent card updates so no lost update can occur, reproducing the
+        legacy ``READ CARDDAT ... UPDATE`` -> ``REWRITE`` serialization
+        (AAP 0.7.4). ``GetForUpdate`` re-reads the row's columns
+        (``populate_existing``) so the returned image reflects the TRUE current
+        database state for the before-image compare against the client echo.
+
+        Args:
+            session: The active async database session (unit of work).
+            cardNum: The 16-digit card-number key to lock.
+
+        Returns:
+            The locked, freshly-read :class:`~app.models.card.Card`.
+
+        Raises:
+            NotFoundError: When no row carries that card number -- the legacy
+                ``INVALID KEY`` / ``NOTFND`` condition
+                (``'Did not find cards for this search condition'``).
+            ConflictError: When the locking read itself fails
+                (``'Could not lock record for update'``).
+        """
+        try:
+            lockedCard = await self.cardRepository.GetForUpdate(session, cardNum)
+        except SQLAlchemyError as lockError:
+            raise ConflictError(MSG_COULD_NOT_LOCK) from lockError
+        if lockedCard is None:
+            raise NotFoundError(MSG_CARD_NOT_FOUND)
+        return lockedCard
+
+    @staticmethod
+    def _ApplyUpdate(card: "Card", cardUpdate: CardUpdate) -> None:
+        """Copy the three editable submitted fields onto the row.
+
+        Only the editable fields (embossed name, expiration date, active status)
+        are assigned. There is no CVV on the request path and no CVV column on
+        the row (QA finding C-03, AAP 0.7.8), so nothing sensitive is written.
+
+        Args:
+            card: The attached ORM card row to mutate.
+            cardUpdate: The validated new field values.
+        """
+        card.embossed_name = cardUpdate.embossed_name
+        card.expiration_date = cardUpdate.expiration_date
+        card.active_status = cardUpdate.active_status
+
+    async def _Persist(self, session: AsyncSession, card: "Card") -> None:
+        """Flush the card update and commit, rolling back on failure.
+
+        The repository ``Update`` only flushes; the service owns the commit
+        boundary. A database failure is rolled back and mapped to the legacy
+        ``'Update of record failed'``.
+
+        Args:
+            session: The active async database session (unit of work).
+            card: The mutated ORM card row to persist.
+
+        Raises:
+            ConflictError: When the flush/commit fails
+                (``'Update of record failed'``).
+        """
+        try:
+            await self.cardRepository.Update(session, card)
+            await session.commit()
+        except SQLAlchemyError as persistError:
+            await session.rollback()
+            raise ConflictError(MSG_UPDATE_FAILED) from persistError
+

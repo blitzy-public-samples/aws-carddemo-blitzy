@@ -1,0 +1,130 @@
+# =============================================================================
+# CardDemo Batch — PEP 621 project manifest, dependencies & tooling config.
+#
+# Installable Python package for the greenfield ``batch/`` tree: the CLI
+# (``batch/cli.py``), the jobs (1:1 with the legacy ``CB*`` COBOL programs), the
+# seed loaders (1:1 with the legacy IDCAMS load jobs), and the orchestration
+# chain (AAP §0.4.1, §0.5.2, §0.6.1). Declaring this manifest makes the batch
+# package first-class and installable, closing QA finding #54 (undeclared batch
+# package / entry point) and #55 (pinning a Typer/Click pair that is verified to
+# render ``--help`` without crashing).
+#
+# Install (from the repository root), together with the backend it imports::
+#
+#     pip install -e ./backend -e ./batch
+#
+# The batch code imports the backend ``app`` package (``app.models``,
+# ``app.utils``, ``app.core``); ``carddemo-backend`` is therefore declared as a
+# dependency and is satisfied from the local ``./backend`` checkout when both
+# are installed in the same command (never fetched from a public index). After
+# installation the console script ``carddemo-batch`` and ``python -m batch.cli``
+# are equivalent entry points.
+#
+# No secrets or environment values appear in this file (Ochs Rule #3:
+# configuration is read from the environment via ``batch/config.py``).
+# =============================================================================
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "carddemo-batch"
+version = "1.0.0"
+description = "Modernized CardDemo batch CLI — Python reimplementation of the legacy COBOL/JCL batch chain."
+requires-python = ">=3.13"
+license = { text = "Apache-2.0" }
+
+# -----------------------------------------------------------------------------
+# Runtime dependencies.
+#
+#   * ``carddemo-backend`` — the batch package imports the backend ``app`` tree
+#     (models, utils, core). Pinned to the backend's own version for
+#     reproducibility; resolved locally from ``./backend`` (see the header),
+#     never from a public index.
+#   * ``typer`` — the CLI framework for ``batch/cli.py`` (AAP §0.6.1). Kept out
+#     of the backend runtime set on purpose (see backend/pyproject.toml), so it
+#     is declared here where it is actually used.
+#   * ``click`` — Typer's underlying command engine. Upgraded as a COORDINATED
+#     PAIR with Typer (QA finding N-04): Click 8.1.8 carried a vulnerable
+#     ``click.edit`` and is below the >= 8.3.3 security floor. Click >= 8.2
+#     changed the ``Parameter.make_metavar()`` signature that crashed Typer
+#     0.15.1's ``--help`` rendering (former finding #55), so Click cannot be
+#     bumped alone; Typer 0.27.0 uses the new signature and renders ``--help``
+#     cleanly with Click 8.4.2. 8.4.2 also satisfies uvicorn's ``click>=7.0``
+#     constraint (no conflict with the backend).
+# -----------------------------------------------------------------------------
+dependencies = [
+    "carddemo-backend==1.0.0",
+    "typer==0.27.0",
+    "click==8.4.2",
+]
+
+[project.optional-dependencies]
+# Test tooling for the batch parity suites (AAP §0.5.2: ``batch/tests/**``). The
+# batch chain is synchronous, so only pytest is required (no pytest-asyncio).
+# pytest >= 9.0.3 (QA finding M-24): 8.3.4 has a fixed tmpdir vulnerability and
+# these parity tests perform privileged DB operations; 9.1.1 matches the backend
+# test runner so the shared virtualenv resolves to a single pytest.
+# Install with: ``pip install -e './batch[dev]'``.
+dev = [
+    "pytest==9.1.1",
+]
+
+# -----------------------------------------------------------------------------
+# Console entry point.
+#
+# ``carddemo-batch`` invokes ``batch.cli:_RunCli`` -- the SAME wrapper the module
+# runs under ``if __name__ == "__main__":`` -- NOT the raw Typer ``app`` object.
+# ``_RunCli`` wraps ``app()`` in the batch error boundary that turns the specific
+# runtime failures (test-DB guard rejection, missing configuration, malformed
+# input) into one concise ``ERROR: ...`` stderr line with a non-zero exit code,
+# instead of a raw multi-line traceback. Targeting ``app`` directly bypassed that
+# boundary, so the packaged command printed tracebacks where ``python -m
+# batch.cli`` printed clean errors (QA finding I6). Routing the script through
+# ``_RunCli`` makes the packaged command and ``python -m batch.cli`` behave
+# identically. (Click still handles ``--help`` / parameter errors itself; those
+# ``SystemExit`` paths propagate through ``_RunCli`` untouched.)
+# -----------------------------------------------------------------------------
+[project.scripts]
+carddemo-batch = "batch.cli:_RunCli"
+
+# -----------------------------------------------------------------------------
+# setuptools package discovery.
+#
+# ``batch/`` is simultaneously the project root (this manifest lives here) and
+# the importable ``batch`` package. A plain ``find`` would misread the
+# sub-packages as top-level ``jobs``/``loaders``/``orchestration``; instead the
+# ``batch`` package is mapped explicitly to this directory via ``package-dir``,
+# so the installed names are ``batch``, ``batch.jobs``, ``batch.loaders`` and
+# ``batch.orchestration`` — matching every ``from batch.* import`` statement and
+# ``python -m batch.cli``. The ``tests`` directory (parity suites) is not a
+# distributable package and is intentionally omitted.
+# -----------------------------------------------------------------------------
+[tool.setuptools]
+packages = [
+    "batch",
+    "batch.jobs",
+    "batch.loaders",
+    "batch.orchestration",
+]
+package-dir = { "batch" = "." }
+
+# -----------------------------------------------------------------------------
+# pytest configuration. Parity tests live under ``batch/tests/`` so
+# ``cd batch && pytest`` works out of the box once tests are authored.
+# -----------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-ra -q"
+
+# -----------------------------------------------------------------------------
+# Optional, dev-only formatter/linter configuration encoding the Ochs formatting
+# rule (4-space indentation; lines kept under 120 characters). Ruff is NOT a
+# declared dependency — this table is advisory and ignored unless ruff is
+# installed in the developer's environment.
+# -----------------------------------------------------------------------------
+[tool.ruff]
+line-length = 120
+indent-width = 4
