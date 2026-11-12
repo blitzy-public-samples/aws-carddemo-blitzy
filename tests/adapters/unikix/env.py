@@ -152,6 +152,13 @@ BPE_NODE_NAME = "bpenode"
 BPE_SUBSYSTEM = "sys1"
 
 REQUIRED_INSTALLATION_VARS = ("UNIKIX", "INSTEBM", "VCOBOL", "KIXLICDIR", "JAVA_HOME")
+# The installation directories a search path names, so load refuses one whose
+# path holds os.pathsep, and _runtime_escape a userenv or batchenv that moves
+# one to such a path: COBCPY ends with $UNIKIX/copy, and the environment
+# file puts $UNIKIX/bin and $VCOBOL/bin on PATH and $VCOBOL/lib on
+# LD_LIBRARY_PATH. INSTEBM, KIXLICDIR and JAVA_HOME are named by no search
+# path, so a ':' in them breaks nothing.
+_SEARCH_PATH_INSTALLATION_VARS = ("UNIKIX", "VCOBOL")
 # TPE_AGENT is recorded but not required: nothing the suite runs uses it.
 INSTALLATION_VARS = REQUIRED_INSTALLATION_VARS + ("TPE_AGENT",)
 # Every path this module derives; each must lie inside the deployment root.
@@ -232,6 +239,19 @@ _JVM_TOKEN_AFTER = r"(?![^\s'\"])"
 # one for the owner-only work-root admission, since the harness does not
 # import the adapters.
 _JVM_UNSAFE_PATH_RE = re.compile(r"[\s'\"]")
+# Why no deployment directory may lie below a path holding os.pathsep: COBCPY
+# names the staging copy's copybook folders below the deployment root, the
+# environment file puts $HOME/bin (home/ below the root) on PATH, the vendor's
+# userenv may add more of the root's folders to PATH and LD_LIBRARY_PATH, and
+# each of those lists is split at os.pathsep, so a folder whose path holds it
+# is named by none. load refuses such a deployment root and deploy.py's
+# work-root check such a work root, each naming it first; harness/__init__.py
+# holds the same text for the owner-only work-root admission, since the
+# harness does not import the adapters.
+_PATH_LIST_UNSAFE = (
+    f"holds {os.pathsep!r}, at which COBCPY, PATH and LD_LIBRARY_PATH are split, so the search "
+    "paths naming the deployment's directories below it would break; choose another work root"
+)
 # The first statement of every bash this module starts for a deployment: what
 # that bash runs or sources afterwards (the environment file, userenv,
 # batchenv, a command, a script a command sources) can then neither assign,
@@ -811,8 +831,14 @@ class UniKixEnvironment:
         ``JDK_JAVA_OPTIONS`` with an unmatched quote, on which no JVM starts;
         and when ``UNIKIX``, ``INSTEBM``, ``VCOBOL``, ``KIXLICDIR`` or
         ``JAVA_HOME`` is unset, is not an absolute path, is missing or is not
-        a directory. Raises ``HarnessError``, naming the path, when the
-        deployment root does not lie below the work root, when one of the
+        a directory, or when ``UNIKIX`` or ``VCOBOL``, whose directories
+        ``COBCPY``, ``PATH`` and ``LD_LIBRARY_PATH`` name, holds
+        ``os.pathsep`` (``_SEARCH_PATH_INSTALLATION_VARS``).
+        Raises ``HarnessError``, naming the path, when the
+        deployment root does not lie below the work root or its path holds
+        ``os.pathsep`` (``:``), at which ``COBCPY``, ``PATH`` and
+        ``LD_LIBRARY_PATH`` are split (``_PATH_LIST_UNSAFE``), both after the
+        variable's checks and before anything is created; when one of the
         directories above is a link, not a directory or another user's, or a
         derived path lies outside the root, when ``tmp/`` holds whitespace
         or a quote, and when ``logs/sourcing.log`` cannot be written
@@ -838,6 +864,11 @@ class UniKixEnvironment:
             below = ()
         if not below or root.resolve() == work.resolve() or not _inside(root, work):
             raise HarnessError(f"deployment root {root} must lie below the work root {work}")
+        # Every deployment variable is derived from this path, COBCPY's
+        # copybook folders included, so one holding os.pathsep is refused
+        # before anything is created below it.
+        if os.pathsep in str(root):
+            raise HarnessError(f"deployment root {root} {_PATH_LIST_UNSAFE}")
         # Every directory below the work root that the file, and later every
         # command, writes in is a real one of this user before the file is
         # sourced, so no write goes through a link planted there.
@@ -877,6 +908,12 @@ class UniKixEnvironment:
                 reason = f"{name} missing: {value or '(unset)'}"
             elif not os.path.isdir(value):
                 reason = f"{name} is not a directory: {value}"
+            elif name in _SEARCH_PATH_INSTALLATION_VARS and os.pathsep in value:
+                reason = (
+                    f"{name} {value} holds {os.pathsep!r}, at which COBCPY, PATH and LD_LIBRARY_PATH "
+                    "are split, so the search paths naming its directories would break; choose an "
+                    f"installation path without {os.pathsep!r}"
+                )
             else:
                 continue
             raise AdapterUnavailable(reason, _GAP_INSTALLATION)
@@ -964,9 +1001,13 @@ class UniKixEnvironment:
     def _runtime_escape(self, snapshot: Mapping[str, str]) -> str:
         """Why a runtime script's ``snapshot`` cannot be kept, as the rest of
         ``"<script> ..."``, or ``""``: it moves a derived path that is unset or
-        outside the deployment root, leaves a JVM option variable with an
-        unmatched quote (``_unmatched_quote``), on which no JVM starts, or
-        moves the JVM's temporary files elsewhere (``_jvm_temp_escape``).
+        outside the deployment root, moves one, or ``UNIKIX`` or ``VCOBOL``
+        (``_SEARCH_PATH_INSTALLATION_VARS``), to a path holding
+        ``os.pathsep``, at which ``COBCPY`` (extended from ``MIGAPP_DIR`` and
+        ``UNIKIX``), ``PATH`` and ``LD_LIBRARY_PATH`` are split, leaves a JVM
+        option variable with an unmatched quote (``_unmatched_quote``), on
+        which no JVM starts, or moves the JVM's temporary files elsewhere
+        (``_jvm_temp_escape``).
         ``TMPDIR``, ``TMP``, ``TEMP`` and ``_JAVA_OPTIONS`` are held
         read-only while the script runs (``_TEMP_HOLD``), so they are checked
         only as a defence. Such a stage is refused rather than repaired: a
@@ -976,6 +1017,20 @@ class UniKixEnvironment:
         if outside:
             name, value = outside[0]
             return f"moves {name} outside the deployment root: {value}"
+        for name in DEPLOYMENT_PATH_VARS:
+            value = snapshot[name]
+            if os.pathsep in value:
+                return (
+                    f"moves {name} to {value}, which holds {os.pathsep!r}, at which COBCPY, PATH "
+                    "and LD_LIBRARY_PATH are split"
+                )
+        for name in _SEARCH_PATH_INSTALLATION_VARS:
+            value = snapshot.get(name, "")
+            if os.pathsep in value:
+                return (
+                    f"moves {name} to {value}, which holds {os.pathsep!r}, at which COBCPY, PATH "
+                    "and LD_LIBRARY_PATH are split"
+                )
         quoted = _unmatched_quote(snapshot)
         if quoted:
             return f"leaves {quoted} with an unmatched quote"
@@ -1029,9 +1084,12 @@ class UniKixEnvironment:
         ``bpe_env`` has ``command: null`` or its probe fails. Raises
         ``AdapterUnavailable`` with GAP-MIS-003 when userenv fails, times
         out, moves a deployment path or the JVM's temporary files out of the
-        deployment root, or leaves a JVM option variable with an unmatched
-        quote (``_runtime_escape``), and with GAP-MIS-006 when batchenv does
-        or ``bpe_env`` exits non-zero or exceeds its own ``timeout_s``.
+        deployment root, moves a deployment path, ``UNIKIX`` or ``VCOBOL`` to
+        one holding ``os.pathsep``, such as a ``MIGAPP_DIR`` or ``UNIKIX``
+        whose copybook folders ``COBCPY`` would then split, or leaves a JVM
+        option variable with an unmatched quote (``_runtime_escape``), and
+        with GAP-MIS-006 when batchenv does or ``bpe_env`` exits non-zero or
+        exceeds its own ``timeout_s``.
         ``MBMSUB`` is kept as the scripts leave it and is not checked here;
         it stays unset unless they export it. ``CommandSet`` refuses each
         command that uses ``$MBMSUB``, under that entry's own gap

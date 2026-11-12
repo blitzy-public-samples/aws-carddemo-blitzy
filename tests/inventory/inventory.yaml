@@ -3261,7 +3261,7 @@ items:
   source: app/cbl/COACTVWC.cbl:129-130
   status: not-covered
 - activation: always
-  description: 'Message condition DID-NOT-FIND-ACCT-IN-ACCTDAT of WS-RETURN-MSG (VALUE ''Did not find this account in account master file''): when the condition is set the text appears in the screen message (ERRMSG).'
+  description: 'Message condition DID-NOT-FIND-ACCT-IN-ACCTDAT of WS-RETURN-MSG (VALUE ''Did not find this account in account master file''): the text is defined and tested, but never set, so it never reaches the screen message (ERRMSG). 9000-READ-ACCT tests the condition after it performs 9300-GETACCTDATA-BYACCT, but the only SET of the condition, in the NOTFND branch of the READ in 9300-GETACCTDATA-BYACCT, is commented out at line 792, and that branch composes its own not-found message in WS-RETURN-MSG instead (GAP-UNC-014).'
   gap_ids:
   - GAP-DEF-020
   - GAP-DOC-025
@@ -3283,7 +3283,7 @@ items:
   source: app/cbl/COACTVWC.cbl:131-132
   status: blocked
 - activation: always
-  description: 'Message condition DID-NOT-FIND-CUST-IN-CUSTDAT of WS-RETURN-MSG (VALUE ''Did not find associated customer in master file''): when the condition is set the text appears in the screen message (ERRMSG).'
+  description: 'Message condition DID-NOT-FIND-CUST-IN-CUSTDAT of WS-RETURN-MSG (VALUE ''Did not find associated customer in master file''): the text is defined and tested, but never set, so it never reaches the screen message (ERRMSG). 9000-READ-ACCT tests the condition after it performs 9400-GETCUSTDATA-BYCUST, but the only SET of the condition, in the NOTFND branch of the READ in 9400-GETCUSTDATA-BYCUST, is commented out at line 842, and that branch composes its own not-found message in WS-RETURN-MSG instead (GAP-UNC-014).'
   gap_ids:
   - GAP-DOC-025
   - GAP-INF-005
@@ -3822,7 +3822,7 @@ items:
   source: app/cbl/COACTUPC.cbl:497-498
   status: not-covered
 - activation: always
-  description: 'Message condition DID-NOT-FIND-ACCT-IN-ACCTDAT of WS-RETURN-MSG (VALUE ''Did not find this account in account master file''): when the condition is set the text appears in the screen message (ERRMSG).'
+  description: 'Message condition DID-NOT-FIND-ACCT-IN-ACCTDAT of WS-RETURN-MSG (VALUE ''Did not find this account in account master file''): the text is defined and tested, but never set, so it never reaches the screen message (ERRMSG). 9000-READ-ACCT tests the condition after it performs 9300-GETACCTDATA-BYACCT, but the only SET of the condition, in the NOTFND branch of the READ in 9300-GETACCTDATA-BYACCT, is commented out at line 3719, and that branch composes its own not-found message in WS-RETURN-MSG instead (GAP-UNC-014).'
   gap_ids:
   - GAP-DEF-020
   - GAP-DOC-025
@@ -3844,7 +3844,7 @@ items:
   source: app/cbl/COACTUPC.cbl:499-500
   status: blocked
 - activation: always
-  description: 'Message condition DID-NOT-FIND-CUST-IN-CUSTDAT of WS-RETURN-MSG (VALUE ''Did not find associated customer in master file''): when the condition is set the text appears in the screen message (ERRMSG).'
+  description: 'Message condition DID-NOT-FIND-CUST-IN-CUSTDAT of WS-RETURN-MSG (VALUE ''Did not find associated customer in master file''): the text is defined and tested, but never set, so it never reaches the screen message (ERRMSG). 9000-READ-ACCT tests the condition after it performs 9400-GETCUSTDATA-BYCUST, but the only SET of the condition, in the NOTFND branch of the READ in 9400-GETCUSTDATA-BYCUST, is commented out at line 3769, and that branch composes its own not-found message in WS-RETURN-MSG instead (GAP-UNC-014).'
   gap_ids:
   - GAP-DOC-025
   - GAP-INF-005
@@ -7980,7 +7980,7 @@ items:
   source: app/cbl/COCRDSLC.cbl:148-149
   status: not-covered
 - activation: always
-  description: 'Message condition DID-NOT-FIND-ACCT-IN-CARDXREF of WS-RETURN-MSG (VALUE ''Did not find this account in cards database''): when the condition is set the text appears in the screen message (ERRMSG).'
+  description: 'Message condition DID-NOT-FIND-ACCT-IN-CARDXREF of WS-RETURN-MSG (VALUE ''Did not find this account in cards database''): the text is defined and set in 9150-GETCARD-BYACCT, a paragraph no statement performs, so it never reaches the screen message (ERRMSG). No PERFORM or GO TO names 9150-GETCARD-BYACCT or a range that holds it, and the paragraph before it is 9100-GETCARD-BYACCTCARD-EXIT, the exit of 9100-GETCARD-BYACCTCARD, which 9000-READ-DATA performs only through that exit, so control never runs on into 9150-GETCARD-BYACCT (GAP-UNC-018).'
   gap_ids:
   - GAP-INF-006
   - GAP-INF-012
@@ -8119,7 +8119,7 @@ items:
   source: app/cbl/COCRDSLC.cbl:767-771
   status: blocked
 - activation: always
-  description: 'On an unexpected RESP in 9150-GETCARD-BYACCT, READ at line 783, COCRDSLC composes WS-FILE-ERROR-MESSAGE ''File Error: READ on CARDAIX returned RESP <ERROR-RESP>,RESP2 <ERROR-RESP2>'' and shows it in the screen message (ERRMSG).'
+  description: 'On an unexpected RESP in 9150-GETCARD-BYACCT, READ at line 783, COCRDSLC composes WS-FILE-ERROR-MESSAGE ''File Error: READ on CARDAIX returned RESP <ERROR-RESP>,RESP2 <ERROR-RESP2>'', but no statement performs 9150-GETCARD-BYACCT, so the text never reaches the screen message (ERRMSG). No PERFORM or GO TO names 9150-GETCARD-BYACCT or a range that holds it, and the paragraph before it is 9100-GETCARD-BYACCTCARD-EXIT, the exit of 9100-GETCARD-BYACCTCARD, which 9000-READ-DATA performs only through that exit, so control never runs on into 9150-GETCARD-BYACCT (GAP-UNC-018).'
   gap_ids:
   - GAP-INF-006
   - GAP-INF-012

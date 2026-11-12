@@ -2046,12 +2046,37 @@ UNIKIX_UNSAFE_ROOT_SKIP = (
     "carry, so no UniKix deployment, whose tmp/ the JVM options name, can lie inside it; run "
     "under a work root holding neither to cover this case"
 )
+# The UniKix environment and deployment also refuse a deployment root and a
+# work root whose path holds ':', at which COBCPY, PATH and LD_LIBRARY_PATH,
+# naming the deployment's directories, are split; a work root's path is
+# checked for whitespace and quotes first. Under a session work root whose
+# path holds ':', a case needing a fake deployment is skipped for that reason
+# alone.
+PATH_LIST_UNSAFE = (
+    "holds ':', at which COBCPY, PATH and LD_LIBRARY_PATH are split, so the search paths naming the "
+    "deployment's directories below it would break; choose another work root"
+)
+UNIKIX_COLON_ROOT_SKIP = (
+    "the session work root's path holds ':', at which COBCPY, PATH and LD_LIBRARY_PATH are split, so "
+    "no UniKix deployment, whose directories those search paths name, can lie inside it; run under a "
+    "work root without ':' to cover this case"
+)
 
 
 def _holds_jvm_unsafe_text(path: str | os.PathLike[str]) -> bool:
     """Whether ``path`` holds whitespace or a quote, which a JVM option
     variable splits at or reads."""
     return any(char.isspace() or char in "'\"" for char in os.fspath(path))
+
+
+def _unikix_path_refusal(path: str | os.PathLike[str]) -> str | None:
+    """Why the UniKix work-root rule refuses ``path``, after the path, or
+    ``None``: whitespace or a quote first, then ':'."""
+    if _holds_jvm_unsafe_text(path):
+        return JVM_UNSAFE_PATH
+    if ":" in os.fspath(path):
+        return PATH_LIST_UNSAFE
+    return None
 
 
 def _skip_where_no_deployment_fits(temp: str | os.PathLike[str]) -> None:
@@ -2072,15 +2097,9 @@ def unikix_temp_root(carddemo_work_root: Path) -> Iterator[Path]:
         shutil.rmtree(directory)
 
 
-def _fake_unikix_environment(
-    case_root: Path, extra: tuple[str, ...] = ()
-) -> unikix_env.UniKixEnvironment:
-    """``UniKixEnvironment.load`` of a fake environment file under
-    ``case_root``, its deployment root ``<case_root>/work/unikix/<id>``;
-    ``extra`` lines end the file. A load refused because that root's tmp/
-    holds whitespace or a quote skips the case
-    (``_skip_where_no_deployment_fits``); any other refusal, such as a
-    planted link found first, reaches the case."""
+def _fake_unikix_env_file(case_root: Path, extra: tuple[str, ...] = ()) -> Path:
+    """``<case_root>/carddemo.env``, a fake environment file naming empty
+    installation directories under ``case_root``; ``extra`` lines end it."""
     lines = []
     for name in unikix_env.REQUIRED_INSTALLATION_VARS:
         directory = case_root / "installation" / name.lower()
@@ -2094,15 +2113,32 @@ def _fake_unikix_environment(
     ]
     env_file = case_root / "carddemo.env"
     env_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return env_file
+
+
+def _fake_unikix_environ(env_file: Path) -> dict[str, str]:
+    """What ``UniKixEnvironment.load`` reads: ``env_file`` and ``PATH``."""
+    return {unikix_env.ENV_VARIABLE: str(env_file), "PATH": os.environ.get("PATH", os.defpath)}
+
+
+def _fake_unikix_environment(
+    case_root: Path, extra: tuple[str, ...] = ()
+) -> unikix_env.UniKixEnvironment:
+    """``UniKixEnvironment.load`` of a fake environment file under
+    ``case_root`` (``_fake_unikix_env_file``), its deployment root
+    ``<case_root>/work/unikix/<id>``. A load refused because that root's
+    path holds ':' skips the case (UNIKIX_COLON_ROOT_SKIP), and so does one
+    refused because its tmp/ holds whitespace or a quote
+    (``_skip_where_no_deployment_fits``); any other refusal, such as a
+    planted link found first, reaches the case."""
+    env_file = _fake_unikix_env_file(case_root, extra)
     work = case_root / "work"
     root = work / "unikix" / UNIKIX_TEMP_EXECUTION
     try:
-        return unikix_env.UniKixEnvironment.load(
-            work,
-            root,
-            environ={unikix_env.ENV_VARIABLE: str(env_file), "PATH": os.environ.get("PATH", os.defpath)},
-        )
+        return unikix_env.UniKixEnvironment.load(work, root, environ=_fake_unikix_environ(env_file))
     except HarnessError as exc:
+        if str(exc) == f"deployment root {os.path.abspath(root)} {PATH_LIST_UNSAFE}":
+            pytest.skip(UNIKIX_COLON_ROOT_SKIP)
         temp = os.path.abspath(root / "tmp")
         if str(exc) == UNIKIX_UNSAFE_TEMP_REFUSAL.format(path=temp):
             _skip_where_no_deployment_fits(temp)
@@ -2412,6 +2448,77 @@ def test_unikix_load_refuses_a_planted_link_before_sourcing_the_file(
     assert list(target.iterdir()) == []
 
 
+# A deployment root whose path holds ':', taken from the work root or from the
+# execution id.
+UNIKIX_COLON_ROOTS = [
+    pytest.param("wo:rk", UNIKIX_TEMP_EXECUTION, id="work-root"),
+    pytest.param("work", "unikix:case", id="execution-id"),
+]
+
+
+@pytest.mark.parametrize(("work_name", "execution_id"), UNIKIX_COLON_ROOTS)
+def test_unikix_load_refuses_a_deployment_root_holding_a_colon_before_creating_anything(
+    unikix_temp_root: Path, work_name: str, execution_id: str
+) -> None:
+    """COBCPY, PATH and LD_LIBRARY_PATH name the deployment's directories and
+    are split at ':', so load refuses a deployment root whose path holds one,
+    naming it, before it creates or sources anything, under any session work
+    root; an unset CARDDEMO_UNIKIX_ENV is still GAP-MIS-009 first."""
+    env_file = _fake_unikix_env_file(unikix_temp_root)
+    work = unikix_temp_root / work_name
+    root = work / "unikix" / execution_id
+    with pytest.raises(base.AdapterUnavailable) as unset:
+        unikix_env.UniKixEnvironment.load(work, root, environ={"PATH": os.environ.get("PATH", os.defpath)})
+    assert (unset.value.reason, unset.value.gap_id) == (
+        f"{unikix_env.ENV_VARIABLE} not set: no UniKix installation is named for this run",
+        "GAP-MIS-009",
+    )
+    with pytest.raises(HarnessError) as refused:
+        unikix_env.UniKixEnvironment.load(work, root, environ=_fake_unikix_environ(env_file))
+    assert str(refused.value) == f"deployment root {os.path.abspath(root)} {PATH_LIST_UNSAFE}"
+    assert not os.path.lexists(work), "a refused deployment root was created"
+
+
+# An existing installation directory whose path holds ':'. COBCPY names
+# $UNIKIX/copy, and the environment file puts $UNIKIX/bin and $VCOBOL/bin on
+# PATH and $VCOBOL/lib on LD_LIBRARY_PATH, so those two are refused; no search
+# path names INSTEBM, KIXLICDIR or JAVA_HOME, so they are kept as they are.
+UNIKIX_INSTALLATION_COLON_REFUSAL = (
+    "{name} {path} holds ':', at which COBCPY, PATH and LD_LIBRARY_PATH are split, so the search "
+    "paths naming its directories would break; choose an installation path without ':'"
+)
+UNIKIX_INSTALLATION_COLON_CASES = [
+    pytest.param("UNIKIX", True, id="unikix-refused"),
+    pytest.param("VCOBOL", True, id="vcobol-refused"),
+    pytest.param("INSTEBM", False, id="instebm-kept"),
+    pytest.param("KIXLICDIR", False, id="kixlicdir-kept"),
+    pytest.param("JAVA_HOME", False, id="java-home-kept"),
+]
+
+
+@pytest.mark.parametrize(("name", "refused"), UNIKIX_INSTALLATION_COLON_CASES)
+def test_unikix_load_refuses_only_a_search_path_installation_directory_holding_a_colon(
+    unikix_temp_root: Path, name: str, refused: bool
+) -> None:
+    """A UNIKIX or VCOBOL whose path holds ':' would split COBCPY, PATH or
+    LD_LIBRARY_PATH, so vcc and kixclt would fail under GAP-MIS-008; load
+    refuses it as an unusable installation (GAP-MIS-009), naming it. The same
+    ':' in INSTEBM, KIXLICDIR or JAVA_HOME blocks nothing."""
+    installed = unikix_temp_root / "instal:lation" / name.lower()
+    installed.mkdir(parents=True)
+    line = f"{name}={shlex.quote(str(installed))}"
+    if refused:
+        with pytest.raises(base.AdapterUnavailable) as caught:
+            _fake_unikix_environment(unikix_temp_root, (line,))
+        assert (caught.value.reason, caught.value.gap_id) == (
+            UNIKIX_INSTALLATION_COLON_REFUSAL.format(name=name, path=installed),
+            "GAP-MIS-009",
+        )
+    else:
+        environment = _fake_unikix_environment(unikix_temp_root, (line,))
+        assert environment.vars[name] == str(installed)
+
+
 # Lines that try to move a temporary-file setting while the environment file is
 # sourced. The held case follows one with what the file then sees, a temporary
 # file it makes and an ordinary last assignment.
@@ -2627,6 +2734,36 @@ def test_unikix_runtime_script_ending_in_a_held_setting_change_is_unavailable(
             "leaves JAVA_TOOL_OPTIONS with an unmatched quote",
             id="batchenv-unmatched-quote",
         ),
+        # A deployment path moved inside the root, to a path holding ':', at
+        # which the search paths naming it are split; {root} is the root.
+        pytest.param(
+            "userenv", 'MIGAPP_DIR="$BASE_DIR/staging/mi:grated"', "GAP-MIS-003",
+            "moves MIGAPP_DIR to {root}/staging/mi:grated, which holds ':', at which COBCPY, PATH and "
+            "LD_LIBRARY_PATH are split",
+            id="userenv-migapp-colon",
+        ),
+        pytest.param(
+            "batchenv", 'KIXSYS="$BASE_DIR/carddemo/kix:sys"', "GAP-MIS-006",
+            "moves KIXSYS to {root}/carddemo/kix:sys, which holds ':', at which COBCPY, PATH and "
+            "LD_LIBRARY_PATH are split",
+            id="batchenv-kixsys-colon",
+        ),
+        # An installation directory that COBCPY ($UNIKIX/copy), PATH ($UNIKIX/bin,
+        # $VCOBOL/bin) and LD_LIBRARY_PATH ($VCOBOL/lib) name, moved to a folder
+        # the script makes, as its last command, so its path holding ':' is all
+        # that is refused; {root} is the root.
+        pytest.param(
+            "userenv", 'UNIKIX="$BASE_DIR/uni:kix"; mkdir "$UNIKIX"', "GAP-MIS-003",
+            "moves UNIKIX to {root}/uni:kix, which holds ':', at which COBCPY, PATH and "
+            "LD_LIBRARY_PATH are split",
+            id="userenv-unikix-colon",
+        ),
+        pytest.param(
+            "batchenv", 'VCOBOL="$BASE_DIR/vco:bol"; mkdir "$VCOBOL"', "GAP-MIS-006",
+            "moves VCOBOL to {root}/vco:bol, which holds ':', at which COBCPY, PATH and "
+            "LD_LIBRARY_PATH are split",
+            id="batchenv-vcobol-colon",
+        ),
     ],
 )
 def test_unikix_refuses_a_runtime_script_that_moves_temporary_files_out(
@@ -2637,7 +2774,8 @@ def test_unikix_refuses_a_runtime_script_that_moves_temporary_files_out(
     paths = _fake_runtime_scripts(environment, **{script: line})
     with pytest.raises(base.AdapterUnavailable) as caught:
         environment.source_runtime_scripts(unikix_env.CommandSet.load())
-    assert (caught.value.reason, caught.value.gap_id) == (f"{paths[script]} {refusal}", gap)
+    reason = f"{paths[script]} {refusal.format(root=environment.deployment_root)}"
+    assert (caught.value.reason, caught.value.gap_id) == (reason, gap)
     assert environment.vars == loaded and environment.generation == 0
 
 
@@ -2946,11 +3084,12 @@ def _bounded_work_root(case_root: Path, monkeypatch: pytest.MonkeyPatch) -> Path
     """``<case_root>/work``, made 0700 so that it passes extract_zip's
     ownership check whatever the umask, with deploy's zip bounds lowered to
     UNIKIX_ZIP_BOUNDS. Under a session work root whose path holds
-    whitespace or a quote, which extract_zip refuses as a work root, the
-    case is skipped."""
+    whitespace, a quote or ':', which extract_zip refuses as a work root,
+    the case is skipped for that reason."""
     work = case_root / "work"
-    if _holds_jvm_unsafe_text(os.path.abspath(work)):
-        pytest.skip(UNIKIX_UNSAFE_ROOT_SKIP)
+    refusal = _unikix_path_refusal(os.path.abspath(work))
+    if refusal is not None:
+        pytest.skip(UNIKIX_UNSAFE_ROOT_SKIP if refusal == JVM_UNSAFE_PATH else UNIKIX_COLON_ROOT_SKIP)
     work.mkdir(mode=0o700)
     work.chmod(0o700)
     for name, value in UNIKIX_ZIP_BOUNDS.items():
@@ -11813,9 +11952,11 @@ def test_inventory_header() -> None:
     assert sorted(item for item, count in Counter(ids).items() if count > 1) == []
 
 
-# One edit of one resolved source line per case, each taking away a fact that
-# a never-shown message row (OVERWRITTEN_MESSAGES, UNSENT_MESSAGES) rests on:
-# (program, area, path, line, old text, new text, part of the refusal).
+# One edit of one source line per case, a resolved code line or a comment line
+# of the program's own file, each taking away a fact that a never-shown
+# message row (OVERWRITTEN_MESSAGES, UNSENT_MESSAGES, NEVER_SET_MESSAGES,
+# UNPERFORMED_PARAGRAPHS) rests on: (program, area, path, line, old text, new
+# text, part of the refusal).
 NEVER_SHOWN_DRIFTS = {
     "unsigned-work-field-signed": (
         "CORPT00C", "RPT", "app/cbl/CORPT00C.cbl", 75, "PIC 9999", "PIC S9999", "anchor /",
@@ -11838,6 +11979,50 @@ NEVER_SHOWN_DRIFTS = {
     "xctl-passes-another-commarea": (
         "COCRDLIC", "CRD", "app/cbl/COCRDLIC.cbl", 404, "CARDDEMO-COMMAREA", "WS-COMMAREA", "anchor /",
     ),
+    "tested-condition-set-in-code": (
+        "COACTVWC", "ACT", "app/cbl/COACTVWC.cbl", 788, "FOUND-ACCT-IN-MASTER", "DID-NOT-FIND-ACCT-IN-ACCTDAT",
+        "DID-NOT-FIND-ACCT-IN-ACCTDAT must be set nowhere, its only SET being commented out at "
+        "app/cbl/COACTVWC.cbl:792, but is set at app/cbl/COACTVWC.cbl:788",
+    ),
+    "test-of-the-never-set-condition-removed": (
+        "COACTVWC", "ACT", "app/cbl/COACTVWC.cbl", 704, "IF DID-NOT-FIND-ACCT-IN-ACCTDAT", "IF FLG-ACCTFILTER-NOT-OK",
+        r"IF\s+DID-NOT-FIND-ACCT-IN-ACCTDAT\s+GO\s+TO\s+9000-READ-ACCT-EXIT\b/ not found",
+    ),
+    "commented-out-set-changed": (
+        "COACTVWC", "ACT", "app/cbl/COACTVWC.cbl", 792, "DID-NOT-FIND-ACCT-IN-ACCTDAT",
+        "DID-NOT-FIND-ACCT-IN-CARDXREF", r"no comment line matches /\bSET\s+DID-NOT-FIND-ACCT-IN-ACCTDAT",
+    ),
+    "commented-out-set-outside-the-not-found-branch": (
+        "COACTVWC", "ACT", "app/cbl/COACTVWC.cbl", 696, "IF DID-NOT-FIND-ACCT-IN-CARDXREF",
+        "SET DID-NOT-FIND-ACCT-IN-ACCTDAT TO TRUE",
+        "the commented-out SET of DID-NOT-FIND-ACCT-IN-ACCTDAT at line 696 must lie in the NOTFND branch at "
+        "app/cbl/COACTVWC.cbl:789-807",
+    ),
+    "unperformed-paragraph-in-a-thru-range": (
+        "COCRDSLC", "CRD", "app/cbl/COCRDSLC.cbl", 345, "9000-READ-DATA-EXIT", "9150-GETCARD-BYACCT-EXIT",
+        "no statement may perform or go to 9150-GETCARD-BYACCT, but the PERFORM at app/cbl/COCRDSLC.cbl:344 "
+        "reaches it",
+    ),
+    "unperformed-paragraph-named-by-a-go-to": (
+        "COCRDSLC", "CRD", "app/cbl/COCRDSLC.cbl", 674, "2210-EDIT-ACCOUNT-EXIT", "9150-GETCARD-BYACCT",
+        "no statement may perform or go to 9150-GETCARD-BYACCT, but the GO TO at app/cbl/COCRDSLC.cbl:674 "
+        "reaches it",
+    ),
+    "paragraph-before-the-unperformed-one-named-by-a-go-to": (
+        "COCRDSLC", "CRD", "app/cbl/COCRDSLC.cbl", 715, "2220-EDIT-CARD-EXIT", "9100-GETCARD-BYACCTCARD-EXIT",
+        "the GO TO at app/cbl/COCRDSLC.cbl:715 enters 9100-GETCARD-BYACCTCARD-EXIT, from which control runs on "
+        "into 9150-GETCARD-BYACCT",
+    ),
+    "go-to-outside-any-perform-into-a-range-that-runs-on-into-the-unperformed-one": (
+        "COCRDSLC", "CRD", "app/cbl/COCRDSLC.cbl", 348, "COMMON-RETURN", "9100-GETCARD-BYACCTCARD",
+        "the GO TO at app/cbl/COCRDSLC.cbl:348 enters 9100-GETCARD-BYACCTCARD, from which control runs on into "
+        "9150-GETCARD-BYACCT",
+    ),
+    "return-that-ends-the-main-run-on-no-longer-ends-it": (
+        "COCRDSLC", "CRD", "app/cbl/COCRDSLC.cbl", 402, "EXEC CICS RETURN", "EXEC CICS SYNCPOINT",
+        "the statements before the first paragraph run on into 0000-MAIN, from which control runs on into "
+        "9150-GETCARD-BYACCT",
+    ),
 }
 
 
@@ -11849,18 +12034,24 @@ def test_inventory_never_shown_message_rows_refuse_source_drift(carddemo_repo_ro
     description, and the same program with the case's one-line edit raises
     InventoryError naming the broken fact."""
     name, area, path, line, old, new, refusal = NEVER_SHOWN_DRIFTS[case]
-    lines = inventory_tools.resolve_copies(carddemo_repo_root / "app" / "cbl" / f"{name}.cbl", carddemo_repo_root)
-    edited = [
-        dataclasses.replace(source, text=source.text.replace(old, new))
-        if (source.path, source.line) == (path, line) else source
-        for source in lines
-    ]
-    assert edited != lines, f"{path}:{line} does not hold {old!r}"
+    source_file = carddemo_repo_root / "app" / "cbl" / f"{name}.cbl"
+    lines = inventory_tools.resolve_copies(source_file, carddemo_repo_root)
+    comments = inventory_tools.comment_lines(source_file, carddemo_repo_root)
+
+    def edit(sources: list[inventory_tools.SourceLine]) -> list[inventory_tools.SourceLine]:
+        return [
+            dataclasses.replace(source, text=source.text.replace(old, new))
+            if (source.path, source.line) == (path, line) else source
+            for source in sources
+        ]
+
+    edited, edited_comments = edit(lines), edit(comments)
+    assert (edited, edited_comments) != (lines, comments), f"{path}:{line} does not hold {old!r}"
     program = f"app/cbl/{name}.cbl"
-    intact = inventory_tools.online_items(area, inventory_tools.CobolProgram(name, program, lines))
+    intact = inventory_tools.online_items(area, inventory_tools.CobolProgram(name, program, lines, comments))
     assert any("never reaches" in draft["description"] for draft in intact)
     with pytest.raises(inventory_tools.InventoryError, match=re.escape(refusal)):
-        inventory_tools.online_items(area, inventory_tools.CobolProgram(name, program, edited))
+        inventory_tools.online_items(area, inventory_tools.CobolProgram(name, program, edited, edited_comments))
 
 
 
@@ -12488,14 +12679,17 @@ def test_conftest_uses_a_usable_work_root(
 WORK_ROOT_MODES = [0o700, 0o750, 0o755, 0o775, 0o757, 0o777, 0o2775, 0o1777]
 # Work-root names held to the UniKix deployment's path rule as well: with
 # jvm_safe_path, refused when the path holds whitespace or a quote, which the
-# JVM option variables naming the deployment's tmp/ cannot carry, before its
+# JVM option variables naming the deployment's tmp/ cannot carry, or else ':',
+# at which the search paths naming its directories are split, before its
 # owner and mode are looked at; without it only the double quote, which a
-# shell reads, is refused, also before its owner and mode.
+# shell reads, is refused, also before its owner and mode, and ':' is
+# accepted.
 JVM_SAFE_PATH_NAMES = [
     pytest.param("root", id="plain"),
     pytest.param("ro ot", id="space"),
     pytest.param("ro'ot", id="single-quote"),
     pytest.param('ro"ot', id="double-quote"),
+    pytest.param("ro:ot", id="colon"),
 ]
 JVM_UNSAFE_PATH = "holds whitespace or a quote, which a JVM option variable cannot carry; choose another work root"
 # Why every admission refuses a path holding a character a shell reads inside
@@ -12520,7 +12714,7 @@ def test_work_root_admission_matches_the_unikix_deployment(
     for its own reason; neither changes the root. Another owner is simulated
     through ``os.geteuid``, so the case holds whoever runs the suite. The
     expected outcome follows the root's whole path, so a session work root
-    holding whitespace or a quote makes every ``jvm_safe_path`` case the
+    holding whitespace, a quote or ':' makes every ``jvm_safe_path`` case the
     path refusal."""
     root = work_root_case / name
     root.mkdir(mode=0o700)
@@ -12550,7 +12744,7 @@ def test_work_root_admission_matches_the_unikix_deployment(
         )
     else:
         owner_reason = None
-    jvm_reason = JVM_UNSAFE_PATH if _holds_jvm_unsafe_text(root) else owner_reason
+    jvm_reason = _unikix_path_refusal(root) or owner_reason
     default_reason = f"holds '\"', {SHELL_TEXT_REFUSAL}" if '"' in name else owner_reason
     assert refusals == [
         None if jvm_reason is None else f"work root {root} {jvm_reason}",
@@ -12562,25 +12756,29 @@ def test_work_root_admission_matches_the_unikix_deployment(
 
 def test_jvm_safe_path_rule_is_the_unikix_environment_s() -> None:
     """The harness keeps its own copy of the pattern the UniKix environment
-    refuses a temporary directory by (``env._JVM_UNSAFE_PATH_RE``), because
-    it does not import the adapters; the copy must not drift from it."""
+    refuses a temporary directory by (``env._JVM_UNSAFE_PATH_RE``), and of
+    the reason it and the deployment refuse a root whose path holds ':' with
+    (``env._PATH_LIST_UNSAFE``), because it does not import the adapters;
+    neither copy may drift from its original."""
     ours, theirs = harness._JVM_UNSAFE_PATH_RE, unikix_env._JVM_UNSAFE_PATH_RE
     assert (ours.pattern, ours.flags) == (theirs.pattern, theirs.flags)
+    assert harness._PATH_LIST_UNSAFE == unikix_env._PATH_LIST_UNSAFE
 
 
 @pytest.mark.parametrize("jvm_safe_path", [pytest.param(True, id="jvm-safe-path"), pytest.param(False, id="default")])
 def test_work_root_made_under_umask_002(work_root_case: Path, jvm_safe_path: bool) -> None:
     """A missing work root made under umask 002, as an operator's shell may
     have it: either admission creates it private, so the runner accepts it
-    and, for a path without whitespace or a quote, so does the UniKix
+    and, for a path without whitespace, a quote or ':', so does the UniKix
     deployment; missing parents get the umask's mode. Under a session work
-    root whose path holds whitespace or a quote, the ``jvm_safe_path``
+    root whose path holds whitespace, a quote or ':', the ``jvm_safe_path``
     admission refuses the root before creating anything."""
     root = work_root_case / "made" / "root"
-    if jvm_safe_path and _holds_jvm_unsafe_text(root):
+    refusal = _unikix_path_refusal(root)
+    if jvm_safe_path and refusal is not None:
         with pytest.raises(HarnessError) as refused:
             usable_work_root(root, jvm_safe_path=jvm_safe_path)
-        assert str(refused.value) == f"{root} {JVM_UNSAFE_PATH}"
+        assert str(refused.value) == f"{root} {refusal}"
         assert not root.parent.exists(), "a refused work root was created"
         return
     previous = os.umask(0o002)
@@ -12593,7 +12791,7 @@ def test_work_root_made_under_umask_002(work_root_case: Path, jvm_safe_path: boo
     assert os.stat(root).st_mode & 0o777 == 0o700
     assert os.stat(workdir).st_mode & 0o777 == 0o700
     assert os.stat(root.parent).st_mode & 0o777 == 0o775
-    if not _holds_jvm_unsafe_text(root):
+    if refusal is None:
         unikix_adapter.deploy._check_work_root(root)
 
 
@@ -12682,10 +12880,12 @@ def test_a_temporary_root_holding_text_no_work_root_may_hold_is_refused(
         pytest.param("unikix", "work-root", 0o700, id="unikix-private"),
         pytest.param("unikix", "work root", 0o700, id="unikix-whitespace"),
         pytest.param("unikix", "work'root", 0o700, id="unikix-quote"),
+        pytest.param("unikix", "work:root", 0o700, id="unikix-colon"),
         pytest.param("unikix", "work`root", 0o700, id="unikix-backquote"),
         pytest.param("gnucobol-batch", "work root", 0o775, id="gnucobol-batch-group-writable"),
         pytest.param("gnucobol-batch", "work root", 0o700, id="gnucobol-batch-whitespace"),
         pytest.param("gnucobol-batch", "work'root", 0o700, id="gnucobol-batch-quote"),
+        pytest.param("gnucobol-batch", "work:root", 0o700, id="gnucobol-batch-colon"),
         pytest.param("gnucobol-batch", "work`root", 0o700, id="gnucobol-batch-backquote"),
     ],
 )
@@ -12701,18 +12901,19 @@ def test_conftest_holds_a_work_root_to_its_adapter_s_rules(
     path holds a character a shell reads even inside double quotes, is
     replaced under every adapter by a fresh private temporary root with a
     warning naming the rule; under ``unikix`` so is one whose path holds
-    whitespace or a quote, which the deployment would refuse in every
+    whitespace, a quote or ':', which the deployment would refuse in every
     scenario, while gnucobol-batch uses a private one as configured. The
     expected outcome follows the root's whole path, so under a session work
-    root holding whitespace or a quote every unikix case is the path
+    root holding whitespace, a quote or ':' every unikix case is the path
     refusal."""
     import conftest
 
     root = work_root_case / name
     root.mkdir(mode=0o700)
     os.chmod(root, mode)
-    if adapter == "unikix" and _holds_jvm_unsafe_text(root):
-        reason = f"{root} {JVM_UNSAFE_PATH}"
+    unikix_refusal = _unikix_path_refusal(root) if adapter == "unikix" else None
+    if unikix_refusal is not None:
+        reason = f"{root} {unikix_refusal}"
     elif "`" in name:
         reason = f"{root} holds '`', {SHELL_TEXT_REFUSAL}"
     elif mode & (stat.S_IWGRP | stat.S_IWOTH):
@@ -13685,6 +13886,27 @@ def _stub_log_line(name: str) -> str:
     )
 
 
+# _run_bash puts the case's bin/ ahead of the real PATH, which is split at
+# ':', so a bin/ whose path holds one is never searched and the real command
+# of each stub would run instead: sudo, curl, make, pip.
+README_STUB_PATH_SKIP = (
+    "the session work root's path holds ':', at which PATH is split, so the case's stub folder inside "
+    "it cannot go on PATH and the real commands would run in place of the stubs; run under a work "
+    "root without ':' to cover this case"
+)
+
+
+def _stub_folder(case: Path) -> Path:
+    """``case/bin``, made empty, the folder ``_run_bash`` puts first on
+    ``PATH``; the case is skipped (README_STUB_PATH_SKIP) before anything is
+    made when its path holds ``os.pathsep``."""
+    folder = case / "bin"
+    if os.pathsep in str(folder):
+        pytest.skip(README_STUB_PATH_SKIP)
+    folder.mkdir()
+    return folder
+
+
 def _logging_stub(folder: Path, name: str, then: str = "") -> Path:
     """An executable ``folder/name`` that logs its call, then runs ``then``."""
     path = folder / name
@@ -13738,8 +13960,7 @@ def test_readme_gnucobol_build_fails_closed(work_root_case: Path, download_fails
     # cobc lines after the subshell run in every case, and only a verified
     # archive is extracted, configured and built.
     block = _readme_bash_block("## Local setup", "sha256sum -c")
-    stubs = work_root_case / "bin"
-    stubs.mkdir()
+    stubs = _stub_folder(work_root_case)
     _logging_stub(stubs, "sudo")
     _logging_stub(stubs, "curl", CURL_FAILS if download_fails else CURL_WRITES_JUNK)
     if checksum_passes:
@@ -13837,8 +14058,7 @@ def test_readme_launch_gives_pytest_a_private_temp_root(work_root_case: Path, mk
     # PYTEST_DEBUG_TEMPROOT naming a new owner-only folder of a fresh owner-only
     # work root, and never when that root cannot be made.
     block = _readme_bash_block("## Local setup", "pytest tests/")
-    stubs = work_root_case / "bin"
-    stubs.mkdir()
+    stubs = _stub_folder(work_root_case)
     _logging_stub(stubs, "python3.11", VENV_MAKES_ACTIVATE)
     _logging_stub(stubs, "pip")
     if mktemp_fails:

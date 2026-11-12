@@ -394,6 +394,18 @@ def code_lines(path: Path, repo_root: Path = REPO_ROOT) -> list[SourceLine]:
         return fixed_format_lines(read_lines(path), rel)
 
 
+def comment_lines(path: Path, repo_root: Path = REPO_ROOT) -> list[SourceLine]:
+    """The comment lines of a fixed-format COBOL file, those with ``*`` or
+    ``/`` in column 7, each with its columns 8-72 as ``text``: what
+    ``code_lines`` drops, such as a statement that was commented out."""
+    rel = _relative(path, repo_root)
+    return [
+        SourceLine(rel, number, raw[7:72], bool(raw[7:11].strip()), False)
+        for number, raw in enumerate(read_lines(path), start=1)
+        if len(raw) > 7 and raw[6] in "*/"
+    ]
+
+
 _COPY_RE = re.compile(r"(?<![A-Za-z0-9-])COPY\s+(['\"]?)([A-Za-z0-9][A-Za-z0-9-]*)\1", re.I)
 _PERIOD_RE = re.compile(r"\.(?=\s|$)")
 _PSEUDO_PAIR_RE = re.compile(r"==(.*?)==\s+BY\s+==(.*?)==", re.S | re.I)
@@ -587,12 +599,18 @@ class StringStatement:
 
 class CobolProgram:
     """A program after COPY resolution, tokenized, with its data entries and
-    procedure-division paragraphs."""
+    procedure-division paragraphs, and the comment lines of its own file
+    (``comment_lines``) for the anchors that cite a commented-out
+    statement."""
 
-    def __init__(self, name: str, path: str, lines: list[SourceLine]):
+    def __init__(self, name: str, path: str, lines: list[SourceLine], comments: Sequence[SourceLine] = ()):
+        stray = [f"{line.path}:{line.line}" for line in comments if line.path != path]
+        if stray:
+            raise InventoryError(f"{path}: comment lines must come from the program's own file, not {stray[0]}")
         self.name = name
         self.path = path
         self.lines = lines
+        self.comments = list(comments)
         self.tokens = tokenize(lines)
         self.words = [token.word for token in self.tokens]
         self.proc_start = self._procedure_start()
@@ -1906,7 +1924,10 @@ def online_navigation(program: CobolProgram) -> list[Navigation]:
 # Anchors: where a table row's behaviour is in the source
 # --------------------------------------------------------------------------
 
-# ("paragraph", NAME) | ("main",) | ("cics", VERB, RESOURCE) | ("regex", PATTERN)
+# ("paragraph", NAME) | ("main",) | ("cics", VERB, RESOURCE) | ("regex", PATTERN) | ("comment", PATTERN).
+# A regex is searched in the code lines of the program's own file joined by
+# newlines; a comment PATTERN in each comment line of that file, the first
+# match designating its line.
 Anchor = tuple[str, ...]
 
 
@@ -1950,6 +1971,11 @@ def anchor_span(program: CobolProgram, anchor: Anchor) -> tuple[str, int, int]:
         first = numbers[bisect.bisect_right(offsets, match.start()) - 1]
         last = numbers[bisect.bisect_right(offsets, max(match.end() - 1, match.start())) - 1]
         return program.path, first, last
+    if kind == "comment":
+        for comment in program.comments:
+            if re.search(anchor[1], comment.text):
+                return program.path, comment.line, comment.line
+        raise InventoryError(f"{program.path}: no comment line matches /{anchor[1]}/")
     raise InventoryError(f"unknown anchor kind {kind!r}")
 
 
@@ -2211,6 +2237,114 @@ UNSENT_MESSAGES: tuple[tuple[str, str, str, tuple[Anchor, ...], Callable[[CobolP
 )
 
 
+def _not_found_branch(reader: str) -> Anchor:
+    """The NOTFND branch of the RESP EVALUATE that ends paragraph ``reader``,
+    from its WHEN to the END-IF of the STRING into WS-RETURN-MSG that
+    composes the branch's own not-found message. A lookahead ties it to the
+    WHEN OTHER branch that ends the EVALUATE just before ``reader``-EXIT, so
+    the anchor's span is the branch alone."""
+    return (
+        "regex",
+        r"WHEN\s+DFHRESP\s*\(\s*NOTFND\s*\)(?:(?!\bWHEN\b).)*?\bSTRING\b(?:(?!\bWHEN\b).)*?"
+        r"\bINTO\s+WS-RETURN-MSG\s+END-STRING\s+END-IF"
+        rf"(?=\s+WHEN\s+OTHER\b(?:(?!\bWHEN\b).)*?\bEND-EVALUATE\s+\.\s+{reader}-EXIT\.)",
+    )
+
+
+def _tested_after(tester: str, reader: str, condition: str) -> Anchor:
+    """The test of ``condition`` in paragraph ``tester`` right after it
+    performs ``reader`` THRU its exit, leaving ``tester`` when the condition
+    holds."""
+    return (
+        "regex",
+        rf"\b{tester}\.(?:(?!\.\s).)*?\bPERFORM\s+{reader}\s+THRU\s+{reader}-EXIT"
+        rf"\s+IF\s+{condition}\s+GO\s+TO\s+{tester}-EXIT\b",
+    )
+
+
+# Message conditions that are tested but never set, their only SET being
+# commented out, so their text never reaches the screen: (program,
+# condition, gap, anchors that prove it, why). The first anchor is the
+# commented-out SET, the second the NOTFND branch of the read that holds it,
+# the third the test of the condition after that read; the extraction fails
+# when an anchor is gone, the commented-out SET lies outside the branch, or
+# the condition is set in code anywhere. The why gives the line of the
+# commented-out SET as {line}, taken from the first anchor so that it moves
+# with the source, and, as in OVERWRITTEN_MESSAGES, quotes no text.
+NEVER_SET_MESSAGES: tuple[tuple[str, str, str, tuple[Anchor, ...], str], ...] = (
+    (
+        "COACTVWC", "DID-NOT-FIND-ACCT-IN-ACCTDAT", "GAP-UNC-014",
+        (
+            ("comment", r"\bSET\s+DID-NOT-FIND-ACCT-IN-ACCTDAT\s+TO\s+TRUE\b"),
+            _not_found_branch("9300-GETACCTDATA-BYACCT"),
+            _tested_after("9000-READ-ACCT", "9300-GETACCTDATA-BYACCT", "DID-NOT-FIND-ACCT-IN-ACCTDAT"),
+        ),
+        "9000-READ-ACCT tests the condition after it performs 9300-GETACCTDATA-BYACCT, but the only SET of the "
+        "condition, in the NOTFND branch of the READ in 9300-GETACCTDATA-BYACCT, is commented out at line {line}, "
+        "and that branch composes its own not-found message in WS-RETURN-MSG instead",
+    ),
+    (
+        "COACTVWC", "DID-NOT-FIND-CUST-IN-CUSTDAT", "GAP-UNC-014",
+        (
+            ("comment", r"\bSET\s+DID-NOT-FIND-CUST-IN-CUSTDAT\s+TO\s+TRUE\b"),
+            _not_found_branch("9400-GETCUSTDATA-BYCUST"),
+            _tested_after("9000-READ-ACCT", "9400-GETCUSTDATA-BYCUST", "DID-NOT-FIND-CUST-IN-CUSTDAT"),
+        ),
+        "9000-READ-ACCT tests the condition after it performs 9400-GETCUSTDATA-BYCUST, but the only SET of the "
+        "condition, in the NOTFND branch of the READ in 9400-GETCUSTDATA-BYCUST, is commented out at line {line}, "
+        "and that branch composes its own not-found message in WS-RETURN-MSG instead",
+    ),
+    (
+        "COACTUPC", "DID-NOT-FIND-ACCT-IN-ACCTDAT", "GAP-UNC-014",
+        (
+            ("comment", r"\bSET\s+DID-NOT-FIND-ACCT-IN-ACCTDAT\s+TO\s+TRUE\b"),
+            _not_found_branch("9300-GETACCTDATA-BYACCT"),
+            _tested_after("9000-READ-ACCT", "9300-GETACCTDATA-BYACCT", "DID-NOT-FIND-ACCT-IN-ACCTDAT"),
+        ),
+        "9000-READ-ACCT tests the condition after it performs 9300-GETACCTDATA-BYACCT, but the only SET of the "
+        "condition, in the NOTFND branch of the READ in 9300-GETACCTDATA-BYACCT, is commented out at line {line}, "
+        "and that branch composes its own not-found message in WS-RETURN-MSG instead",
+    ),
+    (
+        "COACTUPC", "DID-NOT-FIND-CUST-IN-CUSTDAT", "GAP-UNC-014",
+        (
+            ("comment", r"\bSET\s+DID-NOT-FIND-CUST-IN-CUSTDAT\s+TO\s+TRUE\b"),
+            _not_found_branch("9400-GETCUSTDATA-BYCUST"),
+            _tested_after("9000-READ-ACCT", "9400-GETCUSTDATA-BYCUST", "DID-NOT-FIND-CUST-IN-CUSTDAT"),
+        ),
+        "9000-READ-ACCT tests the condition after it performs 9400-GETCUSTDATA-BYCUST, but the only SET of the "
+        "condition, in the NOTFND branch of the READ in 9400-GETCUSTDATA-BYCUST, is commented out at line {line}, "
+        "and that branch composes its own not-found message in WS-RETURN-MSG instead",
+    ),
+)
+
+
+# Paragraphs that no statement performs, so the messages only they set or
+# compose never reach the screen: (program, paragraph, gap, anchors that
+# prove it, why). The first anchor is the paragraph itself, the others the
+# path the why states: the paragraph before it, and the PERFORM range that
+# ends there. A message is the row's when every statement that can place it
+# in a message field lies in the paragraph; the extraction then fails when an
+# anchor is gone, or when _check_never_performed finds a path of control into
+# the paragraph from an entry of the program, through PERFORMs, GO TOs and
+# paragraphs that run on into the next one. As in OVERWRITTEN_MESSAGES, the
+# why quotes no text.
+UNPERFORMED_PARAGRAPHS: tuple[tuple[str, str, str, tuple[Anchor, ...], str], ...] = (
+    (
+        "COCRDSLC", "9150-GETCARD-BYACCT", "GAP-UNC-018",
+        (
+            ("paragraph", "9150-GETCARD-BYACCT"),
+            ("regex", r"\b9100-GETCARD-BYACCTCARD-EXIT\.\s+EXIT\s+\.\s+9150-GETCARD-BYACCT\."),
+            ("regex", r"\b9000-READ-DATA\.\s+PERFORM\s+9100-GETCARD-BYACCTCARD"
+                      r"\s+THRU\s+9100-GETCARD-BYACCTCARD-EXIT\s+\.\s+9000-READ-DATA-EXIT\."),
+        ),
+        "No PERFORM or GO TO names 9150-GETCARD-BYACCT or a range that holds it, and the paragraph before it is "
+        "9100-GETCARD-BYACCTCARD-EXIT, the exit of 9100-GETCARD-BYACCTCARD, which 9000-READ-DATA performs only "
+        "through that exit, so control never runs on into 9150-GETCARD-BYACCT",
+    ),
+)
+
+
 def _condition_set_sites(program: CobolProgram, condition: str) -> list[tuple[str, int]]:
     """(path, line) of each SET statement of ``program`` that names
     ``condition`` among its receiving operands."""
@@ -2290,6 +2424,277 @@ def _unsent_message(program: CobolProgram, message: Message) -> tuple[str, str] 
     return None
 
 
+def _never_set_message(program: CobolProgram, message: Message) -> tuple[str, str] | None:
+    """(gap, why) of the NEVER_SET_MESSAGES row of ``message``, the message
+    of a single 88-level condition of ``program``, with the line of the
+    commented-out SET in the why; None when no row names it. InventoryError
+    when more than one row names it, an anchor of the row is gone from the
+    source, the commented-out SET no longer lies in the NOTFND branch, or the
+    condition is set anywhere in code."""
+    rows = [row for row in NEVER_SET_MESSAGES if row[0] == program.name and message.conditions == [row[1]]]
+    if len(rows) > 1:
+        raise InventoryError(f"{program.path}: {len(rows)} NEVER_SET_MESSAGES rows name {rows[0][1]}")
+    if not rows:
+        return None
+    _owner, condition, gap, anchors, why = rows[0]
+    spans = [anchor_span(program, anchor) for anchor in anchors]
+    (path, line, _last), (branch_path, first, last) = spans[0], spans[1]
+    if branch_path != path or not first <= line <= last:
+        raise InventoryError(
+            f"{program.path}: the commented-out SET of {condition} at line {line} must lie in the NOTFND branch "
+            f"at {cite(branch_path, [(first, last)])}"
+        )
+    sites = _condition_set_sites(program, condition)
+    if sites:
+        raise InventoryError(
+            f"{program.path}: {condition} must be set nowhere, its only SET being commented out at {path}:{line}, "
+            f"but is set at {', '.join(f'{site}:{number}' for site, number in sites)}"
+        )
+    return gap, why.format(line=line)
+
+
+def _message_sites(program: CobolProgram, message: Message) -> list[tuple[str, int, int]]:
+    """(path, first line, last line) of every statement of ``program`` that
+    can place ``message`` in a message field: each SET of its conditions, and
+    the STRING or file-error statements of a message composed at one site, or
+    each MOVE of its literal or CSMSG01Y constant to a message field."""
+    sites = [
+        (path, line, line) for condition in message.conditions
+        for path, line in _condition_set_sites(program, condition)
+    ]
+    if message.origin in ("string", "file-error"):
+        return sites + [message.span]
+    for start, end, sending, targets in program.moves():
+        if not MESSAGE_FIELDS.intersection(targets):
+            continue
+        if sending.literal:
+            moved = message.origin == "literal" and sending.value.rstrip() == message.text
+        else:
+            moved = message.origin == "common" and sending.word == message.constant
+        if moved:
+            sites.append(program.span(start, end))
+    return sites
+
+
+def _control_transfers(program: CobolProgram) -> list[tuple[str, int, int, int]]:
+    """(verb, index of the verb's token, first, last) of every transfer of
+    control to a paragraph of ``program``, as paragraph numbers: each
+    out-of-line PERFORM with its range, THRU included, a SECTION standing for
+    its paragraphs up to the next SECTION; each paragraph a GO TO names,
+    DEPENDING ON lists included, and each paragraph an ALTER makes a GO TO
+    proceed to, as a range of that paragraph alone."""
+    numbers, words = program.paragraph_index, program.words
+    sections = [number for number, para in enumerate(program.paragraphs) if words[para.start + 1] == "SECTION"]
+
+    def through(number: int) -> int:
+        # The last paragraph that a range ending at paragraph ``number`` runs.
+        if number not in sections:
+            return number
+        later = [section for section in sections if section > number]
+        return (later[0] if later else len(program.paragraphs)) - 1
+
+    transfers: list[tuple[str, int, int, int]] = []
+    for index in range(program.proc_start, len(words) - 1):
+        if words[index] == "PERFORM" and words[index + 1] in numbers:
+            first = numbers[words[index + 1]]
+            last = through(first)
+            if words[index + 2:index + 3] in (["THRU"], ["THROUGH"]):
+                end = words[index + 3] if index + 3 < len(words) else ""
+                last = through(numbers[program.paragraph(end).name])
+            transfers.append(("PERFORM", index, first, last))
+        elif words[index] == "GO":
+            position = index + 2 if words[index + 1] == "TO" else index + 1
+            while position < len(words) and (words[position] in numbers or words[position] == ","):
+                if words[position] != ",":
+                    target = numbers[words[position]]
+                    transfers.append(("GO TO", index, target, target))
+                position += 1
+        elif words[index] == "ALTER":
+            # ALTER p1 TO [PROCEED TO] p2, ...: each TO before a paragraph
+            # name gives the paragraph the altered GO TO now goes to.
+            for position in range(index + 1, program.statement_end(index)):
+                if words[position] == "TO" and words[position + 1] in numbers:
+                    target = numbers[words[position + 1]]
+                    transfers.append(("ALTER", index, target, target))
+    return transfers
+
+
+# Words outside the IF, EVALUATE and inline PERFORM statements of a sentence
+# that open a branch or a conditional phrase (AT END, INVALID KEY, ON SIZE
+# ERROR, ON OVERFLOW, ON EXCEPTION, AT END-OF-PAGE and their NOT forms, whose
+# AT or ON may be left out): a statement after one of them may not run.
+_CONDITIONAL_PHRASE_WORDS = frozenset("ELSE WHEN AT END END-OF-PAGE EOP INVALID NOT ON SIZE OVERFLOW EXCEPTION".split())
+_STATEMENT_VERBS = frozenset(
+    word for word in STATEMENT_WORDS if word not in ("ELSE", "WHEN") and not word.startswith("END-")
+)
+
+
+def _runs_off_end(program: CobolProgram, number: int) -> bool:
+    """Whether control may run off the end of paragraph ``number`` of
+    ``program`` into the next paragraph. It cannot only when the last
+    statement of the paragraph's last sentence, an EXEC block counting as one
+    statement, is a GO TO of one paragraph, GOBACK, STOP RUN, or EXEC CICS
+    RETURN, XCTL or ABEND without RESP, RESP2 or NOHANDLE (with which an error
+    passes control to the next statement); when that statement lies outside
+    the sentence's IF, EVALUATE and inline PERFORM statements and after none
+    of _CONDITIONAL_PHRASE_WORDS outside them; and when the sentence holds no
+    NEXT SENTENCE and the paragraph no EXIT PARAGRAPH. Any other paragraph,
+    an empty one included, is taken to run on, which can only make more
+    paragraphs reachable. EXIT PROGRAM is not taken as an end, since in a
+    program that was not called it passes control to the next statement."""
+    words, para = program.words, program.paragraphs[number]
+    body = para.start + (3 if words[para.start + 1] == "SECTION" else 2)
+    stop = para.end
+    while stop > body and words[stop - 1] == ".":
+        stop -= 1
+    sentence = max((index + 1 for index in range(body, stop) if words[index] == "."), default=body)
+    if (
+        program.find_words("EXIT", "PARAGRAPH", start=body, stop=stop) >= 0
+        or program.find_words("NEXT", "SENTENCE", start=sentence, stop=stop) >= 0
+    ):
+        return True
+    depth, conditional, last = 0, False, -1
+    index = sentence
+    while index < stop:
+        word = words[index]
+        if depth == 0 and word in _STATEMENT_VERBS:
+            last = -1 if conditional else index
+        inline = word == "PERFORM" and "".join(words[index + 1:index + 2]) not in program.paragraph_index
+        if word in ("IF", "EVALUATE") or inline:
+            depth += 1
+        elif word in ("END-IF", "END-EVALUATE", "END-PERFORM"):
+            depth -= 1
+        elif depth == 0 and word in _CONDITIONAL_PHRASE_WORDS:
+            conditional = True
+        index = program.statement_end(index) + 1 if word == "EXEC" else index + 1
+    if last < 0:
+        return True
+    statement = words[last:program.statement_end(last) + 1]
+    if statement[:2] == ["GO", "TO"]:
+        del statement[1]
+    ends = (
+        statement in (["GOBACK"], ["STOP", "RUN"])
+        or (len(statement) == 2 and statement[0] == "GO" and statement[1] in program.paragraph_index)
+        or (
+            statement[:2] == ["EXEC", "CICS"] and statement[2:3] in (["RETURN"], ["XCTL"], ["ABEND"])
+            and not {"RESP", "RESP2", "NOHANDLE"}.intersection(statement)
+        )
+    )
+    return not ends
+
+
+def _check_never_performed(program: CobolProgram, paragraph: str) -> None:
+    """InventoryError, naming the statement through which control gets
+    there, when any path of control can enter paragraph ``paragraph`` of
+    ``program``. The check follows states (paragraph, the paragraph at whose
+    end the innermost active PERFORM returns, or None) from the entries of
+    the program: the first paragraph, which the statements before it run on
+    into, and the targets of their PERFORMs and GO TOs; each paragraph an EXEC
+    block names, such as a HANDLE ABEND label; and each paragraph an ALTER
+    makes a GO TO proceed to. From a state, each PERFORM in its paragraph
+    enters the PERFORM's range, each GO TO its target under the same return,
+    and the paragraph runs on into the next one unless the PERFORM returns at
+    its end or _runs_off_end finds that it cannot. Where it is unsure the
+    check follows more paths, never fewer. EXIT SECTION, DECLARATIVES and
+    ENTRY, which it does not follow, are refused outside EXEC blocks."""
+    number = program.paragraph_index[program.paragraph(paragraph).name]
+    if number == 0:
+        raise InventoryError(
+            f"{program.path}: {paragraph} is the first paragraph, so the statements before it run on into it"
+        )
+    words, numbers, paragraphs = program.words, program.paragraph_index, program.paragraphs
+    inside: set[int] = set()
+    entries: list[tuple[str, int, int, int | None]] = [("", -1, 0, None)]
+    for start, end in program.exec_blocks():
+        inside.update(range(start, end + 1))
+        entries += [("EXEC", start, numbers[words[at]], None) for at in range(start, end + 1) if words[at] in numbers]
+    for index in range(program.proc_start, len(words)):
+        construct = "EXIT SECTION" if words[index:index + 2] == ["EXIT", "SECTION"] else words[index]
+        if construct in ("EXIT SECTION", "DECLARATIVES", "ENTRY") and index not in inside:
+            token = program.tokens[index]
+            raise InventoryError(
+                f"{program.path}: the {construct} at {token.path}:{token.line} passes control in a way the check "
+                f"that no statement reaches {paragraph} does not follow"
+            )
+    starts = [para.start for para in paragraphs]
+    transfers: dict[int, list[tuple[str, int, int, int]]] = {}
+    for verb, index, first, last in _control_transfers(program):
+        owner = bisect.bisect_right(starts, index) - 1
+        if verb == "ALTER" or owner < 0:
+            entries.append((verb, index, first, last if verb == "PERFORM" else None))
+        else:
+            transfers.setdefault(owner, []).append((verb, index, first, last))
+    runs_on = [_runs_off_end(program, current) for current in range(len(paragraphs))]
+    came: dict[tuple[int, int | None], tuple[tuple[int, int | None] | None, str, int]] = {}
+    queue: list[tuple[int, int | None]] = []
+
+    def visit(state: tuple[int, int | None], parent: tuple[int, int | None] | None, verb: str, index: int) -> None:
+        if state not in came:
+            came[state] = (parent, verb, index)
+            queue.append(state)
+
+    for verb, index, first, last in entries:
+        visit((first, last), None, verb, index)
+    for state in queue:
+        current, returns = state
+        # Run-ons first, so that a refusal names a transfer only where no
+        # path as short gets there by running on.
+        if current != returns and current + 1 < len(paragraphs) and runs_on[current]:
+            visit((current + 1, returns), state, "", -1)
+        for verb, index, first, last in transfers.get(current, ()):
+            visit((first, last) if verb == "PERFORM" else (first, returns), state, verb, index)
+    reached = next((state for state in queue if state[0] == number), None)
+    if reached is None:
+        return
+    # Back along the run-ons to the entry or transfer that began them.
+    while not came[reached][1] and came[reached][0] is not None:
+        reached = came[reached][0]
+    (entered, returns), (_parent, verb, index) = reached, came[reached]
+    if not verb:
+        raise InventoryError(
+            f"{program.path}: the statements before the first paragraph run on into {paragraphs[0].name}, from "
+            f"which control runs on into {paragraph}"
+        )
+    where = f"{program.tokens[index].path}:{program.tokens[index].line}"
+    if entered == number or (verb == "PERFORM" and returns is not None and entered <= number <= returns):
+        raise InventoryError(
+            f"{program.path}: no statement may perform or go to {paragraph}, but the {verb} at {where} reaches it"
+        )
+    raise InventoryError(
+        f"{program.path}: the {verb} at {where} enters {paragraphs[entered].name}, from which control runs on "
+        f"into {paragraph}"
+    )
+
+
+def _unperformed_message(program: CobolProgram, message: Message) -> tuple[str, str, str] | None:
+    """(gap, why, paragraph) of the UNPERFORMED_PARAGRAPHS row of
+    ``message``, a message of ``program`` placed in a message field only
+    within the row's paragraph; None when no row holds it. InventoryError
+    when an anchor of a row of ``program`` is gone from the source, more than
+    one row holds the message, or control can reach the paragraph
+    (_check_never_performed)."""
+    covering = []
+    sites: list[tuple[str, int, int]] | None = None
+    for owner, paragraph, gap, anchors, why in UNPERFORMED_PARAGRAPHS:
+        if owner != program.name:
+            continue
+        spans = [anchor_span(program, anchor) for anchor in anchors]
+        path, first, last = spans[0]
+        if sites is None:
+            sites = _message_sites(program, message)
+        if sites and all(site == path and first <= low and high <= last for site, low, high in sites):
+            covering.append((gap, why, paragraph))
+    if len(covering) > 1:
+        raise InventoryError(
+            f"{program.path}: the {program.name} message '{message.text}' lies in each of the paragraphs "
+            f"{', '.join(row[2] for row in covering)} of UNPERFORMED_PARAGRAPHS"
+        )
+    if not covering:
+        return None
+    _check_never_performed(program, covering[0][2])
+    return covering[0]
+
+
 def _message_draft(area: str, program: CobolProgram, message: Message) -> dict[str, Any]:
     name = program.name
     shown = _sink_phrase(program, message)
@@ -2297,6 +2702,14 @@ def _message_draft(area: str, program: CobolProgram, message: Message) -> dict[s
     lines = _line_list(message.sites)
     overwritten = _overwritten_message(program, message) if message.origin == "condition" else None
     unsent = _unsent_message(program, message) if message.origin == "literal" else None
+    never_set = _never_set_message(program, message) if message.origin == "condition" else None
+    unperformed = _unperformed_message(program, message)
+    never_shown = [row for row in (overwritten, unsent, never_set, unperformed) if row is not None]
+    if len(never_shown) > 1:
+        raise InventoryError(
+            f"{program.path}: {len(never_shown)} never-shown message rows hold the {name} message "
+            f"'{message.text}', and at most one may say why its text never reaches the screen"
+        )
     if message.origin == "condition":
         conditions = ", ".join(message.conditions)
         parents = fields
@@ -2305,6 +2718,18 @@ def _message_draft(area: str, program: CobolProgram, message: Message) -> dict[s
             description = (
                 f"Message condition {conditions} of {parents} (VALUE '{message.text}'): the text is defined and "
                 f"set, but never reaches {shown}. {why} ({gap})."
+            )
+        elif never_set is not None:
+            gap, why = never_set
+            description = (
+                f"Message condition {conditions} of {parents} (VALUE '{message.text}'): the text is defined and "
+                f"tested, but never set, so it never reaches {shown}. {why} ({gap})."
+            )
+        elif unperformed is not None:
+            gap, why, paragraph = unperformed
+            description = (
+                f"Message condition {conditions} of {parents} (VALUE '{message.text}'): the text is defined and "
+                f"set in {paragraph}, a paragraph no statement performs, so it never reaches {shown}. {why} ({gap})."
             )
         else:
             description = (
@@ -2318,10 +2743,18 @@ def _message_draft(area: str, program: CobolProgram, message: Message) -> dict[s
                 f"message cannot appear."
             )
     elif message.origin == "common":
-        description = (
-            f"{name} moves {message.constant} ('{message.text}', defined in {COMMON_MESSAGE_COPYBOOK}) to "
-            f"{fields} at line(s) {lines}; the text appears in {shown}."
-        )
+        if unperformed is not None:
+            gap, why, paragraph = unperformed
+            description = (
+                f"{name} moves {message.constant} ('{message.text}', defined in {COMMON_MESSAGE_COPYBOOK}) to "
+                f"{fields} at line(s) {lines}, but no statement performs {paragraph}, so the text never reaches "
+                f"{shown}. {why} ({gap})."
+            )
+        else:
+            description = (
+                f"{name} moves {message.constant} ('{message.text}', defined in {COMMON_MESSAGE_COPYBOOK}) to "
+                f"{fields} at line(s) {lines}; the text appears in {shown}."
+            )
     elif message.origin == "literal":
         if unsent is not None:
             gap, why = unsent
@@ -2329,24 +2762,42 @@ def _message_draft(area: str, program: CobolProgram, message: Message) -> dict[s
                 f"{name} has a MOVE of '{message.text}' to {fields} at line(s) {lines}, but the text never reaches "
                 f"{shown}. {why} ({gap})."
             )
+        elif unperformed is not None:
+            gap, why, paragraph = unperformed
+            description = (
+                f"{name} moves '{message.text}' to {fields} at line(s) {lines}, but no statement performs "
+                f"{paragraph}, so the text never reaches {shown}. {why} ({gap})."
+            )
         else:
             description = f"{name} moves '{message.text}' to {fields} at line(s) {lines}; the text appears in {shown}."
         if message.conditions:
             description += f" Also the VALUE of condition(s) {', '.join(message.conditions)}."
     elif message.origin == "string":
+        if unperformed is not None:
+            gap, why, paragraph = unperformed
+            description = (
+                f"{name} composes '{message.text}' with STRING into {fields} in {message.context}; the parts in "
+                f"<> are run-time values. No statement performs {paragraph}, so the text never reaches {shown}. "
+                f"{why} ({gap})."
+            )
+        else:
+            description = (
+                f"{name} composes '{message.text}' with STRING into {fields} in {message.context}; the parts in "
+                f"<> are run-time values. The text appears in {shown}."
+            )
+    elif unperformed is not None:
+        gap, why, paragraph = unperformed
         description = (
-            f"{name} composes '{message.text}' with STRING into {fields} in {message.context}; the parts in "
-            f"<> are run-time values. The text appears in {shown}."
+            f"On an unexpected RESP in {message.context}, {name} composes WS-FILE-ERROR-MESSAGE "
+            f"'{message.text}', but no statement performs {paragraph}, so the text never reaches {shown}. "
+            f"{why} ({gap})."
         )
     else:
         description = (
             f"On an unexpected RESP in {message.context}, {name} composes WS-FILE-ERROR-MESSAGE "
             f"'{message.text}' and shows it in {shown}."
         )
-    activation, gaps = "always", []
-    for hidden in (overwritten, unsent):
-        if hidden is not None:
-            gaps = [hidden[0]]
+    activation, gaps = "always", [hidden[0] for hidden in never_shown]
     if message.unused:
         activation, gaps = "unused", ["GAP-UNC-013"]
     for owner, pattern, gap, blocked, why in UNREACHABLE_MESSAGES:
@@ -2974,7 +3425,7 @@ class _Repository:
         programs: dict[str, CobolProgram] = {}
         copiers: dict[str, list[str]] = {}
         for name, path in program_files.items():
-            program = CobolProgram(name, _relative(path, root), resolve_copies(path, root))
+            program = CobolProgram(name, _relative(path, root), resolve_copies(path, root), comment_lines(path, root))
             programs[name] = program
             for copied in sorted({line.path for line in program.lines} - {program.path}):
                 copiers.setdefault(copied, []).append(name)

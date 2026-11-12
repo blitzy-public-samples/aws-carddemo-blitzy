@@ -50,8 +50,8 @@ Writes go only to ``<work root>/_unikix_zip`` (once, through its temporary
 sibling ``_unikix_zip.tmp-<pid>``), its ``.sha256`` marker (through a
 temporary sibling ``._unikix_zip.sha256.<pid>.<hex>.tmp``) and ``.lock``
 file beside it, and ``<work root>/unikix/<execution_id>/``. A work root
-whose path holds whitespace or a quote, another user owns, or that group or
-others can write to, is refused, and no marker, lock, log, deployment
+whose path holds whitespace, a quote or ``:``, another user owns, or that
+group or others can write to, is refused, and no marker, lock, log, deployment
 directory, staging file or ``bin/deploy_app`` copy is written through a
 symbolic link. Nothing under ``app/``,
 ``samples/`` or ``diagrams/`` is written, the zip is only read, and
@@ -83,6 +83,7 @@ if _TESTS_ROOT not in sys.path:
 from adapters.base import DEFAULT_DEADLINE_S, AdapterUnavailable, ScenarioTimeout  # noqa: E402
 from adapters.unikix.env import (  # noqa: E402
     _JVM_UNSAFE_PATH_RE,
+    _PATH_LIST_UNSAFE,
     CommandResult,
     CommandSet,
     UniKixEnvironment,
@@ -305,8 +306,8 @@ def extract_zip(
     """Extract the UniKix zip into ``<work root>/_unikix_zip/`` and return it.
 
     The work root is created ``0700`` when missing; one whose path holds
-    whitespace or a quote, that another user owns, or that group or others
-    can write to, raises ``HarnessError``. An
+    whitespace, a quote or ``:``, that another user owns, or that group or
+    others can write to, raises ``HarnessError`` (``_check_work_root``). An
     extraction whose marker ``<work root>/_unikix_zip.sha256`` names the
     zip's sha256, and whose tree matches the zip (the same entries and
     nothing else, no symbolic link, each file's bytes, compared with its
@@ -772,19 +773,24 @@ def _refuse_protected(path: Path, what: str, repo_root: Path) -> None:
 
 
 def _check_work_root(work: Path) -> None:
-    """``HarnessError`` unless the path ``work`` holds no whitespace and no
-    quote, and ``work`` is a directory of the effective user that neither
-    group nor others can write to. The path is checked first: the JVM option
+    """``HarnessError`` unless the path ``work`` holds no whitespace, no
+    quote and no ``os.pathsep`` (``:``), and ``work`` is a directory of the
+    effective user that neither group nor others can write to. The path is
+    checked first, whitespace and quotes before ``:``: the JVM option
     variables name the deployment's temporary directory below it
     (``env._contain_temp``), and a JVM splits them at whitespace and reads
-    quotes. In any other directory, someone else can have planted the links
-    and files this module would write through or trust. A symbolic link
-    naming it must be the user's own as well."""
+    quotes; ``COBCPY``, ``PATH`` and ``LD_LIBRARY_PATH`` name deployment
+    directories below it, and each is split at ``:``
+    (``env._PATH_LIST_UNSAFE``). In any other directory, someone else can
+    have planted the links and files this module would write through or
+    trust. A symbolic link naming it must be the user's own as well."""
     if _JVM_UNSAFE_PATH_RE.search(str(work)):
         raise HarnessError(
             f"work root {work} holds whitespace or a quote, which a JVM option variable "
             "cannot carry; choose another work root"
         )
+    if os.pathsep in str(work):
+        raise HarnessError(f"work root {work} {_PATH_LIST_UNSAFE}")
     try:
         link = os.lstat(work)
         status = os.stat(work)

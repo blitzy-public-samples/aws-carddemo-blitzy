@@ -29,13 +29,15 @@ Environment
         the suite's deepest paths below it stay within ``PATH_MAX``. Under
         ``unikix`` its resolved path must also hold no whitespace and no
         quote, which the JVM option variables naming the deployment's
-        temporary directory cannot carry. Unset, the session silently uses a
+        temporary directory cannot carry, and no ``:``, at which ``COBCPY``,
+        ``PATH`` and ``LD_LIBRARY_PATH``, naming the deployment's directories,
+        are split. Unset, the session silently uses a
         fresh ``tempfile.mkdtemp(prefix="carddemo-")`` root. Set to a value that
         cannot be a work root (blank, inside the repository, not a directory,
         not creatable, not readable, writable and searchable by the user, not
         the user's own, writable by group or others, a path holding one of
         those characters or too long, or, under
-        ``unikix``, a path holding whitespace or a quote), it gives a warning
+        ``unikix``, a path holding whitespace, a quote or ``:``), it gives a warning
         naming the refused value and why, then uses the same fresh temporary
         root instead. Only when that temporary root would lie inside the
         repository, fails the same path rule, or cannot be made, is it a
@@ -134,10 +136,12 @@ WORK_ROOT_PREFIX = "carddemo-"
 DEFAULT_ADAPTER = "gnucobol-batch"
 # Adapters whose deployment refuses a work root whose path holds whitespace or
 # a quote (adapters/unikix/deploy.py), which the JVM option variables naming
-# the deployment's temporary directory cannot carry, so the session holds the
-# configured root's path to the same rule and replaces one it refuses, as it
-# replaces any other unusable root. Every adapter's root must be the user's
-# own and writable by neither group nor others.
+# the deployment's temporary directory cannot carry, or ':', at which COBCPY,
+# PATH and LD_LIBRARY_PATH naming the deployment's directories are split, so
+# the session holds the configured root's path to the same rule and replaces
+# one it refuses, as it replaces any other unusable root; the set is named for
+# the first part of that rule. Every adapter's root must be the user's own and
+# writable by neither group nor others.
 JVM_SAFE_PATH_ADAPTERS = frozenset({"unikix"})
 
 # Adapter name -> (module, class). The module is imported only when a scenario
@@ -226,7 +230,7 @@ def _work_root(adapter: str = DEFAULT_ADAPTER) -> tuple[Path, bool, str | None]:
     nor others, and readable, writable and searchable by the user, its owner
     (it opens as the runner opens it, and a directory can be made in it); for
     an adapter of ``JVM_SAFE_PATH_ADAPTERS`` also a path holding no
-    whitespace and no quote. A refused or unset value
+    whitespace, no quote and no ``:``. A refused or unset value
     is replaced by a fresh ``tempfile.mkdtemp(prefix="carddemo-")`` root,
     which this session owns. That root must lie outside the repository and
     pass the same path rule (``harness.check_work_root_path``) too: when the

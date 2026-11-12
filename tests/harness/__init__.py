@@ -992,6 +992,14 @@ _SHARED_WRITE_BITS = stat.S_IWGRP | stat.S_IWOTH
 # same pattern as _JVM_UNSAFE_PATH_RE in adapters/unikix/env.py, kept here
 # because this package does not import the adapters.
 _JVM_UNSAFE_PATH_RE = re.compile(r"[\s'\"]")
+# Why such a work root's path never holds os.pathsep either: COBCPY, PATH and
+# LD_LIBRARY_PATH name the UniKix deployment's directories below it and are
+# split there. The same text as _PATH_LIST_UNSAFE in adapters/unikix/env.py,
+# with which the deployment refuses such a root, kept here for the same reason.
+_PATH_LIST_UNSAFE = (
+    f"holds {os.pathsep!r}, at which COBCPY, PATH and LD_LIBRARY_PATH are split, so the search "
+    "paths naming the deployment's directories below it would break; choose another work root"
+)
 # What no work root's path holds, whatever the adapter. GnuCOBOL 3.2's cobc
 # runs the C compiler and the linker through /bin/sh with each path in double
 # quotes, inside which the shell still reads a backquote, '$', '"' and '\', so
@@ -1079,9 +1087,15 @@ def usable_work_root(configured: str | PurePath, *, jvm_safe_path: bool = False)
     ``jvm_safe_path`` adds the rule the UniKix deployment
     (``adapters/unikix/deploy.py``) holds a work root's path to: the resolved
     path holds no whitespace and no quote, which the JVM option variables
-    naming the deployment's temporary directory below it cannot carry. It is
+    naming the deployment's temporary directory below it cannot carry, and,
+    checked next, no ``os.pathsep`` (``:``), at which ``COBCPY``, ``PATH``
+    and ``LD_LIBRARY_PATH``, naming the deployment's directories below it,
+    are split; the parameter is named for the first of the two. The rule is
     checked before ``check_work_root_path``, so a path both refuse is refused
-    for the deployment's reason, worded as the deployment words it.
+    for the deployment's reason, worded as the deployment words it. Without
+    it a path holding ``:`` is admitted, since ``gnucobol-batch`` names the
+    one directory below the root it puts in a path list, ``COB_LIBRARY_PATH``,
+    relative to the working directory.
     """
     if not isinstance(configured, (str, PurePath)):
         raise TypeError(f"configured must be str or a path, not {type(configured).__name__}")
@@ -1140,13 +1154,16 @@ def usable_work_root(configured: str | PurePath, *, jvm_safe_path: bool = False)
 
 def _check_jvm_safe_path(root: Path) -> None:
     """``HarnessError`` when the path ``root`` holds whitespace or a quote,
-    worded as the UniKix deployment refuses such a root; nothing is read
-    from the file system."""
+    or else ``os.pathsep`` (``_PATH_LIST_UNSAFE``), worded as the UniKix
+    deployment refuses such a root, in the same order; nothing is read from
+    the file system."""
     if _JVM_UNSAFE_PATH_RE.search(str(root)):
         raise HarnessError(
             f"{root} holds whitespace or a quote, which a JVM option variable cannot carry; "
             "choose another work root"
         )
+    if os.pathsep in str(root):
+        raise HarnessError(f"{root} {_PATH_LIST_UNSAFE}")
 
 
 def check_work_root_path(root: str | PurePath) -> None:
