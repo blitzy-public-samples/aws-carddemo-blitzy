@@ -48,9 +48,9 @@ description: >-
   000000001 is missing from the customer master. COACTUPC keeps the search
   screen: the account id echoed, every account and customer field blank, the
   prompt 'Enter or update id of account to update' and the composed message
-  'CustId:000000001 not found in customer master.Resp: 000000013
-  REAS:0000000'. The message 'Did not find associated customer in master file'
-  never appears, because the SET of its condition is commented out.
+  'CustId:000000001 not found in customer master.Resp: 000000013  REAS:0000000'.
+  The message 'Did not find associated customer in master file' never appears,
+  because the SET of its condition is commented out.
 # Primary item first, then the program, the maps the steps enter on and land
 # on, the transaction the step-3 ENTER starts, the CSD files the three reads
 # use, and the online-only copybooks COACTUPC copies. The composed customer

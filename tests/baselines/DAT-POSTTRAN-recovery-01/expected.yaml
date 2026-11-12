@@ -1,5 +1,5 @@
 # Derived from app/jcl/POSTTRAN.jcl:23,34-38 and
-# app/cbl/CBTRN02C.cbl:194,466-478,562-579,707-733; inferred-not-observed
+# app/cbl/CBTRN02C.cbl:194,466-478,562-579,707-727; inferred-not-observed
 # (GAP-INF-011); pinned, never corrected.
 # messages: the STEP15 abend line, then the step's DISPLAY lines. Both records
 # post through the existing TCATBAL key 00000000001/01/0001, so neither shows

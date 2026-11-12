@@ -67,10 +67,17 @@ The work root is ``--work-root``, else ``CARDDEMO_TEST_WORKDIR``, else a new
 ``tempfile.mkdtemp(prefix="carddemo-")`` that is removed at the end unless a
 failing run kept its working directory there; it never lies inside the
 repository. A configured root is used only when ``harness.usable_work_root``
-accepts it (not blank, outside the repository, a directory, created when
-missing, and writable). An unusable ``--work-root`` is a usage error; an
-unusable ``CARDDEMO_TEST_WORKDIR`` is named on stderr with the reason, and the
-new temporary root replaces it. A configured root serves one run or pytest
+accepts it (not blank, outside the repository, its resolved path holding no
+backquote, ``$``, ``"``, ``\\`` or character that is not printable and no
+longer than the work-root limit, a directory, created with mode 0700 when
+missing, the user's own and writable by neither group nor others, and
+readable, writable and searchable by the user, its owner, as the runner opens
+it and makes each scenario's working directory in it). An unusable
+``--work-root`` is a usage error; an unusable
+``CARDDEMO_TEST_WORKDIR`` is named on stderr with the reason, and the new
+temporary root replaces it. That temporary root must pass the same path rule
+(``harness.check_work_root_path``), or the run is a usage error and the root
+is removed. A configured root serves one run or pytest
 session at a time, since each scenario's ``<work root>/<scenario_id>/`` is
 emptied before it runs: the capture holds ``<work root>/_session.lock``
 (``harness.lock_work_root``) until it ends, and a root another run or session
@@ -104,7 +111,14 @@ _TESTS_ROOT = str(Path(__file__).resolve().parents[1])
 if _TESTS_ROOT not in sys.path:
     sys.path.insert(0, _TESTS_ROOT)
 
-from harness import REPO_ROOT, HarnessError, git_head, lock_work_root, usable_work_root  # noqa: E402
+from harness import (  # noqa: E402
+    REPO_ROOT,
+    HarnessError,
+    check_work_root_path,
+    git_head,
+    lock_work_root,
+    usable_work_root,
+)
 from harness import baselines as _baselines  # noqa: E402
 from harness import results as _results  # noqa: E402
 from harness import runner as _runner  # noqa: E402
@@ -554,10 +568,18 @@ def _work_root(option: str | None) -> tuple[Path, bool]:
     """The resolved work root and whether this run created it as a temporary
     directory. ``--work-root`` and ``CARDDEMO_TEST_WORKDIR`` are taken after
     ``~`` expansion and used only when ``harness.usable_work_root`` accepts
-    them. ``CaptureError`` when ``--work-root`` is unusable. An unusable
+    them: not blank, outside the repository, a resolved path holding no
+    backquote, ``$``, ``"``, ``\\`` or character that is not printable and no
+    longer than the work-root limit, created with mode 0700 when missing, a
+    directory, the user's own and writable by neither group nor others, and
+    readable, writable and searchable by the user, its owner (it opens as the
+    runner opens it, and a directory can be made in it). ``CaptureError``
+    when ``--work-root`` is unusable. An unusable
     ``CARDDEMO_TEST_WORKDIR`` is named on stderr with the reason and, like an
-    unset one, replaced by a new temporary directory; ``CaptureError`` when
-    that directory lies inside the repository."""
+    unset one, replaced by a new temporary directory, which ``mkdtemp`` makes
+    private; ``CaptureError``, once that directory is removed, when it lies
+    inside the repository or its path fails the same path rule
+    (``harness.check_work_root_path``)."""
     if option is not None:
         try:
             return usable_work_root(os.path.expanduser(option)), False
@@ -579,6 +601,11 @@ def _work_root(option: str | None) -> tuple[Path, bool]:
     if resolved == repository or repository in resolved.parents:
         shutil.rmtree(resolved, ignore_errors=True)
         raise CaptureError(f"the work root {resolved} lies inside the repository; it must lie outside it")
+    try:
+        check_work_root_path(resolved)
+    except HarnessError as exc:
+        shutil.rmtree(resolved, ignore_errors=True)
+        raise CaptureError(f"the temporary work root cannot be used: {exc}") from None
     return resolved, True
 
 

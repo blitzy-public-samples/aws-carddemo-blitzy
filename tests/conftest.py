@@ -14,20 +14,31 @@ Environment
     ``CARDDEMO_TEST_WORKDIR``
         The work root: the per-scenario working directories, the build cache,
         the extracted UniKix zip and the UniKix deployment root. It must lie
-        outside the repository, and it is created when missing. Under
+        outside the repository, and it is created when missing, with mode
+        0700. Under every adapter it must be the user's own and writable by
+        neither group nor others (``chmod go-w``), since anyone else who can
+        write to it could swap a scenario's working directory for a link
+        leading elsewhere, and readable, writable and searchable by that
+        user, its owner (``chmod u+rwx``), since the runner opens it for
+        reading and makes each scenario's working directory in it. Its
+        resolved path must hold no backquote, ``$``, ``"`` or ``\\``, which
+        a shell reads even inside the double quotes of
+        the compiler commands GnuCOBOL's cobc runs, and no character that is
+        not printable (a line break, a tab, another control character), which
+        no one-line message can show, and it may have at most 3071 bytes, so
+        the suite's deepest paths below it stay within ``PATH_MAX``. Under
         ``unikix`` its resolved path must also hold no whitespace and no
         quote, which the JVM option variables naming the deployment's
-        temporary directory cannot carry, and it must be the user's own and
-        writable by neither group nor others (``chmod go-w``), as the UniKix
-        deployment requires; a missing one is created with mode 0700. Unset,
-        the session silently uses a fresh
-        ``tempfile.mkdtemp(prefix="carddemo-")`` root. Set to a value that
+        temporary directory cannot carry. Unset, the session silently uses a
+        fresh ``tempfile.mkdtemp(prefix="carddemo-")`` root. Set to a value that
         cannot be a work root (blank, inside the repository, not a directory,
-        not creatable, not writable, or, under ``unikix``, a path holding
-        whitespace or a quote, not the user's own or writable by group or
-        others), it gives a warning naming the refused value and why, then
-        uses the same fresh temporary root instead. Only when that temporary
-        root would lie inside the repository, or cannot be made, is it a
+        not creatable, not readable, writable and searchable by the user, not
+        the user's own, writable by group or others, a path holding one of
+        those characters or too long, or, under
+        ``unikix``, a path holding whitespace or a quote), it gives a warning
+        naming the refused value and why, then uses the same fresh temporary
+        root instead. Only when that temporary root would lie inside the
+        repository, fails the same path rule, or cannot be made, is it a
         usage error. A configured root
         serves one session at a time: each scenario runs in a fresh
         ``<work root>/<scenario_id>/``, so two sessions sharing a root would
@@ -104,7 +115,14 @@ if TYPE_CHECKING:
 # PYTHONDONTWRITEBYTECODE itself.
 sys.dont_write_bytecode = True
 
-from harness import MARKER_FOR_ADAPTER, HarnessError, WorkRootLock, lock_work_root, usable_work_root  # noqa: E402
+from harness import (  # noqa: E402
+    MARKER_FOR_ADAPTER,
+    HarnessError,
+    WorkRootLock,
+    check_work_root_path,
+    lock_work_root,
+    usable_work_root,
+)
 
 TESTS_ROOT = Path(__file__).resolve().parent
 REPO_ROOT = TESTS_ROOT.parent
@@ -115,11 +133,12 @@ WORK_ROOT_PREFIX = "carddemo-"
 
 DEFAULT_ADAPTER = "gnucobol-batch"
 # Adapters whose deployment refuses a work root whose path holds whitespace or
-# a quote, that is not the user's own or that group or others can write to
-# (adapters/unikix/deploy.py), so the session holds the configured root to the
-# same rule and replaces one it refuses, as it replaces any other unusable
-# root.
-OWNER_ONLY_ADAPTERS = frozenset({"unikix"})
+# a quote (adapters/unikix/deploy.py), which the JVM option variables naming
+# the deployment's temporary directory cannot carry, so the session holds the
+# configured root's path to the same rule and replaces one it refuses, as it
+# replaces any other unusable root. Every adapter's root must be the user's
+# own and writable by neither group nor others.
+JVM_SAFE_PATH_ADAPTERS = frozenset({"unikix"})
 
 # Adapter name -> (module, class). The module is imported only when a scenario
 # test first needs the adapter, so selecting one adapter never imports the
@@ -199,31 +218,47 @@ def _work_root(adapter: str = DEFAULT_ADAPTER) -> tuple[Path, bool, str | None]:
     but not used (``None`` otherwise).
 
     A set value is used only when ``harness.usable_work_root`` accepts it: not
-    blank, neither the repository nor inside it (checked before anything is
-    created, so a refused root leaves nothing behind), created when missing,
-    a directory, and writable; for an adapter of ``OWNER_ONLY_ADAPTERS`` also
-    a path holding no whitespace and no quote, and the user's own and
-    writable by neither group nor others, created with mode 0700 when
-    missing. A refused or unset value is replaced by a fresh
-    ``tempfile.mkdtemp(prefix="carddemo-")`` root, which this session owns.
-    That root must lie outside the repository too: when the temporary
-    directory lies inside it, or no temporary root can be made, there is no
+    blank, neither the repository nor inside it, a path holding no
+    backquote, ``$``, ``"``, ``\\`` or character that is not printable and
+    no longer than the work-root limit (all checked before anything is
+    created, so a refused root leaves nothing behind), created with mode 0700
+    when missing, a directory, the user's own and writable by neither group
+    nor others, and readable, writable and searchable by the user, its owner
+    (it opens as the runner opens it, and a directory can be made in it); for
+    an adapter of ``JVM_SAFE_PATH_ADAPTERS`` also a path holding no
+    whitespace and no quote. A refused or unset value
+    is replaced by a fresh ``tempfile.mkdtemp(prefix="carddemo-")`` root,
+    which this session owns. That root must lie outside the repository and
+    pass the same path rule (``harness.check_work_root_path``) too: when the
+    temporary directory lies inside the repository, no temporary root can be
+    made, or the one made fails the rule (it is then removed), there is no
     work root at all, and the usage error names the refused value as well.
-    The configured value is used as given, without ``~`` expansion, as
-    ``harness.results`` reads it to keep work-root paths out of result
-    records."""
+    It is made by ``mkdtemp``, so it is private. The configured value is used
+    as given, without ``~`` expansion, as ``harness.results`` reads it to
+    keep work-root paths out of result records."""
     configured = os.environ.get(WORKDIR_ENV)
     refused = None
     if configured is not None:
         try:
-            return usable_work_root(configured, owner_only=adapter in OWNER_ONLY_ADAPTERS), False, None
+            return usable_work_root(configured, jvm_safe_path=adapter in JVM_SAFE_PATH_ADAPTERS), False, None
         except HarnessError as exc:
             refused = f"{WORKDIR_ENV}={configured!r} is not a usable work root: {exc}"
     try:
         _refuse_inside_repository(Path(tempfile.gettempdir()).resolve(), "the temporary directory")
         root = Path(tempfile.mkdtemp(prefix=WORK_ROOT_PREFIX)).resolve()
-    except (OSError, pytest.UsageError) as exc:
-        problem = str(exc) if isinstance(exc, pytest.UsageError) else f"no temporary work root can be made: {exc}"
+        try:
+            check_work_root_path(root)
+        except HarnessError:
+            with contextlib.suppress(OSError):
+                root.rmdir()
+            raise
+    except (OSError, pytest.UsageError, HarnessError) as exc:
+        if isinstance(exc, pytest.UsageError):
+            problem = str(exc)
+        elif isinstance(exc, HarnessError):
+            problem = f"the temporary work root cannot be used: {exc}"
+        else:
+            problem = f"no temporary work root can be made: {exc}"
         if refused is not None:
             problem = f"{refused}, and no fresh temporary work root can replace it: {problem}"
         raise pytest.UsageError(problem) from exc

@@ -118,6 +118,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import functools
+import hashlib
 import io
 import math
 import re
@@ -362,27 +363,84 @@ def _references(text: str, names: frozenset[str]) -> frozenset[str]:
 @functools.lru_cache(maxsize=2)
 def _zip_index(path: str, digest: str) -> _ZipIndex:
     """The ``_ZipIndex`` of the zip at ``path`` whose sha256 is ``digest``;
-    ``HarnessError`` when the file holds other bytes or is no zip. Nothing is
-    extracted, so it serves scenarios that never reached a session."""
+    ``HarnessError`` when the file holds other bytes, is no zip, or holds a
+    member ``zipfile`` cannot read (a bad CRC, a corrupt compressed stream,
+    an unsupported compression method, encryption: any of
+    ``inventory_tools._ZIP_ERRORS``). Nothing is extracted, so it serves
+    scenarios that never reached a session.
+
+    The zip is held to the bounds of ``deploy.py``. At most one byte more
+    than ``deploy._ZIP_MAX_ARCHIVE_BYTES`` is read, and a longer zip raises
+    ``HarnessError`` before ``zipfile`` parses it. A zip of more than
+    ``deploy._ZIP_MAX_ENTRIES`` entries, those skipped included, raises
+    ``HarnessError`` before any entry is looked at; members to hash that the
+    central directory gives as larger than ``deploy._ZIP_MAX_MEMBER_BYTES``
+    each, or as larger than ``deploy._ZIP_MAX_TOTAL_BYTES`` together, are
+    reported at once in one ``HarnessError`` before any member is read.
+    ``zipfile`` yields no more of a member than that size and checks its CRC.
+    Each member is hashed ``deploy._COMPARE_BLOCK_BYTES`` at a time, so none
+    is held whole except the programs and copybooks (``_SOURCE_DIRS``) whose
+    references are read, each within the member bound."""
     try:
-        data = Path(path).read_bytes()
+        with open(path, "rb") as handle:
+            data = handle.read(deploy._ZIP_MAX_ARCHIVE_BYTES + 1)
     except OSError as exc:
         raise HarnessError(f"cannot read {deploy.ZIP_RELPATH}: {exc.strerror or exc}") from None
+    if len(data) > deploy._ZIP_MAX_ARCHIVE_BYTES:
+        raise HarnessError(
+            f"{deploy.ZIP_RELPATH} holds more than {deploy._ZIP_MAX_ARCHIVE_BYTES} bytes, the most"
+            " the zip may hold"
+        )
     if sha256_hex(data) != digest:
         raise HarnessError(f"{deploy.ZIP_RELPATH} changed while its source identity was read")
     hashes: dict[str, str] = {}
     texts: dict[str, str] = {}
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
-            for info in archive.infolist():
-                if info.is_dir() or info.filename.startswith(_ZIP_SKIPPED):
-                    continue
-                content = archive.read(info)
-                hashes[info.filename] = sha256_hex(content)
-                if info.filename.startswith(_SOURCE_DIRS):
-                    texts[info.filename] = content.decode("latin-1")
-    except (zipfile.BadZipFile, OSError, EOFError) as exc:
-        raise HarnessError(f"cannot read {deploy.ZIP_RELPATH}: {exc}") from None
+            entries = archive.infolist()
+            if len(entries) > deploy._ZIP_MAX_ENTRIES:
+                raise HarnessError(
+                    f"{deploy.ZIP_RELPATH} holds {len(entries)} entries, more than"
+                    f" {deploy._ZIP_MAX_ENTRIES}, the most it may hold"
+                )
+            members = [
+                info for info in entries
+                if not info.is_dir() and not info.filename.startswith(_ZIP_SKIPPED)
+            ]
+            problems = [
+                f"{info.filename!r} is {info.file_size} bytes, more than"
+                f" {deploy._ZIP_MAX_MEMBER_BYTES}, the most one member may hold"
+                for info in members
+                if info.file_size > deploy._ZIP_MAX_MEMBER_BYTES
+            ]
+            total = sum(info.file_size for info in members)
+            if total > deploy._ZIP_MAX_TOTAL_BYTES:
+                problems.append(
+                    f"the members hold {total} bytes, more than {deploy._ZIP_MAX_TOTAL_BYTES},"
+                    " the most they may hold together"
+                )
+            if problems:
+                raise HarnessError(
+                    f"{deploy.ZIP_RELPATH} holds members past a size bound: {'; '.join(problems)}"
+                )
+            for info in members:
+                source = info.filename.startswith(_SOURCE_DIRS)
+                member_digest = hashlib.sha256()
+                blocks: list[bytes] = []
+                with archive.open(info) as member:
+                    while True:
+                        block = member.read(deploy._COMPARE_BLOCK_BYTES)
+                        if not block:
+                            break
+                        member_digest.update(block)
+                        if source:
+                            blocks.append(block)
+                hashes[info.filename] = member_digest.hexdigest()
+                if source:
+                    texts[info.filename] = b"".join(blocks).decode("latin-1")
+    except _inventory._ZIP_ERRORS as exc:
+        reason = str(exc) or type(exc).__name__
+        raise HarnessError(f"cannot read {deploy.ZIP_RELPATH}: {reason}") from None
     names = frozenset(hashes)
     references = {member: _references(text, names) for member, text in texts.items()}
     return _ZipIndex(digest, hashes, references)
@@ -2226,7 +2284,10 @@ class UniKixAdapter(Adapter):
 
     def _build_logs(self, scenario: Any) -> dict[str, bytes]:
         """The tail of the build log of every program and map the scenario
-        executes (``deploy.Deployment.log_dir``)."""
+        executes (``deploy.Deployment.log_dir``). deploy.py redacted the
+        command output in those logs as it wrote them
+        (``UniKixEnvironment.redact``), so they show no JVM option but the
+        owned temporary settings."""
         if self._deployment is None:
             return {}
         logs: dict[str, bytes] = {}

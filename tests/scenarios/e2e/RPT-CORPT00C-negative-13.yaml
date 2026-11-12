@@ -61,7 +61,7 @@ description: >-
   argument depends on the implementation, and any result gives a year before
   1582. A CEEDAYS that rejects such a year with a message other than 2513
   would show 'End Date - Not a valid date...' instead. What the year check is
-  for stays open (GAP-UNC-013).
+  for stays open (GAP-UNC-014).
 # Primary item first, then the program, the maps asserted, the transaction
 # step 3 runs under, the online-only copybooks CORPT00C copies, and the
 # CSUTLDTC date acceptance whose 2513 result decides the outcome. Sign-on and
@@ -85,10 +85,13 @@ tags:
 gap_ids:
 - GAP-INF-009  # RPT end-to-end baselines derived, never observed
 - GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
-# The uncertain-purpose entry behind observed-only: online code no known input
-# executes. Its own list does not name this item; the year check is unreachable
-# for the reason given in the description.
-- GAP-UNC-013
+# The uncertain-purpose entry behind observed-only: online message texts that
+# never reach the screen. It lists this item; the year check is unreachable for
+# the reason given in the description. GAP-UNC-013 is not cited: its 34 items
+# are 3 COACTUPC edit predicates no field edit performs and 31 message
+# conditions of COACTUPC, COACTVWC, COCRDSLC and COCRDUPC that no statement
+# sets or tests.
+- GAP-UNC-014
 - GAP-INF-001  # which dates CEEDAYS accepts, here the 2513 for year 0012, is known only through the stub
 - GAP-MIS-010  # whether UniKix supplies CEEDAYS
 # The UniKix copy of CSUTLDTC trims the Vstring lengths it passes to CEEDAYS;

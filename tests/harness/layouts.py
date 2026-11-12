@@ -56,7 +56,10 @@ and tokens) is the one ``harness/inventory_tools.py`` uses as well:
 ``read_source_lines``, ``fixed_format_lines``, ``join_continuations``,
 ``mask_literals`` and ``tokenize``.
 
-The module only reads ``app/`` and only writes ``tests/inventory/layouts.yaml``.
+The module only reads ``app/`` and writes only ``tests/inventory/layouts.yaml``,
+without following a symbolic link: the output is refused, by ``--write`` and
+``--check`` alike, when it or a folder on its path (``tests/inventory``,
+``tests``) is a link.
 """
 
 from __future__ import annotations
@@ -65,7 +68,9 @@ import argparse
 import bisect
 import copy
 import functools
+import os
 import re
+import stat
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -83,7 +88,6 @@ from harness import (  # noqa: E402
     dump_yaml,
     load_yaml,
     sha256_file,
-    write_text,
 )
 
 __all__ = [
@@ -1854,6 +1858,184 @@ def _first_difference(left: Any, right: Any, path: str = "") -> str | None:
     return path or "(top level)"
 
 
+# Where the output lives below the repository root, folder by folder, and the
+# one name every message gives it, never where a symbolic link would lead.
+_OUTPUT_FOLDERS = ("tests", "inventory")
+_OUTPUT_NAME = "layouts.yaml"
+_OUTPUT_SHOWN = "/".join((*_OUTPUT_FOLDERS, _OUTPUT_NAME))
+_FOLDER_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+
+
+def _output_entry(folder: int, name: str, shown: str, *, is_folder: bool) -> os.stat_result | None:
+    """The status of the entry ``name`` of the open folder ``folder``, shown
+    as ``shown``, without following a symbolic link; None when it is missing.
+    A link, or an entry that is not a folder (``is_folder``) or not a regular
+    file, raises ``HarnessError`` naming it, and so does one that cannot be
+    examined."""
+    try:
+        info = os.stat(name, dir_fd=folder, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise HarnessError(f"{shown} cannot be examined: {exc.strerror or exc}") from None
+    if stat.S_ISLNK(info.st_mode):
+        raise HarnessError(f"{shown} is a symbolic link; nothing is read or written through it")
+    if is_folder and not stat.S_ISDIR(info.st_mode):
+        raise HarnessError(f"{shown} is not a folder; nothing is read or written through it")
+    if not is_folder and not stat.S_ISREG(info.st_mode):
+        raise HarnessError(f"{shown} is not a regular file; nothing is read from or written to it")
+    return info
+
+
+def _output_folder(repo_root: str | Path, *, create: bool) -> int | None:
+    """``tests/inventory`` of ``repo_root``, open: the resolved root, then each
+    folder opened relative to its parent with ``O_NOFOLLOW``, so a link there,
+    including one swapped in meanwhile, fails instead of being followed. A
+    missing folder is created when ``create`` is true; otherwise None is
+    returned. A linked folder, an entry that is not a folder, or a folder that
+    cannot be opened or created raises ``HarnessError`` naming it. The caller
+    closes the returned descriptor."""
+    shown = os.fspath(repo_root)
+    try:
+        folder = os.open(os.path.realpath(repo_root), _FOLDER_FLAGS)
+    except OSError as exc:
+        raise HarnessError(
+            f"the repository root {shown} cannot be opened: {exc.strerror or exc}"
+        ) from None
+    try:
+        for depth, part in enumerate(_OUTPUT_FOLDERS, start=1):
+            shown = "/".join(_OUTPUT_FOLDERS[:depth])
+            if _output_entry(folder, part, shown, is_folder=True) is None:
+                if not create:
+                    os.close(folder)
+                    return None
+                try:
+                    os.mkdir(part, dir_fd=folder)
+                except FileExistsError:
+                    pass  # made meanwhile: the no-follow open below decides
+                except OSError as exc:
+                    raise HarnessError(
+                        f"{shown} cannot be created: {exc.strerror or exc}"
+                    ) from None
+            try:
+                child = os.open(part, _FOLDER_FLAGS | os.O_NOFOLLOW, dir_fd=folder)
+            except OSError as exc:
+                # Names a link or a non-folder put there since the check above.
+                _output_entry(folder, part, shown, is_folder=True)
+                raise HarnessError(f"{shown} cannot be opened: {exc.strerror or exc}") from None
+            parent, folder = folder, child
+            os.close(parent)
+    except BaseException:
+        os.close(folder)
+        raise
+    return folder
+
+
+def _read_output(folder: int) -> bytes | None:
+    """The bytes of ``layouts.yaml`` in the open output folder, opened with
+    ``O_NOFOLLOW`` (and ``O_NONBLOCK``, so a FIFO cannot stall the open);
+    None when it is missing. A link or a non-regular file raises
+    ``HarnessError``; a failing read raises ``OSError``."""
+    try:
+        descriptor = os.open(
+            _OUTPUT_NAME, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=folder
+        )
+    except FileNotFoundError:
+        return None
+    except OSError:
+        # Names a link or a non-regular file; anything else is the OSError.
+        _output_entry(folder, _OUTPUT_NAME, _OUTPUT_SHOWN, is_folder=False)
+        raise
+    try:
+        # Checked on the descriptor, before fdopen, which refuses a folder
+        # with an OSError of its own.
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise HarnessError(
+                f"{_OUTPUT_SHOWN} is not a regular file; nothing is read from or written to it"
+            )
+        handle = os.fdopen(descriptor, "rb")
+    except BaseException:
+        os.close(descriptor)
+        raise
+    with handle:
+        return handle.read()
+
+
+def _check_output(repo_root: str | Path) -> None:
+    """Refuse, with ``HarnessError`` naming it, an output path on which
+    ``tests``, ``tests/inventory`` or ``tests/inventory/layouts.yaml`` of
+    ``repo_root`` is a symbolic link, a folder is not a folder, or the file is
+    not a regular file. Missing entries pass: ``--write`` creates them."""
+    folder = _output_folder(repo_root, create=False)
+    if folder is None:
+        return
+    try:
+        _output_entry(folder, _OUTPUT_NAME, _OUTPUT_SHOWN, is_folder=False)
+    finally:
+        os.close(folder)
+
+
+def _read_layouts(repo_root: str | Path = REPO_ROOT) -> bytes | None:
+    """The bytes of ``<repo_root>/tests/inventory/layouts.yaml``, read without
+    following a symbolic link (``_output_folder``, ``_read_output``); None
+    when it or a folder on its path is missing."""
+    folder = _output_folder(repo_root, create=False)
+    if folder is None:
+        return None
+    try:
+        return _read_output(folder)
+    finally:
+        os.close(folder)
+
+
+def _write_layouts(text: str, repo_root: str | Path = REPO_ROOT) -> bool:
+    """Make ``<repo_root>/tests/inventory/layouts.yaml``, and no other file,
+    hold ``text`` as UTF-8 without following a symbolic link. Returns whether
+    the file was written.
+
+    The folders are reached as ``_output_folder`` reaches them, a missing one
+    created. A link or a non-regular file of that name raises
+    ``HarnessError``; an identical file is left untouched, so its mtime stays
+    stable. Otherwise the text goes to a new ``.layouts.yaml.<pid>.<random>.tmp``
+    beside it, created exclusively and never through a link, which
+    ``os.replace`` swaps in within the open folder, so a reader sees the old
+    or the new content and a hard link to the old file keeps the old bytes.
+    An existing file's permission bits are kept; a new one gets the mode the
+    umask allows. The new file is removed when anything fails, and an
+    ``OSError`` writing it propagates."""
+    if not isinstance(text, str):
+        raise TypeError(f"text must be str, not {type(text).__name__}")
+    data = text.encode("utf-8")
+    folder = _output_folder(repo_root, create=True)
+    try:
+        info = _output_entry(folder, _OUTPUT_NAME, _OUTPUT_SHOWN, is_folder=False)
+        if info is not None and info.st_size == len(data) and _read_output(folder) == data:
+            return False
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+        while True:
+            temp = f".{_OUTPUT_NAME}.{os.getpid()}.{os.urandom(4).hex()}.tmp"
+            try:
+                descriptor = os.open(temp, flags, 0o666, dir_fd=folder)
+                break
+            except FileExistsError:
+                continue
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(data)
+                if info is not None:
+                    os.fchmod(handle.fileno(), stat.S_IMODE(info.st_mode))
+            os.replace(temp, _OUTPUT_NAME, src_dir_fd=folder, dst_dir_fd=folder)
+        except BaseException:
+            try:
+                os.unlink(temp, dir_fd=folder)
+            except FileNotFoundError:
+                pass
+            raise
+        return True
+    finally:
+        os.close(folder)
+
+
 _EPILOG = f"""\
 examples (from the repository root):
   python {GENERATED_BY} --write
@@ -1862,11 +2044,13 @@ examples (from the repository root):
 exit codes:
   0  --check: the file is current; --write: the file was written or was current
   1  --check: the file is stale, missing or invalid; either action: a source or
-     the file could not be read, parsed or written
+     the file could not be read, parsed or written, or the file or a folder on
+     its path is a symbolic link
   2  usage error
 
 The sources and tests/inventory/layouts.yaml are those of the repository holding
-this script, whatever the current directory.
+this script, whatever the current directory. The file is never read or written
+through a symbolic link.
 """
 
 
@@ -1887,11 +2071,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    # Read when called, so the repository can be pointed elsewhere; the output
+    # is always its tests/inventory/layouts.yaml, shown by that name.
+    repo_root = REPO_ROOT
+    shown = _OUTPUT_SHOWN
     try:
-        # An output symlink resolving outside the repository is refused here,
-        # before anything is generated or written.
-        shown = _relative(LAYOUTS_FILE, REPO_ROOT)
-        generated = generate()
+        # A symbolic link at tests, tests/inventory or the file, or a file that
+        # is not regular, is refused before anything is generated; the write
+        # and the read below refuse one put there meanwhile.
+        _check_output(repo_root)
+        generated = generate(repo_root)
         text = dump_yaml(generated)
     except HarnessError as exc:
         print(f"layouts: {exc}", file=sys.stderr)
@@ -1902,7 +2091,10 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if args.write:
         try:
-            written = write_text(LAYOUTS_FILE, text)
+            written = _write_layouts(text, repo_root)
+        except HarnessError as exc:
+            print(f"layouts: {exc}", file=sys.stderr)
+            return 1
         except OSError as exc:
             print(f"layouts: cannot write {shown}: {exc.strerror or exc}", file=sys.stderr)
             return 1
@@ -1912,20 +2104,23 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     try:
-        committed_text = LAYOUTS_FILE.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        print(f"{shown} is missing: run python {GENERATED_BY} --write", file=sys.stderr)
+        committed_bytes = _read_layouts(repo_root)
+    except HarnessError as exc:
+        print(f"layouts: {exc}", file=sys.stderr)
         return 1
-    except UnicodeDecodeError:
-        committed_text = None  # load_yaml names the first byte that is not UTF-8
     except OSError as exc:
         print(f"layouts: cannot read {shown}: {exc.strerror or exc}", file=sys.stderr)
         return 1
-    if committed_text == text:
+    if committed_bytes is None:
+        print(f"{shown} is missing: run python {GENERATED_BY} --write", file=sys.stderr)
+        return 1
+    if committed_bytes == text.encode("utf-8"):
         print(f"{shown} is current")
         return 0
     try:
-        committed = load_yaml(LAYOUTS_FILE)
+        # Only to name the first difference: the verdict is already stale.
+        # load_yaml also names the first byte that is not UTF-8.
+        committed = load_yaml(Path(repo_root, *_OUTPUT_FOLDERS, _OUTPUT_NAME))
     except YAMLLoadError as exc:
         # The message already names the file (and the line where known); a
         # value the safe constructors refuse arrives here too.

@@ -448,7 +448,6 @@ items:
   - GAP-MIS-011
   - GAP-MIS-014
   - GAP-MIS-017
-  - GAP-UNC-013
   - GAP-UNC-014
   - GAP-UNC-017
   - GAP-UNC-018
@@ -3199,7 +3198,7 @@ items:
   source: app/cbl/COACTVWC.cbl:119-120
   status: not-covered
 - activation: always
-  description: 'Message condition WS-PROMPT-FOR-ACCT of WS-RETURN-MSG (VALUE ''Account number not provided''): when the condition is set the text appears in the screen message (ERRMSG).'
+  description: 'Message condition WS-PROMPT-FOR-ACCT of WS-RETURN-MSG (VALUE ''Account number not provided''): the text is defined and set, but never reaches the screen message (ERRMSG). 2210-EDIT-ACCOUNT sets the condition only for a blank account id, together with FLG-ACCTFILTER-BLANK, and on its return 2200-EDIT-MAP-INPUTS sets NO-SEARCH-CRITERIA-RECEIVED of the same WS-RETURN-MSG for that flag before any send (GAP-UNC-014).'
   gap_ids:
   - GAP-DOC-025
   - GAP-INF-005
@@ -3577,7 +3576,7 @@ items:
   source: app/cbl/COACTVWC.cbl:460-535
   status: blocked
 - activation: always
-  description: 'Message condition FOUND-ACCOUNT-DATA of WS-INFO-MSG (VALUE ''Details of selected account shown above''): when the condition is set the text appears in the information message (INFOMSG).'
+  description: 'Message condition FOUND-ACCOUNT-DATA of WS-INFO-MSG (VALUE ''Details of selected account shown above''): the text is defined and set, but never reaches the information message (INFOMSG). 1200-EDIT-MAP-INPUTS sets the condition once the account details are fetched, and before every send of the map 3000-SEND-MAP performs 3250-SETUP-INFOMSG, whose EVALUATE sets another WS-INFO-MSG condition for every ACUP-CHANGE-ACTION value before it moves WS-INFO-MSG to INFOMSG (GAP-UNC-014).'
   gap_ids:
   - GAP-DOC-025
   - GAP-INF-005
@@ -3715,7 +3714,7 @@ items:
   source: app/cbl/COACTUPC.cbl:481-482
   status: not-covered
 - activation: always
-  description: 'Message condition WS-PROMPT-FOR-ACCT of WS-RETURN-MSG (VALUE ''Account number not provided''): when the condition is set the text appears in the screen message (ERRMSG).'
+  description: 'Message condition WS-PROMPT-FOR-ACCT of WS-RETURN-MSG (VALUE ''Account number not provided''): the text is defined and set, but never reaches the screen message (ERRMSG). 1210-EDIT-ACCOUNT sets the condition only for a blank account id, together with FLG-ACCTFILTER-BLANK, and on its return 1200-EDIT-MAP-INPUTS sets NO-SEARCH-CRITERIA-RECEIVED of the same WS-RETURN-MSG for that flag before any send (GAP-UNC-014).'
   gap_ids:
   - GAP-DOC-025
   - GAP-INF-005
@@ -7183,7 +7182,7 @@ items:
   - GAP-MIS-014
   - GAP-UNC-010
   - GAP-UNC-012
-  - GAP-UNC-013
+  - GAP-UNC-014
   id: INV-CRD-001
   kind: program
   level: e2e
@@ -7232,7 +7231,6 @@ items:
   - GAP-MIS-014
   - GAP-UNC-010
   - GAP-UNC-012
-  - GAP-UNC-013
   - GAP-UNC-018
   id: INV-CRD-002
   kind: program
@@ -7338,7 +7336,7 @@ items:
   - GAP-MIS-011
   - GAP-MIS-014
   - GAP-UNC-010
-  - GAP-UNC-013
+  - GAP-UNC-014
   id: INV-CRD-004
   kind: map
   level: e2e
@@ -7386,7 +7384,6 @@ items:
   - GAP-MIS-011
   - GAP-MIS-014
   - GAP-UNC-010
-  - GAP-UNC-013
   - GAP-UNC-018
   id: INV-CRD-005
   kind: map
@@ -7496,7 +7493,7 @@ items:
   source: app/cbl/COCRDLIC.cbl:115-116
   status: blocked
 - activation: always
-  description: 'Message condition WS-EXIT-MESSAGE of WS-ERROR-MSG (VALUE ''PF03 PRESSED.EXITING''): when the condition is set the text appears in the screen message (ERRMSG).'
+  description: 'Message condition WS-EXIT-MESSAGE of WS-ERROR-MSG (VALUE ''PF03 PRESSED.EXITING''): the text is defined and set, but never reaches the screen message (ERRMSG). The PF3 branch of 0000-MAIN sets the condition and at once XCTLs to COMEN01C, the LIT-MENUPGM, with CARDDEMO-COMMAREA alone; WS-ERROR-MSG belongs to WS-MISC-STORAGE, which that COMMAREA does not carry, so the text is lost with the working storage of COCRDLIC before any map is sent (GAP-UNC-014).'
   gap_ids:
   - GAP-INF-006
   - GAP-INF-012
@@ -7506,7 +7503,7 @@ items:
   - GAP-MIS-006
   - GAP-MIS-007
   - GAP-MIS-009
-  - GAP-UNC-013
+  - GAP-UNC-014
   id: INV-CRD-008
   kind: rule
   level: e2e
@@ -7993,7 +7990,6 @@ items:
   - GAP-MIS-006
   - GAP-MIS-007
   - GAP-MIS-009
-  - GAP-UNC-013
   - GAP-UNC-018
   id: INV-CRD-034
   kind: recovery
@@ -10664,7 +10660,6 @@ items:
   - GAP-MIS-011
   - GAP-MIS-014
   - GAP-UNC-012
-  - GAP-UNC-013
   - GAP-UNC-019
   id: INV-BIL-001
   kind: program
@@ -10712,7 +10707,6 @@ items:
   - GAP-MIS-009
   - GAP-MIS-011
   - GAP-MIS-014
-  - GAP-UNC-013
   - GAP-UNC-019
   id: INV-BIL-002
   kind: map
@@ -10934,7 +10928,7 @@ items:
   - GAP-MIS-006
   - GAP-MIS-007
   - GAP-MIS-009
-  - GAP-UNC-013
+  - GAP-UNC-019
   id: INV-BIL-012
   kind: recovery
   level: e2e
@@ -11144,7 +11138,7 @@ items:
   - GAP-MIS-011
   - GAP-MIS-017
   - GAP-UNC-012
-  - GAP-UNC-013
+  - GAP-UNC-014
   id: INV-RPT-001
   kind: program
   level: e2e
@@ -11201,7 +11195,7 @@ items:
   - GAP-MIS-010
   - GAP-MIS-011
   - GAP-MIS-017
-  - GAP-UNC-013
+  - GAP-UNC-014
   id: INV-RPT-002
   kind: map
   level: e2e
@@ -11596,7 +11590,7 @@ items:
   source: app/cbl/CORPT00C.cbl:340-341
   status: blocked
 - activation: always
-  description: CORPT00C moves 'Start Date - Not a valid Year...' to WS-MESSAGE at line(s) 348; the text appears in the screen message (ERRMSG).
+  description: CORPT00C has a MOVE of 'Start Date - Not a valid Year...' to WS-MESSAGE at line(s) 348, but the text never reaches the screen message (ERRMSG). The MOVE runs only when SDTYYYYI OF CORPT0AI IS NOT NUMERIC, and before that test the field is overwritten by WS-NUM-9999, an unsigned PIC 9999 into which the COMPUTE stores FUNCTION NUMVAL-C of the field, so the 4-character field always holds four digits and the test cannot hold (GAP-UNC-014).
   gap_ids:
   - GAP-DOC-021
   - GAP-INF-001
@@ -11609,7 +11603,7 @@ items:
   - GAP-MIS-007
   - GAP-MIS-009
   - GAP-MIS-010
-  - GAP-UNC-013
+  - GAP-UNC-014
   id: INV-RPT-019
   kind: rule
   level: e2e
@@ -11657,7 +11651,7 @@ items:
   source: app/cbl/CORPT00C.cbl:366-367
   status: blocked
 - activation: always
-  description: CORPT00C moves 'End Date - Not a valid Year...' to WS-MESSAGE at line(s) 374; the text appears in the screen message (ERRMSG).
+  description: CORPT00C has a MOVE of 'End Date - Not a valid Year...' to WS-MESSAGE at line(s) 374, but the text never reaches the screen message (ERRMSG). The MOVE runs only when EDTYYYYI OF CORPT0AI IS NOT NUMERIC, and before that test the field is overwritten by WS-NUM-9999, an unsigned PIC 9999 into which the COMPUTE stores FUNCTION NUMVAL-C of the field, so the 4-character field always holds four digits and the test cannot hold (GAP-UNC-014).
   gap_ids:
   - GAP-DOC-021
   - GAP-INF-001
@@ -11670,7 +11664,7 @@ items:
   - GAP-MIS-007
   - GAP-MIS-009
   - GAP-MIS-010
-  - GAP-UNC-013
+  - GAP-UNC-014
   id: INV-RPT-022
   kind: rule
   level: e2e
@@ -13391,7 +13385,7 @@ items:
   - GAP-STB-002
   - GAP-STB-004
   - GAP-STB-011
-  - GAP-UNC-013
+  - GAP-UNC-014
   - GAP-UNC-017
   id: INV-UTL-003
   kind: rule
@@ -13502,7 +13496,6 @@ items:
   - GAP-MIS-010
   - GAP-MIS-011
   - GAP-MIS-014
-  - GAP-UNC-013
   - GAP-UNC-014
   - GAP-UNC-017
   - GAP-UNC-019
@@ -13719,7 +13712,6 @@ items:
   - GAP-MIS-007
   - GAP-MIS-009
   - GAP-MIS-011
-  - GAP-UNC-013
   - GAP-UNC-018
   id: INV-CFG-002
   kind: config
@@ -13750,7 +13742,7 @@ items:
   - GAP-MIS-011
   - GAP-MIS-014
   - GAP-UNC-010
-  - GAP-UNC-013
+  - GAP-UNC-014
   - GAP-UNC-018
   id: INV-CFG-003
   kind: config
@@ -14114,7 +14106,6 @@ items:
   - GAP-MIS-010
   - GAP-MIS-011
   - GAP-MIS-014
-  - GAP-UNC-013
   - GAP-UNC-014
   - GAP-UNC-017
   - GAP-UNC-019
@@ -14338,7 +14329,6 @@ items:
   - GAP-MIS-009
   - GAP-MIS-011
   - GAP-MIS-014
-  - GAP-UNC-013
   - GAP-UNC-019
   id: INV-CFG-007
   kind: config
@@ -14762,7 +14752,6 @@ items:
   - GAP-MIS-009
   - GAP-MIS-011
   - GAP-MIS-014
-  - GAP-UNC-013
   - GAP-UNC-019
   id: INV-CFG-012
   kind: transaction
@@ -14810,7 +14799,6 @@ items:
   - GAP-MIS-011
   - GAP-MIS-014
   - GAP-UNC-010
-  - GAP-UNC-013
   - GAP-UNC-018
   id: INV-CFG-013
   kind: transaction
@@ -14854,7 +14842,7 @@ items:
   - GAP-MIS-011
   - GAP-MIS-014
   - GAP-UNC-010
-  - GAP-UNC-013
+  - GAP-UNC-014
   id: INV-CFG-014
   kind: transaction
   level: e2e
@@ -15044,7 +15032,7 @@ items:
   - GAP-MIS-010
   - GAP-MIS-011
   - GAP-MIS-017
-  - GAP-UNC-013
+  - GAP-UNC-014
   id: INV-CFG-019
   kind: transaction
   level: e2e
@@ -15699,7 +15687,6 @@ items:
   - GAP-MIS-014
   - GAP-MIS-017
   - GAP-UNC-010
-  - GAP-UNC-013
   - GAP-UNC-014
   - GAP-UNC-017
   - GAP-UNC-018
@@ -16277,7 +16264,6 @@ items:
   - GAP-MIS-014
   - GAP-MIS-017
   - GAP-UNC-010
-  - GAP-UNC-013
   - GAP-UNC-014
   - GAP-UNC-017
   - GAP-UNC-018
@@ -16801,7 +16787,6 @@ items:
   - GAP-MIS-014
   - GAP-MIS-017
   - GAP-UNC-010
-  - GAP-UNC-013
   - GAP-UNC-014
   - GAP-UNC-017
   - GAP-UNC-018
@@ -17539,7 +17524,6 @@ items:
   - GAP-MIS-014
   - GAP-MIS-017
   - GAP-UNC-010
-  - GAP-UNC-013
   - GAP-UNC-014
   - GAP-UNC-017
   - GAP-UNC-018
@@ -18049,7 +18033,6 @@ items:
   - GAP-MIS-011
   - GAP-MIS-014
   - GAP-UNC-010
-  - GAP-UNC-013
   - GAP-UNC-014
   - GAP-UNC-017
   - GAP-UNC-018
@@ -18553,7 +18536,6 @@ items:
   - GAP-MIS-011
   - GAP-MIS-014
   - GAP-UNC-010
-  - GAP-UNC-013
   - GAP-UNC-014
   - GAP-UNC-017
   - GAP-UNC-018
@@ -19410,7 +19392,6 @@ items:
   - GAP-MIS-011
   - GAP-MIS-014
   - GAP-UNC-010
-  - GAP-UNC-013
   - GAP-UNC-014
   - GAP-UNC-017
   - GAP-UNC-018

@@ -40,7 +40,8 @@ Command line (run from the repository root)::
     python tests/harness/inventory_tools.py --check    # drift check, exit 1 on drift
 
 The tool only reads ``app/``, ``samples/`` and ``README.md``; the UniKix zip is
-read in memory with ``zipfile``. It makes no network call and writes nothing
+read in memory with ``zipfile``, and a zip or member past its size bound is
+refused before it is read. It makes no network call and writes nothing
 outside ``tests/inventory/``: ``--freeze``, ``append_items`` and
 ``append_closures`` resolve the inventory path, symlinks followed, and refuse
 any target outside ``tests/inventory/`` of the repository holding this script,
@@ -344,18 +345,41 @@ _ZIP_ERRORS = (
 )
 
 
+# The UniKix zip is 434,174 bytes, and fct.lst, the member the inventory
+# cites, 938 (its largest member is 186,302). Both bounds lie far above these
+# and far below what reading a zip, or one member, into memory would exhaust.
+_ZIP_MAX_ARCHIVE_BYTES = 16 * 1024 * 1024
+_ZIP_MAX_MEMBER_BYTES = 16 * 1024 * 1024
+
+
 def _zip_member(archive_path: Path, shown: str, member: str) -> bytes:
     """The bytes of ``member`` of the zip at ``archive_path`` (``shown`` in
     messages), read in memory. ``__MACOSX/`` AppleDouble entries and
-    directories are no members. A missing member, or a missing, unreadable or
-    damaged zip, raises InventoryError."""
+    directories are no members. A zip larger than ``_ZIP_MAX_ARCHIVE_BYTES``
+    is refused before ``zipfile`` parses it, and a member the central
+    directory gives as larger than ``_ZIP_MAX_MEMBER_BYTES`` before any of it
+    is read; ``zipfile`` yields no more of a member than that size. A missing
+    or oversized member, or a missing, unreadable, oversized or damaged zip,
+    raises InventoryError."""
     if not member or member.startswith("__MACOSX/") or member.endswith("/"):
         raise InventoryError(f"{shown}:{member} is not a member file of the zip")
     try:
-        with zipfile.ZipFile(archive_path) as archive:
-            if member not in archive.namelist():
-                raise InventoryError(f"{shown} holds no {member}")
-            return archive.read(member)
+        with open(archive_path, "rb") as handle:
+            size = os.fstat(handle.fileno()).st_size
+            if size > _ZIP_MAX_ARCHIVE_BYTES:
+                raise InventoryError(
+                    f"{shown} is {size} bytes, more than {_ZIP_MAX_ARCHIVE_BYTES}, the most the zip may hold"
+                )
+            with zipfile.ZipFile(handle) as archive:
+                if member not in archive.namelist():
+                    raise InventoryError(f"{shown} holds no {member}")
+                info = archive.getinfo(member)
+                if info.file_size > _ZIP_MAX_MEMBER_BYTES:
+                    raise InventoryError(
+                        f"{shown}:{member} is {info.file_size} bytes, more than {_ZIP_MAX_MEMBER_BYTES},"
+                        " the most a member may hold"
+                    )
+                return archive.read(info)
     except _ZIP_ERRORS as exc:
         reason = _os_reason(exc) if isinstance(exc, OSError) else str(exc) or type(exc).__name__
         raise InventoryError(f"cannot read {member} from {shown}: {reason}") from exc
@@ -2077,18 +2101,216 @@ UNREACHABLE_MESSAGES: tuple[tuple[str, str, str, Callable[[CobolProgram], bool],
 )
 
 
+# Message conditions that are set, then replaced in the same message field
+# before any send or left in working storage that the XCTL after the SET
+# does not pass on, so their text never reaches the screen: (program,
+# condition, gap, anchors that prove the loss, why). The first anchor holds
+# the condition's SET; the extraction fails when an anchor is gone or the
+# condition is set anywhere else. The why names other messages by condition
+# only, since report.py reads every quoted description text as the item's
+# message.
+OVERWRITTEN_MESSAGES: tuple[tuple[str, str, str, tuple[Anchor, ...], str], ...] = (
+    (
+        "COACTVWC", "WS-PROMPT-FOR-ACCT", "GAP-UNC-014",
+        (
+            ("regex", r"SET\s+FLG-ACCTFILTER-BLANK\s+TO\s+TRUE\s+IF\s+WS-RETURN-MSG-OFF"
+                      r"\s+SET\s+WS-PROMPT-FOR-ACCT\s+TO\s+TRUE\b"),
+            ("regex", r"PERFORM\s+2210-EDIT-ACCOUNT\s+THRU\s+2210-EDIT-ACCOUNT-EXIT"
+                      r"\s+IF\s+FLG-ACCTFILTER-BLANK\s+SET\s+NO-SEARCH-CRITERIA-RECEIVED\s+TO\s+TRUE\b"),
+        ),
+        "2210-EDIT-ACCOUNT sets the condition only for a blank account id, together with FLG-ACCTFILTER-BLANK, "
+        "and on its return 2200-EDIT-MAP-INPUTS sets NO-SEARCH-CRITERIA-RECEIVED of the same WS-RETURN-MSG for "
+        "that flag before any send",
+    ),
+    (
+        "COACTUPC", "WS-PROMPT-FOR-ACCT", "GAP-UNC-014",
+        (
+            ("regex", r"SET\s+FLG-ACCTFILTER-BLANK\s+TO\s+TRUE\s+IF\s+WS-RETURN-MSG-OFF"
+                      r"\s+SET\s+WS-PROMPT-FOR-ACCT\s+TO\s+TRUE\b"),
+            ("regex", r"PERFORM\s+1210-EDIT-ACCOUNT\s+THRU\s+1210-EDIT-ACCOUNT-EXIT"
+                      r"\s+MOVE\s+LOW-VALUES\s+TO\s+ACUP-OLD-ACCT-DATA"
+                      r"\s+IF\s+FLG-ACCTFILTER-BLANK\s+SET\s+NO-SEARCH-CRITERIA-RECEIVED\s+TO\s+TRUE\b"),
+        ),
+        "1210-EDIT-ACCOUNT sets the condition only for a blank account id, together with FLG-ACCTFILTER-BLANK, "
+        "and on its return 1200-EDIT-MAP-INPUTS sets NO-SEARCH-CRITERIA-RECEIVED of the same WS-RETURN-MSG for "
+        "that flag before any send",
+    ),
+    (
+        "COACTUPC", "FOUND-ACCOUNT-DATA", "GAP-UNC-014",
+        (
+            ("regex", r"GO\s+TO\s+1200-EDIT-MAP-INPUTS-EXIT\s+ELSE\s+CONTINUE\s+END-IF"
+                      r"\s+SET\s+FOUND-ACCOUNT-DATA\s+TO\s+TRUE\b"),
+            ("regex", r"3000-SEND-MAP\.(?:\s+PERFORM\s+[\w-]+\s+THRU\s+[\w-]+)*?"
+                      r"\s+PERFORM\s+3250-SETUP-INFOMSG\s+THRU\s+3250-SETUP-INFOMSG-EXIT"
+                      r"(?:\s+PERFORM\s+[\w-]+\s+THRU\s+[\w-]+)*?\s+PERFORM\s+3400-SEND-SCREEN\b"),
+            ("regex", r"3250-SETUP-INFOMSG\.\s+EVALUATE\s+TRUE"
+                      r"\s+(?:WHEN\s+[\w-]+\s+SET\s+(?!FOUND-ACCOUNT-DATA\b)[\w-]+\s+TO\s+TRUE\s+)+"
+                      r"END-EVALUATE\s+MOVE\s+WS-INFO-MSG\s+TO\s+INFOMSGO\b"),
+        ),
+        "1200-EDIT-MAP-INPUTS sets the condition once the account details are fetched, and before every send of "
+        "the map 3000-SEND-MAP performs 3250-SETUP-INFOMSG, whose EVALUATE sets another WS-INFO-MSG condition for "
+        "every ACUP-CHANGE-ACTION value before it moves WS-INFO-MSG to INFOMSG",
+    ),
+    (
+        "COCRDLIC", "WS-EXIT-MESSAGE", "GAP-UNC-014",
+        (
+            ("regex", r"SET\s+WS-EXIT-MESSAGE\s+TO\s+TRUE\s+SET\s+CDEMO-PGM-ENTER\s+TO\s+TRUE"
+                      r"\s+EXEC\s+CICS\s+XCTL\s+PROGRAM\s*\(\s*LIT-MENUPGM\s*\)"
+                      r"\s+COMMAREA\s*\(\s*CARDDEMO-COMMAREA\s*\)\s+END-EXEC\b"),
+            ("regex", r"\b01\s+WS-MISC-STORAGE\.(?:(?!\s01\s).)*?\s05\s+WS-ERROR-MSG\s+PIC\s+X\(75\)\."),
+            ("regex", r"\b05\s+LIT-MENUPGM\s+PIC\s+X\(8\)\s+VALUE\s+'COMEN01C'\."),
+        ),
+        "The PF3 branch of 0000-MAIN sets the condition and at once XCTLs to COMEN01C, the LIT-MENUPGM, with "
+        "CARDDEMO-COMMAREA alone; WS-ERROR-MSG belongs to WS-MISC-STORAGE, which that COMMAREA does not carry, so "
+        "the text is lost with the working storage of COCRDLIC before any map is sent",
+    ),
+)
+
+
+# Literal messages whose only MOVE into a message field runs under a test
+# that cannot hold, so their text never reaches the screen: (program, text,
+# gap, anchors that prove the test cannot hold, check that the tested field
+# still has the width of the value moved into it, why). The first anchor
+# holds the test and its MOVE, the next the overwrite of the field with
+# nothing naming it, or its other map fields, before the test; the
+# extraction fails when an anchor is gone, the check fails or the text is
+# moved anywhere else. As in OVERWRITTEN_MESSAGES, the why quotes no text.
+UNSENT_MESSAGES: tuple[tuple[str, str, str, tuple[Anchor, ...], Callable[[CobolProgram], bool], str], ...] = (
+    (
+        "CORPT00C", "Start Date - Not a valid Year...", "GAP-UNC-014",
+        (
+            ("regex", r"\bIF\s+SDTYYYYI\s+OF\s+CORPT0AI\s+IS\s+NOT\s+NUMERIC"
+                      r"\s+MOVE\s+'Start Date - Not a valid Year\.\.\.'\s+TO\s+WS-MESSAGE\b"),
+            ("regex", r"COMPUTE\s+WS-NUM-9999\s+=\s+FUNCTION\s+NUMVAL-C\s*\(\s*SDTYYYYI\s+OF\s+CORPT0AI\s*\)"
+                      r"\s+MOVE\s+WS-NUM-9999\s+TO\s+SDTYYYYI\s+OF\s+CORPT0AI\b(?:(?!SDTYYYY).)*?"
+                      r"\bIF\s+SDTYYYYI\s+OF\s+CORPT0AI\s+IS\s+NOT\s+NUMERIC"
+                      r"\s+MOVE\s+'Start Date - Not a valid Year\.\.\.'\s+TO\s+WS-MESSAGE\b"),
+            ("regex", r"\b05\s+WS-NUM-9999\s+PIC\s+9999\s+VALUE\s+0\."),
+        ),
+        lambda program: _alphanumeric_width(program, "SDTYYYYI") == (4, False),
+        "The MOVE runs only when SDTYYYYI OF CORPT0AI IS NOT NUMERIC, and before that test the field is overwritten "
+        "by WS-NUM-9999, an unsigned PIC 9999 into which the COMPUTE stores FUNCTION NUMVAL-C of the field, so the "
+        "4-character field always holds four digits and the test cannot hold",
+    ),
+    (
+        "CORPT00C", "End Date - Not a valid Year...", "GAP-UNC-014",
+        (
+            ("regex", r"\bIF\s+EDTYYYYI\s+OF\s+CORPT0AI\s+IS\s+NOT\s+NUMERIC"
+                      r"\s+MOVE\s+'End Date - Not a valid Year\.\.\.'\s+TO\s+WS-MESSAGE\b"),
+            ("regex", r"COMPUTE\s+WS-NUM-9999\s+=\s+FUNCTION\s+NUMVAL-C\s*\(\s*EDTYYYYI\s+OF\s+CORPT0AI\s*\)"
+                      r"\s+MOVE\s+WS-NUM-9999\s+TO\s+EDTYYYYI\s+OF\s+CORPT0AI\b(?:(?!EDTYYYY).)*?"
+                      r"\bIF\s+EDTYYYYI\s+OF\s+CORPT0AI\s+IS\s+NOT\s+NUMERIC"
+                      r"\s+MOVE\s+'End Date - Not a valid Year\.\.\.'\s+TO\s+WS-MESSAGE\b"),
+            ("regex", r"\b05\s+WS-NUM-9999\s+PIC\s+9999\s+VALUE\s+0\."),
+        ),
+        lambda program: _alphanumeric_width(program, "EDTYYYYI") == (4, False),
+        "The MOVE runs only when EDTYYYYI OF CORPT0AI IS NOT NUMERIC, and before that test the field is overwritten "
+        "by WS-NUM-9999, an unsigned PIC 9999 into which the COMPUTE stores FUNCTION NUMVAL-C of the field, so the "
+        "4-character field always holds four digits and the test cannot hold",
+    ),
+)
+
+
+def _condition_set_sites(program: CobolProgram, condition: str) -> list[tuple[str, int]]:
+    """(path, line) of each SET statement of ``program`` that names
+    ``condition`` among its receiving operands."""
+    sites = []
+    words = program.words
+    for index in range(program.proc_start, len(words)):
+        if words[index] != "SET":
+            continue
+        position = index + 1
+        while position < len(words) and words[position] not in ("TO", "UP", "DOWN", "SET"):
+            if words[position] == condition:
+                sites.append((program.tokens[position].path, program.tokens[position].line))
+            position += 1
+    return sites
+
+
+def _overwritten_message(program: CobolProgram, message: Message) -> tuple[str, str] | None:
+    """(gap, why) of the OVERWRITTEN_MESSAGES row of ``message``, the
+    message of a single 88-level condition of ``program``; None when no row
+    names it. InventoryError when an anchor of the row is gone from the
+    source, or when the condition is set outside the row's first anchor."""
+    for owner, condition, gap, anchors, why in OVERWRITTEN_MESSAGES:
+        if owner != program.name or message.conditions != [condition]:
+            continue
+        spans = [anchor_span(program, anchor) for anchor in anchors]
+        path, first, last = spans[0]
+        sites = _condition_set_sites(program, condition)
+        if not sites or any(site != path or not first <= line <= last for site, line in sites):
+            raise InventoryError(
+                f"{program.path}: {condition} must be set only at {cite(path, [(first, last)])}, "
+                f"where its text is lost before any send, but is set at "
+                f"{', '.join(f'{site}:{line}' for site, line in sites) or 'no line'}"
+            )
+        return gap, why
+    return None
+
+
+def _literal_move_sites(program: CobolProgram, text: str) -> list[tuple[str, int]]:
+    """(path, line) of each MOVE of ``program`` that sends the literal
+    ``text`` to a message field."""
+    sites = []
+    for start, end, sending, targets in program.moves():
+        if sending.literal and sending.value.rstrip() == text and MESSAGE_FIELDS.intersection(targets):
+            path, line, _last = program.span(start, end)
+            sites.append((path, line))
+    return sites
+
+
+def _unsent_message(program: CobolProgram, message: Message) -> tuple[str, str] | None:
+    """(gap, why) of the UNSENT_MESSAGES row of ``message``, a literal
+    message of ``program``; None when no row names it. InventoryError when
+    an anchor of the row is gone from the source, its width check fails, the
+    text is moved to a message field outside the row's first anchor, or it is
+    also the VALUE of a message condition."""
+    for owner, text, gap, anchors, holds, why in UNSENT_MESSAGES:
+        if owner != program.name or message.text != text:
+            continue
+        spans = [anchor_span(program, anchor) for anchor in anchors]
+        path, first, last = spans[0]
+        if not holds(program):
+            raise InventoryError(
+                f"{program.path}: the field tested before the MOVE of '{text}' no longer has the width of the "
+                f"value moved into it, so the test at {cite(path, [(first, last)])} may hold"
+            )
+        sites = _literal_move_sites(program, text)
+        if not sites or any(site != path or not first <= line <= last for site, line in sites):
+            raise InventoryError(
+                f"{program.path}: '{text}' must be moved only at {cite(path, [(first, last)])}, under a test that "
+                f"cannot hold, but is moved at {', '.join(f'{site}:{line}' for site, line in sites) or 'no line'}"
+            )
+        if message.conditions:
+            raise InventoryError(
+                f"{program.path}: '{text}' must reach its message field only through the MOVE at "
+                f"{cite(path, [(first, last)])}, but is also the VALUE of {', '.join(message.conditions)}"
+            )
+        return gap, why
+    return None
+
+
 def _message_draft(area: str, program: CobolProgram, message: Message) -> dict[str, Any]:
     name = program.name
     shown = _sink_phrase(program, message)
     fields = ", ".join(sorted(message.targets))
     lines = _line_list(message.sites)
+    overwritten = _overwritten_message(program, message) if message.origin == "condition" else None
+    unsent = _unsent_message(program, message) if message.origin == "literal" else None
     if message.origin == "condition":
         conditions = ", ".join(message.conditions)
         parents = fields
-        description = (
-            f"Message condition {conditions} of {parents} (VALUE '{message.text}'): when the condition is set "
-            f"the text appears in {shown}."
-        )
+        if overwritten is not None:
+            gap, why = overwritten
+            description = (
+                f"Message condition {conditions} of {parents} (VALUE '{message.text}'): the text is defined and "
+                f"set, but never reaches {shown}. {why} ({gap})."
+            )
+        else:
+            description = (
+                f"Message condition {conditions} of {parents} (VALUE '{message.text}'): when the condition is set "
+                f"the text appears in {shown}."
+            )
         if message.unused:
             description += (
                 f" Unused: {conditions} {'is' if len(message.conditions) == 1 else 'are'} never set or tested "
@@ -2101,7 +2323,14 @@ def _message_draft(area: str, program: CobolProgram, message: Message) -> dict[s
             f"{fields} at line(s) {lines}; the text appears in {shown}."
         )
     elif message.origin == "literal":
-        description = f"{name} moves '{message.text}' to {fields} at line(s) {lines}; the text appears in {shown}."
+        if unsent is not None:
+            gap, why = unsent
+            description = (
+                f"{name} has a MOVE of '{message.text}' to {fields} at line(s) {lines}, but the text never reaches "
+                f"{shown}. {why} ({gap})."
+            )
+        else:
+            description = f"{name} moves '{message.text}' to {fields} at line(s) {lines}; the text appears in {shown}."
         if message.conditions:
             description += f" Also the VALUE of condition(s) {', '.join(message.conditions)}."
     elif message.origin == "string":
@@ -2115,6 +2344,9 @@ def _message_draft(area: str, program: CobolProgram, message: Message) -> dict[s
             f"'{message.text}' and shows it in {shown}."
         )
     activation, gaps = "always", []
+    for hidden in (overwritten, unsent):
+        if hidden is not None:
+            gaps = [hidden[0]]
     if message.unused:
         activation, gaps = "unused", ["GAP-UNC-013"]
     for owner, pattern, gap, blocked, why in UNREACHABLE_MESSAGES:

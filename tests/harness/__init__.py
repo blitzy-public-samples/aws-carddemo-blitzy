@@ -29,6 +29,7 @@ from __future__ import annotations
 import decimal
 import errno
 import fcntl
+import functools
 import hashlib
 import io
 import os
@@ -51,6 +52,7 @@ __all__ = [
     "BASELINES_DIR",
     "DEADLINE_S",
     "DEFAULT_CLOCK",
+    "DIRECTORY_OPEN_FLAGS",
     "FIXTURES_FILE",
     "HarnessError",
     "INVENTORY_DIR",
@@ -71,12 +73,15 @@ __all__ = [
     "YAML_MAX_ALIAS_WEIGHT",
     "YAML_MAX_DEPTH",
     "bootstrap_path",
+    "check_work_root_owner",
+    "check_work_root_path",
     "cob_current_date",
     "display_path",
     "dump_yaml",
     "git_head",
     "load_yaml",
     "lock_work_root",
+    "open_directory",
     "relpath",
     "sha256_file",
     "sha256_hex",
@@ -367,12 +372,44 @@ _CanonicalDumper.add_representer(frozenset, _represent_set)
 _CanonicalDumper.add_multi_representer(dict, yaml.SafeDumper.represent_dict)
 _CanonicalDumper.add_multi_representer(list, yaml.SafeDumper.represent_list)
 
+
+class _DeadlineDumper(_CanonicalDumper):
+    """_CanonicalDumper that reads the clock before it represents each node,
+    after it writes each scalar and after each event it emits, and raises
+    ``TimeoutError`` once ``deadline``, a ``time.monotonic()`` value, has
+    passed. The emitter finishes each scalar, whatever its length, in
+    ``process_scalar``, so a reading follows each scalar's text at once and
+    no two scalars are written between two readings. A reading costs far
+    less than writing a node. The checks only read the clock, so its text is
+    _CanonicalDumper's."""
+
+    def __init__(self, stream: Any, *, deadline: float, **options: Any) -> None:
+        super().__init__(stream, **options)
+        self._deadline = deadline
+
+    def _check(self) -> None:
+        if time.monotonic() >= self._deadline:
+            raise TimeoutError("the deadline passed while the YAML text was being written")
+
+    def represent_data(self, data: Any) -> yaml.Node:
+        self._check()
+        return super().represent_data(data)
+
+    def process_scalar(self) -> None:
+        super().process_scalar()
+        self._check()
+
+    def emit(self, event: yaml.Event) -> None:
+        super().emit(event)
+        self._check()
+
+
 # The C parser is a faster drop-in with the same safe constructors and
 # resolvers; the pure-Python one is used where libyaml is absent.
 _SafeLoader = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
 
 
-def dump_yaml(obj: Any) -> str:
+def dump_yaml(obj: Any, *, deadline: float | None = None) -> str:
     """Serialize ``obj`` as canonical YAML: sorted keys, block style, no line
     folding, ``\\n`` line breaks, no anchors.
 
@@ -392,11 +429,25 @@ def dump_yaml(obj: Any) -> str:
     integer conversion limit (``sys.get_int_max_str_digits()`` digits).
     Strings, including trailing spaces and control characters, load back
     unchanged.
+
+    ``deadline``, a ``time.monotonic()`` value (``None``, the default, sets
+    none), bounds the writing: the clock is read before it starts, at every
+    node and after every scalar while it runs (``_DeadlineDumper``), and once
+    the text is complete, and the builtin ``TimeoutError`` is raised once the
+    deadline has passed, so text completed after it is never returned. The
+    text is the same with a deadline as without one.
     """
+    dumper: Any = _CanonicalDumper
+    if deadline is not None:
+        if isinstance(deadline, bool) or not isinstance(deadline, (int, float)):
+            raise TypeError(f"a deadline is a time.monotonic() value or None, not {type(deadline).__name__}")
+        if time.monotonic() >= deadline:
+            raise TimeoutError("the deadline passed before the YAML text was written")
+        dumper = functools.partial(_DeadlineDumper, deadline=deadline)
     try:
-        return yaml.dump(
+        text = yaml.dump(
             obj,
-            Dumper=_CanonicalDumper,
+            Dumper=dumper,
             sort_keys=True,
             default_flow_style=False,
             allow_unicode=True,
@@ -415,6 +466,9 @@ def dump_yaml(obj: Any) -> str:
         raise HarnessError(
             "cannot write value as YAML: it nests too deeply or refers to itself"
         ) from None
+    if deadline is not None and time.monotonic() >= deadline:
+        raise TimeoutError("the deadline passed while the YAML text was being written")
+    return text
 
 
 def load_yaml(path: str | PurePath, missing_ok: bool = False, *, max_bytes: int | None = None) -> Any:
@@ -930,40 +984,104 @@ def display_path(path: str | PurePath) -> str:
 # to prove that working directories can be created and removed there.
 _WORK_ROOT_PROBE_PREFIX = ".carddemo-probe-"
 # The write bits that make a directory writable by someone other than its
-# owner; an owner-only work root has neither.
+# owner; a usable work root has neither.
 _SHARED_WRITE_BITS = stat.S_IWGRP | stat.S_IWOTH
-# What an owner-only work root's path never holds: the UniKix deployment names
-# its temporary directory, below the work root, in JVM option variables, which
-# a JVM splits at whitespace and reads quotes in. The same pattern as
-# _JVM_UNSAFE_PATH_RE in adapters/unikix/env.py, kept here because this
-# package does not import the adapters.
+# What the path of a work root admitted with jvm_safe_path never holds: the
+# UniKix deployment names its temporary directory, below the work root, in JVM
+# option variables, which a JVM splits at whitespace and reads quotes in. The
+# same pattern as _JVM_UNSAFE_PATH_RE in adapters/unikix/env.py, kept here
+# because this package does not import the adapters.
 _JVM_UNSAFE_PATH_RE = re.compile(r"[\s'\"]")
+# What no work root's path holds, whatever the adapter. GnuCOBOL 3.2's cobc
+# runs the C compiler and the linker through /bin/sh with each path in double
+# quotes, inside which the shell still reads a backquote, '$', '"' and '\', so
+# a path holding one is partly run as shell text. build.py hands cobc no path
+# below the work root, but any tool that composes a shell command line from
+# such a path would run that text, so no root holding one is admitted.
+_SHELL_QUOTED_CHARACTERS = frozenset('`$"\\')
+# PATH_MAX on Linux: the most bytes a path handed to a system call may have,
+# its terminating NUL included.
+_PATH_MAX = 4096
+# The bytes a work root's path leaves free for the longest path the suite
+# makes below it. The deepest paths are the UniKix deployment's:
+# unikix/<execution id>/ (32 bytes as evidence.make_execution_id makes one;
+# deploy.deployment_root takes one path component of up to 255) holding the
+# zip's application tree, whose deepest member is 70 bytes long, below
+# staging/migrated_app/ and the project tree. The build cache and the
+# scenario working directories go less than 200 bytes deep: a full
+# gnucobol-batch run made none deeper than 118 bytes (a key profile's compile
+# log) and 81 bytes (a job step's evidence). The reserve covers all of them
+# with room to spare; every gnucobol-batch unit and integration scenario
+# passes under a work root of the limit's length.
+_WORK_ROOT_PATH_RESERVE = 1024
+# The most bytes, in the file-system encoding, a resolved work root may have.
+_WORK_ROOT_MAX_BYTES = _PATH_MAX - 1 - _WORK_ROOT_PATH_RESERVE
+# How the work root, a scenario's working directory and its inputs/ are
+# opened (open_directory): for reading, as a directory, never through a
+# symbolic link in the last component, by no child process. The runner opens
+# them so, and usable_work_root admits a root only when it opens so, so a
+# root the runner cannot open is refused before any scenario runs.
+DIRECTORY_OPEN_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+# What a work root's permissions must allow, as a refusal for want of them
+# states it: the runner opens the root for reading, and makes, looks up and
+# removes each scenario's working directory in it.
+_WORK_ROOT_ACCESS_RULE = "a work root must be a directory you own and can read, write and search (chmod u+rwx)"
 
 
-def usable_work_root(configured: str | PurePath, *, owner_only: bool = False) -> Path:
+def open_directory(name: str | PurePath, shown: str, dir_fd: int | None = None) -> int:
+    """A descriptor of the directory ``name`` (relative to ``dir_fd`` when
+    given), opened with ``DIRECTORY_OPEN_FLAGS``, so a symbolic link in its
+    last component is not followed; ``HarnessError`` naming ``shown`` when it
+    is a link, not a directory or cannot be opened. The caller closes it."""
+    try:
+        return os.open(name, DIRECTORY_OPEN_FLAGS, dir_fd=dir_fd)
+    except OSError as exc:
+        if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+            # Linux gives ENOTDIR for a link that O_DIRECTORY and O_NOFOLLOW
+            # both refuse; lstat only words the refusal.
+            try:
+                link = stat.S_ISLNK(os.lstat(name, dir_fd=dir_fd).st_mode)
+            except OSError:
+                link = exc.errno == errno.ELOOP
+            raise HarnessError(f"{shown} is {'a symbolic link' if link else 'not a directory'}") from None
+        raise HarnessError(f"{shown} cannot be opened: {exc.strerror or exc}") from None
+
+
+def usable_work_root(configured: str | PurePath, *, jvm_safe_path: bool = False) -> Path:
     """The resolved work root ``configured`` names, created when missing, or
     ``HarnessError`` saying why it cannot be one.
 
     A work root holds every scenario's working directory, the build cache,
     the extracted UniKix zip and the UniKix deployment root, so it is usable
     only when ``configured`` is not blank; its resolved path is neither the
-    repository nor inside it, which is checked before anything is created, so
-    a refused value leaves nothing behind; it is created with any missing
-    parents; it is a directory; and a directory can be made in it and
-    removed again, as each scenario's working directory is. The text is taken
+    repository nor inside it and passes ``check_work_root_path`` (it holds no
+    backquote, ``$``, ``"``, ``\\`` or character that is not printable, and
+    has at most ``_WORK_ROOT_MAX_BYTES`` bytes), both checked before anything
+    is created, so a refused value leaves nothing behind; it is created when
+    missing, with mode ``0o700`` (its missing parents get the default mode);
+    it is a directory; it opens as the runner opens it (``open_directory``:
+    for reading, as a directory, not through a symbolic link), so the
+    effective user can read it; judged on that descriptor, it is the
+    effective user's own and writable by neither group nor others
+    (``check_work_root_owner``), since anyone else who can write to it could
+    swap a scenario's working directory, or a link or file the adapters write
+    through or trust, for one of their own; and a directory can be made in it
+    and removed again, as each scenario's working directory is, so the user
+    can write and search it. A root that cannot be opened, or in which
+    permission to make a directory is denied, is refused with the rule that
+    it must be readable, writable and searchable by its owner, the user
+    running the suite (``chmod u+rwx``); nothing is made in one that cannot
+    be opened, and the descriptor is closed on every path. The text is taken
     as given: ``~`` is not expanded, and a relative path is taken from the
     current folder. It reads no environment variable; the caller passes the
     configured text and decides what replaces a refused root.
 
-    ``owner_only`` applies the rule the UniKix deployment
-    (``adapters/unikix/deploy.py``) holds a work root to: the resolved path
-    holds no whitespace and no quote, which the JVM option variables naming
-    the deployment's temporary directory below it cannot carry, checked
-    before anything is created; a missing root is created with mode
-    ``0o700``; and the resolved root must be owned by the effective user and
-    writable by neither group nor others, since anyone else who can write to
-    it could plant the links and files the deployment writes through or
-    trusts. Its missing parents get the default mode.
+    ``jvm_safe_path`` adds the rule the UniKix deployment
+    (``adapters/unikix/deploy.py``) holds a work root's path to: the resolved
+    path holds no whitespace and no quote, which the JVM option variables
+    naming the deployment's temporary directory below it cannot carry. It is
+    checked before ``check_work_root_path``, so a path both refuse is refused
+    for the deployment's reason, worded as the deployment words it.
     """
     if not isinstance(configured, (str, PurePath)):
         raise TypeError(f"configured must be str or a path, not {type(configured).__name__}")
@@ -982,21 +1100,36 @@ def usable_work_root(configured: str | PurePath, *, owner_only: bool = False) ->
         raise HarnessError("the path is the repository itself")
     if REPO_ROOT in root.parents:
         raise HarnessError(f"the path resolves to {display_path(root)}, inside the repository")
-    if owner_only:
-        _check_owner_only_path(root)
+    if jvm_safe_path:
+        _check_jvm_safe_path(root)
+    check_work_root_path(root)
     try:
-        root.mkdir(mode=0o700 if owner_only else 0o777, parents=True, exist_ok=True)
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
     except OSError as exc:
         if os.path.exists(root) and not os.path.isdir(root):
             raise HarnessError(f"{root} is not a directory") from None
         raise HarnessError(f"{root} cannot be created: {exc}") from None
     if not root.is_dir():
         raise HarnessError(f"{root} is not a directory")
-    if owner_only:
-        _check_owner_only(root)
+    try:
+        descriptor = open_directory(root, str(root))
+    except HarnessError as exc:
+        raise HarnessError(f"{exc}; {_WORK_ROOT_ACCESS_RULE}") from None
+    try:
+        try:
+            status = os.fstat(descriptor)
+        except OSError as exc:
+            raise HarnessError(f"{root} cannot be inspected: {exc.strerror or exc}") from None
+        check_work_root_owner(root, status)
+    finally:
+        os.close(descriptor)
     try:
         probe = tempfile.mkdtemp(prefix=_WORK_ROOT_PROBE_PREFIX, dir=root)
     except OSError as exc:
+        if exc.errno == errno.EACCES:  # no write or no search permission
+            raise HarnessError(
+                f"no directory can be made in {root}: {exc.strerror}; {_WORK_ROOT_ACCESS_RULE}"
+            ) from None
         raise HarnessError(f"{root} is not writable: {exc}") from None
     try:
         os.rmdir(probe)
@@ -1005,7 +1138,7 @@ def usable_work_root(configured: str | PurePath, *, owner_only: bool = False) ->
     return root
 
 
-def _check_owner_only_path(root: Path) -> None:
+def _check_jvm_safe_path(root: Path) -> None:
     """``HarnessError`` when the path ``root`` holds whitespace or a quote,
     worded as the UniKix deployment refuses such a root; nothing is read
     from the file system."""
@@ -1016,14 +1149,50 @@ def _check_owner_only_path(root: Path) -> None:
         )
 
 
-def _check_owner_only(root: Path) -> None:
-    """``HarnessError`` unless the directory ``root`` is the effective user's
-    own and writable by neither group nor others, worded as the UniKix
-    deployment refuses such a root."""
-    try:
-        status = os.stat(root)
-    except OSError as exc:
-        raise HarnessError(f"{root} cannot be inspected: {exc.strerror or exc}") from None
+def check_work_root_path(root: str | PurePath) -> None:
+    """``HarnessError`` when the path ``root``, a resolved work root, cannot
+    be one whatever the adapter; nothing is read from the file system.
+
+    It must hold no backquote, ``$``, ``"`` or ``\\``, which a shell reads
+    even inside the double quotes GnuCOBOL's cobc puts around each path of
+    the C compiler commands it runs through ``/bin/sh``
+    (``_SHELL_QUOTED_CHARACTERS``), and no character that is not printable (a
+    line break, a tab, another control character), which no one-line log,
+    message or record naming a path below the root could show; the message
+    names the first such character. Its file-system encoding must have at
+    most ``_WORK_ROOT_MAX_BYTES`` bytes, so that the longest path the suite
+    makes below it (``_WORK_ROOT_PATH_RESERVE`` more) stays within
+    ``PATH_MAX``; the message names its length and the limit. A path holding
+    a character that is not printable is shown as its ``repr``."""
+    text = os.fspath(root)
+    shown = text if text.isprintable() else repr(text)
+    for character in text:
+        if character in _SHELL_QUOTED_CHARACTERS:
+            raise HarnessError(
+                f"{shown} holds {character!r}, which a shell reads even inside double quotes, as in the C "
+                "compiler commands GnuCOBOL's cobc runs through /bin/sh; choose another work root"
+            )
+        if not character.isprintable():
+            raise HarnessError(
+                f"{shown} holds the non-printable character {character!r}, which no one-line log, message or "
+                "record naming a path below the work root could show; choose another work root"
+            )
+    length = len(os.fsencode(text))
+    if length > _WORK_ROOT_MAX_BYTES:
+        raise HarnessError(
+            f"the path is {length} bytes long, more than the {_WORK_ROOT_MAX_BYTES} a work root may have: the "
+            f"paths the suite makes below it take up to {_WORK_ROOT_PATH_RESERVE} more, and no path may exceed "
+            f"{_PATH_MAX - 1} bytes (PATH_MAX); choose a shorter work root"
+        )
+
+
+def check_work_root_owner(root: str | PurePath, status: os.stat_result) -> None:
+    """``HarnessError`` unless ``status``, the status of the work root
+    directory ``root`` (as ``os.stat`` or ``os.fstat`` gives it), is the
+    effective user's own and writable by neither group nor others: anyone
+    else who can write to it could plant the links and files the suite
+    writes through or trusts, or swap a scenario's working directory for one
+    of their own. Worded as the UniKix deployment refuses such a root."""
     if status.st_uid != os.geteuid():
         raise HarnessError(f"{root} is owned by uid {status.st_uid}, not {os.geteuid()}; choose another work root")
     if status.st_mode & _SHARED_WRITE_BITS:

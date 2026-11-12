@@ -48,8 +48,9 @@
 # write or rewrite was issued before it: account 1 keeps its balance and
 # TRANSACT stays empty. The READ UPDATE lock ends with the task. Whether the
 # message is meant to be shown is doubtful, so the outcome is pinned as
-# observed (observed-only) under GAP-UNC-013, the open question of online
-# message texts no screen ever shows.
+# observed (observed-only) under GAP-UNC-019, the open COBIL00C question of
+# whether the pay block is meant to go on after a failed lookup. GAP-UNC-013
+# is not cited: it asks about code that never runs, and this path runs.
 #
 # The expectation is derived from the source and the CICS file control
 # responses, never observed (GAP-INF-008); no TPE region runs in CI.
@@ -94,7 +95,7 @@ tags:
 gap_ids:
 - GAP-INF-008  # BIL end-to-end baselines derived from the source, never observed
 - GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
-- GAP-UNC-013  # a message COBIL00C sends is overwritten and never stays on a screen
+- GAP-UNC-019  # the pay block goes on after the STARTBR NOTFND, so its message never stays on a screen
 preconditions:
   datasets:
     # COSGN00C reads the sign-on user from USRSEC; ACCTDATA is the region's

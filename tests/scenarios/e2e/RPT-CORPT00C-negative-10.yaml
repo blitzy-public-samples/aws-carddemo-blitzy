@@ -54,7 +54,7 @@ description: >-
   rejects with message 2513, and CORPT00C ignores that message. The request
   goes through and CORPT00C asks for confirmation with 'Please confirm to
   print the Custom report...'. Whether the year message can be reached at all
-  is doubtful (GAP-UNC-013), so the outcome is pinned as observed.
+  is doubtful (GAP-UNC-014), so the outcome is pinned as observed.
 # Primary item first, then the program, the maps asserted, the transaction step
 # 3 runs under, the online-only copybooks CORPT00C copies, and the CSUTLDTC date
 # acceptance whose message 2513 decides the outcome. The confirmation message
@@ -78,10 +78,12 @@ gap_ids:
 - GAP-INF-009  # RPT end-to-end baselines derived, never observed
 - GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
 # The year check is a message that no screen can show: the unsigned MOVE
-# before it always leaves four digits. GAP-UNC-013 is the open uncertain-purpose
-# entry for online message texts that cannot appear, so no second entry asks
-# the same question.
-- GAP-UNC-013
+# before it always leaves four digits. GAP-UNC-014 is the open uncertain-purpose
+# entry for online message texts that never reach the screen, and it lists this
+# item. GAP-UNC-013 is not cited: its 34 items are 3 COACTUPC edit predicates
+# no field edit performs and 31 message conditions of COACTUPC, COACTVWC,
+# COCRDSLC and COCRDUPC that no statement sets or tests.
+- GAP-UNC-014
 - GAP-INF-001  # which dates CEEDAYS accepts is known only through the stub
 - GAP-MIS-010  # whether UniKix supplies CEEDAYS
 # The UniKix copy of CSUTLDTC trims the Vstring lengths it passes to CEEDAYS;

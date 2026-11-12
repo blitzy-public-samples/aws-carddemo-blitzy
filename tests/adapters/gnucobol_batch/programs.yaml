@@ -17,14 +17,22 @@
 #
 # Schema (schema_version 1; under programs, mapping keys are sorted at every level)
 #   programs:
-#     <UNIT>:
+#     <UNIT>:                      a batch program name: one to eight upper-case letters
+#                                  and digits, starting with a letter; build.py refuses
+#                                  any other key, because it names bin/<UNIT> or
+#                                  modules/<UNIT>.so and logs/<UNIT>.log
 #       called_by: <UNIT>          run: called only; the unit whose executable holds it
 #       calls: [<UNIT>...]         units linked into this one; their dd entries are
 #                                  merged into this unit's DD environment at run time
 #       compile:
 #         extra_flags: [...]       flags beyond the common ones build.py adds to every
 #                                  compile: -std=ibm -fsign=EBCDIC -ftab-width=4
-#                                  -fbinary-truncate -I app/cpy
+#                                  -fbinary-truncate -I app/cpy; only the exact
+#                                  flags build.py allows (today
+#                                  -fbinary-byteorder=native) are accepted, so no
+#                                  flag can choose an output, listing, temporary or
+#                                  configuration path or forward C compiler or linker
+#                                  options
 #         link_with: [<UNIT>...]   sources compiled in the same cobc call, after the
 #                                  unit's own (main first)
 #         mode: executable|module  cobc -x or cobc -m

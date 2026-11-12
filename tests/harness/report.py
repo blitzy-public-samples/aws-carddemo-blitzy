@@ -15,10 +15,22 @@ Status rules
     under ``tests/reports/results/`` and the ``validation.yaml`` files of
     imported UniKix evidence under ``tests/reports/unikix/<execution_id>/
     <scenario_id>/`` (``result.yaml`` beside it is raw, immutable evidence).
-    A ``validation.yaml`` is a record only beside that raw evidence: a
-    regular ``result.yaml`` and the ``environment.yaml`` of its scenario or
-    execution directory; one whose evidence is missing or unreadable is a
-    ``--check`` problem and counts nowhere. An imported record is current
+    A ``validation.yaml`` holds the result record fields and
+    ``result_sha256``, the sha256 of the exact ``result.yaml`` bytes its
+    verdict was judged from, and is a record only beside that raw evidence,
+    checked again on every read (``load_unikix_records``): the
+    ``result.yaml`` must pass the import's own checks (``read_evidence``:
+    the record contract, the evidence's shape, the ``environment.yaml`` of
+    its scenario or execution directory, the source identity against the zip
+    and the scenario), hash to ``result_sha256``, agree with it on the
+    scenario, adapter, execution, execution fingerprint, source identity and
+    evidence path, and the verdict must be one that run can give: passed, or
+    failing on a comparison, only for a run with an observed outcome to
+    compare; failing with reason ``error`` and no decoded outcome for any
+    run; otherwise the run's own status, reason and gap with no decoded
+    outcome. One that fails any of these is a ``--check`` problem and counts
+    nowhere, so a verdict planted beside other evidence, or evidence changed
+    after its verdict, verifies nothing. An imported record is current
     only under the fingerprint rule too: a recorded ``execution_fingerprint``
     must equal the scenario's as it stands (one that cannot be computed
     matches none), and a passed record always carries one by the record
@@ -56,8 +68,10 @@ Outputs (``regenerate``, run at the end of every pytest session and by
     elapsed time, absolute path or wall-clock date, so two consecutive full
     runs leave them byte-identical. Nothing is regenerated, and nothing
     written, while the inventory lists another number of items than its
-    frozen ``header.total`` or a gnucobol-batch record cannot be read or is
-    a symbolic link: ``ReportError`` names each.
+    frozen ``header.total``, a scenario file of the id manifest cannot be
+    read, a gnucobol-batch record cannot be read or is a symbolic link, or a
+    ``validation.yaml`` cannot be read, breaks the validation record
+    contract or is a symbolic link: ``ReportError`` names each.
 
 Command line (from the repository root)::
 
@@ -112,7 +126,7 @@ _TESTS_ROOT = str(Path(__file__).resolve().parents[1])
 if _TESTS_ROOT not in sys.path:
     sys.path.insert(0, _TESTS_ROOT)
 
-from adapters.base import AdapterError, Result, after_job_observation  # noqa: E402
+from adapters.base import AdapterError, Result, after_job_observation, parse_after_job, parse_region_stage  # noqa: E402
 from harness import (  # noqa: E402
     DEFAULT_CLOCK,
     INVENTORY_DIR,
@@ -180,6 +194,11 @@ REPORT_FILE = REPORTS_DIR / "coverage-report.md"
 VALIDATION_FILE = "validation.yaml"
 RESULT_FILE = "result.yaml"
 ENVIRONMENT_FILE = "environment.yaml"
+# The one field validation.yaml holds beside the result record fields: the
+# sha256 of the exact result.yaml bytes its verdict was judged from, so the
+# verdict counts only beside that raw record, unchanged.
+VALIDATION_BINDING = "result_sha256"
+_SHA256_HEX_RE = re.compile(r"[0-9a-f]{64}")
 EVIDENCE_DATASETS_DIR = "datasets"
 # The most bytes an evidence YAML file (result.yaml, environment.yaml,
 # validation.yaml, the promotion.yaml journal) may hold before it is parsed:
@@ -188,6 +207,12 @@ EVIDENCE_DATASETS_DIR = "datasets"
 # below what exhausts memory, since loading a YAML file costs tens of times
 # its size. The importer never writes a journal larger than this.
 EVIDENCE_YAML_MAX_BYTES = 4 * 1024 * 1024
+# The most entries one scenario's evidence datasets/ folder may hold (a run maps far fewer).
+EVIDENCE_DATASET_MAX_FILES = 512
+# The most bytes one datasets/*.bin file may hold (the largest baseline dataset is 663,200).
+EVIDENCE_DATASET_MAX_BYTES = 16 * 1024 * 1024
+# The most bytes the datasets/*.bin files one scenario's evidence reads may hold together.
+EVIDENCE_DATASETS_MAX_BYTES = 64 * 1024 * 1024
 
 MATRIX_HEADER = (
     "inventory_id", "implementation_locations", "scenario_ids", "assertions",
@@ -886,20 +911,34 @@ def resolve_affected(
 # --------------------------------------------------------------------------
 
 
-def _present_scenarios() -> tuple[dict, list[str]]:
+def _present_scenarios() -> tuple[dict, dict[str, str]]:
     """The scenario of every manifest id that has a file (manifest level
-    first), in id order, and the problems of files that cannot be read."""
+    first), in id order, and, by id, the problem of every file that exists
+    but cannot be read: the file cannot be read, is not UTF-8 text or valid
+    YAML, or holds a document ``harness.scenarios`` refuses to load (a key
+    given twice, a recursive alias, nesting or aliases beyond their bounds,
+    an empty file, a value that is not a mapping), each named by its file. A
+    file that cannot be read is no scenario: it lists no item, so it is never
+    taken for the scenario it should be."""
     present: dict[str, Any] = {}
-    problems: list[str] = []
+    unread: dict[str, str] = {}
     for scenario_id in sorted(_scenarios.ALL_IDS):
         try:
             scenario = _scenarios.get(scenario_id, missing_ok=True)
         except HarnessError as exc:
-            problems.append(f"{scenario_id}: scenario file cannot be read: {exc}")
+            unread[scenario_id] = f"{scenario_id}: scenario file cannot be read: {exc}"
             continue
-        if scenario is not None:
-            present[scenario_id] = scenario
-    return present, problems
+        except OSError as exc:
+            unread[scenario_id] = f"{scenario_id}: scenario file cannot be read: {_os_problem(exc)}"
+            continue
+        if scenario is None:
+            continue
+        if scenario.load_problems:
+            unread[scenario_id] = (f"{scenario_id}: scenario file cannot be read: {display_path(scenario.path)}: "
+                                   + "; ".join(map(str, scenario.load_problems)))
+            continue
+        present[scenario_id] = scenario
+    return present, unread
 
 
 def _load_baseline(scenario_id: str) -> tuple[Any, str | None]:
@@ -1031,6 +1070,29 @@ def _unikix_record_problems(record: Any, execution_id: str, scenario_id: str) ->
     if scenario_id not in _scenarios.ALL_IDS:
         issues.append(f"{scenario_id} is not an id of the closed scenario id manifest")
     return issues
+
+
+def _validation_record(document: Any, execution_id: str, scenario_id: str) -> tuple[Any, Any, list[str]]:
+    """The validation record contract, for the ``validation.yaml`` document
+    of the scenario directory ``scenario_id`` of the execution directory
+    ``execution_id``: its result record fields (every key but
+    ``result_sha256``), its binding (``result_sha256``) and every way it
+    breaks the contract. The record fields must be a valid UniKix record of
+    that directory (``_unikix_record_problems``); ``result_sha256`` must be
+    present and the sha256 hex digest of the ``result.yaml`` the verdict was
+    judged from (64 lowercase hex digits). A document that is not a mapping
+    is returned as the record, which the record contract refuses."""
+    if not isinstance(document, Mapping):
+        return document, None, _unikix_record_problems(document, execution_id, scenario_id)
+    record = {key: value for key, value in document.items() if key != VALIDATION_BINDING}
+    binding = document.get(VALIDATION_BINDING)
+    issues = _unikix_record_problems(record, execution_id, scenario_id)
+    if VALIDATION_BINDING not in document:
+        issues.append(f"{VALIDATION_BINDING}: missing; a {VALIDATION_FILE} binds the sha256 of the {RESULT_FILE} its "
+                      "verdict was judged from")
+    elif not (isinstance(binding, str) and _SHA256_HEX_RE.fullmatch(binding)):
+        issues.append(f"{VALIDATION_BINDING}: {_shown(binding)} is not a sha256 hex digest")
+    return record, binding, issues
 
 
 # The members of a decoded outcome: harness.baselines.decode_result always
@@ -1174,17 +1236,114 @@ def _decoded_problems(decoded: Any) -> list[str]:
     return problems
 
 
-def load_unikix_records(evidence_dir: Path = UNIKIX_EVIDENCE_DIR) -> tuple[list[UnikixRecord], list[str]]:
-    """Every ``validation.yaml`` that keeps the result record contract and
-    lies beside its raw evidence (a regular ``result.yaml``, and the
-    ``environment.yaml`` the import reads: the scenario directory's, else
-    the execution directory's), and the problems of those that do not, which
-    ``check`` reports. A symbolic link on the way to the evidence
-    (``tests/reports``, ``tests/reports/unikix``), in place of an execution
-    or scenario directory or in place of a ``validation.yaml`` is a problem
-    too, and nothing is read through it."""
+# The record fields a validation.yaml copies from the result.yaml it was
+# judged from, or shares with it; evidence_path is compared as written.
+_AGREEING_FIELDS = ("scenario_id", "adapter", "execution_id", "execution_fingerprint", "source_identity")
+# The failing reasons only a comparison of an observed outcome gives.
+_COMPARED_REASONS = (_baselines.REASON_ASSERTION, _baselines.REASON_DIVERGENCE, _baselines.REASON_ERROR)
+
+
+def _verdict_text(status: Any, reason: Any, gap_id: Any) -> str:
+    """A record's status, reason and gap as a problem names them:
+    ``blocked (adapter-unavailable) under GAP-MIS-005``."""
+    return f"{status}" + (f" ({reason})" if reason else "") + (f" under {gap_id}" if gap_id else "")
+
+
+def _verdict_problem(record: Mapping[str, Any], evidence: "Evidence") -> str | None:
+    """Why the verdict of a ``validation.yaml`` is none ``_validate_evidence``
+    writes for ``evidence``, or ``None`` when it is one. Failing with reason
+    ``error`` and no decoded outcome is written whatever the evidence holds
+    (the schema check's refusal, a projection that cannot be made). Passed,
+    and failing with reason ``assertion``, ``cross-adapter-divergence`` or
+    ``error`` with a decoded outcome, are judgements of an observed outcome,
+    so the run must have one to compare (``Evidence.ran``, with ``observed``
+    present). Any other verdict is that of a run with no outcome to compare,
+    which keeps the status, reason and gap ``result.yaml`` records and no
+    decoded outcome."""
+    status, reason, decoded = record.get("status"), record.get("reason"), record.get("decoded")
+    raw = evidence.raw
+    verdict = _verdict_text(status, reason, record.get("gap_id"))
+    recorded = _verdict_text(raw.get("status"), raw.get("reason"), raw.get("gap_id"))
+    if status == _results.STATUS_FAILING and reason == _baselines.REASON_ERROR and decoded is None:
+        return None
+    if status == _results.STATUS_PASSED or (status == _results.STATUS_FAILING and reason in _COMPARED_REASONS):
+        if evidence.ran and evidence.observed is not None:
+            return None
+        lacking = "no observed outcome" if evidence.observed is None else "no outcome to compare"
+        return (f"its verdict {verdict} judges an observed outcome, but the {RESULT_FILE} beside it records "
+                f"{recorded}, with {lacking}")
+    if evidence.ran:
+        return (f"its verdict {verdict} is no judgement of the outcome the {RESULT_FILE} beside it records: a run with "
+                "an outcome to compare is validated passed or failing (assertion, error or cross-adapter-divergence)")
+    if (status, reason, record.get("gap_id"), decoded) != (raw.get("status"), raw.get("reason"), raw.get("gap_id"),
+                                                           None):
+        return (f"its verdict {verdict} is not the {recorded} the {RESULT_FILE} beside it records for a run with no "
+                "outcome to compare, which carries over with no decoded outcome")
+    return None
+
+
+def _evidence_disagreements(record: Mapping[str, Any], binding: Any, evidence: "Evidence") -> list[str]:
+    """Every way a ``validation.yaml`` that keeps the validation record
+    contract (``record`` its result record fields, ``binding`` its
+    ``result_sha256``) was not written from ``evidence``, the ``result.yaml``
+    beside it as ``read_evidence`` reads it now: a record field the two must
+    share that differs (``_AGREEING_FIELDS``, and ``evidence_path``, which is
+    the result's own or else its scenario directory), a binding that is not
+    the sha256 of that ``result.yaml``'s bytes, or a verdict no comparison of
+    that evidence gives (``_verdict_problem``)."""
+    raw = evidence.raw
+    differing = [name for name in _AGREEING_FIELDS if record.get(name) != raw.get(name)]
+    if record.get("evidence_path") != (raw.get("evidence_path") or evidence.path):
+        differing.append("evidence_path")
+    issues = []
+    if differing:
+        issues.append(f"it disagrees with the {RESULT_FILE} beside it on {', '.join(differing)}")
+    if binding != evidence.result_sha256:
+        issues.append(f"its {VALIDATION_BINDING} is not the sha256 of the {RESULT_FILE} beside it "
+                      f"({evidence.result_sha256}), which therefore changed after the verdict was written")
+    problem = _verdict_problem(record, evidence)
+    if problem is not None:
+        issues.append(problem)
+    return issues
+
+
+def _unread_validation(problem: str, execution_id: str) -> str:
+    """The problem of a ``validation.yaml`` that is not read (a symbolic
+    link, unreadable, or breaking the validation record contract), with the
+    two ways past it."""
+    return (f"{problem}; restore it, or remove it and import {execution_id} again (python tests/harness/report.py "
+            f"--import-unikix {execution_id}), which writes it anew")
+
+
+def load_unikix_records(
+    evidence_dir: Path = UNIKIX_EVIDENCE_DIR, zip_info: tuple[str, dict] | None = None,
+) -> tuple[list[UnikixRecord], list[str], dict[str, str]]:
+    """Every ``validation.yaml`` that counts as a UniKix record, the problems
+    of every one that does not, which ``check`` reports, and, among them, the
+    ``validation.yaml`` files that are not read at all (display path ->
+    problem), which ``regenerate`` refuses (``State.unread_validations``).
+
+    A ``validation.yaml`` is not read when it is a symbolic link, cannot be
+    read, is not valid YAML or larger than ``EVIDENCE_YAML_MAX_BYTES``, or
+    breaks the validation record contract (``_validation_record``: the
+    result record fields of a valid UniKix record of its directory, and
+    ``result_sha256``); each such problem says how to get past it. One that
+    is read counts only beside the raw evidence it was judged from, checked
+    again on every read: the ``result.yaml`` beside it must pass the
+    import's own checks (``read_evidence`` against ``zip_info``, the zip
+    read when it is ``None``: the record contract, the evidence's shape, its
+    ``environment.yaml`` and the source identity against the zip and the
+    scenario), and the two must agree (``_evidence_disagreements``: the
+    shared record fields, ``result_sha256`` equal to the sha256 of that
+    ``result.yaml``'s bytes, and a verdict that evidence can give).
+    Otherwise it is a problem, led by its path and ending ``the record does
+    not count``, and counts nowhere. A symbolic link on the way to the
+    evidence (``tests/reports``, ``tests/reports/unikix``) or in place of an
+    execution or scenario directory is a problem too, and nothing is read
+    through it."""
     found: list[UnikixRecord] = []
     problems: list[str] = []
+    unread: dict[str, str] = {}
     link = _linked_component(evidence_dir)
     if link is not None:
         problems.append(f"{display_path(link)} {_EVIDENCE_LINK}")
@@ -1193,38 +1352,43 @@ def load_unikix_records(evidence_dir: Path = UNIKIX_EVIDENCE_DIR) -> tuple[list[
         for scenario_dir in _scenario_dirs(execution_dir, links):
             path = scenario_dir / VALIDATION_FILE
             shown = display_path(path)
+            problem: str | None = None
+            document: Any = None
             try:
                 if path.is_symlink():
-                    links.append(path)
-                if path.is_symlink() or not path.is_file():
+                    problem = f"{shown} {_ENTRY_LINK}"
+                elif not path.is_file():
                     continue
-                record = load_yaml(path, max_bytes=EVIDENCE_YAML_MAX_BYTES)
+                else:
+                    document = load_yaml(path, max_bytes=EVIDENCE_YAML_MAX_BYTES)
             except OSError as exc:
-                problems.append(f"cannot read {_os_problem(exc, path)}")
-                continue
+                problem = f"cannot read {_os_problem(exc, path)}"
             except YAMLLoadError as exc:
-                problems.append(f"{shown}: {exc}")
+                problem = str(exc)
+            if problem is None:
+                record, binding, issues = _validation_record(document, execution_dir.name, scenario_dir.name)
+                if issues:
+                    problem = f"{shown}: " + "; ".join(issues)
+            if problem is not None:
+                unread[shown] = _unread_validation(problem, execution_dir.name)
+                problems.append(unread[shown])
                 continue
-            issues = _unikix_record_problems(record, execution_dir.name, scenario_dir.name)
+            # A verdict counts only beside the immutable raw evidence it was
+            # judged from, as the import would read and check it today.
+            if zip_info is None:
+                zip_info = zip_identity()
+            evidence, why = read_evidence(execution_dir.name, scenario_dir, zip_info)
+            if evidence is None:
+                problems.append(f"{shown}: the evidence beside it fails the import's checks: {why}; "
+                                "the record does not count")
+                continue
+            issues = _evidence_disagreements(record, binding, evidence)
             if issues:
-                problems.append(f"{shown}: " + "; ".join(issues))
-                continue
-            # An item leaves blocked only on the immutable raw evidence the
-            # import read; a verdict whose evidence is gone does not count.
-            missing = []
-            result = scenario_dir / RESULT_FILE
-            if result.is_symlink() or not result.is_file():
-                missing.append(f"no {RESULT_FILE} beside it")
-            _, why = _read_environment(scenario_dir)
-            if why is not None:
-                missing.append(why)
-            if missing:
-                problems.append(f"{shown}: the raw evidence ({RESULT_FILE} / {ENVIRONMENT_FILE}) is missing or "
-                                f"unreadable: {'; '.join(missing)}; the record does not count")
+                problems.append(f"{shown}: " + "; ".join(issues) + "; the record does not count")
                 continue
             found.append(UnikixRecord(execution_dir.name, scenario_dir.name, dict(record), path))
     problems.extend(f"{display_path(path)} {_ENTRY_LINK}" for path in links)
-    return found, problems
+    return found, problems, unread
 
 
 # --------------------------------------------------------------------------
@@ -1232,23 +1396,106 @@ def load_unikix_records(evidence_dir: Path = UNIKIX_EVIDENCE_DIR) -> tuple[list[
 # --------------------------------------------------------------------------
 
 
+# Bounds on the UniKix zip that _bounded_zip reads for _zip_members, which
+# hashes its members, and _zip_units, which reads its programs and copybooks;
+# a zip past any of them is refused before any member is read. The committed
+# zip is 434,174 bytes of 381 entries, its largest member 186,302 bytes. Each
+# bound lies far above these and far below what holding the zip in memory
+# would exhaust; they are the bounds adapters/unikix/deploy.py extracts the
+# zip under, which this module does not import. Members are read
+# _ZIP_READ_BLOCK_BYTES at a time.
+_ZIP_MAX_ARCHIVE_BYTES = 16 * 1024 * 1024
+_ZIP_MAX_MEMBER_BYTES = 16 * 1024 * 1024
+_ZIP_MAX_TOTAL_BYTES = 64 * 1024 * 1024
+_ZIP_MAX_ENTRIES = 4096
+_ZIP_READ_BLOCK_BYTES = 1024 * 1024
+
+
+@contextlib.contextmanager
+def _bounded_zip(zip_sha256: str, path: str, mismatch: str) -> Iterator[tuple[zipfile.ZipFile, list]]:
+    """The UniKix zip at ``path`` parsed in memory, and its file members
+    (directories and ``__MACOSX/`` resource forks skipped). At most one byte
+    more than ``_ZIP_MAX_ARCHIVE_BYTES`` of the file is read, and ``zipfile``
+    parses the very bytes whose sha256 is checked against ``zip_sha256``.
+    Before any member is read, ``ReportError`` refuses: a longer file, before
+    ``zipfile`` parses it; other bytes, the path followed by ``mismatch`` as
+    its message; bytes ``zipfile`` cannot parse (``inventory_tools._ZIP_ERRORS``);
+    more than ``_ZIP_MAX_ENTRIES`` entries, those skipped included; and,
+    reported at once, members the central directory gives as larger than
+    ``_ZIP_MAX_MEMBER_BYTES`` each or ``_ZIP_MAX_TOTAL_BYTES`` together.
+    ``OSError`` when the file cannot be opened or read."""
+    shown = display_path(path)
+    with open(path, "rb") as handle:
+        data = handle.read(_ZIP_MAX_ARCHIVE_BYTES + 1)
+    if len(data) > _ZIP_MAX_ARCHIVE_BYTES:
+        raise ReportError(f"{shown} holds more than {_ZIP_MAX_ARCHIVE_BYTES} bytes, the most the zip may hold")
+    if sha256_hex(data) != zip_sha256:
+        raise ReportError(f"{shown} {mismatch}")
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(data))
+    except _inventory._ZIP_ERRORS as exc:
+        raise ReportError(f"cannot read {shown}: {str(exc) or type(exc).__name__}") from None
+    with archive:
+        entries = archive.infolist()
+        if len(entries) > _ZIP_MAX_ENTRIES:
+            raise ReportError(f"{shown} holds {len(entries)} entries, more than {_ZIP_MAX_ENTRIES}, the most it may "
+                              "hold")
+        members = [
+            info for info in entries
+            if not info.is_dir() and not info.filename.startswith(_ZIP_SKIPPED_PREFIX)
+        ]
+        problems = [
+            f"{info.filename!r} is {info.file_size} bytes, more than {_ZIP_MAX_MEMBER_BYTES}, the most one member "
+            "may hold"
+            for info in members if info.file_size > _ZIP_MAX_MEMBER_BYTES
+        ]
+        total = sum(info.file_size for info in members)
+        if total > _ZIP_MAX_TOTAL_BYTES:
+            problems.append(f"the members hold {total} bytes, more than {_ZIP_MAX_TOTAL_BYTES}, the most they may "
+                            "hold together")
+        if problems:
+            raise ReportError(f"{shown} holds members past a size bound: {'; '.join(problems)}")
+        yield archive, members
+
+
+def _member_blocks(archive: zipfile.ZipFile, info: zipfile.ZipInfo, shown: str) -> Iterator[bytes]:
+    """The bytes of the member ``info`` of ``archive``, the zip ``shown``,
+    ``_ZIP_READ_BLOCK_BYTES`` at a time; ``zipfile`` yields no more of it
+    than the size the central directory gives and checks its CRC. A member
+    ``zipfile`` cannot read (a bad CRC, a corrupt compressed stream, an
+    unsupported compression method, encryption: ``inventory_tools._ZIP_ERRORS``)
+    raises ``ReportError`` naming it."""
+    try:
+        with archive.open(info) as member:
+            while block := member.read(_ZIP_READ_BLOCK_BYTES):
+                yield block
+    except _inventory._ZIP_ERRORS as exc:
+        raise ReportError(f"cannot read {info.filename!r} from {shown}: {str(exc) or type(exc).__name__}") from None
+
+
 @functools.lru_cache(maxsize=4)
 def _zip_members(zip_sha256: str, path: str) -> dict:
     """sha256 of every file member of the UniKix zip whose sha256 is
-    ``zip_sha256``, read in memory; ``__MACOSX/`` resource forks skipped."""
-    with zipfile.ZipFile(path) as archive:
-        if sha256_file(path) != zip_sha256:
-            raise ReportError(f"{display_path(path)} changed while it was read")
-        return {
-            info.filename: sha256_hex(archive.read(info))
-            for info in archive.infolist()
-            if not info.is_dir() and not info.filename.startswith(_ZIP_SKIPPED_PREFIX)
-        }
+    ``zip_sha256``, read in memory; ``__MACOSX/`` resource forks skipped.
+    The zip is read, checked and refused as ``_bounded_zip`` sets out, a
+    file of other bytes as one that ``changed while it was read``. Each
+    member is hashed ``_ZIP_READ_BLOCK_BYTES`` at a time, never held whole,
+    and one that cannot be read raises ``ReportError`` (``_member_blocks``)."""
+    shown = display_path(path)
+    with _bounded_zip(zip_sha256, path, "changed while it was read") as (archive, members):
+        hashes = {}
+        for info in members:
+            digest = hashlib.sha256()
+            for block in _member_blocks(archive, info, shown):
+                digest.update(block)
+            hashes[info.filename] = digest.hexdigest()
+        return hashes
 
 
 def zip_identity(path: Path = UNIKIX_ZIP) -> tuple[str, dict] | None:
     """The UniKix zip's sha256 and member hashes, or ``None`` when the zip
-    cannot be read."""
+    cannot be read or parsed, is past a bound, or holds a member that cannot
+    be read (``_zip_members``)."""
     try:
         digest = sha256_file(path)
         return digest, _zip_members(digest, str(path))
@@ -1341,17 +1588,15 @@ def _zip_units(zip_sha256: str, path: str) -> _ZipUnits:
     """The members of the UniKix zip whose sha256 is ``zip_sha256`` and the
     COPY and CALL references of its programs and copybooks, read in memory
     (texts decoded as latin-1). ``ReportError`` when the file at ``path`` is
-    not that zip."""
-    with zipfile.ZipFile(path) as archive:
-        if sha256_file(path) != zip_sha256:
-            raise ReportError(f"{display_path(path)} is not the zip whose sha256 is {zip_sha256}")
-        infos = [
-            info for info in archive.infolist()
-            if not info.is_dir() and not info.filename.startswith(_ZIP_SKIPPED_PREFIX)
-        ]
+    not that zip, or is past a bound or cannot be parsed, each refused as
+    ``_bounded_zip`` sets out before any member is read; and when a program
+    or copybook cannot be read (``_member_blocks``). Each is read
+    ``_ZIP_READ_BLOCK_BYTES`` at a time and held within the member bound."""
+    shown = display_path(path)
+    with _bounded_zip(zip_sha256, path, f"is not the zip whose sha256 is {zip_sha256}") as (archive, infos):
         names = frozenset(info.filename for info in infos)
         texts = {
-            info.filename: archive.read(info).decode("latin-1")
+            info.filename: b"".join(_member_blocks(archive, info, shown)).decode("latin-1")
             for info in infos if info.filename.startswith(_ZIP_SOURCE_DIRS)
         }
     references = {member: _source_references(text, names) for member, text in texts.items()}
@@ -1790,11 +2035,22 @@ class State:
     unikix_records: list
     problems: list = field(default_factory=list)
     baseline_problems: dict = field(default_factory=dict)
+    # scenario id -> why its scenario file, which exists, is not read
+    # (``_present_scenarios``); such a scenario is not in ``scenarios``. Each
+    # problem is in ``problems`` too, and ``regenerate`` refuses while any
+    # exists.
+    unread_scenarios: dict = field(default_factory=dict)
     # scenario id -> why its gnucobol-batch record is not read: the record
     # cannot be read or breaks the record contract, or it, or the results
     # folder holding it, is a symbolic link. Each problem is in ``problems``
     # too (once for a linked folder), and ``regenerate`` refuses while any exists.
     unread_records: dict = field(default_factory=dict)
+    # validation.yaml (display path) -> why it is not read: a symbolic link
+    # in its place, a file that cannot be read or is not valid YAML, or one
+    # that breaks the validation record contract (``load_unikix_records``).
+    # Each problem is in ``problems`` too, and ``regenerate`` refuses while
+    # any exists.
+    unread_validations: dict = field(default_factory=dict)
 
     @property
     def total(self) -> int:
@@ -1892,27 +2148,33 @@ def build_state() -> State:
     """Read the inventory, the gap register, the scenarios, their baselines
     and every record, and apply the status rules. An inventory header whose
     frozen total is missing or malformed raises ``ReportError``
-    (``_frozen_total``) before anything else is read. A gnucobol-batch
-    record that cannot be read, breaks the record contract or is refused as
-    a symbolic link (``harness.results.refused_link``: the record file, the
-    results folder or its parent) counts as no record, and is recorded in
-    ``unread_records`` and ``problems``. A counted passed record of a
-    scenario that fails the schema check counts as failing with reason
-    ``error``, and ``problems`` names the scenario."""
+    (``_frozen_total``) before anything else is read. A scenario file of the
+    id manifest that exists but cannot be read (``_present_scenarios``) is
+    no scenario, and is recorded in ``unread_scenarios`` and ``problems``. A
+    gnucobol-batch record that cannot be read, breaks the record contract or
+    is refused as a symbolic link (``harness.results.refused_link``: the
+    record file, the results folder or its parent) counts as no record, and
+    is recorded in ``unread_records`` and ``problems``. The imported UniKix
+    records are the ``validation.yaml`` files ``load_unikix_records`` counts,
+    each checked against the raw evidence beside it on this read; one that
+    is not read at all is recorded in ``unread_validations`` and
+    ``problems``, and one that fails that check in ``problems``. A counted
+    passed record of a scenario that fails the schema check counts as
+    failing with reason ``error``, and ``problems`` names the scenario."""
     inventory = _inventory.load()
     header = dict(inventory["header"])
     _frozen_total(header)
     items = sorted((dict(item) for item in inventory["items"]), key=lambda item: item["id"])
     gaps = load_gaps()
     problems = list(gaps.problems)
-    present, scenario_problems = _present_scenarios()
-    problems.extend(scenario_problems)
+    present, unread_scenarios = _present_scenarios()
+    problems.extend(unread_scenarios.values())
     universe = _Universe.build(items, present.values())
     affected = {gap_id: _resolve(gap_id, entry, universe) for gap_id, entry in gaps.entries.items()}
     copy_gaps = _copy_gaps(gaps, affected)
     zip_info = zip_identity()
 
-    unikix_records, record_problems = load_unikix_records()
+    unikix_records, record_problems, unread_validations = load_unikix_records(zip_info=zip_info)
     problems.extend(record_problems)
     by_scenario: dict[str, list[UnikixRecord]] = {}
     for entry in unikix_records:
@@ -2025,7 +2287,9 @@ def build_state() -> State:
         unikix_records=unikix_records,
         problems=problems,
         baseline_problems=baseline_problems,
+        unread_scenarios=unread_scenarios,
         unread_records=unread_records,
+        unread_validations=unread_validations,
     )
 
 
@@ -2150,15 +2414,60 @@ class ObservedMessage:
     line: int
 
 
+def _evidence_yaml_bytes(path: Path) -> bytes | None:
+    """The bytes of the evidence YAML file at ``path`` (a ``result.yaml`` or
+    ``validation.yaml``), opened without following a symbolic link and read
+    through its descriptor, never more than one byte past
+    ``EVIDENCE_YAML_MAX_BYTES``. ``None`` when it is a symbolic link, is not
+    a regular file by the time it is opened (a FIFO is opened without
+    blocking and never read), cannot be read, or holds more than
+    ``EVIDENCE_YAML_MAX_BYTES``, whether its size already says so or it grows
+    past that bound while it is read: the files that the link checks before
+    ``load_yaml(path, max_bytes=EVIDENCE_YAML_MAX_BYTES)``, or that call
+    itself, refuse."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except OSError:
+        return None
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > EVIDENCE_YAML_MAX_BYTES:
+            return None
+        chunks = []
+        left = EVIDENCE_YAML_MAX_BYTES + 1
+        while left > 0:
+            chunk = os.read(descriptor, min(left, _EVIDENCE_READ_CHUNK))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            left -= len(chunk)
+        return None if left == 0 else b"".join(chunks)
+    except OSError:
+        return None
+    finally:
+        os.close(descriptor)
+
+
 def _observed_messages(result_path: Path, raw: Mapping[str, Any], execution_id: str,
                        scenario_id: str) -> list[ObservedMessage]:
+    """The observed messages of ``raw``, the record parsed from the
+    ``result.yaml`` at ``result_path``, each with the line of that file that
+    first holds its text. The file is read again only as
+    ``_evidence_yaml_bytes`` reads it, its lines split as a text-mode read
+    splits them; when that read gives nothing (a symbolic link or anything
+    but a regular file swapped in, a file grown past
+    ``EVIDENCE_YAML_MAX_BYTES``, one that cannot be read or is no longer
+    UTF-8), or no line holds the text, the line is 1."""
     entries = raw.get("observed_messages")
     if not isinstance(entries, list):
         return []
+    data = _evidence_yaml_bytes(result_path)
     try:
-        lines = result_path.read_text(encoding="utf-8").split("\n")
-    except OSError:
-        lines = []
+        content = "" if data is None else data.decode("utf-8")
+    except UnicodeDecodeError:
+        content = ""
+    # A text-mode read ends a line at CRLF and at a lone CR as at LF.
+    lines = content.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     found = []
     for entry in entries:
         if not isinstance(entry, Mapping) or not isinstance(entry.get("value"), str):
@@ -2200,11 +2509,36 @@ def unmatched_messages(state: State, evidence_dir: Path = UNIKIX_EVIDENCE_DIR) -
 # --------------------------------------------------------------------------
 
 
+# The leading characters that make a spreadsheet read a CSV cell as a formula
+# (OWASP CSV Injection): '=', '+', '-', '@', a tab, a carriage return or a
+# line feed, and the full-width forms of the first four (U+FF1D, U+FF0B,
+# U+FF0D, U+FF20). The register and the matrix carry curated and imported
+# text (gaps.yaml's unknown, needed and resolving_evidence among it), and CSV
+# quoting only keeps a value inside its cell, so a cell that begins with one
+# of these is written with a leading "'".
+CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r", "\n", "\uff1d", "\uff0b", "\uff0d", "\uff20")
+
+
+def _csv_cell(value: Any) -> str:
+    """One CSV cell's text: ``''`` for ``None``, else ``str(value)``, with a
+    leading ``'`` when that text begins with one of ``CSV_FORMULA_PREFIXES``,
+    so a spreadsheet shows it as text instead of evaluating it. A pure
+    function of the value, so the reports stay deterministic."""
+    if value is None:
+        return ""
+    text = str(value)
+    return "'" + text if text.startswith(CSV_FORMULA_PREFIXES) else text
+
+
 def _csv(rows: Iterable[Sequence[Any]]) -> str:
+    """The CSV text of ``rows``, ``\\n``-terminated, each cell rendered by
+    ``_csv_cell``. The formula neutralization exists only in this text: the
+    sources the cells come from (gaps.yaml, the inventory, the scenarios and
+    the records) keep their exact values."""
     buffer = io.StringIO()
     writer = csv.writer(buffer, lineterminator="\n")
     for row in rows:
-        writer.writerow(["" if value is None else str(value) for value in row])
+        writer.writerow([_csv_cell(value) for value in row])
     return buffer.getvalue()
 
 
@@ -2237,7 +2571,9 @@ def render_matrix(state: State) -> str:
     ``execution_id`` and ``evidence_path`` columns are paired record by
     record in scenario order (the row's ``scenario_ids``, then each
     scenario's deciding records by adapter and execution id), so the i-th
-    execution id is the one recorded in the i-th evidence path."""
+    execution id is the one recorded in the i-th evidence path. A cell that
+    would begin with a spreadsheet formula prefix carries a leading ``'``
+    (``_csv_cell``); the inventory, scenarios and records stay exact."""
     rows: list[Sequence[Any]] = [MATRIX_HEADER]
     for item in state.items:
         scenario_ids = state.item_scenarios[item["id"]]
@@ -2263,7 +2599,9 @@ def _render_evidence(evidence: Any) -> str:
 
 def render_register(state: State) -> str:
     """``gap-register.csv``: one row per register entry in id order, its
-    affected items resolved."""
+    affected items resolved. A cell that would begin with a spreadsheet
+    formula prefix, such as an ``unknown`` of ``=1+1``, carries a leading
+    ``'`` (``_csv_cell``); gaps.yaml keeps the exact text."""
     rows: list[Sequence[Any]] = [REGISTER_HEADER]
     for gap_id, entry in state.gaps.entries.items():
         rows.append([
@@ -2418,13 +2756,21 @@ def _projection_causes(state: State) -> list[str]:
     """Why this report's counts can differ from the planning projection."""
     causes = []
     missing = sorted(set(_scenarios.ALL_IDS) - set(state.scenarios))
-    if missing:
+    # A scenario file that exists but cannot be read is not an absent one.
+    unreadable = [scenario_id for scenario_id in missing if scenario_id in state.unread_scenarios]
+    absent = [scenario_id for scenario_id in missing if scenario_id not in state.unread_scenarios]
+    if absent:
         by_level = Counter(
-            level for level, ids in _scenarios.MANIFEST.items() for scenario_id in missing if scenario_id in ids
+            level for level, ids in _scenarios.MANIFEST.items() for scenario_id in absent if scenario_id in ids
         )
         shown = ", ".join(f"{by_level[level]} {level}" for level in _scenarios.LEVELS if by_level[level])
-        causes.append(f"{len(missing)} scenario files of the id manifest are absent ({shown}); "
+        causes.append(f"{len(absent)} scenario files of the id manifest are absent ({shown}); "
                       "the items only they would list are not-covered.")
+    if unreadable:
+        causes.append(f"{len(unreadable)} scenario files of the id manifest exist but cannot be read (python "
+                      "tests/harness/report.py --check names each problem): " + ", ".join(unreadable[:10])
+                      + (" ..." if len(unreadable) > 10 else "")
+                      + "; the items only they would list are not-covered.")
     recordless = [
         scenario_id for scenario_id, status in state.statuses.items()
         if status.status == _results.STATUS_BLOCKED and not status.counted and not status.stale
@@ -2768,18 +3114,26 @@ def _refuse_unreportable(state: State) -> None:
     """Raise ``ReportError`` when the reports cannot be regenerated from
     ``state`` truthfully: the inventory lists another number of items than
     its frozen total (drift, which ``inventory_tools.py --check`` explains),
-    or a gnucobol-batch result record cannot be read, breaks the record
-    contract or is refused as a symbolic link (``State.unread_records``),
-    which would otherwise count as a scenario that never ran. Every reason
-    is named, each unread record by its file or the link refused. The
-    regeneration, the import and the revalidation call it before they write
-    anything."""
+    a scenario file of the id manifest exists but cannot be read
+    (``State.unread_scenarios``), which would otherwise count as an absent
+    scenario and leave the items it lists not-covered, a gnucobol-batch
+    result record cannot be read, breaks the record contract or is refused
+    as a symbolic link (``State.unread_records``), which would otherwise
+    count as a scenario that never ran, or a ``validation.yaml`` is a
+    symbolic link, cannot be read or breaks the validation record contract
+    (``State.unread_validations``), which would otherwise count as an
+    execution never imported. Every reason is named, each unread file by its
+    path or the link refused, an unread ``validation.yaml`` with the way
+    past it. The regeneration, the import and the revalidation call it
+    before they write anything."""
     reasons = []
     listed = len(state.items)
     if listed != state.total:
         reasons.append(f"{display_path(_inventory.INVENTORY_FILE)} header.total is {state.total} but the "
                        f"inventory holds {listed} items; run python tests/harness/inventory_tools.py --check")
+    reasons.extend(dict.fromkeys(state.unread_scenarios.values()))
     reasons.extend(dict.fromkeys(state.unread_records.values()))
+    reasons.extend(dict.fromkeys(state.unread_validations.values()))
     if reasons:
         raise ReportError("the reports are not regenerated, and nothing is written: " + "; ".join(reasons))
 
@@ -2790,10 +3144,12 @@ def regenerate() -> State:
     item. Unchanged files are left untouched. The three texts are rendered
     before anything is written, so one that cannot be rendered (an invalid
     ``CARDDEMO_ADAPTER``) leaves every file as it was, and so do an
-    inventory whose item count differs from its frozen total and a
-    gnucobol-batch result record that cannot be read, breaks the record
-    contract or is a symbolic link, which ``_refuse_unreportable`` refuses
-    with ``ReportError`` naming each. Returns the state reported."""
+    inventory whose item count differs from its frozen total, a scenario
+    file that cannot be read, a gnucobol-batch result record that cannot be
+    read, breaks the record contract or is a symbolic link, and a
+    ``validation.yaml`` that is a symbolic link, cannot be read or breaks the
+    validation record contract, which ``_refuse_unreportable`` refuses with
+    ``ReportError`` naming each. Returns the state reported."""
     _refuse_links(REPORTS_DIR.parent, REPORTS_DIR, MATRIX_FILE, REGISTER_FILE, REPORT_FILE)
     state = build_state()
     _refuse_unreportable(state)
@@ -4454,7 +4810,8 @@ def _matrix_findings(state: State) -> list[str]:
     duplicates = sorted(item_id for item_id, count in Counter(ids).items() if count > 1)
     if duplicates:
         findings.append(f"coverage matrix: duplicate rows for {', '.join(duplicates)}")
-    inventory_ids = {item["id"] for item in state.items}
+    # Each row names its item as render_matrix wrote it, formula prefix neutralized.
+    inventory_ids = {_csv_cell(item["id"]) for item in state.items}
     missing, extra = sorted(inventory_ids - set(ids)), sorted(set(ids) - inventory_ids)
     if missing:
         findings.append(f"coverage matrix: no row for {len(missing)} inventory items: {', '.join(missing[:20])}")
@@ -4552,8 +4909,10 @@ def check(state: State | None = None) -> list[str]:
     findings.extend(check_seams(state))
     for path, text in render(state).items():
         try:
-            current = path.read_text(encoding="utf-8")
-        except OSError:
+            # Read without newline translation, as write_text writes the
+            # rendered text: a carriage return inside a CSV cell is no line end.
+            current = path.read_bytes().decode("utf-8")
+        except (OSError, UnicodeDecodeError):
             current = None
         if path == REPORT_FILE and current is not None:
             # The Environment section describes the host that ran the check,
@@ -4808,6 +5167,10 @@ class Evidence:
     raw: dict  # result.yaml
     environment: dict
     datasets: dict  # observation or logical name -> bytes
+    # The sha256 of the result.yaml bytes ``raw`` was parsed from, which a
+    # validation.yaml judged from this evidence binds; None for evidence not
+    # read from a file, of which no validation.yaml is ever written.
+    result_sha256: str | None = None
 
     @property
     def path(self) -> str:
@@ -4914,30 +5277,155 @@ def _read_environment(scenario_dir: Path) -> tuple[dict | None, str | None]:
     return dict(document), None
 
 
+# How many bytes one read of an evidence dataset file asks for at most.
+_EVIDENCE_READ_CHUNK = 1024 * 1024
+
+
+def _dataset_limit_problem(path: Path, held: str, budget: int) -> str:
+    """Why the ``datasets/`` file at ``path`` is refused, given ``held``, the
+    bytes it holds (a count, or ``more than <n>``), and ``budget``, what the
+    evidence's earlier files leave of ``EVIDENCE_DATASETS_MAX_BYTES``: past
+    ``EVIDENCE_DATASET_MAX_BYTES``, the most one file may hold, while the
+    budget still covers that much, else past the budget."""
+    shown = display_path(path)
+    if budget >= EVIDENCE_DATASET_MAX_BYTES:
+        return (f"{shown} holds {held} bytes; one evidence {EVIDENCE_DATASETS_DIR}/ file may hold at most "
+                f"{EVIDENCE_DATASET_MAX_BYTES}")
+    return (f"{shown} holds {held} bytes, and the {EVIDENCE_DATASETS_DIR}/ files of one scenario's evidence "
+            f"may hold at most {EVIDENCE_DATASETS_MAX_BYTES} together ({budget} were left for it)")
+
+
+def _read_dataset_file(folder: int, name: str, path: Path, budget: int) -> bytes | None:
+    """The bytes of the file ``name`` of the open ``datasets/`` folder
+    ``folder`` (shown as ``path``), opened without following a symbolic
+    link and read through its descriptor: ``None`` when it is a symbolic
+    link or not a regular file by the time it is opened, so it is skipped
+    as when it was listed. It may hold at most ``EVIDENCE_DATASET_MAX_BYTES``
+    and at most ``budget``, what the evidence's earlier files leave of
+    ``EVIDENCE_DATASETS_MAX_BYTES``. A file whose size already passes that
+    limit is refused before anything is read, and at most one byte more than
+    the limit is ever read, so a file that grows after its size was taken is
+    refused too, never held whole: ``ReportError`` naming the file, its size
+    and the limit (``_dataset_limit_problem``), or why it cannot be read."""
+    try:
+        descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=folder)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            return None
+        raise ReportError(f"cannot read {display_path(path)}: {exc.strerror or exc}") from None
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            return None
+        limit = min(EVIDENCE_DATASET_MAX_BYTES, budget)
+        if info.st_size > limit:
+            raise ReportError(_dataset_limit_problem(path, str(info.st_size), budget))
+        chunks = []
+        left = limit + 1
+        while left > 0:
+            chunk = os.read(descriptor, min(left, _EVIDENCE_READ_CHUNK))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            left -= len(chunk)
+        if left == 0:
+            raise ReportError(_dataset_limit_problem(path, f"more than {limit}", budget))
+        return b"".join(chunks)
+    except OSError as exc:
+        raise ReportError(f"cannot read {display_path(path)}: {exc.strerror or exc}") from None
+    finally:
+        os.close(descriptor)
+
+
+def _recognized_observation(name: str, definitions: Mapping[str, _fixtures.DatasetSpec]) -> bool:
+    """Whether a scenario can name ``name`` in ``expected.datasets`` or
+    ``expected.file_state``, as the scenario schema admits it: a logical
+    dataset of ``definitions`` (``harness.fixtures.specs``, the datasets of
+    tests/fixtures/datasets.yaml); ``@CATALOG``, ``@REGION-FILES`` or
+    ``@TDQ:JOBS``; ``@AIX:<path>`` for an alternate-index path of one of
+    those datasets; a region stage observation ``@BEFORE:<JOB>:@REGION-FILES``
+    or ``@AFTER:<JOB>:@REGION-FILES``; or a stage observation
+    ``@AFTER:<JOB>:<LOGICAL>`` of a logical dataset. ``<JOB>`` is only held
+    to the form ``adapters.base.parse_region_stage`` and ``parse_after_job``
+    read it by, since no scenario is at hand to say which jobs it runs."""
+    if name in definitions or name in (_scenarios.OBS_CATALOG, _scenarios.OBS_REGION_FILES, _scenarios.OBS_TDQ_JOBS):
+        return True
+    if name.startswith(_scenarios.OBS_AIX_PREFIX):
+        path = name[len(_scenarios.OBS_AIX_PREFIX):]
+        return any(key.path == path for spec in definitions.values() for key in spec.alternate_keys)
+    if parse_region_stage(name) is not None:
+        return True
+    stage = parse_after_job(name)
+    return stage is not None and stage[1] in definitions
+
+
 def _evidence_datasets(scenario_dir: Path, raw: Mapping[str, Any]) -> dict[str, bytes]:
-    """The bytes of every ``datasets/*.bin`` file of the evidence, under the
-    name ``capture_summary.datasets`` gives it back; ``ReportError`` naming
-    the folder or file that cannot be read."""
+    """The bytes of every ``datasets/*.bin`` file of the evidence that a
+    scenario can name, in file name order, under the name
+    ``capture_summary.datasets`` gives it back, else its reserved
+    observation or logical name. A file whose name is not one a scenario can
+    name (``_recognized_observation``: neither a logical dataset of
+    tests/fixtures/datasets.yaml nor a reserved observation of one), such as
+    ``JUNK.bin`` or an ``_AIX_<path>.bin`` file the summary does not give
+    back, is never opened and counts against no byte limit. Symbolic links
+    and anything but regular files are skipped. The folder is opened
+    without following a symbolic link and listed through its descriptor;
+    the files are read as ``_read_dataset_file`` reads them. ``ReportError``
+    before any file is read when the folder holds more than
+    ``EVIDENCE_DATASET_MAX_FILES`` entries of any name (the listing stops at
+    the first entry past that bound), and when a file read holds more than
+    ``EVIDENCE_DATASET_MAX_BYTES`` or takes the files read past
+    ``EVIDENCE_DATASETS_MAX_BYTES`` together, naming the folder or file, its
+    size and the limit; and naming the folder or file that cannot be read,
+    or tests/fixtures/datasets.yaml when its logical datasets cannot be
+    read."""
     folder = scenario_dir / EVIDENCE_DATASETS_DIR
     summary = raw.get("capture_summary")
     names = summary.get("datasets") if isinstance(summary, Mapping) else None
     names = names if isinstance(names, Mapping) else {}
-    datasets = {}
     try:
         if folder.is_symlink() or not folder.is_dir():
             return {}
-        for entry in sorted(folder.iterdir()):
-            if entry.is_symlink() or not entry.is_file() or entry.suffix != ".bin":
-                continue
-            name = names.get(entry.name, names.get(entry.stem))
-            if not isinstance(name, str):
-                name = _OBSERVATION_FILES.get(entry.stem, entry.stem)
-                if name.startswith("_"):
-                    continue  # an @AIX:<path> file whose name the summary does not give back
-            datasets[name] = entry.read_bytes()
+        descriptor = os.open(folder, _FOLDER_FLAGS | os.O_NOFOLLOW)
     except OSError as exc:
         raise ReportError(f"cannot read {_os_problem(exc, folder)}") from None
-    return datasets
+    try:
+        files = []
+        try:
+            with os.scandir(descriptor) as listing:
+                for count, entry in enumerate(listing, 1):
+                    if count > EVIDENCE_DATASET_MAX_FILES:
+                        raise ReportError(f"{display_path(folder)} holds more than {EVIDENCE_DATASET_MAX_FILES} "
+                                          f"entries; an evidence {EVIDENCE_DATASETS_DIR}/ folder may hold at most "
+                                          f"{EVIDENCE_DATASET_MAX_FILES}")
+                    if entry.is_file(follow_symlinks=False) and Path(entry.name).suffix == ".bin":
+                        files.append(entry.name)
+        except OSError as exc:
+            raise ReportError(f"cannot read {display_path(folder)}: {exc.strerror or exc}") from None
+        try:
+            definitions = _fixtures.specs() if files else {}
+        except OSError as exc:
+            raise ReportError(f"the {EVIDENCE_DATASETS_DIR}/ files of {display_path(scenario_dir)} cannot be named: "
+                              f"cannot read {_os_problem(exc, _fixtures.FIXTURES_FILE)}") from None
+        except HarnessError as exc:
+            raise ReportError(f"the {EVIDENCE_DATASETS_DIR}/ files of {display_path(scenario_dir)} cannot be named: "
+                              f"{_clip(exc, 300)}") from None
+        datasets = {}
+        budget = EVIDENCE_DATASETS_MAX_BYTES
+        for file_name in sorted(files):
+            stem = Path(file_name).stem
+            name = names.get(file_name, names.get(stem))
+            if not isinstance(name, str):
+                name = _OBSERVATION_FILES.get(stem, stem)
+            if not _recognized_observation(name, definitions):
+                continue  # no scenario can name it, so nothing it holds is ever compared
+            data = _read_dataset_file(descriptor, file_name, folder / file_name, budget)
+            if data is not None:
+                datasets[name] = data
+                budget -= len(data)
+        return datasets
+    finally:
+        os.close(descriptor)
 
 
 def _shown(value: Any) -> str:
@@ -5046,8 +5534,18 @@ def read_evidence(execution_id: str, scenario_dir: Path,
     ``result.yaml`` larger than ``EVIDENCE_YAML_MAX_BYTES``, a record that
     breaks the result contract or names another execution, scenario or
     adapter, a key or ``observed`` payload ``adapters/unikix/evidence.py``
-    does not write (``_evidence_problems``), a file the importer cannot read,
-    or a source identity that is not the zip's UniKix copy as committed."""
+    does not write (``_evidence_problems``), a file the importer cannot read
+    or that changed while it was read, a source identity that is not the
+    zip's UniKix copy as committed, or a ``datasets/`` folder holding more
+    than ``EVIDENCE_DATASET_MAX_FILES`` entries, a ``datasets/*.bin`` file
+    read holding more than ``EVIDENCE_DATASET_MAX_BYTES``, or such files
+    holding more than ``EVIDENCE_DATASETS_MAX_BYTES`` together
+    (``_evidence_datasets``, which never reads more than one byte past a
+    limit, and never opens a file whose name is neither a logical dataset of
+    tests/fixtures/datasets.yaml nor a reserved observation a scenario can
+    name). The evidence carries the sha256 of the ``result.yaml`` bytes it
+    was parsed from (``Evidence.result_sha256``), which the
+    ``validation.yaml`` judged from it binds."""
     scenario_id = scenario_dir.name
     if scenario_id not in _scenarios.ALL_IDS:
         return None, f"{scenario_id} is not an id of the closed scenario id manifest"
@@ -5061,11 +5559,18 @@ def read_evidence(execution_id: str, scenario_dir: Path,
     if environment is None:
         return None, f"environment: {problem}"
     try:
+        before = path.stat()
         raw = load_yaml(path, max_bytes=EVIDENCE_YAML_MAX_BYTES)
+        result_sha256 = sha256_file(path)
+        after = path.stat()
     except OSError as exc:
         return None, f"cannot read {_os_problem(exc, path)}"
     except YAMLLoadError as exc:
         return None, str(exc)
+    # The digest must be of the bytes parsed: a file replaced or rewritten
+    # between the two reads is refused rather than bound.
+    if (before.st_ino, before.st_size, before.st_mtime_ns) != (after.st_ino, after.st_size, after.st_mtime_ns):
+        return None, f"{display_path(path)} changed while it was read"
     if not isinstance(raw, Mapping):
         return None, f"{RESULT_FILE} does not hold a mapping"
     record = {name: raw.get(name) for name in _results.RECORD_FIELDS}
@@ -5082,6 +5587,8 @@ def read_evidence(execution_id: str, scenario_dir: Path,
         scenario = _scenarios.get(scenario_id, missing_ok=True)
     except HarnessError as exc:
         return None, f"the scenario file cannot be read: {exc}"
+    except OSError as exc:
+        return None, f"the scenario file cannot be read: {_os_problem(exc)}"
     problem = identity_problem(record["source_identity"], zip_info, scenario)
     if problem is not None:
         return None, f"source identity: {problem}"
@@ -5089,7 +5596,7 @@ def read_evidence(execution_id: str, scenario_dir: Path,
         datasets = _evidence_datasets(scenario_dir, raw)
     except ReportError as exc:
         return None, str(exc)
-    return Evidence(execution_id, scenario_id, scenario_dir, dict(raw), environment, datasets), None
+    return Evidence(execution_id, scenario_id, scenario_dir, dict(raw), environment, datasets, result_sha256), None
 
 
 def _date_text(value: Any) -> str | None:
@@ -5288,6 +5795,16 @@ def current_fingerprint(scenario: Any) -> tuple[str | None, str | None]:
 
 def _validation(evidence: Evidence, scenario: Any, baseline: Any, status: str, reason: str | None,
                 gap_id: str | None, decoded: Mapping[str, Any] | None) -> dict:
+    """The ``validation.yaml`` of a verdict on ``evidence``: the result record
+    fields, checked against the record contract, and ``result_sha256``
+    (``VALIDATION_BINDING``), the sha256 of the ``result.yaml`` bytes the
+    evidence was read from. ``ReportError`` when the record would break the
+    contract, or when the evidence was not read from a ``result.yaml``
+    (``Evidence.result_sha256`` is ``None``), since such a verdict could be
+    bound to no raw record."""
+    if evidence.result_sha256 is None:
+        raise ReportError(f"{evidence.path}: {VALIDATION_FILE} cannot be written: the evidence was not read from a "
+                          f"{RESULT_FILE} whose sha256 it could bind")
     record = {
         "scenario_id": evidence.scenario_id,
         "adapter": _results.UNIKIX,
@@ -5306,7 +5823,7 @@ def _validation(evidence: Evidence, scenario: Any, baseline: Any, status: str, r
     if problems:
         raise ReportError(f"{evidence.path}: {VALIDATION_FILE} would break the record contract: "
                           + "; ".join(problems))
-    return record
+    return {**record, VALIDATION_BINDING: evidence.result_sha256}
 
 
 _FOLDER_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
@@ -6501,6 +7018,34 @@ def _divergence_entry(evidence: Evidence, scenario: Any, baseline: Any, diff: st
     return "stub-limitation", unknown, needed
 
 
+def _refuse_rebinding(evidence: Evidence) -> None:
+    """Raise ``ReportError`` when the ``validation.yaml`` already beside
+    ``evidence`` binds another ``result.yaml`` than the one read now: its
+    ``result_sha256`` differs from ``Evidence.result_sha256``, so the raw
+    record changed after that verdict was written, and judging it again
+    would bind a verdict to evidence that is no longer immutable. One that
+    cannot be read raises too, since it is never replaced unexamined; an
+    absent one, a symbolic link (which the write itself refuses) and one
+    without a binding are left to the write."""
+    path = evidence.directory / VALIDATION_FILE
+    try:
+        if path.is_symlink() or not path.is_file():
+            return
+        document = load_yaml(path, max_bytes=EVIDENCE_YAML_MAX_BYTES)
+    except OSError as exc:
+        raise ReportError(f"cannot read {_os_problem(exc, path)}") from None
+    except YAMLLoadError as exc:
+        raise ReportError(str(exc)) from None
+    binding = document.get(VALIDATION_BINDING) if isinstance(document, Mapping) else None
+    if isinstance(binding, str) and binding != evidence.result_sha256:
+        raise ReportError(
+            f"{display_path(path)} was written from another {RESULT_FILE}: its {VALIDATION_BINDING} is not the sha256 "
+            f"of {display_path(evidence.directory / RESULT_FILE)} ({evidence.result_sha256}), which changed after "
+            f"that verdict; evidence is immutable, so nothing is judged or written: restore {RESULT_FILE} from "
+            f"version control, or remove {VALIDATION_FILE} and import {evidence.execution_id} again to judge the "
+            "evidence as it now stands")
+
+
 def _validate_evidence(evidence: Evidence, scenario: Any, document: dict | None,
                        summary: ImportSummary | None, copy_gaps: _CopyGaps,
                        zip_info: tuple[str, dict] | None, *, importing: bool) -> tuple[str, str | None] | None:
@@ -6526,9 +7071,13 @@ def _validate_evidence(evidence: Evidence, scenario: Any, document: dict | None,
     evidence no longer describes the scenario (its execution fingerprint
     changed, or it lacks such an observation) or a promotion is pending
     while revalidating. Raises ``HarnessError`` when the evidence cannot be
-    judged: the current execution fingerprint cannot be computed, the
-    baseline cannot be read, the comparison could not be made, or a
-    journalled promotion can no longer complete."""
+    judged: the ``validation.yaml`` already beside it binds another
+    ``result.yaml`` (``_refuse_rebinding``), the current execution
+    fingerprint cannot be computed, the baseline cannot be read, the
+    comparison could not be made, or a journalled promotion can no longer
+    complete. Every ``validation.yaml`` written binds the ``result.yaml``
+    it was judged from (``_validation``)."""
+    _refuse_rebinding(evidence)
     raw = evidence.raw
     fingerprint = raw.get("execution_fingerprint")
     if fingerprint is not None:
@@ -7152,16 +7701,22 @@ def import_unikix(execution_id: str) -> ImportSummary:
     that is a register outcome, not a rejected record,
     so it leaves the exit status to the records. A record whose current
     execution fingerprint cannot be computed is rejected, and so is one
+    whose ``validation.yaml`` already binds another ``result.yaml``
+    (``_refuse_rebinding``), with nothing written for it, and one
     whose scenario fails the schema check, after its ``validation.yaml``
-    records failing with reason error and with nothing promoted. Imports and
+    records failing with reason error and with nothing promoted. Each
+    ``validation.yaml`` written binds the sha256 of the ``result.yaml`` it
+    was judged from (``_validation``). Imports and
     revalidations run one at a time (``_exclusive``). An invalid
     ``CARDDEMO_ADAPTER``, which the final regeneration refuses, raises
     ``ReportError`` before anything is written, and so do a missing
     execution directory, one holding no scenario directory and no symbolic
     link (0 scenario records), an inventory whose item count differs from
-    its frozen total and a gnucobol-batch result record that cannot be read
-    or is a symbolic link, which the final regeneration refuses too
-    (``_refuse_unreportable``)."""
+    its frozen total, a scenario file that cannot be read, a gnucobol-batch
+    result record that cannot be read or is a symbolic link, and a
+    ``validation.yaml`` of any execution that is a symbolic link, cannot be
+    read or breaks the validation record contract, which the final
+    regeneration refuses too (``_refuse_unreportable``)."""
     if not isinstance(execution_id, str) or not _UNIKIX_ID_RE.fullmatch(execution_id):
         raise ReportError(f"{execution_id!r} is not a unikix execution id unikix-<yyyymmddThhmmssZ>-<8 hex>")
     _selected_adapter()
@@ -7269,7 +7824,9 @@ def revalidate() -> RevalidationSummary:
     ``result.yaml`` and every observation the current ``expected`` names is
     in the evidence) and rewrite it; leave every other one, stale until a new
     run; reject the evidence that fails its checks, whose scenario file is
-    gone or that cannot be judged, and the records whose observed payload
+    gone or that cannot be judged, the records whose ``validation.yaml``
+    binds another ``result.yaml`` than the one beside it, which are never
+    bound again (``_refuse_rebinding``), and the records whose observed payload
     cannot be compared with the baseline or whose scenario fails the schema
     check (rewritten failing with reason error, as a live run records it,
     and reported with the comparison's diagnostic or the schema problems).
@@ -7292,9 +7849,11 @@ def revalidate() -> RevalidationSummary:
     scenario directory is rejected, and reported as such. An invalid
     ``CARDDEMO_ADAPTER``, which the final regeneration refuses, raises
     ``ReportError`` before anything is read or written. An inventory whose
-    item count differs from its frozen total and a gnucobol-batch result
-    record that cannot be read or is a symbolic link, which the final
-    regeneration refuses too (``_refuse_unreportable``), raise
+    item count differs from its frozen total, a scenario file that cannot
+    be read, a gnucobol-batch result record that cannot be read or is a
+    symbolic link, and a ``validation.yaml`` that is a symbolic link,
+    cannot be read or breaks the validation record contract, which the
+    final regeneration refuses too (``_refuse_unreportable``), raise
     ``ReportError`` before anything is written."""
     _selected_adapter()
     with _exclusive():
@@ -7323,12 +7882,12 @@ def _comparison_error(evidence: Evidence, scenario: Any) -> str | None:
 
 
 def _validation_bytes(path: Path) -> bytes | None:
-    """The bytes of the ``validation.yaml`` at ``path``; ``None`` when it is
-    a symbolic link, which is never read through, or cannot be read."""
-    try:
-        return None if path.is_symlink() else path.read_bytes()
-    except OSError:
-        return None
+    """The bytes of the ``validation.yaml`` at ``path``, read as
+    ``_evidence_yaml_bytes`` reads them; ``None`` when it is a symbolic link,
+    which is never read through, is not a regular file, cannot be read, or
+    holds more than ``EVIDENCE_YAML_MAX_BYTES``: the files
+    ``load_unikix_records`` does not read either, and the reports refuse."""
+    return _evidence_yaml_bytes(path)
 
 
 def _revalidate() -> RevalidationSummary:
@@ -7400,7 +7959,9 @@ def _execution_records(execution_id: str) -> tuple[dict[str, dict], list[str]]:
     """The valid record of each scenario directory of one UniKix execution,
     by scenario id, and the problems of every scenario that has none, each
     led by ``<execution_id>/<scenario>``. A scenario's record is its
-    ``validation.yaml`` when it has one, else its ``result.yaml``, whose
+    ``validation.yaml`` when it has one, which must keep the validation
+    record contract (``_validation_record``) and whose result record fields
+    are taken without its ``result_sha256``, else its ``result.yaml``, whose
     result record fields are taken. Either must keep the result record
     contract, name the unikix adapter, this execution and its own
     directory, which must be named by an id of the closed scenario id
@@ -7444,10 +8005,13 @@ def _execution_records(execution_id: str) -> tuple[dict[str, dict], list[str]]:
         except OSError as exc:
             problems.append(f"{label}: {path.name} cannot be read: {exc.strerror or exc}")
             continue
-        record = document
-        if path.name == RESULT_FILE and isinstance(document, Mapping):
-            record = {name: document[name] for name in _results.RECORD_FIELDS if name in document}
-        issues = _unikix_record_problems(record, execution_id, scenario_id)
+        if path.name == VALIDATION_FILE:
+            record, _, issues = _validation_record(document, execution_id, scenario_id)
+        else:
+            record = document
+            if isinstance(document, Mapping):
+                record = {name: document[name] for name in _results.RECORD_FIELDS if name in document}
+            issues = _unikix_record_problems(record, execution_id, scenario_id)
         if isinstance(record, Mapping):
             issues.extend(_decoded_problems(record.get("decoded")))
         if issues:
@@ -7501,8 +8065,11 @@ cannot revalidate a record, or two executions differ, 2 when the action
 cannot run. A revalidation that only leaves records stale until a new run
 exits 0. Regeneration, an import and a revalidation exit 2 and write
 nothing while the inventory lists another number of items than its frozen
-header.total, or while a result record under tests/reports/results cannot
-be read or is a symbolic link; --check lists each such problem.
+header.total, a scenario file under tests/scenarios cannot be read, a
+result record under tests/reports/results cannot be read or is a symbolic
+link, or a validation.yaml under tests/reports/unikix cannot be read,
+breaks the validation record contract or is a symbolic link; --check lists
+each such problem.
 """
 
 

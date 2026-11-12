@@ -18,14 +18,20 @@ whose name is not one of ``harness.ADAPTER_NAMES``, an unknown scenario id).
 
 Steps of ``run``
     1. ``harness.scenarios.validate``: a schema problem is ``failing`` with
-       reason ``error``, and nothing runs.
+       reason ``error``, and nothing runs. The scenario's baseline is still
+       read (``harness.baselines.load``), for the record only, so the record
+       names the baseline version it stands against and counts as a current
+       failing record; a baseline that cannot be read leaves the version out
+       and is a note, never a change to the verdict or its diff.
     2. Capability (``scenarios.capable_adapters``): a scenario the adapter
        cannot run is ``blocked``; ``conftest.py`` normally deselects it.
     3. ``harness.baselines.load``: comparing without a baseline is ``failing``
        with reason ``error``.
     4. A fresh ``<work root>/<scenario_id>/`` (the adapter's ``work_root``,
-       never inside the repository) and the deadline: ``time.monotonic()``
-       plus ``DEADLINE_S`` (300 s), set as ``adapter.deadline``.
+       never inside the repository, and refused unless it is the effective
+       user's own and writable by neither group nor others; see Isolation)
+       and the deadline: ``time.monotonic()`` plus ``DEADLINE_S`` (300 s),
+       set as ``adapter.deadline``.
     5. ``harness.fixtures.build``: the precondition and parameter datasets,
        written to ``inputs/`` (below). ``FixtureError`` (an unregistered
        cross-check mismatch included) is ``failing``/``error``.
@@ -43,10 +49,13 @@ Steps of ``run``
        had (never created; the work root itself for an id that is not a
        scenario id), and what that cleanup raises goes to the runtime file
        without changing the outcome.
-    9. ``baselines.decode_result``, ``baselines.compare`` and
-       ``baselines.projection`` on the ``Result``.
+    9. ``baselines.decode_result``, ``baselines.projection`` and
+       ``baselines.compare`` on the ``Result``, under the judge deadline
+       (see Timeout precedence).
     10. The execution id (with the adapter's ``build_key``) and source
-        identity, the result record (``results.build_record``), the
+        identity, the result record (``results.build_record``) and its
+        canonical text (``Outcome.record_text``), each held to the judge
+        deadline before any evidence is written, the
         adapter's evidence (``write_evidence``), the working directory kept
         only for a ``failing`` scenario, and the runtime file
         ``tests/reports/runtime/<id>.yaml`` (``results.write_runtime``),
@@ -89,8 +98,20 @@ Status mapping
 Timeout precedence
     A ``Result`` that ``execute`` returned before the deadline stands, passed
     or failing, even when ``cleanup`` then fails or overruns; the cleanup
-    error goes to the runtime file. Otherwise, once the deadline has passed
-    by the end of ``cleanup``, the scenario is ``failing`` with reason
+    error goes to the runtime file. Judging it (step 9) and, in step 10,
+    identifying the run, building its record and rendering the record's text
+    run under the judge deadline: the time the deadline had left when the
+    result arrived, counted from the end of ``cleanup``, so cleanup's time
+    never turns the result into a timeout and judging gets no more than the
+    scenario's budget. When the judge deadline passes in any of these steps,
+    or has passed once one of them returns (a record text completed after it
+    included), the run is ``failing`` with reason ``timeout`` and keeps no
+    outcome (no decoded result, projection or ``Result``, so its record holds
+    none); the runtime file names the step (``timeout_phase``) and keeps
+    ``elapsed_execute_s`` and the verdict the timeout replaced. A record
+    built again after the evidence or the working directory failed is held
+    to the judge deadline the same way. Otherwise, once the deadline has
+    passed by the end of ``cleanup``, the scenario is ``failing`` with reason
     ``timeout`` whatever was raised, and what was raised goes to the runtime
     file. That verdict also stands, with its diff and detail, through every
     error step 10 meets afterwards; each such error goes to the runtime file
@@ -101,7 +122,15 @@ Timeout precedence
 Isolation
     Nothing of one run reaches the next: each scenario gets its own working
     directory, which is removed unless the scenario fails, and
-    ``adapter.deadline`` is cleared after ``cleanup``. The only state kept
+    ``adapter.deadline`` is cleared after ``cleanup``. The working directory
+    is emptied, made (mode 0700) and filled through directory descriptors
+    opened without following symbolic links: the work root must be the
+    effective user's own and writable by neither group nor others, judged on
+    its open descriptor, so no one else can swap ``<scenario_id>`` for a
+    link; a link left there is unlinked, never followed; ``inputs/`` is
+    written only once the working directory proves to be the one made for
+    the run (its ``st_dev`` and ``st_ino``), each file created new without
+    following a link, so nothing lands outside it. The only state kept
     across runs is which adapters have had their ``environment()``
     successfully written, which never affects an outcome. Inside the
     repository the runner writes only through ``harness.results``
@@ -115,7 +144,9 @@ Isolation
 from __future__ import annotations
 
 import datetime as _dt
+import os
 import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -137,14 +168,19 @@ from harness import (  # noqa: E402
     ADAPTER_NAMES,
     REPO_ROOT,
     HarnessError,
+    check_work_root_owner,
     cob_current_date,
     display_path,
     dump_yaml,
     git_head,
     sha256_hex,
-    write_text,
 )
 from harness import DEADLINE_S as _HARNESS_DEADLINE_S  # noqa: E402
+# How the work root, a working directory and its inputs/ are opened: as a
+# directory, never through a symbolic link, by no child process. It is the
+# helper the work-root admission (harness.usable_work_root) opens a root with,
+# so a root admitted is one the runner can open.
+from harness import open_directory as _open_directory  # noqa: E402
 from harness import baselines as _baselines  # noqa: E402
 from harness import fixtures as _fixtures  # noqa: E402
 from harness import results as _results  # noqa: E402
@@ -171,6 +207,9 @@ DEADLINE_S = _HARNESS_DEADLINE_S
 INPUTS_DIR = "inputs"
 DATASETS_FILE = "datasets.yaml"
 PARAMETERS_FILE = "parameters.yaml"
+
+# How each file of inputs/ is created: new, never through a symbolic link.
+_NEW_FILE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
 
 PASSED = _results.STATUS_PASSED
 FAILING = _results.STATUS_FAILING
@@ -219,11 +258,14 @@ class Outcome:
     ``implemented-unexecuted``, its ``gap_id``. ``diff`` says what differs or
     went wrong for a ``failing`` run. ``record`` is the result record
     (``results.build_record``; ``None`` only when even a ``failing`` record
-    could not be built, as ``detail`` then says). ``decoded`` is
+    could not be built, as ``detail`` then says), and ``record_text`` its
+    canonical text, ``harness.dump_yaml(dict(record))``, rendered under the
+    scenario deadline, which ``results.write`` writes (``None`` without a
+    record, or when the record cannot be written as YAML). ``decoded`` is
     ``baselines.decode_result`` of ``result`` (the record holds its
-    projection). ``materialized`` holds the bytes written to ``inputs/``.
-    ``workdir`` is the working directory kept for a ``failing`` run, else
-    ``None``."""
+    projection); a run that timed out keeps neither. ``materialized`` holds
+    the bytes written to ``inputs/``. ``workdir`` is the working directory
+    kept for a ``failing`` run, else ``None``."""
 
     scenario_id: str
     adapter: str
@@ -237,6 +279,7 @@ class Outcome:
     detail: str = ""
     materialized: dict[str, bytes] = field(default_factory=dict)
     workdir: Path | None = None
+    record_text: str | None = None
 
 
 def conclude(outcome: Outcome) -> None:
@@ -288,6 +331,8 @@ class _Run:
     detail: str = ""
     baseline: Any = None
     workdir: Path | None = None
+    # The (st_dev, st_ino) of the working directory _fresh_workdir made.
+    workdir_identity: tuple[int, int] | None = None
     materialized: dict[str, bytes] = field(default_factory=dict)
     fingerprint: str | None = None
     result: _base.Result | None = None
@@ -295,6 +340,11 @@ class _Run:
     projection: dict | None = None
     identity: Any = None
     execution_id: str | None = None
+    # The scenario's deadline in seconds, once _execute has set it, and the
+    # judge deadline (time.monotonic()) of a result that stands: the end of
+    # cleanup plus the time the deadline had left when the result arrived.
+    limit: float | None = None
+    judge_deadline: float | None = None
     # Runtime-file entries: tracebacks, cleanup errors, superseded errors.
     runtime: dict[str, Any] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
@@ -362,8 +412,11 @@ def run(scenario: Any, adapter: Any, compare: bool = True) -> Outcome:
     ``passed`` means it executed and every observation the scenario's
     ``expected`` names was produced and decodes, so the result can stand as an
     observed baseline; an incomplete or undecodable capture is ``failing``
-    with reason ``error``. The record then carries no ``baseline_version``
-    when the scenario has no baseline yet.
+    with reason ``error``. Either way the record carries the
+    ``baseline_version`` of the scenario's baseline once step 3 has read it,
+    as does the record of a run the schema check stopped (step 1); it carries
+    none when the scenario has no baseline yet, when its baseline cannot be
+    read, or when the run stops at the capability check.
 
     ``adapter.cleanup`` is called exactly once however the run ends, a
     schema, capability, baseline or working-directory stop included (step 8
@@ -375,6 +428,7 @@ def run(scenario: Any, adapter: Any, compare: bool = True) -> Outcome:
             _execute(state)
             if state.status is None and state.result is not None:
                 _judge(state)
+                _in_time(state, "judging the result")
             if state.status is None:
                 state.fail(REASON_ERROR, f"{state.scenario_id}: the run ended without a result or a status")
     finally:
@@ -390,9 +444,11 @@ def _precheck(state: _Run) -> bool:
         problems = _scenarios.validate(s)
     except Exception as exc:  # validate reports rather than raises; keep that promise here
         state.error("the schema check raised", exc)
+        _record_baseline(state)
         return False
     if problems:
         state.fail(REASON_ERROR, f"{s.id}: the scenario fails the schema check:\n" + "\n".join(problems))
+        _record_baseline(state)
         return False
     try:
         capable = _scenarios.capable_adapters(s)
@@ -421,10 +477,41 @@ def _precheck(state: _Run) -> bool:
     return True
 
 
-def _fresh_workdir(adapter: Any, scenario_id: str) -> Path:
-    """``<work root>/<scenario_id>/``, emptied: whatever a previous run left
-    there is removed first. The work root never lies inside the
-    repository."""
+def _record_baseline(state: _Run) -> None:
+    """Read the baseline of a run the schema check stopped, for its record
+    only: nothing is compared with it, and the ``failing``/``error`` record
+    names the baseline version it stands against, so the record is current
+    and its scenario counts as failing, never as stale. A baseline that
+    cannot be read leaves the version out and becomes the note
+    ``baseline_error``; the schema verdict and its diff stand."""
+    try:
+        state.baseline = _baselines.load(state.scenario_id, missing_ok=True)
+    except Exception as exc:
+        state.note(
+            "baseline_error",
+            f"its baseline cannot be read, so the record names no baseline version: {type(exc).__name__}: {exc}",
+        )
+
+
+def _fresh_workdir(adapter: Any, scenario_id: str) -> tuple[Path, tuple[int, int]]:
+    """``<work root>/<scenario_id>/``, emptied, with its ``(st_dev,
+    st_ino)``: whatever a previous run left there is removed first. The work
+    root never lies inside the repository; a missing one is created with
+    mode ``0o700``.
+
+    Everything below the work root is done through a descriptor of it, opened
+    without following a symbolic link, so a path swapped while the run works
+    cannot redirect it: the root must be the effective user's own and
+    writable by neither group nor others (``harness.check_work_root_owner``,
+    judged on that descriptor, so a root an adapter was constructed with
+    directly, or one whose mode changed since it was admitted, is held to the
+    rule too), since anyone else who can write to it could replace the
+    working directory with a link leading elsewhere. A link or file left at
+    ``<scenario_id>`` is unlinked, never followed; a directory is removed by
+    ``shutil.rmtree`` relative to the descriptor, which does not follow links
+    either. The new directory gets mode ``0o700``, and its identity lets
+    ``_materialize`` refuse a directory swapped in for it. ``HarnessError``
+    for a refused root or one that cannot be opened."""
     if not _scenarios.ID_RE.fullmatch(scenario_id):
         raise HarnessError(f"{scenario_id!r} is not a scenario id, so it names no working directory")
     work_root = Path(getattr(adapter, "work_root")).resolve()
@@ -433,14 +520,28 @@ def _fresh_workdir(adapter: Any, scenario_id: str) -> Path:
         raise HarnessError(
             f"the work root {work_root} lies inside the repository; working directories live outside it"
         )
-    work_root.mkdir(parents=True, exist_ok=True)
-    workdir = work_root / scenario_id
-    if workdir.is_symlink() or workdir.is_file():
-        workdir.unlink()
-    elif workdir.exists():
-        shutil.rmtree(workdir)
-    workdir.mkdir()
-    return workdir
+    work_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    root_fd = _open_directory(work_root, f"the work root {work_root}")
+    try:
+        check_work_root_owner(work_root, os.fstat(root_fd))
+        try:
+            found = os.lstat(scenario_id, dir_fd=root_fd)
+        except FileNotFoundError:
+            found = None
+        if found is not None and stat.S_ISDIR(found.st_mode):
+            shutil.rmtree(scenario_id, dir_fd=root_fd)
+        elif found is not None:
+            os.unlink(scenario_id, dir_fd=root_fd)
+        os.mkdir(scenario_id, 0o700, dir_fd=root_fd)
+        workdir = work_root / scenario_id
+        workdir_fd = _open_directory(scenario_id, f"the working directory {workdir}", dir_fd=root_fd)
+        try:
+            made = os.fstat(workdir_fd)
+        finally:
+            os.close(workdir_fd)
+    finally:
+        os.close(root_fd)
+    return workdir, (made.st_dev, made.st_ino)
 
 
 def _execute(state: _Run) -> None:
@@ -450,19 +551,20 @@ def _execute(state: _Run) -> None:
     raises."""
     s, adapter = state.scenario, state.adapter
     try:
-        state.workdir = _fresh_workdir(adapter, s.id)
+        state.workdir, state.workdir_identity = _fresh_workdir(adapter, s.id)
     except Exception as exc:
         state.error("its working directory cannot be created", exc)
         return
     workdir = state.workdir
     limit = min(DEADLINE_S, _HARNESS_DEADLINE_S)
+    state.limit = limit
     deadline = time.monotonic() + limit
     result_at: float | None = None
     raised: BaseException | None = None
     try:
         try:
             adapter.deadline = deadline
-            state.materialized = _materialize(s, workdir)
+            state.materialized = _materialize(s, workdir, state.workdir_identity)
             state.fingerprint = _results.execution_fingerprint(s, state.materialized, state.name)
             hook = getattr(adapter, "refuse", None)
             if callable(hook):
@@ -503,6 +605,9 @@ def _execute(state: _Run) -> None:
         except AttributeError:
             pass
     if result_at is not None and result_at < deadline:
+        # The result stands. Judging it gets the time the deadline had left
+        # when it arrived, counted from now, the end of cleanup.
+        state.judge_deadline = time.monotonic() + (deadline - result_at)
         return
     if time.monotonic() >= deadline:
         if raised is not None and "traceback" not in state.runtime:
@@ -555,17 +660,24 @@ def _cleanup_unexecuted(state: _Run) -> None:
             pass
 
 
-def _materialize(scenario: Any, workdir: Path) -> dict[str, bytes]:
+def _materialize(scenario: Any, workdir: Path, identity: tuple[int, int] | None) -> dict[str, bytes]:
     """Build the scenario's datasets and write ``inputs/``: each dataset's
-    bytes, ``datasets.yaml`` and ``parameters.yaml``."""
+    bytes, ``datasets.yaml`` and ``parameters.yaml`` (as UTF-8).
+
+    ``workdir`` is opened without following a symbolic link and must still
+    be the directory ``_fresh_workdir`` made, whose ``(st_dev, st_ino)`` is
+    ``identity``; otherwise it was replaced since, and ``HarnessError``
+    naming it is raised before anything is written. ``inputs/`` is made, and
+    each file created new, through descriptors of those directories, never
+    following a link and never writing into an existing file
+    (``O_EXCL | O_NOFOLLOW``), so nothing is written outside ``workdir``."""
     data = _fixtures.build(scenario)
-    inputs = workdir / INPUTS_DIR
-    inputs.mkdir()
+    files: list[tuple[str, bytes]] = []
     listing: dict[str, Any] = {}
     for logical, payload in data.items():
         definition = _fixtures.spec(logical)
         relative = f"{INPUTS_DIR}/{logical}.dat"
-        (workdir / relative).write_bytes(payload)
+        files.append((f"{logical}.dat", payload))
         key = definition.key
         listing[logical] = {
             "path": relative,
@@ -585,9 +697,41 @@ def _materialize(scenario: Any, workdir: Path) -> dict[str, bytes]:
             ],
             "layout": definition.layout,
         }
-    write_text(inputs / DATASETS_FILE, dump_yaml(listing))
-    write_text(inputs / PARAMETERS_FILE, dump_yaml(_parameters(scenario, data)))
+    files.append((DATASETS_FILE, dump_yaml(listing).encode("utf-8")))
+    files.append((PARAMETERS_FILE, dump_yaml(_parameters(scenario, data)).encode("utf-8")))
+    shown = f"the working directory {workdir}"
+    workdir_fd = _open_directory(workdir, shown)
+    try:
+        made = os.fstat(workdir_fd)
+        if identity is None or (made.st_dev, made.st_ino) != tuple(identity):
+            raise HarnessError(
+                f"{shown} is no longer the directory made for this run: it was replaced, so nothing is "
+                "written there"
+            )
+        os.mkdir(INPUTS_DIR, dir_fd=workdir_fd)
+        inputs_fd = _open_directory(INPUTS_DIR, f"{shown}'s {INPUTS_DIR}/", dir_fd=workdir_fd)
+        try:
+            for name, payload in files:
+                _write_new_file(name, payload, inputs_fd)
+        finally:
+            os.close(inputs_fd)
+    finally:
+        os.close(workdir_fd)
     return data
+
+
+def _write_new_file(name: str, payload: bytes, directory_fd: int) -> None:
+    """Create the file ``name`` in the directory ``directory_fd`` and write
+    all of ``payload`` to it. The file must not exist yet and is never
+    reached through a symbolic link (``O_EXCL | O_NOFOLLOW``); it gets the
+    mode the umask allows."""
+    descriptor = os.open(name, _NEW_FILE_FLAGS, 0o666, dir_fd=directory_fd)
+    try:
+        view = memoryview(payload)
+        while view:
+            view = view[os.write(descriptor, view):]
+    finally:
+        os.close(descriptor)
 
 
 def _parameters(scenario: Any, data: Mapping[str, bytes]) -> dict[str, Any]:
@@ -653,11 +797,18 @@ def _judge(state: _Run) -> None:
     ``expected`` names was produced and decodes, each screen identified with
     the fields its expected step names (``_capture_problems``), and is
     ``failing``/``error`` otherwise. Either way the decoded result and its
-    projection are kept for the record."""
-    s, result = state.scenario, state.result
+    projection are kept for the record. Every step runs under the judge
+    deadline, and one it interrupts makes the run ``failing``/``timeout``
+    (``_overrun``)."""
+    s, result, deadline = state.scenario, state.result, state.judge_deadline
+    phase = "decoding the result"
     try:
-        state.decoded = _baselines.decode_result(s, result)
-        state.projection = _baselines.projection(state.decoded, s, state.baseline)
+        state.decoded = _baselines.decode_result(s, result, deadline=deadline)
+        phase = "projecting the decoded result"
+        state.projection = _baselines.projection(state.decoded, s, state.baseline, deadline=deadline)
+    except _TIMEOUT_ERRORS as exc:
+        _overrun(state, phase, exc)
+        return
     except Exception as exc:
         state.error("its result cannot be decoded", exc)
         return
@@ -673,11 +824,65 @@ def _judge(state: _Run) -> None:
         state.settle(PASSED, None)
         return
     try:
-        status, reason, diff = _baselines.compare(s, state.baseline, result, state.name, _run_date(state))
+        status, reason, diff = _baselines.compare(
+            s, state.baseline, result, state.name, _run_date(state), deadline=deadline
+        )
+    except _TIMEOUT_ERRORS as exc:
+        _overrun(state, "comparing the result", exc)
+        return
     except Exception as exc:
         state.error("the comparison raised", exc)
         return
     state.settle(status, reason, None, diff)
+
+
+def _overrun(state: _Run, phase: str, exc: BaseException | None = None) -> None:
+    """``failing``/``timeout``: the judge deadline passed while ``phase``
+    ran, raising ``exc``, or before it returned. A timeout verdict that
+    already stands is kept, with its diff. The run keeps no outcome, like a
+    run whose deadline passed in ``execute``: ``decoded``, ``projection``
+    and ``result`` are dropped, so the record holds none. The runtime file
+    gets ``timeout_phase``, the result's ``elapsed_execute_s``, the
+    traceback of ``exc`` and, as ``superseded``, the verdict and diff the run
+    had before."""
+    if state.status == FAILING and state.reason == REASON_TIMEOUT:
+        return
+    if exc is not None:
+        state.runtime.setdefault("traceback", _traceback(exc))
+    if state.status is not None:
+        verdict = state.status
+        if state.reason:
+            verdict += f": {state.reason}"
+        if state.gap_id:
+            verdict += f" [{state.gap_id}]"
+        state.runtime["superseded"] = "\n".join(
+            [f"before the timeout the run was {verdict}", *([state.diff] if state.diff else [])]
+        )
+    if state.result is not None:
+        state.runtime["elapsed_execute_s"] = state.result.elapsed_s
+    state.runtime["timeout_phase"] = phase
+    state.decoded = state.projection = state.result = None
+    state.fail(
+        REASON_TIMEOUT,
+        f"{state.scenario_id}: timeout: the scenario deadline of {state.limit} s passed while {phase}",
+        "what the run raised is in the runtime file" if exc is not None else "",
+    )
+
+
+def _in_time(state: _Run, phase: str) -> bool:
+    """Whether what ``phase``, a step after the result arrived, has just
+    finished may stand: always without a judge deadline or once a timeout
+    verdict stands, and otherwise only while the judge deadline has not
+    passed. Work finished past it is an overrun like work it interrupted:
+    ``_overrun`` makes the run ``failing``/``timeout``, and ``False`` is
+    returned."""
+    deadline = state.judge_deadline
+    if deadline is None or (state.status == FAILING and state.reason == REASON_TIMEOUT):
+        return True
+    if time.monotonic() < deadline:
+        return True
+    _overrun(state, phase)
+    return False
 
 
 def _capture_problems(decoded: Mapping[str, Any], expected: Any) -> list[str]:
@@ -776,7 +981,9 @@ def _run_date(state: _Run) -> _dt.date | None:
 
 def _finish(state: _Run) -> Outcome:
     _identify(state)
-    record = _record(state)
+    _in_time(state, "identifying the run")
+    record, text = _rendered(state, _record(state), "building the result record")
+    rendered = record
     record = _evidence(state, record)
     settled = (state.status, state.reason, state.gap_id)
     kept = _dispose(state)
@@ -793,6 +1000,10 @@ def _finish(state: _Run) -> Outcome:
                 f"the evidence at {evidence} holds the record as it was before the working directory failed "
                 f"({settled[0]}); that evidence is immutable and is not rewritten",
             )
+    if record is not rendered:
+        # A record built again after its text was rendered (the evidence or
+        # the working directory failed) carries a text of its own.
+        record, text = _rendered(state, record, "rebuilding the result record")
     _write_environment_once(state)
     _write_runtime(state, kept)
     detail = "; ".join(part for part in [state.detail, *state.notes] if part)
@@ -809,7 +1020,46 @@ def _finish(state: _Run) -> Outcome:
         detail=detail,
         materialized=state.materialized,
         workdir=kept,
+        record_text=text,
     )
+
+
+def _rendered(state: _Run, record: dict | None, built: str) -> tuple[dict | None, str | None]:
+    """``record``, which the step ``built`` names has just produced, and its
+    canonical text, ``dump_yaml(dict(record))``, for ``results.write``. For
+    a run whose result stands and whose verdict is no timeout, the record
+    stands only when ``built`` ended before the judge deadline, and its text
+    only when it is rendered under that deadline and returned before it
+    (``_in_time``). A record built past it, or too large to render in the
+    time left, makes the run ``failing``/``timeout`` (``_overrun``), for the
+    first record ``_finish`` renders before any evidence is written; the
+    record is then built again without its outcome and rendered without a
+    deadline. A timeout verdict's record holds no outcome and is rendered
+    without one too. The text is ``None`` without a record, and for a record
+    ``dump_yaml`` refuses, which ``results.write`` then refuses as it dumps
+    the record itself."""
+    if record is None:
+        return None, None
+    if _in_time(state, built):
+        deadline = state.judge_deadline
+        if state.status == FAILING and state.reason == REASON_TIMEOUT:
+            deadline = None
+        try:
+            text = dump_yaml(dict(record), deadline=deadline)
+        except TimeoutError as exc:
+            _overrun(state, "rendering the result record", exc)
+        except HarnessError:
+            return record, None
+        else:
+            if _in_time(state, "rendering the result record"):
+                return record, text
+    record = _record(state)
+    if record is None:
+        return None, None
+    try:
+        return record, dump_yaml(dict(record))
+    except HarnessError:
+        return record, None
 
 
 def _finalization_error(state: _Run, key: str, what: str, exc: BaseException) -> bool:

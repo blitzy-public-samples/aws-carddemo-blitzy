@@ -57,9 +57,9 @@ description: >-
   account 00000000002 on the COACTUPC screen (CAUP). The card cross-reference
   through CXACAIX finds the account's card and customer, but the account master
   holds no record for it, so the READ of ACCTDAT ends NOTFND and the message
-  line reads 'Account:00000000002 not found in Acct Master file.Resp:000000013
-  Reas:0000', the composed text cut at the 75-byte message field. The program
-  still reads the customer and shows the details screen with the change prompt.
+  line reads 'Account:00000000002 not found in Acct Master file.Resp:000000013  Reas:0000',
+  the composed text cut at the 75-byte message field. The program still reads
+  the customer and shows the details screen with the change prompt.
 # Primary item first, then the program, the maps asserted, the transaction step
 # 3 runs, the CSD files the lookup reads, and the online-only copybooks
 # COACTUPC copies. CUSTDAT is listed because the lookup continues to the

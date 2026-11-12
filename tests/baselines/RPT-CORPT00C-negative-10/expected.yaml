@@ -10,7 +10,7 @@
 # [app/cbl/CSUTLDTC.cbl:61-70]; with CONFIRM blank, SUBMIT-JOB-TO-INTRDR sends
 # 'Please confirm to print the Custom report...' and ends the task, so nothing
 # reaches JOBS [app/cbl/CORPT00C.cbl:429-441,556-580]. Doubtful behaviour
-# pinned as observed (observed-only, GAP-UNC-013). CURDATE and CURTIME come
+# pinned as observed (observed-only, GAP-UNC-014). CURDATE and CURTIME come
 # from the run clock [app/cbl/CORPT00C.cbl:609-628]; TITLE01 and TITLE02 are
 # COTTL01Y's titles.
 messages:

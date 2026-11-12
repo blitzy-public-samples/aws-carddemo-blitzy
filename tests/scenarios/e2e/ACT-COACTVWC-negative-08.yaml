@@ -50,8 +50,8 @@ description: >-
   COACTVWC for account 00000000003, whose cross-reference and account records
   exist but whose customer 000000003 is missing from CUSTDAT. The screen shows
   the account's status, dates and amounts, leaves every customer field blank,
-  and reports 'CustId:000000003 not found in customer master.Resp: 000000013
-  REAS:0000000', the composed message cut to the 75-byte WS-RETURN-MSG.
+  and reports 'CustId:000000003 not found in customer master.Resp: 000000013  REAS:0000000',
+  the composed message cut to the 75-byte WS-RETURN-MSG.
 inventory_ids:
 - INV-ACT-022  # COACTVWC message 'CustId:<id> not found in customer master.Resp: <RESP> REAS:<RESP2>'
 - INV-ACT-001  # COACTVWC program

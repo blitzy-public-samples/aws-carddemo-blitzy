@@ -25,8 +25,8 @@
 #
 # The message is set and then discarded, so its only observable outcome is its
 # absence: the menu's ERRMSG is blank. That purpose is doubtful, so the outcome
-# is pinned as observed (observed-only) under GAP-UNC-013, the open question of
-# online message conditions whose text no screen ever shows.
+# is pinned as observed (observed-only) under GAP-UNC-014, the open question of
+# online message texts that are set or tested but never reach the screen.
 #
 # Expected values are derived from the source (no TPE region runs in CI).
 # ERRMSG compares at its BMS length of 78 with every space kept
@@ -58,11 +58,13 @@ tags:
 gap_ids:
 - GAP-INF-006  # CRD end-to-end baselines derived, never observed
 - GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
-# The pinned outcome is that a message COCRDLIC sets is never shown. GAP-UNC-013
-# is the open uncertain-purpose entry for online message conditions whose text
-# cannot appear; it is cited here for INV-CRD-008, which is set rather than
-# unreferenced, so no second entry asks the same question.
-- GAP-UNC-013
+# The pinned outcome is that a message COCRDLIC sets is never shown. GAP-UNC-014
+# is the open uncertain-purpose entry for online message texts that are set or
+# tested but never reach the screen, and it lists INV-CRD-008. GAP-UNC-013 is
+# not cited: its 34 items are 3 COACTUPC edit predicates no field edit performs
+# and 31 message conditions of COACTUPC, COACTVWC, COCRDSLC and COCRDUPC that
+# no statement sets or tests, and this condition is set.
+- GAP-UNC-014
 preconditions:
   datasets:
     # COCRDLIC browses CARDDAT on entry from the menu.

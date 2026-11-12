@@ -45,8 +45,9 @@ and run, so a submission directory changed within a generation is seen at
 once.
 
 Every write stays inside the deployment root: the empty ``home/`` used as
-``HOME``, ``logs/commands.log``, unlinked spool files for command output, and
-``tmp/``, the temporary directory of every command and both sourcing stages.
+``HOME``, ``logs/commands.log`` and ``logs/sourcing.log``, unlinked spool
+files for command output, and ``tmp/``, the temporary directory of every
+command and both sourcing stages.
 ``load`` makes the root, ``home/``, ``tmp/`` and ``logs/`` real directories
 of the effective user before it sources anything; every process start
 checks the root, ``tmp/`` and ``logs/`` again, every log write the root and
@@ -64,6 +65,22 @@ of every process, and every bash started for the deployment holds
 script it sources cannot change them. A runtime script that leaves JVM
 options naming another ``java.io.tmpdir``, or with an unmatched quote,
 makes its stage unavailable.
+
+Evidence gets nonsecret facts only. ``as_record``, the source of
+``environment.yaml``, holds the environment file and its sha256, the
+installation and deployment paths, the runtime script states and the
+generation, with ``JAVA_TOOL_OPTIONS`` and ``_JAVA_OPTIONS`` shown as the
+owned temporary settings and every other option as ``REDACTED``; it never
+dumps ``vars``, which keep the operator's options. ``redact`` hides those
+other options, of the environment a command ran with and of every JVM's
+``Picked up`` line, and the value of a hidden ``-D`` property wherever a
+property listing shows it, in every command log entry, every version
+probe's text and every build log (``deploy.py``). What the environment
+file, userenv and batchenv print while sourced stays in the deployment
+root's ``logs/``: ``sourcing.log`` holds all of it, and batchenv's is also
+the ``stderr`` of its ``bpe_env`` command log entry, which the evidence
+copy withholds (``render_evidence_log``). BPE job sysout, generated JCL
+and raw observations are raw evidence, kept unchanged and not redacted.
 Python 3.11 standard library and PyYAML only. Nothing here uses the network.
 """
 
@@ -105,6 +122,7 @@ __all__ = [
     "LOG_ELAPSED_KEY",
     "LOG_LIMIT_BYTES",
     "PROBE_TIMEOUT_CAP_S",
+    "REDACTED",
     "REQUIRED_INSTALLATION_VARS",
     "SOURCE_TIMEOUT_S",
     "VERSION_ENTRIES",
@@ -112,6 +130,8 @@ __all__ = [
     "CommandResult",
     "CommandSet",
     "UniKixEnvironment",
+    "redact",
+    "redact_jvm_options",
 ]
 
 # --------------------------------------------------------------------------
@@ -152,12 +172,12 @@ DEPLOYMENT_PATH_VARS = (
     "TMP",
     "TEMP",
 )
+# environment.yaml records these as they are, then the always-set JVM option
+# variables, redacted (as_record).
 _DEPLOYMENT_RECORD_VARS = DEPLOYMENT_PATH_VARS + (
     "EBMSYS",
     "COBCPY",
     "MBMSUB",
-    "JAVA_TOOL_OPTIONS",
-    "_JAVA_OPTIONS",
 )
 
 # The owned temporary directory <deployment root>/tmp. Native tools take it
@@ -167,9 +187,12 @@ _DEPLOYMENT_RECORD_VARS = DEPLOYMENT_PATH_VARS + (
 # shared performance memory is disabled.
 _TEMP_DIR_NAME = "tmp"
 _TEMP_DIR_MODE = 0o700
-# <deployment root>/logs: commands.log and the spool files of command output.
+# <deployment root>/logs: commands.log, sourcing.log and the spool files of
+# command output. sourcing.log holds what the environment file, userenv and
+# batchenv print while sourced, which never reaches the evidence.
 _LOG_DIR_NAME = "logs"
 _COMMANDS_LOG = "commands.log"
+_SOURCING_LOG = "sourcing.log"
 _OWNED_DIR_MODE = 0o755
 _SHARED_WRITE = stat.S_IWGRP | stat.S_IWOTH
 _TEMP_VARS = ("TMPDIR", "TMP", "TEMP")
@@ -188,6 +211,22 @@ _HSPERFDATA = "/tmp/hsperfdata_<user>"
 # What separates the options of a JVM option variable: C isspace().
 _JVM_SPACE = frozenset(" \t\n\v\f\r")
 _JVM_QUOTES = frozenset("'\"")
+# What evidence-bound text shows in place of every JVM option other than the
+# owned temporary settings, and of such a -D property's value in a property
+# listing (redact_jvm_options, redact).
+REDACTED = "<redacted>"
+# The line every JVM prints on stderr for each JVM option variable it reads,
+# "Picked up JAVA_TOOL_OPTIONS: <value>" and "Picked up _JAVA_OPTIONS: <value>"
+# from HotSpot, "NOTE: Picked up JDK_JAVA_OPTIONS: <value>" from the java
+# launcher; matched anywhere in a line, so a prefix stays as printed.
+_JVM_ECHO_RE = re.compile(
+    r"(Picked up (?:" + "|".join(re.escape(name) for name in _JVM_OPTION_VARS) + r"): )([^\r\n]*)"
+)
+# Where a JVM option stands as a word of its own: after the start, whitespace,
+# a quote or "=" (NAME=<option>, '<option>'), and before the end, whitespace or
+# a quote.
+_JVM_TOKEN_BEFORE = r"(?<![^\s'\"=])"
+_JVM_TOKEN_AFTER = r"(?![^\s'\"])"
 # A JVM option variable is split at whitespace and reads quotes. deploy.py's
 # work-root check uses this pattern too; harness/__init__.py holds the same
 # one for the owner-only work-root admission, since the harness does not
@@ -573,6 +612,85 @@ def _jvm_temp_escape(variables: Mapping[str, str], root: Path) -> str:
     return ""
 
 
+def _shown_option(raw: str, decoded: str) -> bool:
+    """Whether evidence may show the JVM option written ``raw``, which a JVM
+    reads as ``decoded``: only an owned temporary setting, one that sets
+    ``java.io.tmpdir`` or ``PerfDisableSharedMem`` (``_temp_option``),
+    written without quotes."""
+    return raw == decoded and _temp_option(decoded)
+
+
+def redact_jvm_options(value: str) -> str:
+    """The JVM option variable ``value`` as evidence shows it: each option,
+    read as a JVM reads it (``_jvm_options``), kept as written when it is an
+    owned temporary setting (``_shown_option``) and ``REDACTED`` otherwise,
+    one space apart. A value with an unmatched quote, such as a clipped
+    echo, is ``REDACTED`` whole; a blank one is ``""``. Applying it again
+    changes nothing."""
+    try:
+        options = _jvm_options(value)
+    except _UnmatchedQuote:
+        return REDACTED
+    return " ".join(raw if _shown_option(raw, decoded) else REDACTED for raw, decoded in options)
+
+
+def redact(text: str, variables: Mapping[str, str]) -> str:
+    """``text``, output of a command that ran with the environment
+    ``variables``, with every JVM option but the owned temporary settings
+    hidden. Each option of a JVM option variable of ``variables`` that
+    ``redact_jvm_options`` hides, as written and as a JVM reads it, becomes
+    ``REDACTED`` wherever it stands as a word of its own (``_JVM_TOKEN_BEFORE``,
+    ``_JVM_TOKEN_AFTER``), as in a ``set -x`` trace or an ``env`` listing; a
+    variable with an unmatched quote is hidden whole. Next, for each hidden
+    option that a JVM reads as ``-D<name>=<value>``, ``<value>`` becomes
+    ``REDACTED`` wherever a property listing shows it, as ``<name> =
+    <value>`` (``java -XshowSettings:properties``) or ``<name>=<value>``:
+    ``<name>`` after anything but a word character, ``.`` or ``-``, spaces
+    or tabs around ``=``, ``<value>`` before the end, whitespace or a quote
+    (``_JVM_TOKEN_AFTER``), the name and ``=`` kept as printed. Then the
+    value of every JVM's ``Picked up <variable>: <value>`` line becomes what
+    ``redact_jvm_options`` shows, which also hides options a command set for
+    itself. Text that holds no such option or property value is returned
+    unchanged, and applying it again changes nothing."""
+    hidden: set[str] = set()
+    # (name, value) of each hidden -D<name>=<value>, as a JVM reads it.
+    properties: set[tuple[str, str]] = set()
+    for name in _JVM_OPTION_VARS:
+        value = variables.get(name)
+        if not value:
+            continue
+        try:
+            options = _jvm_options(value)
+        except _UnmatchedQuote:
+            hidden.add(value.strip())
+            continue
+        for raw, decoded in options:
+            if not _shown_option(raw, decoded):
+                hidden.update((raw, decoded))
+                key, equals, setting = decoded.removeprefix("-D").partition("=")
+                if decoded.startswith("-D") and key and equals and setting:
+                    properties.add((key, setting))
+    hidden.discard("")
+    hidden.discard(REDACTED)
+    if hidden:
+        # One alternation, longest first, so an option is hidden whole even
+        # where a shorter one is a prefix of it.
+        words = "|".join(re.escape(word) for word in sorted(hidden, key=lambda word: (-len(word), word)))
+        pattern = re.compile(f"{_JVM_TOKEN_BEFORE}(?:{words}){_JVM_TOKEN_AFTER}")
+        text = pattern.sub(REDACTED, text)
+    if properties:
+        # One alternative per property, longest first, so a value is hidden
+        # whole even where a shorter value of the same name is a prefix of
+        # it; each captures what stays, the name and "=" as printed.
+        listed = "|".join(
+            f"({re.escape(key)}[ \\t]*=[ \\t]*){re.escape(setting)}"
+            for key, setting in sorted(properties, key=lambda pair: (-len(pair[0]) - len(pair[1]), pair))
+        )
+        pattern = re.compile(f"(?<![\\w.-])(?:{listed}){_JVM_TOKEN_AFTER}")
+        text = pattern.sub(lambda match: match.group(match.lastindex) + REDACTED, text)
+    return _JVM_ECHO_RE.sub(lambda match: match.group(1) + redact_jvm_options(match.group(2)), text)
+
+
 def _derived(root: str, unikix: str, inherited_cobcpy: str) -> dict[str, str]:
     """The deployment variables, with the definitions of ``carddemo.env``
     under ``BASE_DIR=<deployment root>``. ``PR``, ``PARMFILES`` and
@@ -679,7 +797,10 @@ class UniKixEnvironment:
         read-only, so the file cannot change or unset them while it is
         sourced. Whatever the file exports, ``HOME`` is then ``home/`` and
         every temporary-file setting points at ``tmp/``, the JVM's
-        ``java.io.tmpdir`` included.
+        ``java.io.tmpdir`` included. What the file prints is kept in
+        ``sourcing_output`` and appended, its JVM options hidden
+        (``redact``), to ``logs/sourcing.log`` (``_log_sourcing``); neither
+        reaches the evidence.
 
         Raises ``AdapterUnavailable`` with GAP-MIS-009 when the variable is
         unset or names no readable file, before anything is created; when
@@ -693,8 +814,9 @@ class UniKixEnvironment:
         a directory. Raises ``HarnessError``, naming the path, when the
         deployment root does not lie below the work root, when one of the
         directories above is a link, not a directory or another user's, or a
-        derived path lies outside the root, and when ``tmp/`` holds
-        whitespace or a quote."""
+        derived path lies outside the root, when ``tmp/`` holds whitespace
+        or a quote, and when ``logs/sourcing.log`` cannot be written
+        (``append_log``)."""
         source = os.environ if environ is None else environ
         setting = (source.get(ENV_VARIABLE) or "").strip()
         if not setting:
@@ -774,6 +896,7 @@ class UniKixEnvironment:
                 "derived paths outside the deployment root "
                 f"{root}: {', '.join(f'{name}={value}' for name, value in outside)}"
             )
+        environment._log_sourcing(env_file, sourcing_output, variables)
         return environment
 
     # -------------------------------------------------------------- accessors
@@ -792,6 +915,24 @@ class UniKixEnvironment:
         log = _log_dir(self.deployment_root) / name
         _append_log(log, text)
         return log
+
+    def redact(self, text: str) -> str:
+        """``text``, output of a command run with ``vars``, with every JVM
+        option but the owned temporary settings hidden (``redact``)."""
+        return redact(text, self.vars)
+
+    def _log_sourcing(self, script: Path, output: str, variables: Mapping[str, str]) -> None:
+        """Append ``output``, what sourcing ``script`` printed, to
+        ``logs/sourcing.log`` under a ``--- <script> ---`` line, its JVM
+        options hidden as ``variables``, the environment the script left,
+        name them (``redact``); nothing when it printed nothing. A failing
+        write raises ``HarnessError`` (``append_log``)."""
+        if not output:
+            return
+        text = redact(output, variables)
+        if not text.endswith("\n"):
+            text += "\n"
+        self.append_log(_SOURCING_LOG, f"--- {script} ---\n{text}")
 
     @property
     def mbmsub(self) -> str | None:
@@ -876,7 +1017,12 @@ class UniKixEnvironment:
         it in a shell where they had been sourced, and the temporary-file
         settings are pointed at ``tmp/`` again. When neither script is
         sourced, ``vars`` returns to what ``load`` produced. Every call starts
-        a new ``generation``.
+        a new ``generation``. What each script printed is kept in
+        ``sourcing_output`` and appended, its JVM options hidden as the
+        environment that script left names them (``redact``), to
+        ``logs/sourcing.log`` (``_log_sourcing``); neither reaches the
+        evidence. A write that fails raises ``HarnessError`` before ``vars``
+        changes.
 
         Returns the state of each script: ``sourced``, ``absent``,
         ``outside-deployment-root`` or, for batchenv, ``unavailable`` when
@@ -917,6 +1063,8 @@ class UniKixEnvironment:
         current = start
         output = ""
         states: dict[str, str] = {}
+        # Each sourced script, what it printed and the environment it left.
+        printed: list[tuple[Path, str, dict[str, str]]] = []
 
         userenv = Path(start.get("KIXSYS", "")) / "bin" / "userenv"
         states["userenv"] = self._script_state(userenv)
@@ -924,6 +1072,7 @@ class UniKixEnvironment:
             current, stderr = self._source_userenv(userenv, start, deadline, during)
             self._refuse_escape(userenv, current, _GAP_USERENV, deadline, during)
             output += stderr
+            printed.append((userenv, stderr, current))
 
         batchenv = Path(current.get("EBMHOME", "")) / "batchenv"
         states["batchenv"] = self._script_state(batchenv)
@@ -938,9 +1087,13 @@ class UniKixEnvironment:
                 current, stderr = captured
                 self._refuse_escape(batchenv, current, _GAP_BATCHENV, deadline, during)
                 output += stderr
+                printed.append((batchenv, stderr, current))
 
         if _expired(deadline):
             raise ScenarioTimeout(f"scenario deadline passed during {during}")
+        # Before vars changes, so a failing write leaves this call without effect.
+        for script, stderr, variables in printed:
+            self._log_sourcing(script, stderr, variables)
         if current is start:
             self.vars = dict(self._load_vars)
             self._inherited_cobcpy = self._load_inherited_cobcpy
@@ -1036,11 +1189,14 @@ class UniKixEnvironment:
     # ---------------------------------------------------------- records
 
     def versions(self, commands: CommandSet) -> dict[str, str]:
-        """The output of every ``version_*`` entry, keyed by entry id, for
-        ``environment.yaml`` (GAP-MIS-009). Every value is non-empty text, as
-        the evidence import requires. A failure is recorded as text and never
-        raised: ``not defined in commands.yaml``, ``unavailable: <reason>``,
-        or ``exit status <rc>`` followed by the output. A probe that exits 0
+        """What every ``version_*`` entry reported, keyed by entry id, for
+        ``environment.yaml`` (GAP-MIS-009). Each value is bounded diagnostic
+        text, not the output verbatim: stdout and stderr combined, every JVM
+        option but the owned temporary settings hidden (``redact``), then cut
+        to ``LOG_LIMIT_BYTES``. Every value is non-empty text, as the evidence
+        import requires. A failure is recorded as text and never raised:
+        ``not defined in commands.yaml``, ``unavailable: <reason>``, or
+        ``exit status <rc>`` followed by the output. A probe that exits 0
         and prints nothing, or only whitespace (``ls -1`` of an empty
         directory), is recorded as ``no output: <id> exited 0 and printed
         nothing`` (or ``only whitespace``), which names no version."""
@@ -1054,7 +1210,7 @@ class UniKixEnvironment:
             except (AdapterUnavailable, ScenarioTimeout, HarnessError) as exc:
                 found[entry_id] = f"unavailable: {exc}"
                 continue
-            text = result.stdout + result.stderr
+            text = self.redact(result.stdout + result.stderr)
             if result.returncode != 0:
                 text = f"exit status {result.returncode}\n{text}"
             elif not text.strip():
@@ -1064,20 +1220,32 @@ class UniKixEnvironment:
         return found
 
     def as_record(self) -> dict[str, Any]:
-        """The environment as ``environment.yaml`` records it: installation
-        paths, deployment paths (the temporary directory included) with the
-        ``JAVA_TOOL_OPTIONS`` and ``_JAVA_OPTIONS`` that carry it to every
-        JVM, the environment file and its sha256, and the runtime script
-        states. It is never a
-        dump of ``vars``."""
+        """The environment as ``environment.yaml`` records it, nonsecret facts
+        only: the environment file and its sha256, the installation paths,
+        the deployment paths (the temporary directory included) with
+        ``EBMSYS``, ``COBCPY`` and ``MBMSUB``, then the ``JAVA_TOOL_OPTIONS``
+        and ``_JAVA_OPTIONS`` that carry the temporary directory to every
+        JVM, shown as the owned temporary settings with every other option
+        ``REDACTED`` (``redact_jvm_options``; null when unset), the runtime
+        script states, the generation, and ``sourcing_log``, the path of
+        ``logs/sourcing.log`` once sourcing printed anything, else null.
+        What the environment file, userenv and batchenv printed is kept out:
+        it stays in that log, inside the work root. It is never a dump of
+        ``vars``."""
+        deployment: dict[str, str | None] = {
+            name: self.vars.get(name) for name in _DEPLOYMENT_RECORD_VARS
+        }
+        for name in _JVM_ALWAYS_SET:
+            value = self.vars.get(name)
+            deployment[name] = None if value is None else redact_jvm_options(value)
         return {
             "env_file": str(self.env_file),
             "env_file_sha256": self.env_file_sha256,
             "installation": {name: self.vars.get(name) for name in INSTALLATION_VARS},
-            "deployment": {name: self.vars.get(name) for name in _DEPLOYMENT_RECORD_VARS},
+            "deployment": deployment,
             "runtime_scripts": dict(self.runtime_scripts),
             "generation": self.generation,
-            "sourcing_output": _clip(self.sourcing_output)[0],
+            "sourcing_log": str(self.log_dir / _SOURCING_LOG) if self.sourcing_output else None,
         }
 
 
@@ -1903,9 +2071,11 @@ class CommandSet:
     ``vars`` (and optionally ``deployment_root`` and ``generation``). The log
     holds every probe and every run, and every refused run too, in order.
     It is kept in memory and appended to ``<deployment root>/logs/commands.log``
-    as YAML documents. ``mark`` and ``log_since`` select the entries of one
-    scenario, and ``render_evidence_log`` renders them for its evidence
-    without their elapsed times. Calls may come from several threads."""
+    as YAML documents, each entry's output with every JVM option but the
+    owned temporary settings hidden (``redact``). ``mark`` and ``log_since``
+    select the entries of one scenario, and ``render_evidence_log`` renders
+    them for its evidence without their elapsed times and without what a
+    sourced script printed. Calls may come from several threads."""
 
     def __init__(self, entries: Mapping[str, CommandEntry], path: Path) -> None:
         self.path = path
@@ -2265,8 +2435,10 @@ class CommandSet:
         temporary directory held read-only as for ``run``, so the script it
         sources cannot move ``TMPDIR``, ``TMP``, ``TEMP`` or
         ``_JAVA_OPTIONS``, bounded by ``timeout_s`` capped
-        at ``deadline_left``. Its output goes to stderr, which is logged and
-        returned; stdout is the exported environment and is never logged.
+        at ``deadline_left``. Its output goes to stderr, which is returned
+        as printed and logged in an entry marked ``sourcing`` (``_record``),
+        which the evidence copy withholds (``render_evidence_log``); stdout
+        is the exported environment and is never logged.
         The environment returned has the shell's own variables, ``BASH_ENV``
         and ``ENV`` removed.
 
@@ -2349,7 +2521,7 @@ class CommandSet:
         stderr = _text(done.stderr)
         self._record(
             view, "run", entry_id, entry.command, cwd, done.returncode, outcome, done.elapsed_s,
-            stderr=stderr,
+            stderr=stderr, sourcing=True,
         )
         if done.timed_out:
             if deadline_capped:
@@ -2402,15 +2574,27 @@ class CommandSet:
     def render_evidence_log(records: list[dict[str, Any]]) -> str:
         """``records`` as the YAML documents of the ``commands.log`` copy in a
         scenario's evidence: ``render_log`` of each record without its
-        ``LOG_ELAPSED_KEY``, every other field kept. The evidence is
-        committed, and elapsed times go only to the git-ignored
-        ``tests/reports/runtime/`` (AAP 0.4.6). ``records`` is not changed."""
-        return CommandSet.render_log(
-            [
-                {key: value for key, value in record.items() if key != LOG_ELAPSED_KEY}
-                for record in records
-            ]
-        )
+        ``LOG_ELAPSED_KEY``. A ``sourcing`` record, which holds what a sourced
+        script printed, keeps none of it: a non-empty ``stderr`` becomes
+        ``""``, ``withheld`` lists ``stderr``, and ``truncated`` no longer
+        names it (the key goes when nothing else is left in it). Every other
+        field is kept. The evidence is committed: elapsed times go only to
+        the git-ignored ``tests/reports/runtime/`` (AAP 0.4.6), and a sourced
+        script's output only to the work root's ``logs/``. ``records`` is not
+        changed."""
+        rendered: list[dict[str, Any]] = []
+        for record in records:
+            shown = {key: value for key, value in record.items() if key != LOG_ELAPSED_KEY}
+            if shown.get("sourcing") and shown.get("stderr"):
+                shown["stderr"] = ""
+                shown["withheld"] = ["stderr"]
+                truncated = [name for name in shown.get("truncated", ()) if name != "stderr"]
+                if truncated:
+                    shown["truncated"] = truncated
+                else:
+                    shown.pop("truncated", None)
+            rendered.append(shown)
+        return CommandSet.render_log(rendered)
 
     def _record(
         self,
@@ -2426,14 +2610,21 @@ class CommandSet:
         stdout: str = "",
         stderr: str = "",
         reason: str = "",
+        sourcing: bool = False,
     ) -> None:
-        """Append one log entry. Output is cut to ``LOG_LIMIT_BYTES``; the
-        environment is never logged, so no exported value reaches the log.
+        """Append one log entry. Output passes ``redact`` with the
+        environment the command ran with, ``env.vars``, and is then cut to
+        ``LOG_LIMIT_BYTES``. The environment itself is never logged, but a
+        command can print what it holds, and every JVM echoes its option
+        variables, so of the JVM options the log keeps only the owned
+        temporary settings. A ``sourcing`` entry holds what a sourced script
+        printed, which ``render_evidence_log`` keeps out of the evidence.
         ``commands.log`` is written only once the root and ``logs/`` pass
         again (``_log_dir``), never through a link (``_append_log``); either
         failing raises ``HarnessError`` with the entry kept in memory alone."""
-        out, out_cut = _clip(stdout)
-        err, err_cut = _clip(stderr)
+        variables = getattr(env, "vars", {})
+        out, out_cut = _clip(redact(stdout, variables))
+        err, err_cut = _clip(redact(stderr, variables))
         record: dict[str, Any] = {
             "kind": kind,
             "id": entry_id,
@@ -2451,6 +2642,8 @@ class CommandSet:
             record["truncated"] = truncated
         if reason:
             record["reason"] = reason
+        if sourcing:
+            record["sourcing"] = True
         root = getattr(env, "deployment_root", None)
         with self._lock:
             record["seq"] = len(self._log) + 1

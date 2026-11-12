@@ -82,8 +82,8 @@ description: >-
   the READ of ACCTDAT fails with a response other than NORMAL or NOTFND, and
   COACTUPC still reads the customer: COACTUP comes back with the entered
   account id, customer 000000001's details, the prompt 'Update account details
-  presented above.' and the message 'File Error: READ     on ACCTDAT
-  returned RESP 000000084 ,RESP2 000000050'.
+  presented above.' and the message
+  'File Error: READ     on ACCTDAT   returned RESP 000000084 ,RESP2 000000050'.
 # The recovery message is the primary item, then the program, the maps the
 # steps enter on and land on, the transaction under which the failing READ
 # runs, the CSD files the step reads (CXACAIX and CUSTDAT successfully, ACCTDAT

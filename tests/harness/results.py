@@ -238,6 +238,9 @@ _DEFAULT_WORK_ROOT_PREFIX = "carddemo-"
 # operator command of the CICS file jobs) are none either.
 _ABSOLUTE_PATH_RE = re.compile(r"(?<![^\s\"'(\[{<=:,;])/[\w.~+@%-]+/[\w.~+@%/-]*")
 _PATH_SHOWN_CHARS = 120
+# The most characters of a refused text a problem shows, so a problem stays
+# short however long the text it names.
+_TEXT_SHOWN_CHARS = 120
 # How far math.log10 of an integer may lie from the true value, relative to
 # it: its error is a few units of 2**-52 of the result, so an estimate this
 # close to a whole number is settled by comparing with that power of ten.
@@ -332,12 +335,14 @@ def _writable_text(text: str, where: str, what: str) -> str:
     """``text`` when it can be written as UTF-8. A lone surrogate (half of a
     pair, or an undecodable byte kept by ``surrogateescape``) is no Unicode
     character, and ``dump_yaml`` refuses it, so ``ResultError`` names where
-    it lies before any record is written."""
+    it lies before any record is written, showing at most
+    ``_TEXT_SHOWN_CHARS`` characters of the text."""
     try:
         text.encode("utf-8")
     except UnicodeEncodeError as exc:
+        shown = repr(text) if len(text) <= _TEXT_SHOWN_CHARS else f"{text[:_TEXT_SHOWN_CHARS]!r}..."
         raise ResultError(
-            f"{where}: {what} {text!r} holds the lone surrogate {text[exc.start]!r} at offset {exc.start}, "
+            f"{where}: {what} {shown} holds the lone surrogate {text[exc.start]!r} at offset {exc.start}, "
             f"which no record can hold"
         ) from None
     return text
@@ -1150,7 +1155,11 @@ def write(outcome: Any, *, results_dir: str | PurePath = RESULTS_DIR) -> Path | 
     an unchanged record leaves the file untouched.
 
     ``outcome`` carries ``adapter`` (the adapter's name, or the adapter),
-    ``scenario_id`` and ``record`` (``build_record``). Nothing is written, and
+    ``scenario_id`` and ``record`` (``build_record``), and may carry
+    ``record_text``: the record's canonical text, ``dump_yaml(dict(record))``,
+    which the runner renders under the scenario deadline. When that is a
+    ``str`` it is written as it is once the record passes the checks below;
+    otherwise the record is dumped here. Nothing is written, and
     ``None`` returned, for any other adapter (a unikix run's record is its
     immutable evidence ``result.yaml``, and the record the status rules read
     is ``validation.yaml``), and for a scenario outside the closed id manifest
@@ -1182,7 +1191,8 @@ def write(outcome: Any, *, results_dir: str | PurePath = RESULTS_DIR) -> Path | 
     path = folder / f"{scenario_id}.yaml"
     if path.is_symlink():
         raise ResultError(f"{display_path(path)} is a symbolic link; the record is not written through it")
-    write_text(path, dump_yaml(dict(record)))
+    text = getattr(outcome, "record_text", None)
+    write_text(path, text if isinstance(text, str) else dump_yaml(dict(record)))
     return path
 
 

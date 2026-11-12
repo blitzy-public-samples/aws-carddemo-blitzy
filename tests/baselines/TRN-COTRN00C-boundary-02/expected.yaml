@@ -2,7 +2,7 @@
 # in TRANSACT, USER0001 signs on, opens the transaction list from the main menu
 # (option 6) and pages forward once. Authored from the source at commit
 # 93ebec71ff7b59a68cedd7c501afe496a8eaa68d, never captured (capture_platform:
-# derived): app/cbl/COTRN00C.cbl:95-141,257-328,381-445,567-700 with
+# derived): app/cbl/COTRN00C.cbl:95-141,257-328,381-445,567-696 with
 # app/bms/COTRN00.bms, app/cpy/COTTL01Y.cpy and app/cpy/CSDAT01Y.cpy (the browse,
 # the paging, the row formatting and the screen header), app/cbl/COSGN00C.cbl
 # and app/cbl/COMEN01C.cbl with app/cpy/COMEN02Y.cpy (the type-U route and

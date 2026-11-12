@@ -11,7 +11,7 @@
 # because its 88-level is the target of a SET. This scenario is the primary case
 # of that item and pins what the screen shows instead when the account owns no
 # such card. What 9150 and its message are for is the open uncertain-purpose
-# question of GAP-UNC-013, hence the observed-only tag.
+# question of GAP-UNC-018, hence the observed-only tag.
 #
 # Steps 1-2 reach the COCRDSL search screen as MNU-COMEN01C-alternate-04 does:
 # option 4 'Credit Card View' makes COMEN01C XCTL to COCRDSLC with
@@ -50,7 +50,7 @@ description: >-
   with card 0500024453765740 of account 00000000050. 'Did not find this account
   in cards database' does not appear: its only SET is in 9150-GETCARD-BYACCT,
   the account lookup through CARDAIX, which no statement performs, so the
-  paragraph is dead code and GAP-UNC-013 carries the question of its purpose.
+  paragraph is dead code and GAP-UNC-018 carries the question of its purpose.
   The program reads CARDDAT by card number alone and never compares the card's
   account with the one entered, so COCRDSL shows the card's name 'Aniya Von',
   active status Y and expiry 03/2023 with the info message 'Displaying
@@ -82,7 +82,7 @@ tags:
 gap_ids:
 - GAP-INF-006  # CRD end-to-end baselines derived, never observed
 - GAP-INF-012  # online-only copybooks covered only through derived e2e baselines
-- GAP-UNC-013  # online code defined but never executed: 9150-GETCARD-BYACCT and its message
+- GAP-UNC-018  # the never-performed 9150-GETCARD-BYACCT and its two messages
 preconditions:
   datasets:
     USRSEC: {base: USRSEC}

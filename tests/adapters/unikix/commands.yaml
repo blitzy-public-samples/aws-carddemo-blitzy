@@ -2,8 +2,9 @@
 #
 # Every UniKix command the adapter issues is an entry of this file: the adapter issues nothing outside it.
 # tests/adapters/unikix/env.py (CommandSet) is the only reader and the only executor; deploy.py, bpe.py and
-# adapter.py call entries by id. No entry was confirmed against a UniKix release when this file was written:
-# the commands come from the zip's bin/ scripts, the AWS CardDemo-on-UniKix tutorial
+# adapter.py call entries by id. Every entry stays unconfirmed (`status: unconfirmed`) until an operator
+# has validated it against the installed UniKix release (see Operators below). The commands come from the
+# zip's bin/ scripts, the AWS CardDemo-on-UniKix tutorial
 # (https://docs.aws.amazon.com/m2/latest/userguide/tutorial-unikix-runtime.html) and the legacy Sun MTP guide
 # (https://docs.oracle.com/cd/E19065-01/servers.12k/816-5328-11/cfgstartstop.html).
 #
@@ -18,12 +19,14 @@
 #   JDK_JAVA_OPTIONS when set) ending in those options, because a JVM ignores TMPDIR and HotSpot writes
 #   /tmp/hsperfdata_<user> otherwise. HotSpot reads _JAVA_OPTIONS after the command line, so it wins over a
 #   -Djava.io.tmpdir a vendor script passes; every JVM therefore prints "Picked up JAVA_TOOL_OPTIONS" and
-#   "Picked up _JAVA_OPTIONS" on stderr. Every command's shell holds TMPDIR, TMP, TEMP and _JAVA_OPTIONS
-#   read-only, as do the shells that source the environment file, userenv and batchenv: a command, or a
-#   script it sources, that assigns, exports or unsets one gets bash's "readonly variable" error (a failed
-#   plain assignment also skips the rest of its line) and the owned value stays. A userenv or batchenv whose
-#   JAVA_TOOL_OPTIONS or JDK_JAVA_OPTIONS name another java.io.tmpdir, or hold an unmatched quote, is refused
-#   under GAP-MIS-003 or GAP-MIS-006.
+#   "Picked up _JAVA_OPTIONS" on stderr. Before any output is logged or recorded, env.py shows every JVM
+#   option there, and every option the JVM option variables hold, as <redacted>, except the owned temporary
+#   settings. Every command's shell holds TMPDIR, TMP, TEMP and _JAVA_OPTIONS read-only, as do the shells
+#   that source the environment file, userenv and batchenv: a command, or a script it sources, that
+#   assigns, exports or unsets one gets bash's "readonly variable" error (a failed plain assignment also
+#   skips the rest of its line) and the owned value stays. A userenv or batchenv whose JAVA_TOOL_OPTIONS or
+#   JDK_JAVA_OPTIONS name another java.io.tmpdir, or hold an unmatched quote, is refused under GAP-MIS-003
+#   or GAP-MIS-006.
 # - Placeholders in {braces} (member, map, job, file, operation, queue, dsn, clock, job_number) are filled by
 #   the caller.
 #   In `command` each value is shell-quoted and $VAR is expanded by bash; `cwd` is filled and expanded by
@@ -776,7 +779,9 @@ entries:
     source: none; no public source names a CEMT SET FILE equivalent
     notes: >-
       Must disable region file {file}, as CEMT SET FIL({file}) DIS does. Applied between steps for the online
-      cases with condition unavailable; without it they stay implemented-unexecuted.
+      cases with condition unavailable. While it is unavailable, region_file_close stands in, so the file is
+      closed (NOTOPEN) rather than disabled; only when neither entry is available do those cases stay
+      implemented-unexecuted under GAP-MIS-011.
 
   region_file_enable:
     action: enable a region file
@@ -896,7 +901,10 @@ entries:
       until then every scenario with clock_mode fixed (BAT-CHAIN-normal-01 among them) is blocked on unikix.
 
   # ---------------------------------------------------------------------------------------------------------
-  # Version probes, recorded verbatim in environment.yaml. Installation paths as in zip bin/carddemo.env.
+  # Version probes. environment.yaml records what each reports as bounded diagnostic text, not verbatim
+  # output: stdout and stderr combined, a non-zero exit prefixed "exit status <rc>", JVM options other than
+  # the owned temporary settings shown as <redacted>, cut at 64 KiB. Installation paths as in zip
+  # bin/carddemo.env.
   # The flag forms are unconfirmed; a failing probe or command is recorded as text, never raised, and a
   # command that exits 0 and prints nothing as "no output: <id> exited 0 and printed nothing", which names
   # no version. report.py --import-unikix closes GAP-MIS-009 only once each of these entries is
@@ -912,7 +920,9 @@ entries:
     source: zip bin/carddemo.env:14 (UNIKIX=/opt/software/TPE)
     notes: >-
       Lists the TPE installation directory and asks kixregion for its version; the flag form is
-      unconfirmed and the output is recorded verbatim.
+      unconfirmed. What it prints is recorded as bounded diagnostic text (stdout and stderr combined, a
+      non-zero exit prefixed "exit status <rc>", no output as the no-output text, JVM options other than the
+      owned temporary settings redacted, cut at 64 KiB).
 
   version_bpe:
     action: record the BPE installation
@@ -923,7 +933,9 @@ entries:
     status: unconfirmed
     source: zip bin/carddemo.env:20 (INSTEBM=/opt/software/BPE/INSTEBM)
     notes: >-
-      No version command is known; the directory listing is recorded verbatim.
+      No version command is known; the directory listing is recorded as bounded diagnostic text (stdout
+      and stderr combined, a non-zero exit prefixed "exit status <rc>", an empty listing as the no-output
+      text, JVM options other than the owned temporary settings redacted, cut at 64 KiB).
 
   version_vcobol:
     action: record the Visual COBOL installation
@@ -935,7 +947,9 @@ entries:
     source: zip bin/carddemo.env:27 (VCOBOL=/opt/software/COBOL)
     notes: >-
       Tries the compiler version flags, then falls back to the directory listing; the flag forms are
-      unconfirmed and the output is recorded verbatim.
+      unconfirmed. What it prints is recorded as bounded diagnostic text (stdout and stderr combined, a
+      non-zero exit prefixed "exit status <rc>", no output as the no-output text, JVM options other than the
+      owned temporary settings redacted, cut at 64 KiB).
 
   version_java:
     action: record the Java runtime
@@ -946,7 +960,9 @@ entries:
     status: unconfirmed
     source: zip bin/carddemo.env:32 (JAVA_HOME from /etc/alternatives/java)
     notes: >-
-      The output is recorded verbatim.
+      What it prints is recorded as bounded diagnostic text (stdout and stderr combined, a non-zero exit
+      prefixed "exit status <rc>", no output as the no-output text, JVM options other than the owned
+      temporary settings redacted, so the JVM's own "Picked up" lines show only those, cut at 64 KiB).
 
   version_licence:
     action: record the UniKix licence directory
@@ -957,7 +973,10 @@ entries:
     status: unconfirmed
     source: zip bin/carddemo.env:11 (KIXLICDIR=/opt/unikix)
     notes: >-
-      Records file names, sizes and dates only, never the licence contents; the output is recorded verbatim.
+      Records file names, sizes and dates only, never the licence contents; the listing is recorded as
+      bounded diagnostic text (stdout and stderr combined, a non-zero exit prefixed "exit status <rc>", no
+      output as the no-output text, JVM options other than the owned temporary settings redacted, cut at
+      64 KiB).
 
   version_s3270:
     action: record the s3270 version
@@ -968,4 +987,6 @@ entries:
     status: unconfirmed
     source: s3270 command-line option -v (prints the version; checked with s3270 4.3ga10)
     notes: >-
-      The operator host needs s3270 4.x for the online scenarios; the output is recorded verbatim.
+      The operator host needs s3270 4.x for the online scenarios. What it prints is recorded as bounded
+      diagnostic text (stdout and stderr combined, a non-zero exit prefixed "exit status <rc>", no output as
+      the no-output text, JVM options other than the owned temporary settings redacted, cut at 64 KiB).

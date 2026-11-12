@@ -93,14 +93,22 @@ root that is not the top level of a git work tree, or git failing. A
 directory whose ``manifest.yaml`` is missing at ``<revision>`` had no version
 there, so it is judged as new.
 
-The module writes only under ``tests/baselines/``: ``write`` builds ``<id>/``
+Inside the repository the module writes only under ``tests/baselines/``
+(``write``'s default ``baselines_dir``): ``write`` builds ``<id>/``
 complete in a staging directory ``.<id>.<pid>.<8 hex>.new`` beside it and
 swaps it in (by way of a pre-image ``.<id>.<pid>.<8 hex>.old`` where the
 kernel cannot exchange two names), holding an exclusive ``flock`` on
 ``tests/baselines/`` itself, which ``load`` and the bump check hold shared. A
 writer that dies leaves such directories behind; the next ``write``, or a
 ``load`` that finds ``<id>`` missing beside its pre-image, puts the pre-image
-back or removes them, and the bump check passes over them.
+back or removes them, and the bump check passes over them. Outside the
+repository, the bump check (``check_bumps``, ``bump_needed``) writes each
+YAML file it compares, at the base and in the working tree, to a
+``<n>.yaml`` it removes once parsed, in a private ``carddemo-bumps-*``
+folder removed before it returns: under ``bump_needed``'s ``scratch`` when
+given, else under the work root ``CARDDEMO_TEST_WORKDIR`` names when
+``harness.usable_work_root`` accepts it, else in the system temporary
+directory.
 """
 
 from __future__ import annotations
@@ -123,6 +131,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
@@ -237,7 +246,22 @@ REASON_ERROR = "error"
 REASON_DIVERGENCE = "cross-adapter-divergence"
 
 DIFF_MAX_LINES = 400
+# The most characters of a diff, its truncation note included.
+DIFF_MAX_CHARS = 200_000
+# The most characters of one string, a mapping key included, a diff shows; a
+# longer one is cut to this many and a marker counting the rest. It exceeds
+# every record of tests/fixtures/datasets.yaml (at most 500 bytes) and an
+# unformatted screen's @text (24 rows of 80 characters and 23 line breaks),
+# so only an outsize value is cut.
+_DIFF_MAX_CHARS_PER_VALUE = 2_000
 _PROBLEMS_PER_KEY = 20
+# A diff of a list value starts this many identical items before the first
+# item at which the expected and the actual list differ.
+_DIFF_CONTEXT_ITEMS = 3
+
+# Iterations of a loop whose cost grows with the data between two readings
+# of the clock against the scenario deadline (_Deadline.tick).
+_DEADLINE_EVERY = 256
 
 # The DALYREJS reason: the 4 bytes CBTRN02C moves from its PIC 9(04)
 # WS-VALIDATION-FAIL-REASON [app/cbl/CBTRN02C.cbl:180-182,446-451]. They are
@@ -1403,6 +1427,49 @@ def write(
 
 
 # --------------------------------------------------------------------------
+# The scenario deadline
+# --------------------------------------------------------------------------
+
+# What a _Deadline names as interrupted, by the step that reads it.
+_PROJECTING = "projecting the decoded outcome"
+_RENDERING = "rendering the comparison diff"
+
+
+class _Deadline:
+    """The scenario deadline ``decode_result``, ``projection`` and
+    ``compare`` run under: a ``time.monotonic()`` value, or ``None`` for
+    none. ``check`` reads the clock; ``tick``, called once per iteration of
+    a loop whose cost grows with the data, reads it every
+    ``_DEADLINE_EVERY`` calls, so a run inside its budget pays next to
+    nothing. Past the deadline either raises ``adapters.base.ScenarioTimeout``
+    naming what it interrupted; it is no ``HarnessError``, so no comparison
+    step turns it into a finding."""
+
+    __slots__ = ("at", "_calls")
+
+    def __init__(self, at: float | None) -> None:
+        if at is not None and (isinstance(at, bool) or not isinstance(at, (int, float))):
+            raise TypeError(f"a deadline is a time.monotonic() value or None, not {type(at).__name__}")
+        self.at = at
+        self._calls = 0
+
+    def check(self, what: str) -> None:
+        if self.at is not None and time.monotonic() >= self.at:
+            raise _base.ScenarioTimeout(f"the scenario deadline passed while {what}")
+
+    def tick(self, what: str) -> None:
+        if self.at is None:
+            return
+        self._calls += 1
+        if self._calls >= _DEADLINE_EVERY:
+            self._calls = 0
+            self.check(what)
+
+
+_UNBOUNDED = _Deadline(None)
+
+
+# --------------------------------------------------------------------------
 # The decoded projection
 # --------------------------------------------------------------------------
 
@@ -1495,9 +1562,10 @@ def _aix_spec(path: str) -> _fixtures.DatasetSpec:
     )
 
 
-def _dataset_view(name: str, data: bytes | None) -> _View:
+def _dataset_view(name: str, data: bytes | None, deadline: _Deadline = _UNBOUNDED) -> _View:
     """Decode one dataset or observation of a result (ASCII bytes, the
-    encoding of both adapters' files)."""
+    encoding of both adapters' files), reading ``deadline`` as each record is
+    ordered and decoded."""
     view = _View(name)
     if data is None:
         view.problem = f"{name} was not produced"
@@ -1531,15 +1599,23 @@ def _dataset_view(name: str, data: bytes | None) -> _View:
             view.own_fields = tuple(definition.fields)
         raw = _codec.split_records(data, view.record_length, dataset=name)
         order = list(range(len(raw)))
+        what = f"decoding {name}"
         if sort and definition is not None:
+            keyed = definition
+
+            def key(index: int) -> Any:
+                deadline.tick(what)
+                return keyed.key_of(raw[index])
+
             # Indexed datasets compare in primary-key order whatever order an
             # unloader delivered them in; equal keys keep their order.
-            order.sort(key=lambda index: definition.key_of(raw[index]))
+            order.sort(key=key)
         view.order = order
         view.raw = [raw[index] for index in order]
         text = view.layout is not None and _is_text_layout(view.layout)
         records = []
         for position, index in enumerate(order):
+            deadline.tick(what)
             if view.layout is None:
                 records.append(view.raw[position].decode(_codec.ENCODINGS["ascii"]))
                 continue
@@ -1552,10 +1628,10 @@ def _dataset_view(name: str, data: bytes | None) -> _View:
     return view
 
 
-def _reject_codes(result: _base.Result) -> list[str] | dict | None:
+def _reject_codes(result: _base.Result, deadline: _Deadline = _UNBOUNDED) -> list[str] | dict | None:
     """The DALYREJS reason texts in written order, ``None`` when the result
     holds no DALYREJS, or an ``@error`` marker when its records cannot be
-    split."""
+    split; ``deadline`` is read as each record is."""
     data = result.datasets.get(REJECTS_DATASET)
     if data is None:
         return None
@@ -1566,7 +1642,12 @@ def _reject_codes(result: _base.Result) -> list[str] | dict | None:
     except (HarnessError, KeyError) as exc:
         return {ERROR: f"{REJECTS_DATASET} reason codes cannot be read: {exc}"}
     start, end = reason["offset"], reason["offset"] + reason["length"]
-    return [record[start:end].decode(_codec.ENCODINGS["ascii"]) for record in records]
+    what = f"reading the {REJECTS_DATASET} reason codes"
+    codes = []
+    for record in records:
+        deadline.tick(what)
+        codes.append(record[start:end].decode(_codec.ENCODINGS["ascii"]))
+    return codes
 
 
 @dataclass
@@ -1575,25 +1656,28 @@ class _Decoded:
     views: dict  # (section, name) -> _View
 
 
-def _decode(scenario: Any, result: _base.Result) -> _Decoded:
+def _decode(scenario: Any, result: _base.Result, deadline: _Deadline = _UNBOUNDED) -> _Decoded:
     expected = scenario.expected if isinstance(scenario.expected, Mapping) else {}
     decoded: dict[str, Any] = {"return_code": result.return_code}
     views: dict[tuple[str, str], _View] = {}
     if "messages" in expected:
         decoded["messages"] = list(result.messages)
     if "reject_reason_codes" in expected:
-        decoded["reject_reason_codes"] = _reject_codes(result)
+        decoded["reject_reason_codes"] = _reject_codes(result, deadline)
     for section in ("datasets", "file_state"):
         names = expected.get(section)
         if not isinstance(names, Mapping):
             continue
         decoded[section] = {}
         for name in names:
-            view = _dataset_view(str(name), result.datasets.get(str(name)))
+            view = _dataset_view(str(name), result.datasets.get(str(name)), deadline)
             views[(section, str(name))] = view
             decoded[section][str(name)] = view.value()
     if "screens" in expected:
-        screens: list[dict] = [dict(screen) for screen in result.screens]
+        screens: list[dict] = []
+        for screen in result.screens:
+            deadline.tick("decoding the screens")
+            screens.append(dict(screen))
         wanted = expected["screens"]
         steps = len(wanted) if isinstance(wanted, list) else 0
         screens.extend({MISSING: True} for _ in range(steps - len(screens)))
@@ -1601,7 +1685,7 @@ def _decode(scenario: Any, result: _base.Result) -> _Decoded:
     return _Decoded(decoded, views)
 
 
-def decode_result(scenario: Any, result: _base.Result) -> dict:
+def decode_result(scenario: Any, result: _base.Result, *, deadline: float | None = None) -> dict:
     """The decoded projection of ``result`` for what ``scenario`` asserts.
 
     ``return_code`` always; ``messages`` and ``screens`` as delivered (no
@@ -1617,8 +1701,15 @@ def decode_result(scenario: Any, result: _base.Result) -> dict:
     ``@AFTER:<JOB>:@REGION-FILES``) as their lines. A dataset the result
     lacks is ``{"@missing": true}``; one that
     cannot be decoded is ``{"@error": <reason>}``. The result is plain
-    YAML-safe data; raw bytes are never changed."""
-    return _decode(scenario, result).decoded
+    YAML-safe data; raw bytes are never changed.
+
+    ``deadline`` is the scenario deadline as a ``time.monotonic()`` value
+    (``None``, the default, sets none): it is read on entry and as records
+    are decoded, and once it has passed ``adapters.base.ScenarioTimeout``
+    names what was being decoded."""
+    clock = _Deadline(deadline)
+    clock.check("decoding the result")
+    return _decode(scenario, result, clock).decoded
 
 
 def asserted_records(
@@ -1823,16 +1914,18 @@ def _normalized(spec: Any, exact: bool) -> tuple[dict, bool]:
 
 
 def _list_check(
-    spec: Any, view: _View, ctx: _Context, exact: bool, label: str
+    spec: Any, view: _View, ctx: _Context, exact: bool, label: str, deadline: _Deadline = _UNBOUNDED
 ) -> tuple[list[str], Any, Any]:
     """Compare a list of records or lines with a list value (``exact``: a
-    plain list is the exact records, otherwise an ordered subsequence).
-    Returns the problems and both sides as the diff shows them."""
+    plain list is the exact records, otherwise an ordered subsequence),
+    reading ``deadline`` at each record compared. Returns the problems and
+    both sides as the diff shows them."""
     if view.problem is not None:
         return [f"{label}: {view.problem}"], _display(spec), view.value()
     specs, plain = _normalized(spec, exact)
     field_matchers = dict(specs.get("matchers") or {})
     count = len(view.records)
+    what = f"comparing {label}"
     problems: list[str] = []
     expected_shown: dict[str, Any] = {}
     actual_shown: dict[str, Any] = {}
@@ -1849,6 +1942,7 @@ def _list_check(
         if len(records) != count:
             problems.append(f"{label}: {count} record(s), expected exactly {len(records)}")
         for index in range(count):
+            deadline.tick(what)
             if index >= len(records):
                 rows.append(_restricted(view, index, union))
                 continue
@@ -1865,6 +1959,7 @@ def _list_check(
         for number, item in enumerate(wanted, start=1):
             found = None
             for index in range(position, count):
+                deadline.tick(what)
                 problem, shown = _record_check(item, view, index, ctx, field_matchers)
                 if problem is None:
                     found = (index, shown)
@@ -1888,17 +1983,20 @@ def _lines_view(name: str, lines: Sequence[Any]) -> _View:
 
 
 def _screens_check(
-    spec: Any, screens: Sequence[Mapping[str, Any]], ctx: _Context, label: str
+    spec: Any, screens: Sequence[Mapping[str, Any]], ctx: _Context, label: str, deadline: _Deadline = _UNBOUNDED
 ) -> tuple[list[str], Any, Any]:
     """Compare the captured screens step by step over the fields each
-    expected step names, ``@map`` and ``@text`` included."""
+    expected step names, ``@map`` and ``@text`` included, reading
+    ``deadline`` at each screen."""
     if not isinstance(spec, list):
         raise BaselineError(f"{label}: must be a list with one field map per step")
     problems: list[str] = []
     rows: list[Any] = []
+    what = f"comparing {label}"
     if len(screens) != len(spec):
         problems.append(f"{label}: {len(screens)} screen(s) captured, expected {len(spec)}")
     for number, expected in enumerate(spec, start=1):
+        deadline.tick(what)
         actual = screens[number - 1] if number <= len(screens) else {MISSING: True}
         if MISSING in actual:
             problems.append(f"{label} step {number}: no screen was captured")
@@ -1914,7 +2012,9 @@ def _screens_check(
                 problems.append(f"{label} step {number} {name}: {problem}")
             shown[name] = _shown(value, got, problem)
         rows.append(shown)
-    rows.extend(dict(screen) for screen in screens[len(spec) :])
+    for screen in screens[len(spec) :]:
+        deadline.tick(what)
+        rows.append(dict(screen))
     return problems, _display(spec), rows
 
 
@@ -1968,12 +2068,13 @@ def _list_marks(
     global_matchers: Mapping[str, Any],
     exact: bool,
     every_record: bool,
+    deadline: _Deadline = _UNBOUNDED,
 ) -> dict[int, dict[str, str]]:
     """Record index -> {field (``*`` for a whole line): matcher kind} for
     every value the expectation ``spec`` gives as a matcher: positional for
     ``records``, by loose alignment for ``contains``, and in every record for
     field-level matchers (where the record holds the field, unless
-    ``every_record``)."""
+    ``every_record``). ``deadline`` is read at each record."""
     if spec is None or spec == _scenarios.BASELINE:
         return {}
     try:
@@ -1983,6 +2084,7 @@ def _list_marks(
     marks: dict[int, dict[str, str]] = {}
     field_level = {**global_matchers, **_matcher_map(specs.get("matchers"))}
     for index, record in enumerate(records):
+        deadline.tick(_PROJECTING)
         for name, matcher in field_level.items():
             if every_record or (isinstance(record, dict) and name in record):
                 marks.setdefault(index, {})[name] = matcher["match"]
@@ -1997,11 +2099,13 @@ def _list_marks(
 
     if isinstance(specs.get("records"), list):
         for index, item in enumerate(specs["records"][: len(records)]):
+            deadline.tick(_PROJECTING)
             mark(index, item)
     if isinstance(specs.get("contains"), list):
         position = 0
         for item in specs["contains"]:
             for index in range(position, len(records)):
+                deadline.tick(_PROJECTING)
                 if _loose_match(item, records[index], field_level):
                     mark(index, item)
                     position = index + 1
@@ -2009,8 +2113,9 @@ def _list_marks(
     return marks
 
 
-def _apply_marks(records: list, marks: Mapping[int, Mapping[str, str]]) -> None:
+def _apply_marks(records: list, marks: Mapping[int, Mapping[str, str]], deadline: _Deadline = _UNBOUNDED) -> None:
     for index, names in marks.items():
+        deadline.tick(_PROJECTING)
         record = records[index]
         if isinstance(record, str) and "*" in names:
             records[index] = names["*"]
@@ -2025,7 +2130,36 @@ def _section_value(expected: Any, section: str, name: str) -> Any:
     return values.get(name) if isinstance(values, Mapping) else None
 
 
-def projection(decoded: Mapping[str, Any], scenario: Any, baseline: Baseline | None = None) -> dict:
+def _copied(value: Any, deadline: _Deadline, memo: dict[int, Any] | None = None) -> Any:
+    """``copy.deepcopy(value)``, reading ``deadline`` at each item of every
+    list a mapping or list of ``value`` holds. Lists and dicts down to those
+    items are copied here, the items and everything else by
+    ``copy.deepcopy`` under one shared memo, so an object held twice is
+    copied once, as ``copy.deepcopy`` copies it."""
+    memo = {} if memo is None else memo
+    if type(value) is list:
+        if id(value) in memo:
+            return memo[id(value)]
+        items: list = []
+        memo[id(value)] = items
+        for item in value:
+            deadline.tick(_PROJECTING)
+            items.append(copy.deepcopy(item, memo))
+        return items
+    if type(value) is dict:
+        if id(value) in memo:
+            return memo[id(value)]
+        mapping: dict = {}
+        memo[id(value)] = mapping
+        for key, item in value.items():
+            mapping[copy.deepcopy(key, memo)] = _copied(item, deadline, memo)
+        return mapping
+    return copy.deepcopy(value, memo)
+
+
+def projection(
+    decoded: Mapping[str, Any], scenario: Any, baseline: Baseline | None = None, *, deadline: float | None = None
+) -> dict:
     """The deterministic projection stored in result records: ``decoded``
     (from ``decode_result``) with every field whose expected value is a
     matcher, in the baseline or in the scenario, holding the matcher's kind
@@ -2034,15 +2168,22 @@ def projection(decoded: Mapping[str, Any], scenario: Any, baseline: Baseline | N
     whether or not the step names them, because their observed value is the
     run clock; a matcher the step or a top-level ``matchers`` entry names
     still decides the kind shown. Nothing else changes: no value is trimmed,
-    case-folded, reordered or dropped."""
-    out = copy.deepcopy(dict(decoded))
+    case-folded, reordered or dropped.
+
+    ``deadline`` is the scenario deadline as a ``time.monotonic()`` value
+    (``None``, the default, sets none): it is read on entry and as records
+    are copied and marked, and once it has passed
+    ``adapters.base.ScenarioTimeout`` names the projection."""
+    clock = _Deadline(deadline)
+    clock.check(_PROJECTING)
+    out = _copied(dict(decoded), clock)
     inline = scenario.expected if isinstance(scenario.expected, Mapping) else {}
     stored = baseline.expected if baseline is not None else {}
     global_matchers = {**_matcher_map(stored.get("matchers")), **_matcher_map(inline.get("matchers"))}
     messages = out.get("messages")
     if isinstance(messages, list):
         for spec, exact in ((stored.get("messages"), True), (inline.get("messages"), False)):
-            _apply_marks(messages, _list_marks(spec, messages, {}, exact, False))
+            _apply_marks(messages, _list_marks(spec, messages, {}, exact, False, clock), clock)
     for section in ("datasets", "file_state"):
         values = out.get(section)
         if not isinstance(values, dict):
@@ -2051,7 +2192,7 @@ def projection(decoded: Mapping[str, Any], scenario: Any, baseline: Baseline | N
             if not isinstance(records, list):
                 continue
             for spec in (_section_value(stored, section, name), _section_value(inline, section, name)):
-                _apply_marks(records, _list_marks(spec, records, global_matchers, True, False))
+                _apply_marks(records, _list_marks(spec, records, global_matchers, True, False, clock), clock)
     screens = out.get("screens")
     if isinstance(screens, list):
         for screen in screens:
@@ -2300,14 +2441,18 @@ def _field_span(view: _View, name: str) -> tuple[int, int] | None:
     return None
 
 
-def _excluded_ranges(view: _View, marks: Mapping[int, Mapping[str, str]]) -> list[tuple[int, int]]:
+def _excluded_ranges(
+    view: _View, marks: Mapping[int, Mapping[str, str]], deadline: _Deadline = _UNBOUNDED
+) -> list[tuple[int, int]]:
     """Byte ranges of the delivered dataset that matcher fields occupy. A
     field whose bytes cannot be located excludes its whole record, so a value
     the adapter's clock decided never fails the raw comparison."""
     if not view.record_length or view.raw is None:
         return []
     ranges = []
+    what = f"locating the matcher fields of {view.name}"
     for index, names in marks.items():
+        deadline.tick(what)
         start = view.order[index] * view.record_length
         for name in names:
             span = _field_span(view, name) or (0, view.record_length)
@@ -2315,10 +2460,11 @@ def _excluded_ranges(view: _View, marks: Mapping[int, Mapping[str, str]]) -> lis
     return ranges
 
 
-def _first_difference(left: bytes, right: bytes) -> int:
+def _first_difference(left: bytes, right: bytes, deadline: _Deadline = _UNBOUNDED) -> int:
     limit = min(len(left), len(right))
     step = 4096
     for start in range(0, limit, step):
+        deadline.tick("comparing raw bytes")
         end = min(start + step, limit)
         if left[start:end] != right[start:end]:
             return next(index for index in range(start, end) if left[index] != right[index])
@@ -2331,15 +2477,19 @@ def _raw_problem(
     actual: bytes | None,
     record_length: int | None,
     excluded: Sequence[tuple[int, int]],
+    deadline: _Deadline = _UNBOUNDED,
 ) -> str | None:
     """Byte-for-byte comparison of a dataset with its ``.bin``; ``excluded``
-    ranges are left out of both. Neither side is modified."""
+    ranges are left out of both, and ``deadline`` is read as they are. Neither
+    side is modified."""
     if actual is None:
         return f"datasets/{name}{RAW_SUFFIX}: {name} was not produced"
     left, right = expected, actual
     if excluded:
         masked_left, masked_right = bytearray(expected), bytearray(actual)
+        what = f"masking the matcher fields of datasets/{name}{RAW_SUFFIX}"
         for start, end in excluded:
+            deadline.tick(what)
             for buffer in (masked_left, masked_right):
                 stop = min(end, len(buffer))
                 if start < stop:
@@ -2347,7 +2497,7 @@ def _raw_problem(
         left, right = bytes(masked_left), bytes(masked_right)
     if left == right:
         return None
-    offset = _first_difference(left, right)
+    offset = _first_difference(left, right, deadline)
     where = f"byte offset {offset}"
     if record_length:
         where += f" (record {offset // record_length + 1}, byte {offset % record_length + 1})"
@@ -2378,20 +2528,139 @@ _FINDING_TITLES = {
 }
 
 
-def _yaml_lines(value: Any) -> list[str]:
+def _clipped_text(text: str) -> str:
+    """``text`` as a diff shows it: whole up to ``_DIFF_MAX_CHARS_PER_VALUE``
+    characters, else cut to that many and a marker counting the rest."""
+    if len(text) <= _DIFF_MAX_CHARS_PER_VALUE:
+        return text
+    left_out = len(text) - _DIFF_MAX_CHARS_PER_VALUE
+    return f"{text[:_DIFF_MAX_CHARS_PER_VALUE]}... ({left_out} more character(s) not shown)"
+
+
+def _clipped(value: Any, deadline: _Deadline) -> Any:
+    """``value`` with every string in it, mapping keys included, cut as a
+    diff shows it (``_clipped_text``), so its YAML costs what the diff can
+    show however long its strings are. Lists, tuples and dicts are copied
+    down to their strings, reading ``deadline`` at each item; every other
+    value is kept. A key whose cut text an earlier key of the same mapping
+    already has is kept whole, so no entry is lost."""
+    if isinstance(value, str):
+        return _clipped_text(value)
+    if isinstance(value, (list, tuple)):
+        items = []
+        for item in value:
+            deadline.tick(_RENDERING)
+            items.append(_clipped(item, deadline))
+        return items
+    if isinstance(value, dict):
+        mapping: dict[Any, Any] = {}
+        for key, item in value.items():
+            deadline.tick(_RENDERING)
+            shown = _clipped_text(key) if isinstance(key, str) else key
+            mapping[key if shown is not key and shown in mapping else shown] = _clipped(item, deadline)
+        return mapping
+    return value
+
+
+def _yaml_lines(value: Any, deadline: _Deadline = _UNBOUNDED) -> list[str]:
+    """The lines of ``value`` as a diff writes it: its YAML, with every string
+    cut first (``_clipped``), written under ``deadline``, past which
+    ``adapters.base.ScenarioTimeout`` names the diff. A value YAML cannot
+    hold is shown by ``_show`` instead."""
+    shown = _clipped(value, deadline)
     try:
-        return dump_yaml(value).splitlines()
+        return dump_yaml(shown, deadline=deadline.at).splitlines()
+    except TimeoutError as exc:
+        raise _base.ScenarioTimeout(f"the scenario deadline passed while {_RENDERING}") from exc
     except HarnessError:  # an integer too long to write in decimal, among others
-        return [_show(value, 10_000)]
+        return [_show(shown, 10_000)]
 
 
-def _render(findings: Sequence[_Finding], scenario_id: Any) -> str:
+def _first_unequal(left: Sequence[Any], right: Sequence[Any], deadline: _Deadline) -> int:
+    """The first index at which ``left`` and ``right`` hold different items:
+    the shorter one's length when it is the other's beginning."""
+    limit = min(len(left), len(right))
+    for index in range(limit):
+        deadline.tick(_RENDERING)
+        if left[index] != right[index]:
+            return index
+    return limit
+
+
+def _window_end(items: Sequence[Any], start: int, deadline: _Deadline) -> int:
+    """Where the diff window of ``items`` that begins at ``start`` ends: after
+    the item whose YAML, as the diff writes it (``_yaml_lines``), brings the
+    window to ``DIFF_MAX_LINES`` lines or ``DIFF_MAX_CHARS`` characters, or
+    at the end of ``items``."""
+    lines, chars, end = 0, 0, start
+    while end < len(items) and lines < DIFF_MAX_LINES and chars < DIFF_MAX_CHARS:
+        deadline.tick(_RENDERING)
+        written = _yaml_lines([items[end]], deadline)
+        lines += len(written)
+        chars += sum(len(line) + 1 for line in written)
+        end += 1
+    return end
+
+
+def _cut_lists(left: Any, right: Any, deadline: _Deadline) -> tuple[Any, Any, str | None]:
+    """``left`` (expected) and ``right`` (actual) cut to a diff window, and
+    what the window leaves out; both unchanged, with ``None``, when each list
+    fits a window whole. The window of a list begins ``_DIFF_CONTEXT_ITEMS``
+    items before the first one at which the two lists differ (the start of a
+    list whose other side is no list, which is kept whole) and ends where
+    ``_window_end`` says."""
+    sides = [("expected", left), ("actual", right)]
+    lists = {name: side for name, side in sides if isinstance(side, list)}
+    if all(_window_end(side, 0, deadline) == len(side) for side in lists.values()):
+        return left, right, None
+    first = _first_unequal(left, right, deadline) if len(lists) == 2 else 0
+    start = max(0, first - _DIFF_CONTEXT_ITEMS)
+    ends = {name: _window_end(side, start, deadline) for name, side in lists.items()}
+    cut = [side[start : ends[name]] if name in ends else side for name, side in sides]
+    left_out = [f"{start} identical leading item(s)"] if start else []
+    trailing = [f"{len(side) - ends[name]} {name}" for name, side in sides if name in ends and len(side) > ends[name]]
+    if trailing:
+        left_out.append(f"{', '.join(trailing)} trailing item(s)")
+    return cut[0], cut[1], f"{' and '.join(left_out)} not shown"
+
+
+def _bounded(expected: Any, actual: Any, deadline: _Deadline) -> tuple[Any, Any, list[str]]:
+    """``expected`` and ``actual`` as a diff of ``DIFF_MAX_LINES`` lines and
+    ``DIFF_MAX_CHARS`` characters can show them, with one line per list cut
+    saying what it leaves out (``_cut_lists``): a list value, or the
+    ``records`` and ``contains`` lists of a mapping value. A list that fits
+    is kept whole, so a small value is shown in full."""
+    if isinstance(expected, list) or isinstance(actual, list):
+        left, right, note = _cut_lists(expected, actual, deadline)
+        return left, right, [note] if note is not None else []
+    if not isinstance(expected, dict) and not isinstance(actual, dict):
+        return expected, actual, []
+    sides = [dict(side) if isinstance(side, dict) else side for side in (expected, actual)]
+    notes: list[str] = []
+    for key in ("records", "contains"):
+        held = [side.get(key) if isinstance(side, dict) else None for side in sides]
+        left, right, note = _cut_lists(held[0], held[1], deadline)
+        for side, value in zip(sides, (left, right)):
+            if isinstance(side, dict) and key in side:
+                side[key] = value
+        if note is not None:
+            notes.append(f"{key}: {note}")
+    return sides[0], sides[1], notes
+
+
+def _render(findings: Sequence[_Finding], scenario_id: Any, deadline: _Deadline = _UNBOUNDED) -> str:
     """The human-readable diff: per failing key a title naming
     ``scenario_id`` and the key, its problems, then a unified diff of the
     expected and the actual value as YAML, truncated at ``DIFF_MAX_LINES``
-    lines."""
+    lines and then at ``DIFF_MAX_CHARS`` characters, each cut ending in a
+    line counting what it leaves out. Each value is cut before it is written,
+    its lists to a window (``_bounded``) and its strings to
+    ``_DIFF_MAX_CHARS_PER_VALUE`` characters (``_yaml_lines``), so the diff
+    costs what it can show however long the lists and strings are;
+    ``deadline`` is read while it is built and its YAML written."""
     lines: list[str] = []
     for finding in findings:
+        deadline.tick(_RENDERING)
         lines.append(f"{scenario_id}: {finding.key}: {_FINDING_TITLES[finding.kind]}")
         listed = finding.problems[:_PROBLEMS_PER_KEY]
         lines.extend(f"  - {problem}" for problem in listed)
@@ -2400,10 +2669,12 @@ def _render(findings: Sequence[_Finding], scenario_id: Any) -> str:
         if finding.expected is _ABSENT or not isinstance(finding.expected, (list, dict)):
             continue
         source = "baseline" if finding.kind == "baseline" else "scenario"
+        expected, actual, notes = _bounded(finding.expected, finding.actual, deadline)
+        lines.extend(f"  ... {note}" for note in notes)
         lines.extend(
             difflib.unified_diff(
-                _yaml_lines(finding.expected),
-                _yaml_lines(finding.actual),
+                _yaml_lines(expected, deadline),
+                _yaml_lines(actual, deadline),
                 fromfile=f"expected {finding.key} ({source})",
                 tofile=f"actual {finding.key}",
                 lineterm="",
@@ -2412,7 +2683,16 @@ def _render(findings: Sequence[_Finding], scenario_id: Any) -> str:
     if len(lines) > DIFF_MAX_LINES:
         hidden = len(lines) - DIFF_MAX_LINES
         lines = lines[:DIFF_MAX_LINES] + [f"... diff truncated: {hidden} more line(s) not shown"]
-    return "\n".join(lines)
+    text = "\n".join(lines)
+    if len(text) <= DIFF_MAX_CHARS:
+        return text
+    # The note's length grows with the count it gives, so the cut leaves room
+    # for the longest note, the whole text's count, and falls at a line break
+    # where there is one.
+    room = DIFF_MAX_CHARS - len(f"\n... diff truncated: {len(text)} more character(s) not shown")
+    cut = text.rfind("\n", 0, room + 1)
+    cut = cut if cut > 0 else room
+    return f"{text[:cut]}\n... diff truncated: {len(text) - cut} more character(s) not shown"
 
 
 class _Checker:
@@ -2437,7 +2717,8 @@ class _Checker:
 
 
 def _findings(
-    scenario: Any, baseline: Baseline | None, result: Any, adapter_name: str, run_date: Any
+    scenario: Any, baseline: Baseline | None, result: Any, adapter_name: str, run_date: Any,
+    deadline: _Deadline = _UNBOUNDED,
 ) -> list[_Finding]:
     checker = _Checker()
     scenario_id = getattr(scenario, "id", "?")
@@ -2452,7 +2733,7 @@ def _findings(
         checker.add("error", "expected", ["the scenario's expected is not a mapping"])
         return checker.findings
     stored = baseline.expected
-    bundle = _decode(scenario, result)
+    bundle = _decode(scenario, result, deadline)
     decoded = bundle.decoded
     clock = _scenarios.clock(scenario)
     _parse_clock(clock)
@@ -2487,7 +2768,7 @@ def _findings(
         lines = _lines_view("messages", decoded["messages"])
         for kind, spec in sources("messages", stored, "messages", expected["messages"]):
             checker.run(kind, "messages", lambda spec=spec, kind=kind: _list_check(
-                spec, lines, contexts[kind], kind == "baseline", "messages"))
+                spec, lines, contexts[kind], kind == "baseline", "messages", deadline))
 
     if "reject_reason_codes" in expected:
         codes = decoded["reject_reason_codes"]
@@ -2501,7 +2782,7 @@ def _findings(
             view = _lines_view("reject_reason_codes", codes)
             for kind, spec in found:
                 checker.run(kind, "reject_reason_codes", lambda spec=spec, kind=kind: _list_check(
-                    _reason_texts(spec), view, contexts[kind], True, "reject_reason_codes"))
+                    _reason_texts(spec), view, contexts[kind], True, "reject_reason_codes", deadline))
 
     for section in ("datasets", "file_state"):
         if section not in expected:
@@ -2519,13 +2800,13 @@ def _findings(
                 continue
             for kind, spec in sources(key, stored_section, str(name), inline_value):
                 checker.run(kind, key, lambda spec=spec, kind=kind, view=view, key=key: _list_check(
-                    spec, view, contexts[kind], True, key))
+                    spec, view, contexts[kind], True, key, deadline))
 
     if "screens" in expected:
         screens = decoded["screens"]
         for kind, spec in sources("screens", stored, "screens", expected["screens"]):
             checker.run(kind, "screens", lambda spec=spec, kind=kind: _screens_check(
-                spec, screens, contexts[kind], "screens"))
+                spec, screens, contexts[kind], "screens", deadline))
 
     if baseline.capture_platform == adapter_name:
         compared: set[str] = set()
@@ -2546,9 +2827,10 @@ def _findings(
                 if not exact:
                     for spec in (_section_value(stored, section, name), _section_value(expected, section, name)):
                         excluded.extend(_excluded_ranges(view, _list_marks(
-                            spec, view.records, {**scenario_matchers, **stored_matchers}, True, True)))
+                            spec, view.records, {**scenario_matchers, **stored_matchers}, True, True, deadline),
+                            deadline))
                 problem = _raw_problem(
-                    name, baseline.datasets[name], result.datasets.get(name), view.record_length, excluded)
+                    name, baseline.datasets[name], result.datasets.get(name), view.record_length, excluded, deadline)
                 checker.add("raw", f"{section}.{name}", [problem] if problem else [])
     return checker.findings
 
@@ -2559,6 +2841,8 @@ def compare(
     result: _base.Result,
     adapter_name: str,
     run_date: Any = None,
+    *,
+    deadline: float | None = None,
 ) -> tuple[str, str | None, str]:
     """Compare a run's ``result`` with the scenario's baseline and inline
     expectations; returns ``(status, reason, diff)``.
@@ -2581,10 +2865,26 @@ def compare(
     ``cross-adapter-divergence`` when a decoded value differs from a
     baseline observed on another adapter (that baseline stays
     authoritative), else ``assertion``; ``diff`` names the scenario and
-    says what differs."""
+    says what differs. The diff shows each key's problems (at most
+    ``_PROBLEMS_PER_KEY``) and a unified diff of the two values as YAML in at
+    most ``DIFF_MAX_LINES`` lines and ``DIFF_MAX_CHARS`` characters in all,
+    with a line counting what a cut leaves out; of a list longer than that it
+    shows the items around the first difference, with a line counting the
+    items left out before and after them, and of a string longer than
+    ``_DIFF_MAX_CHARS_PER_VALUE`` characters that many, with a marker
+    counting the rest. The cuts change only the diff, never the status, the
+    reason or a problem.
+
+    ``deadline`` is the scenario deadline as a ``time.monotonic()`` value
+    (``None``, the default, sets none): it is read on entry and throughout
+    the decoding, the checks and the diff, its YAML included, and once it has
+    passed ``adapters.base.ScenarioTimeout`` names what was interrupted,
+    whatever the comparison had found so far."""
     scenario_id = getattr(scenario, "id", "?")
+    clock = _Deadline(deadline)
+    clock.check("comparing the result")
     try:
-        findings = _findings(scenario, baseline, result, adapter_name, run_date)
+        findings = _findings(scenario, baseline, result, adapter_name, run_date, clock)
     except HarnessError as exc:
         return STATUS_FAILING, REASON_ERROR, f"{scenario_id}: comparison error: {exc}"
     if not findings:
@@ -2596,7 +2896,7 @@ def compare(
         reason = REASON_DIVERGENCE
     else:
         reason = REASON_ASSERTION
-    return STATUS_FAILING, reason, _render(findings, scenario_id)
+    return STATUS_FAILING, reason, _render(findings, scenario_id, clock)
 
 
 # --------------------------------------------------------------------------

@@ -20,6 +20,9 @@ SORT (GAP-STB-006)
     sequence is ASCII, not EBCDIC; equal keys keep their input order
     (``EQUALS``). Records are padded with spaces or truncated to the SORTOUT
     record length with RC 0, as DFSORT's ``PAD=RC0``/``TRUNC=RC0`` do.
+    OUTREC keeps DFSORT's limits (``parse_sort``): repetition factors of at
+    most 4095, columns up to 32752, input fields ending by byte 32752 and a
+    record of at most 32760 bytes.
 IEBGENER, IEFBR14 and DISP (GAP-STB-007)
     IEBGENER copies SYSUT1 to SYSUT2 at SYSUT2's record length (``SYSIN DD
     DUMMY`` only); IEFBR14 allocates its new datasets and does nothing else.
@@ -46,14 +49,17 @@ Contract with the job driver
 Output
     The utility's message dataset (SYSPRINT; SYSOUT for SORT; ISFOUT for
     SDSF) goes to ``<workdir>/evidence/<step index>-<step>.sysprint.txt`` and
-    never to ``Result.messages``, which hold program DISPLAY lines only, so
-    the same baselines hold on ``unikix``. The lines carry no time, path or
-    host and follow the order of the statements and the datasets, so two runs
-    write identical evidence.
+    never to ``Result.messages``, which hold each step's ``STEP`` status line
+    and the program steps' DISPLAY lines only, so the same baselines hold on
+    ``unikix``. The lines carry no time, path or host and follow the order of
+    the statements and the datasets, so two runs write identical evidence.
 
 ``UtilityError`` (a ``HarnessError``) reports a step the replacements cannot
 run as transcribed: an unparseable or unsupported statement, an unknown DD, a
-record layout the emulation does not handle. It is never a step return code.
+record layout the emulation does not handle, a DCB LRECL or written record
+longer than 32760 bytes (the longest fixed-length record), or records over
+64 MiB that one step would build or write (an emulation bound), refused
+before they are built. It is never a step return code.
 A control statement the replacements cannot parse is reported with the job,
 the qualified step and the complete statement, and the step's evidence file
 holds its control statements.
@@ -141,9 +147,10 @@ _STEP_FILE_RE = re.compile(r"[^A-Za-z0-9.#@$-]")
 class UtilityError(HarnessError):
     """A utility step the replacements cannot run as transcribed in
     ``jobs.yaml``: an unparseable or unsupported control statement, a DD the
-    step does not have, a record layout the emulation does not handle. The
-    runner reports it ``failing`` with reason ``error``; it is never turned
-    into a step return code."""
+    step does not have, a record layout the emulation does not handle, a
+    record or step output beyond ``_MAX_RECORD_LENGTH`` or
+    ``_MAX_STEP_BYTES``. The runner reports it ``failing`` with reason
+    ``error``; it is never turned into a step return code."""
 
 
 @dataclass
@@ -214,6 +221,20 @@ def _is_number(text: str) -> bool:
     scripts, which ``int`` then reads as numbers or refuses with
     ``ValueError``."""
     return text.isascii() and text.isdigit()
+
+
+def _number_value(text: str, what: str, where: str) -> int:
+    """The value of ``text``, a number of the digits 0-9 a control statement
+    holds. ``int`` refuses one of more digits than Python's integer string
+    conversion limit (``sys.get_int_max_str_digits()``, 4300 by default)
+    with ``ValueError``; that refusal raises ``UtilityError`` naming
+    ``what``."""
+    try:
+        return int(text)
+    except ValueError:
+        raise UtilityError(
+            f"{where}: {what} has {len(text)} digits, too many to read as a number"
+        ) from None
 
 
 def _disp(entry: Mapping[str, Any], where: str) -> tuple[str, ...]:
@@ -371,8 +392,9 @@ class StepContext:
     def _dcb_length(
         self, ddname: str, entry: Mapping[str, Any], seen: frozenset[str]
     ) -> int | None:
-        """The LRECL of a DD's DCB; ``DCB=(*.<dd>)`` refers to the first
-        dataset of another DD of the step."""
+        """The LRECL of a DD's DCB, at most ``_MAX_RECORD_LENGTH``;
+        ``DCB=(*.<dd>)`` refers to the first dataset of another DD of the
+        step."""
         dcb = entry.get("dcb")
         if dcb is None:
             return None
@@ -380,7 +402,13 @@ class StepContext:
         if not isinstance(dcb, Mapping):
             raise UtilityError(f"{where}: dcb must be a mapping")
         if dcb.get("lrecl") is not None:
-            return _positive_int(dcb["lrecl"], f"{where} DCB LRECL")
+            lrecl = _positive_int(dcb["lrecl"], f"{where} DCB LRECL")
+            if lrecl > _MAX_RECORD_LENGTH:
+                raise UtilityError(
+                    f"{where}: DCB LRECL={lrecl} is longer than {_MAX_RECORD_LENGTH}, the longest "
+                    f"fixed-length record"
+                )
+            return lrecl
         refer = dcb.get("refer")
         if refer is None:
             return None
@@ -701,11 +729,38 @@ def _write_records(
     ctx: StepContext, resolved: ResolvedDD, records: Sequence[bytes], length: int
 ) -> None:
     """Write fixed-length records to a sequential output: appended under
-    ``DISP=MOD`` of an existing dataset, replacing it otherwise."""
+    ``DISP=MOD`` of an existing dataset, replacing it otherwise. A record
+    longer than ``_MAX_RECORD_LENGTH``, or a written dataset (the bytes
+    ``DISP=MOD`` keeps included) of more than ``_MAX_STEP_BYTES``, is refused
+    before the kept bytes are read or any record is padded, so the dataset
+    is left unchanged."""
     if resolved.path is None:
         raise UtilityError(f"{resolved.shown} has no file to write")
+    if length > _MAX_RECORD_LENGTH:
+        raise UtilityError(
+            f"{ctx.label}: {resolved.shown} has a record length of {length}, longer than "
+            f"{_MAX_RECORD_LENGTH}, the longest fixed-length record"
+        )
+    appended = _status(resolved.disp) == "MOD" and resolved.exists
+    kept = 0
+    if appended:
+        try:
+            kept = ctx.store.inside(resolved.path).stat().st_size
+        except OSError as exc:
+            raise UtilityError(
+                f"{ctx.label}: the size of {resolved.shown}, which DISP=MOD extends, cannot be "
+                f"read: {exc.strerror or exc}"
+            ) from exc
+    total = len(records) * length + kept
+    if total > _MAX_STEP_BYTES:
+        kept_part = f" plus the {kept} bytes DISP=MOD keeps of it" if kept else ""
+        raise UtilityError(
+            f"{ctx.label}: {len(records)} records of {length} bytes for {resolved.shown}"
+            f"{kept_part} are {total} bytes, more than the {_MAX_STEP_BYTES} one utility step "
+            f"may write (an emulation bound)"
+        )
     data = b"".join(_fit(record, length) for record in records)
-    if _status(resolved.disp) == "MOD" and resolved.exists:
+    if appended:
         data = ctx.store.read_sequential(resolved.path) + data
     ctx.store.write_sequential(resolved.path, data, length)
     ctx.written[resolved.path] = length
@@ -914,7 +969,10 @@ def _numbers(value: tuple[_Operand, ...] | None, keyword: str, count: int, where
         or not all(isinstance(item, str) and _is_number(item) for item in value)
     ):
         raise UtilityError(f"{where}: {keyword} needs {count} number(s), got {value!r}")
-    return [int(item) for item in value]  # type: ignore[arg-type]
+    return [
+        _number_value(item, f"a number of {keyword}", where)  # type: ignore[arg-type]
+        for item in value
+    ]
 
 
 def _flag(params: Mapping[str, Any], on: str, off: str, default: bool, where: str) -> bool:
@@ -1157,7 +1215,7 @@ def _parse_command(text: str, where: str, depth: int = 0) -> IdcamsCommand:
         return IdcamsCommand("", "NULL")
     match = _SET_RE.fullmatch(statement)
     if match:
-        value = int(match.group(2))
+        value = _number_value(match.group(2), f"the SET {match.group(1).upper()} value", where)
         if value > _MAX_CONDITION_CODE:
             raise UtilityError(f"{where}: SET {match.group(1).upper()} = {value} is above 16")
         return IdcamsCommand(statement, "SET", register=match.group(1).upper(), value=value)
@@ -1187,7 +1245,7 @@ def _parse_command(text: str, where: str, depth: int = 0) -> IdcamsCommand:
             "IF",
             register=register.upper(),
             operator=comparison.upper(),
-            value=int(threshold),
+            value=_number_value(threshold, f"the IF {register.upper()} value", where),
             then=_parse_command(clause, where, depth + 1),
             otherwise=otherwise,
         )
@@ -1632,6 +1690,27 @@ def _run_idcams(ctx: StepContext, result: UtilityResult) -> int:
 
 _SORT_FORMATS = ("CH", "ZD")
 _ZD_MAX_DIGITS = 31  # DFSORT's longest ZD field
+# OUTREC (and BUILD) limits of the OUTREC control statement (z/OS DFSORT
+# Application Programming Guide): for nX, nC'..' and nX'..' "n can range from
+# 1 to 4095"; "c must be a number between 1 and 32752"; and of an input
+# field p,m "no field may extend beyond byte 32752". The record the items
+# build is at most _MAX_RECORD_LENGTH bytes.
+_MAX_REPETITION = 4095
+_MAX_COLUMN = 32752
+_MAX_FIELD_END = 32752
+# The longest fixed-length record: "An output record length for fixed-length
+# records was greater than 32760" and "A reformatted record length for
+# fixed-length records was greater than 32760" end DFSORT with ICE024A
+# MAXIMUM RECORD LENGTH EXCEEDED (z/OS DFSORT Messages, Codes and Diagnosis
+# Guide), and LRECL is "1 to 32,760 for non-VSAM data sets" (z/OS MVS JCL
+# Reference, LRECL parameter). It bounds the OUTREC record, every DCB LRECL
+# and every record a replacement (SORT, IEBGENER, sequential REPRO) writes.
+_MAX_RECORD_LENGTH = 32760
+# The most bytes of fixed-length records one utility step builds or writes:
+# an emulation guard, not an IBM limit. The largest transcribed output,
+# CREASTMT's TRXFL (312 records of 350 bytes), is about 107 KiB; the bound
+# refuses a step whose records would exhaust the pytest process.
+_MAX_STEP_BYTES = 64 * 1024 * 1024
 _SYMBOL_NAME_RE = re.compile(r"[A-Za-z#$@][A-Za-z0-9#$@_-]*")
 _CHAR_CONSTANT_RE = re.compile(r"([0-9]*)C'((?:[^']|'')*)'", re.IGNORECASE)
 _HEX_CONSTANT_RE = re.compile(r"([0-9]*)X'([0-9A-Fa-f]*)'", re.IGNORECASE)
@@ -1717,18 +1796,35 @@ class Constant:
     hexadecimal: bool = False
 
 
+def _check_repetition(count: int, token: str, where: str) -> None:
+    """Refuse the repetition factor ``count`` of the OUTREC item ``token``
+    (``nX``, ``nC'..'``, ``nX'..'``) above ``_MAX_REPETITION``, before any
+    byte of it is built."""
+    if count > _MAX_REPETITION:
+        raise UtilityError(
+            f"{where}: the repetition factor {count} of {token} is more than {_MAX_REPETITION}, "
+            f"the most DFSORT allows"
+        )
+
+
 def _constant(token: str, where: str, *, repeat: bool = False) -> tuple[int, Constant] | None:
     """``(repetition, constant)`` of a constant token, ``None`` for a token
-    that is no constant. ``nC'..'`` and ``nX'..'`` repeat only in OUTREC."""
+    that is no constant. ``nC'..'`` and ``nX'..'`` repeat only in OUTREC, at
+    most ``_MAX_REPETITION`` times."""
     for pattern, hexadecimal in ((_CHAR_CONSTANT_RE, False), (_HEX_CONSTANT_RE, True)):
         match = pattern.fullmatch(token)
         if match is None:
             continue
-        count = int(match.group(1)) if match.group(1) else 1
         if match.group(1) and not repeat:
             raise UtilityError(f"{where}: a repetition factor is not valid in {token}")
+        count = (
+            _number_value(match.group(1), f"the repetition factor of {token}", where)
+            if match.group(1)
+            else 1
+        )
         if count == 0:
             raise UtilityError(f"{where}: a repetition factor must be positive in {token}")
+        _check_repetition(count, token, where)
         if hexadecimal:
             if len(match.group(2)) % 2:
                 raise UtilityError(f"{where}: {token} has an odd number of hex digits")
@@ -1797,7 +1893,8 @@ def parse_symnames(lines: Iterable[Any]) -> dict[str, Symbol]:
                 continue
             if len(values) not in (2, 3) or not all(_is_number(value) for value in values[:2]):
                 raise UtilityError(f"{where}: {line!r} is not 'name,position,length[,format]'")
-            position, length = int(values[0]), int(values[1])
+            position = _number_value(values[0], "the position", where)
+            length = _number_value(values[1], "the length", where)
             if position == 0 or length == 0:
                 raise UtilityError(f"{where}: position and length must be positive")
             fmt = values[2].upper() if len(values) == 3 else None
@@ -2102,9 +2199,18 @@ class SortSpec:
         return refs
 
     def reformat(self, record: bytes) -> bytes:
+        """``record`` built by the OUTREC items, or unchanged without them. An
+        OUTREC record longer than ``_MAX_RECORD_LENGTH`` is refused before
+        it is allocated."""
         if self.outrec is None:
             return record
-        built = bytearray(_BLANK * (self.outrec_length or 0))
+        length = self.outrec_length or 0
+        if length > _MAX_RECORD_LENGTH:
+            raise UtilityError(
+                f"the OUTREC record is {length} bytes, longer than {_MAX_RECORD_LENGTH}, the "
+                f"longest fixed-length record DFSORT builds (ICE024A)"
+            )
+        built = bytearray(_BLANK * length)
         for item in self.outrec:
             built[item.column - 1 : item.column - 1 + item.length] = item.render(record)
         return bytes(built)
@@ -2226,10 +2332,19 @@ def _outrec_items(value: str, symbols: Mapping[str, Symbol], where: str) -> tupl
             column, token = int(column_match.group(1)), column_match.group(2)
             if column == 0 or column < cursor:
                 raise UtilityError(f"{where}: column {column} overlaps the item before it")
+            if column > _MAX_COLUMN:
+                raise UtilityError(
+                    f"{where}: column {column} is beyond {_MAX_COLUMN}, the last column DFSORT "
+                    f"allows"
+                )
             start = column
         else:
             start = cursor
         symbol = symbols.get(token)
+        coded = token  # how the item's bounds diagnostics show it
+        # The unit and count of nX, nC'..' and nX'..', built only once the
+        # item's length is known to fit the record.
+        repeated: tuple[bytes, int] | None = None
         if symbol is not None and symbol.constant is not None:
             data = symbol.constant.data
             if data is None:
@@ -2252,6 +2367,12 @@ def _outrec_items(value: str, symbols: Mapping[str, Symbol], where: str) -> tupl
                     index += 1
                 else:
                     fmt = None
+                coded = f"{position},{length}"
+            if position + length - 1 > _MAX_FIELD_END:
+                raise UtilityError(
+                    f"{where}: the OUTREC field {coded} ends at byte {position + length - 1}, "
+                    f"beyond {_MAX_FIELD_END}, the last byte a DFSORT input field may reach"
+                )
             mask = take_mask()
             if mask is not None:
                 if fmt != "ZD":
@@ -2271,17 +2392,27 @@ def _outrec_items(value: str, symbols: Mapping[str, Symbol], where: str) -> tupl
             blanks = None if constant is not None else _BLANKS_RE.fullmatch(token)
             if constant is not None:
                 count, literal = constant
-                data = (literal.data or b"") * count
-                item = OutItem(start, len(data), data=data)
+                unit = literal.data or b""
             elif blanks is not None:
                 count = int(blanks.group(1)) if blanks.group(1) else 1
-                item = OutItem(start, count, data=_BLANK * count)
+                _check_repetition(count, token, where)
+                unit = _BLANK
             else:
                 raise UtilityError(
                     f"{where}: the OUTREC item {token!r} is not emulated (GAP-STB-006)"
                 )
+            repeated = (unit, count)
+            item = OutItem(start, len(unit) * count)
         if item.length == 0:
             raise UtilityError(f"{where}: the OUTREC item {token!r} is empty")
+        end = start + item.length - 1
+        if end > _MAX_RECORD_LENGTH:
+            raise UtilityError(
+                f"{where}: the OUTREC item {coded!r} at column {start} ends at byte {end}, beyond "
+                f"{_MAX_RECORD_LENGTH}, the longest fixed-length record DFSORT builds (ICE024A)"
+            )
+        if repeated is not None:
+            item = replace(item, data=repeated[0] * repeated[1])
         items.append(item)
         cursor = start + item.length
     return tuple(items)
@@ -2294,8 +2425,12 @@ def parse_sort(lines: Iterable[Any], symbols: Mapping[str, Symbol] | None = None
     ``D``, or ``COPY``; ``INCLUDE COND`` compares fields with fields or
     constants (``EQ NE GT GE LT LE``) joined by ``AND`` and ``OR``;
     ``OUTREC FIELDS`` (or ``BUILD``) takes ``c:``, ``p,l``, symbols, ``X``,
-    ``nX``, ``C'..'``, ``X'..'`` and ``EDIT=(mask)`` of ZD fields. Anything
-    else raises ``UtilityError`` quoting the complete statement."""
+    ``nX``, ``C'..'``, ``X'..'`` and ``EDIT=(mask)`` of ZD fields, within
+    DFSORT's limits: a repetition factor ``n`` of 1 to 4095, a column ``c``
+    of 1 to 32752, input fields ending at or before byte 32752 and items
+    ending at or before byte 32760, each checked before the item's bytes are
+    built. Anything else raises ``UtilityError`` quoting the complete
+    statement."""
     table = dict(symbols or {})
     keys: tuple[SortKey, ...] | None = None
     include: Condition | None = None
@@ -2437,11 +2572,20 @@ def _run_sort(ctx: StepContext, result: UtilityResult) -> int:
     # previous one among equal keys, so equal records keep their input order.
     for key in reversed(spec.keys):
         ordered.sort(key=_sort_key(key.field), reverse=key.descending)
-    built = [spec.reformat(record) for record in ordered]
     built_length = spec.outrec_length or sortin_length
     length = target.record_length or built_length
     if length is None:
         raise UtilityError(f"step {ctx.step_name}: no record length is known for {target.shown}")
+    # Each record is built at the OUTREC length and written at the SORTOUT
+    # length: both are bounded before the first record is reformatted.
+    widest = max(length, spec.outrec_length or 0)
+    if len(ordered) * widest > _MAX_STEP_BYTES:
+        raise UtilityError(
+            f"{ctx.label}: {len(ordered)} records of {widest} bytes for {target.shown} are "
+            f"{len(ordered) * widest} bytes, more than the {_MAX_STEP_BYTES} one utility step may "
+            f"build (an emulation bound)"
+        )
+    built = [spec.reformat(record) for record in ordered]
     if built_length is not None and length != built_length:
         lines.append(
             f"ICE171I SORTOUT LRECL OF {length} IS DIFFERENT FROM SORTIN(OUT) LRECL OF "

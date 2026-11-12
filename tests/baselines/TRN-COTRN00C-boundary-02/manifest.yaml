@@ -1,7 +1,7 @@
 # Manifest of the derived baseline of TRN-COTRN00C-boundary-02: the page-size
 # boundary of the transaction list, 11 invented transactions, one more than
 # the 10 rows a page holds, so page 1 shows ids 1-10 and PF8 shows page 2
-# holding only 0000000000000011 [app/cbl/COTRN00C.cbl:257-328,567-700]. Only
+# holding only 0000000000000011 [app/cbl/COTRN00C.cbl:257-328,567-696]. Only
 # unikix can run the scenario, so expected.yaml is authored from the source
 # and is inferred-not-observed (GAP-INF-007, GAP-INF-012). It names no
 # execution_id or execution_fingerprint and holds no datasets/ until

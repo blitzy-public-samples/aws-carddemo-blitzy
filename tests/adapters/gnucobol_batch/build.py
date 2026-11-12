@@ -20,9 +20,9 @@ the adapter runs into ``<work root>/_build/<build key>/``:
 ``profiles/<profile name>/KSLOAD``, ``KSUNLOAD``
     The generated indexed-file loader and unloader of one ``KeyProfile``.
 ``logs/<unit>.log``, ``src/``, ``manifest.yaml``, ``COMPLETE``
-    Each compile's command line, stdout and stderr; generated sources; the
-    evidence of what was built, with the sha256 of every artifact under
-    ``artifacts``; the marker written last.
+    Each compile's command line, working directory, status, stdout and
+    stderr; generated sources; the evidence of what was built, with the
+    sha256 of every artifact under ``artifacts``; the marker written last.
 ``logs/CLOCKCHK.probe.log``
     Each clock-probe run's command line, ``COB_CURRENT_DATE``, status, stdout
     and stderr: the evidence of ``clock_fraction_mode``.
@@ -35,7 +35,13 @@ overpunch ``0000005047G`` reads +504.77 (without it POSTTRAN rejects 299 of 300
 records as 102), ``-ftab-width=4`` for the tab characters of ``CUSTREC``, and
 ``-fbinary-truncate`` for TRUNC(STD), which ``ibm-strict.conf`` turns off. The
 mapping stays a stand-in: ``defaultbyte 0`` gives the ``x'00'`` fill of the
-CBACT04C descriptions, and comparisons use the ASCII collating sequence.
+CBACT04C descriptions, and comparisons use the ASCII collating sequence. A
+unit may add only the flags of ``_EXTRA_FLAGS``, matched exactly (today
+``-fbinary-byteorder=native``, for CBSTM03A and the CBSTM03B it links); any
+other ``compile.extra_flags`` entry of a unit or of a unit it links, such as
+``-o``, ``-t``, ``-T``, ``-P``, ``--save-temps``, ``--conf``, ``-A`` or
+``-Q``, which choose where cobc writes or forward options to the C compiler or
+linker, is a ``BuildError`` before anything is written or compiled.
 
 Build key. ``compute_build_key`` hashes, with repository-relative names only,
 the unit sources of ``programs.yaml``, every file of ``app/cpy``, every stub of
@@ -76,7 +82,36 @@ A truncated, altered or missing artifact, or a manifest without the hashes,
 makes the directory stale, so it is removed and rebuilt. An on-demand profile
 keeps its own ``profiles/<profile>/manifest.yaml``, checked on its first use
 in a session; on a mismatch it is set aside under the key lock, removed and
-rebuilt.
+rebuilt. Below the work root every component of the cache is refused at
+admission when it is unsound and re-verified by identity before every
+reuse, creation, set-aside, removal or publication. ``_build`` is created
+private (mode 0700) when missing and admitted only as a real directory of the
+effective user that neither group nor others can write to, never a symbolic
+link, before anything is created, reused, published or removed in it; one an
+earlier session created with mode 0755 is admitted. The key lock is opened
+without following a link and must be the user's regular file, and
+``_build/<key>/``, ``profiles/`` and ``profiles/<profile>/`` are refused when
+they are symbolic links or no directories. The identities, ``(st_dev,
+st_ino)``, of ``_build`` as admitted and of ``_build/<key>/`` once found or
+published finished are recorded, and both are re-admitted, without following
+a link, before the cache is reused: whenever ``ensure_built`` would return
+the memoized cache and on every ``loader`` and ``unloader`` call, a profile
+already checked included. ``_build`` is re-admitted in every key lock
+section, before the lock file is opened and once it is held, and before a
+build workspace is created; a profile's creation, set-aside, removal and
+publication re-admit both and ``profiles/`` first. A component that is now a
+symbolic link, no directory, another user's or a different directory than
+the one admitted is refused. Each refusal is a ``BuildError`` naming the
+component, a configuration error that is never memoized, and nothing is
+read, written or removed through it; a workspace reachable only through a
+refused component is left where it is. A memoized cache whose ``_build`` or
+``_build/<key>/`` was removed is built afresh by the next ``ensure_built``.
+These checks run before each such step, not while a build writes into its
+own workspace: a swap made while the compiles run can receive what they and
+the build then write there, and is refused at the next check, before
+anything is set aside, removed or published. Verification never takes a
+link's target as its trust root: a directory that is, or is reached through,
+a symbolic link is not intact.
 
 Indexed files. GnuCOBOL 3.2 with Berkeley DB keeps alternate key *i* in
 ``<file>.i``. ``OPEN INPUT`` fails with status 35 when a declared alternate's
@@ -124,15 +159,33 @@ Clock. ``clock_fraction_mode`` says how libcob reads the fraction of
 ``harness.cob_current_date`` formats it. A generated probe decides it once per
 cache.
 
-Nothing is written in the repository: sources are passed by absolute path,
-every output goes to the build directory through ``-o``, and each compile
-runs with its working and temporary directories inside it. Importing this
+Nothing is written in the repository: each compile runs with the build
+directory as its working directory and ``TMPDIR=tmp`` inside it, and gets
+its output (``-o``) and generated sources by their paths relative to the
+build directory, so no text of the work root reaches the shell commands cobc
+runs the C compiler and the linker through; repository sources and ``-I
+app/cpy`` are passed by absolute path. A cobc compile whose arguments or
+``TMPDIR`` hold a character such a shell command would read (a backquote,
+``$``, ``"`` or ``\\``) or one that is not printable, which only a checkout
+or cobc path can hold, is refused unrun and fails the build with a
+``BuildError`` naming the argument and the character. Each compile log names
+the build directory ``<build>``. Nothing is written outside the build
+directory either. Every ``programs.yaml`` unit key must be a batch program
+name, one to eight upper-case letters and digits starting with a letter
+(``_UNIT_ID_RE``), because it names the unit's artifact and log; any other
+key, one holding ``/`` or ``..`` included, is a ``BuildError`` before
+anything is written. Independently, each compile's artifact, each compile
+log and each generated source must be a non-empty relative path without a
+``..`` part, so it stays lexically inside the directory being built; it is
+checked before any directory is created, any file written or any compiler
+started, and a ``BuildError`` names the first that is not. Importing this
 module starts no process and reads no file.
 """
 
 from __future__ import annotations
 
 import fcntl
+import functools
 import inspect
 import os
 import re
@@ -144,7 +197,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -227,6 +280,11 @@ _COMPLETE = "COMPLETE"
 _MANIFEST = "manifest.yaml"
 _BUILD_SUBDIR = "_build"
 _LOCK_SUFFIX = ".lock"
+# The mode of a build root ensure_built creates, and the bits that refuse
+# one: a directory others can write to is one where they can plant links.
+_PRIVATE_DIR_MODE = 0o700
+_SHARED_WRITE = stat.S_IWGRP | stat.S_IWOTH
+_REFUSAL_HINT = "remove it or choose another work root"
 _SETUP_HINT = (
     "GnuCOBOL 3.2 built --with-db (Berkeley DB) must be on PATH, with its lib "
     "directory on LD_LIBRARY_PATH; see tests/README.md"
@@ -234,6 +292,14 @@ _SETUP_HINT = (
 
 _MODE_FLAGS = {"executable": "-x", "module": "-m"}
 _RUN_MODES = {"executable": "executable", "parmdrv": "module", "dtcdrv": "module"}
+# The flags a programs.yaml unit may add to its compile, matched exactly: only
+# -fbinary-byteorder=native, which CBSTM03A and the CBSTM03B it links need
+# because TIOT-INDEX is a POINTER redefined as binary. An argv list keeps a flag
+# from the shell, not from cobc: -o, -t, -T, -P, --save-temps, --conf, -I, -L,
+# -A, -Q and -j choose output, listing, temporary, configuration or search
+# paths, forward options to the C compiler or linker, or run the program, so
+# any flag not listed here is refused before anything is compiled.
+_EXTRA_FLAGS = frozenset({"-fbinary-byteorder=native"})
 _LOADER_PROGRAM = "KSLOAD"
 _UNLOADER_PROGRAM = "KSUNLOAD"
 _CLOCK_PROGRAM = "CLOCKCHK"
@@ -252,6 +318,11 @@ _COBC_VERSION_RE = re.compile(r"^cobc \(GnuCOBOL\) 3\.2(\.0)?$")
 _BDB_RE = re.compile(r"^indexed file handler\s*:\s*BDB\b", re.MULTILINE)
 _INFO_ENTRY_RE = re.compile(r"^(\S.*?)\s+:\s?(.*)$")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")  # an ``artifacts`` digest, matched whole
+# A programs.yaml unit key, matched whole: a batch program name of one to
+# eight upper-case letters and digits, starting with a letter. The key becomes
+# the artifact bin/<UNIT> or modules/<UNIT>.so and the log logs/<UNIT>.log, so
+# no other key, one holding "/" or ".." included, is admitted.
+_UNIT_ID_RE = re.compile(r"[A-Z][A-Z0-9]{0,7}")
 _COBOL_LINE_LIMIT = 72
 
 _PARALLEL_COMPILES = max(1, min(4, os.cpu_count() or 1))
@@ -369,9 +440,10 @@ def profile_for(record_length: int, keys: Mapping[str, Any]) -> KeyProfile:
     if not isinstance(keys, Mapping):
         raise BuildError(f"key declaration must be a mapping, got {keys!r}")
     if "primary" in keys:
-        primary, alternates = keys["primary"], keys.get("alternates") or []
+        primary, alternates = keys["primary"], _entries(keys.get("alternates"), "alternates")
     elif "key" in keys:
-        primary, alternates = keys["key"], keys.get("alternate_keys") or []
+        primary = keys["key"]
+        alternates = _entries(keys.get("alternate_keys"), "alternate_keys")
     elif "offset" in keys and "length" in keys:
         primary, alternates = keys, []
     else:
@@ -406,11 +478,54 @@ def _load_config(repo_root: Path, relative: str) -> Any:
     return data
 
 
+def _section(value: Any, what: str) -> Mapping[str, Any]:
+    """A configuration value that must be a mapping: an absent one (``None``)
+    is empty, and any other value raises ``BuildError`` naming ``what``."""
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise BuildError(f"{what} must be a mapping, got {value!r}")
+    return value
+
+
+def _entries(value: Any, what: str) -> list[Any]:
+    """A configuration value that must be a list: an absent one (``None``) is
+    empty, and any other value raises ``BuildError`` naming ``what``."""
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise BuildError(f"{what} must be a list, got {value!r}")
+    return value
+
+
+def _define_number(digits: str, what: str) -> int:
+    """The digits of a ``jobs.yaml`` DEFINE operand as a number. ``int``
+    refuses one of more digits than Python's integer string conversion limit
+    (``sys.get_int_max_str_digits()``, 4300 by default) with ``ValueError``;
+    that refusal raises ``BuildError`` naming ``what``."""
+    try:
+        return int(digits)
+    except ValueError:
+        raise BuildError(
+            f"{what} has {len(digits)} digits, too many to read as a number"
+        ) from None
+
+
 def _programs(repo_root: Path) -> dict[str, Mapping[str, Any]]:
+    """The ``programs`` mapping of ``programs.yaml``, every key of which is a
+    unit id (``_UNIT_ID_RE``); any other key is refused before anything is
+    planned or written."""
     data = _load_config(repo_root, _PROGRAMS_YAML)
     if data.get("schema_version") != 1 or not isinstance(data.get("programs"), Mapping):
         raise BuildError(f"{_PROGRAMS_YAML} must have schema_version 1 and a programs mapping")
-    return dict(data["programs"])
+    programs = dict(data["programs"])
+    for unit in programs:
+        if not isinstance(unit, str) or not _UNIT_ID_RE.fullmatch(unit):
+            raise BuildError(
+                f"{_PROGRAMS_YAML} unit {unit!r} is not a batch program name: one to eight "
+                f"upper-case letters and digits, starting with a letter"
+            )
+    return programs
 
 
 def _datasets(repo_root: Path) -> dict[str, Mapping[str, Any]]:
@@ -441,7 +556,7 @@ def _dataset_record_length(name: str, entry: Mapping[str, Any], layouts: Mapping
     length = _non_negative_int(entry.get("record_length"), f"dataset {name} record_length")
     layout = entry.get("layout")
     if layout is not None:
-        if layout not in layouts:
+        if not isinstance(layout, str) or layout not in layouts:
             raise BuildError(f"dataset {name} names layout {layout}, which {_LAYOUTS_YAML} lacks")
         if layouts[layout] != length:
             raise BuildError(
@@ -487,6 +602,9 @@ def _job_defines(jobs: Mapping[str, Any]) -> tuple[list[tuple[str, str, str]], d
     logical dataset."""
     defines: list[tuple[str, str, str]] = []
     dsn_logical: dict[str, str] = {}
+    for job_name in jobs:
+        if not isinstance(job_name, str):
+            raise BuildError(f"{_JOBS_YAML} job name {job_name!r} is not text")
     for job_name in sorted(jobs):
         job = jobs[job_name]
         steps = job.get("steps") if isinstance(job, Mapping) else None
@@ -495,15 +613,23 @@ def _job_defines(jobs: Mapping[str, Any]) -> tuple[list[tuple[str, str, str]], d
         for step in steps:
             if not isinstance(step, Mapping):
                 raise BuildError(f"{_JOBS_YAML} job {job_name} holds a step that is not a mapping")
-            for dd in (step.get("dd") or {}).values():
+            where = f"{_JOBS_YAML} job {job_name} step {step.get('step')}"
+            for ddname, dd in _section(step.get("dd"), f"{where} dd").items():
                 if not isinstance(dd, Mapping):
                     continue
-                for entry in [dd, *(dd.get("concat") or [])]:
+                for entry in [dd, *_entries(dd.get("concat"), f"{where} dd {ddname} concat")]:
                     if isinstance(entry, Mapping) and entry.get("dsn") and entry.get("logical"):
-                        dsn_logical.setdefault(entry["dsn"], entry["logical"])
+                        dsn, logical = entry["dsn"], entry["logical"]
+                        if not isinstance(dsn, str) or not isinstance(logical, str):
+                            raise BuildError(
+                                f"{where} dd {ddname}: dsn and logical must be text, got "
+                                f"{dsn!r} and {logical!r}"
+                            )
+                        dsn_logical.setdefault(dsn, logical)
             if step.get("kind") != "idcams":
                 continue
-            for statement in _idcams_statements((step.get("params") or {}).get("sysin") or []):
+            params = _section(step.get("params"), f"{where} params")
+            for statement in _idcams_statements(_entries(params.get("sysin"), f"{where} sysin")):
                 match = _DEFINE_RE.search(statement)
                 if match:
                     kind = "CLUSTER" if match.group(1) == "CLUSTER" else "ALTERNATEINDEX"
@@ -535,7 +661,14 @@ def _job_profiles(
                 f"{_JOBS_YAML} job {job_name}: DEFINE CLUSTER {name.group(1)} has KEYS "
                 f"but no RECORDSIZE"
             )
-        profile = KeyProfile(int(size.group(2)), (int(keys.group(2)), int(keys.group(1))))
+        where = f"{_JOBS_YAML} job {job_name}: DEFINE CLUSTER {name.group(1)}"
+        profile = KeyProfile(
+            _define_number(size.group(2), f"{where} RECORDSIZE"),
+            (
+                _define_number(keys.group(2), f"{where} KEYS offset"),
+                _define_number(keys.group(1), f"{where} KEYS length"),
+            ),
+        )
         if clusters.setdefault(name.group(1), profile) != profile:
             raise BuildError(
                 f"{_JOBS_YAML}: cluster {name.group(1)} is defined with two key profiles, "
@@ -561,7 +694,12 @@ def _job_profiles(
                 )
             record_length = _dataset_record_length(logical, entry, layouts)
             base = profile_for(record_length, {"key": entry.get("key")})
-        alternate = (int(keys.group(2)), int(keys.group(1)), bool(_NONUNIQUE_RE.search(statement)))
+        where = f"{_JOBS_YAML} job {job_name}: DEFINE ALTERNATEINDEX"
+        alternate = (
+            _define_number(keys.group(2), f"{where} KEYS offset"),
+            _define_number(keys.group(1), f"{where} KEYS length"),
+            bool(_NONUNIQUE_RE.search(statement)),
+        )
         profiles.add(base.with_alternates([alternate]))
     return profiles
 
@@ -578,7 +716,14 @@ def static_profiles(repo_root: Path | str) -> tuple[KeyProfile, ...]:
     layouts = _layout_lengths(root)
     profiles: set[KeyProfile] = set()
     for unit, config in sorted(_programs(root).items()):
-        for ddname, dd in sorted(((config or {}).get("dd") or {}).items()):
+        dds = _section(
+            _section(config, f"{_PROGRAMS_YAML} unit {unit}").get("dd"),
+            f"{_PROGRAMS_YAML} {unit} dd",
+        )
+        for ddname in dds:
+            if not isinstance(ddname, str):
+                raise BuildError(f"{_PROGRAMS_YAML} {unit} dd name {ddname!r} is not text")
+        for ddname, dd in sorted(dds.items()):
             if not isinstance(dd, Mapping) or dd.get("organization") != "indexed":
                 continue
             if not isinstance(dd.get("keys"), Mapping):
@@ -586,7 +731,13 @@ def static_profiles(repo_root: Path | str) -> tuple[KeyProfile, ...]:
                     f"{_PROGRAMS_YAML} {unit} dd {ddname} is indexed but declares no keys"
                 )
             profile = profile_for(dd.get("record_length"), dd["keys"])
-            entry = datasets.get(dd.get("logical"))
+            logical = dd.get("logical")
+            if logical is not None and not isinstance(logical, str):
+                raise BuildError(
+                    f"{_PROGRAMS_YAML} {unit} dd {ddname} logical must be a dataset name, "
+                    f"got {logical!r}"
+                )
+            entry = datasets.get(logical)
             dataset_length = (
                 _dataset_record_length(entry["name"], entry, layouts) if entry is not None else None
             )
@@ -1225,11 +1376,35 @@ def _find_toolchain(
 # --------------------------------------------------------------------------
 
 
+def _destination(relative: Any, what: str) -> str:
+    """``relative``, a path a build writes relative to the directory it builds
+    in, when it is a non-empty relative POSIX path with no ``..`` part, so that
+    directory joined with it stays lexically inside it. Anything else raises
+    ``BuildError`` naming ``what`` and the path."""
+    if isinstance(relative, str) and "\0" not in relative:
+        path = PurePosixPath(relative)
+        if path.parts and not path.is_absolute() and ".." not in path.parts:
+            return relative
+    raise BuildError(f"{what} {relative!r} is not a relative path inside the build directory")
+
+
+def _inside(path: Path, directory: Path, what: str) -> None:
+    """Raise ``BuildError`` naming ``what`` and ``path``, a path a build
+    writes, unless it lies lexically below ``directory`` (``_destination``)."""
+    try:
+        relative = path.relative_to(directory).as_posix()
+    except ValueError:
+        raise BuildError(f"{what} {str(path)!r} is not inside the build directory") from None
+    _destination(relative, what)
+
+
 @dataclass(frozen=True)
 class _Compile:
     """One compiler invocation. ``sources`` are repository-relative, or
     relative to the build directory when ``generated``; ``artifact`` is
-    relative to the build directory."""
+    relative to the build directory. The artifact and generated sources are
+    checked (``_destination``) when the compile is made, so no compile whose
+    output would leave the build directory exists."""
 
     name: str
     tool: str  # "cobc" or "cc"
@@ -1237,6 +1412,12 @@ class _Compile:
     sources: tuple[str, ...]
     artifact: str
     generated: bool = False
+
+    def __post_init__(self) -> None:
+        _destination(self.artifact, f"the artifact of {self.name}")
+        if self.generated:
+            for source in self.sources:
+                _destination(source, f"the generated source of {self.name}")
 
     def key_entry(self) -> dict[str, Any]:
         flags = [*self.flags, f"-I {COPYBOOK_DIR}"] if self.tool == "cobc" else list(self.flags)
@@ -1248,10 +1429,17 @@ class _Compile:
             "tool": self.tool,
         }
 
-    def argv(self, toolchain: _Toolchain, repo_root: Path, base: Path) -> list[str]:
-        source_root = base if self.generated else repo_root
-        sources = [str(source_root / source) for source in self.sources]
-        output = ["-o", str(base / self.artifact)]
+    def argv(self, toolchain: _Toolchain, repo_root: Path, base: Path, cwd: Path) -> list[str]:
+        """The command line, run with ``cwd`` as its working directory. The
+        output and the generated sources lie in ``base``, inside ``cwd``, and
+        are named relative to ``cwd``, so no text of the work root reaches
+        the compiler (cobc puts its paths into the shell commands it runs);
+        repository sources and ``-I app/cpy`` are named by absolute path."""
+        if self.generated:
+            sources = [(base / source).relative_to(cwd).as_posix() for source in self.sources]
+        else:
+            sources = [str(repo_root / source) for source in self.sources]
+        output = ["-o", (base / self.artifact).relative_to(cwd).as_posix()]
         if self.tool == "cobc":
             include = ["-I", str(repo_root / COPYBOOK_DIR)]
             return [toolchain.cobc, *self.flags, *include, *output, *sources]
@@ -1335,6 +1523,19 @@ def _string_list(value: Any, what: str) -> list[str]:
     return list(value)
 
 
+def _extra_flags(value: Any, what: str) -> list[str]:
+    """A unit's ``compile.extra_flags``, refused unless each is one of
+    ``_EXTRA_FLAGS``."""
+    flags = _string_list(value, what)
+    for flag in flags:
+        if flag not in _EXTRA_FLAGS:
+            raise BuildError(
+                f"{what}: flag {flag!r} is not allowed; a unit may add only "
+                f"{', '.join(sorted(_EXTRA_FLAGS))}"
+            )
+    return flags
+
+
 def _plan(repo_root: Path) -> _Plan:
     programs = _programs(repo_root)
     units: dict[str, dict[str, str]] = {}
@@ -1352,26 +1553,38 @@ def _plan(repo_root: Path) -> _Plan:
             raise BuildError(f"{what} has no sources")
         run = config.get("run")
         if run == "called":
-            caller = programs.get(config.get("called_by"))
-            caller_compile = (caller or {}).get("compile") or {}
+            called_by = config.get("called_by")
+            caller = programs.get(called_by) if isinstance(called_by, str) else None
+            if not isinstance(caller, Mapping):
+                raise BuildError(
+                    f"{what} is called, but its called_by {called_by!r} names no unit of "
+                    f"{_PROGRAMS_YAML}"
+                )
+            caller_compile = _section(
+                caller.get("compile"), f"{_PROGRAMS_YAML} unit {called_by} compile"
+            )
             linked = _string_list(caller_compile.get("link_with"), f"{what} caller link_with")
             if unit not in linked:
                 raise BuildError(f"{what} is called, but its called_by unit does not link it")
             units[unit] = {"called_by": config["called_by"], "run": run}
             continue
-        compile_config = config.get("compile") or {}
+        compile_config = _section(config.get("compile"), f"{what} compile")
         mode = compile_config.get("mode")
-        if run not in _RUN_MODES or _RUN_MODES[run] != mode:
+        if not isinstance(run, str) or run not in _RUN_MODES or _RUN_MODES[run] != mode:
             raise BuildError(f"{what}: run {run!r} does not fit compile mode {mode!r}")
-        extra_flags = _string_list(compile_config.get("extra_flags"), f"{what} extra_flags")
+        extra_flags = _extra_flags(compile_config.get("extra_flags"), f"{what} extra_flags")
         for linked_unit in _string_list(compile_config.get("link_with"), f"{what} link_with"):
             linked_config = programs.get(linked_unit)
             if not isinstance(linked_config, Mapping):
                 raise BuildError(f"{what} links {linked_unit}, which {_PROGRAMS_YAML} lacks")
             # One cobc call compiles the main unit and the units it links, so
             # they can only share one flag list.
-            linked_flags = _string_list(
-                (linked_config.get("compile") or {}).get("extra_flags"), linked_unit
+            linked_compile = _section(
+                linked_config.get("compile"), f"{_PROGRAMS_YAML} unit {linked_unit} compile"
+            )
+            linked_flags = _extra_flags(
+                linked_compile.get("extra_flags"),
+                f"{_PROGRAMS_YAML} unit {linked_unit} extra_flags",
             )
             if linked_flags != extra_flags:
                 raise BuildError(
@@ -1488,6 +1701,18 @@ class _Task:
 _COMPILE_POLL_S = 0.1
 _REAP_TIMEOUT_S = 10
 
+# The TMPDIR of every compile, relative to its working directory, the build
+# workspace: cobc names its intermediate files by this path in the shell
+# commands it runs, so they carry no text of the work root.
+_COMPILE_TMPDIR = "tmp"
+# What no argument of a cobc compile, and not its TMPDIR, may hold. cobc runs
+# the C compiler and the linker through /bin/sh with each path in double
+# quotes, inside which the shell still reads a backquote, '$', '"' and '\', so
+# an argument holding one would be partly run as shell text. The same set as
+# harness._SHELL_QUOTED_CHARACTERS, by which such a work root is refused; a
+# compile can still meet one in the absolute paths of the checkout it names.
+_SHELL_QUOTED_CHARACTERS = frozenset('`$"\\')
+
 # The compiles whose leader was still unreaped _REAP_TIMEOUT_S after the kill
 # of their group, such as one stuck in the kernel with the kill pending. They
 # are held here, never dropped unreaped, until _reap_retained reaps them.
@@ -1590,11 +1815,36 @@ def _kill_group(
     return drained_stdout or b"", drained_stderr or b"", note
 
 
+def _shell_refusal(argv: Sequence[str], tmpdir: str) -> str | None:
+    """Why the cobc compile ``argv``, run with ``TMPDIR`` set to ``tmpdir``,
+    must not run, or ``None`` when it may: the first argument, or the TMPDIR,
+    holding a character of ``_SHELL_QUOTED_CHARACTERS``, which a shell would
+    read in cobc's C compiler commands, or one that is not printable (a line
+    break, a tab, another control character), which no one-line compile log
+    could show, named with that character. Only the absolute paths of cobc
+    and of the checkout can hold one; the paths below the work root are
+    relative."""
+    for what, value in [*(("argument", element) for element in argv), ("TMPDIR", tmpdir)]:
+        for character in value:
+            if character in _SHELL_QUOTED_CHARACTERS:
+                return (
+                    f"not run: the {what} {value!r} holds {character!r}, which a shell reads even inside the "
+                    "double quotes of the C compiler commands cobc runs through /bin/sh"
+                )
+            if not character.isprintable():
+                return (
+                    f"not run: the {what} {value!r} holds the non-printable character {character!r}, which no "
+                    "one-line compile log could show"
+                )
+    return None
+
+
 def _write_compile_log(
     task: _Task, argv: Sequence[str], status: str, stdout: bytes, stderr: bytes, workspace: Path
 ) -> None:
     text = "\n".join([
         f"command: {shlex.join(argv)}",
+        f"cwd: {workspace}",
         f"status: {status}",
         "--- stdout ---",
         stdout.decode("utf-8", "replace").rstrip("\n"),
@@ -1610,9 +1860,22 @@ def _write_compile_log(
 def _run_compile(
     task: _Task, toolchain: _Toolchain, repo_root: Path, workspace: Path, cancel: _Cancel
 ) -> str | None:
-    """Run one compile with ``cwd`` and ``TMPDIR`` inside ``workspace``;
-    return ``None`` on success or the failure detail. The log always gets the
-    command line, status, stdout and stderr.
+    """Run one compile with ``workspace`` as its working directory and
+    ``TMPDIR`` set to ``_COMPILE_TMPDIR``; return ``None`` on success or the
+    failure detail. The log always gets the command line, its working
+    directory, status, stdout and stderr, with ``workspace`` shown as
+    ``<build>``.
+
+    The compiler gets its output, its generated sources and its ``TMPDIR``
+    relative to ``workspace`` (``_Compile.argv``), so no text of the work
+    root reaches the shell commands cobc runs; only ``HOME`` names the
+    workspace by its absolute path, and cobc puts no environment value into
+    those commands. A cobc compile one of whose arguments, or whose
+    ``TMPDIR``, holds a character a shell would read there, or one that is
+    not printable (``_shell_refusal``), runs nothing: its log gets the
+    refusal, which names the argument and the character, as its status, and
+    the refusal is the failure detail, so the build fails with a
+    ``BuildError`` naming the unit, the refusal and the log.
 
     The compiler starts a new session, so it and every process it starts form
     a process group of their own. When ``COMPILE_TIMEOUT_S`` passes or
@@ -1624,13 +1887,18 @@ def _run_compile(
     ``KeyboardInterrupt``, does the same and is re-raised once the log is
     written. A compile cancelled before it starts runs nothing and logs why."""
     artifact = task.base / task.job.artifact
-    argv = task.job.argv(toolchain, repo_root, task.base)
+    argv = task.job.argv(toolchain, repo_root, task.base, workspace)
     if cancel.is_set():
         skipped = f"not run: {cancel.reason}"
         _write_compile_log(task, argv, skipped, b"", b"", workspace)
         return skipped
+    env = toolchain.env(workspace, TMPDIR=_COMPILE_TMPDIR)
+    if task.job.tool == "cobc":
+        refused = _shell_refusal(argv, env["TMPDIR"])
+        if refused is not None:
+            _write_compile_log(task, argv, refused, b"", b"", workspace)
+            return refused
     artifact.parent.mkdir(parents=True, exist_ok=True)
-    env = toolchain.env(workspace, TMPDIR=str(workspace / "tmp"))
     stdout = stderr = b""
     detail: str | None = None
     try:
@@ -1746,6 +2014,14 @@ def _resume_signal(signum: int, disposition: Any) -> None:
     raise BuildError(f"the build stopped on {signal.Signals(signum).name}")
 
 
+def _check_tasks(tasks: Iterable[_Task], workspace: Path) -> None:
+    """Raise ``BuildError`` naming the first artifact or log of ``tasks`` that
+    does not lie lexically inside ``workspace`` (``_inside``)."""
+    for task in tasks:
+        _inside(task.base / task.job.artifact, workspace, f"the artifact of {task.label}")
+        _inside(task.log, workspace, f"the log of {task.label}")
+
+
 def _compile_all(
     tasks: Sequence[_Task], toolchain: _Toolchain, repo_root: Path, workspace: Path
 ) -> None:
@@ -1765,9 +2041,14 @@ def _compile_all(
     restored. Every log a task wrote stays in ``workspace``; the caller keeps
     it and then acts on a ``_Terminated`` as the signal's disposition would
     have (``_resume_signal``). The compiles an earlier build retained
-    unreaped are retried first (``_reap_retained``)."""
+    unreaped are retried first (``_reap_retained``).
+
+    Before any directory is created or any compile started, every task's
+    artifact and log must lie lexically inside ``workspace``
+    (``_check_tasks``)."""
+    _check_tasks(tasks, workspace)
     _reap_retained()
-    (workspace / "tmp").mkdir(parents=True, exist_ok=True)
+    (workspace / _COMPILE_TMPDIR).mkdir(parents=True, exist_ok=True)
     cancels = [_Cancel() for _ in tasks]
     first: int | None = None
     first_detail = ""
@@ -1803,7 +2084,7 @@ def _compile_all(
                 pool.shutdown(wait=True, cancel_futures=True)
                 raise
     finally:
-        shutil.rmtree(workspace / "tmp", ignore_errors=True)
+        shutil.rmtree(workspace / _COMPILE_TMPDIR, ignore_errors=True)
     if first is not None:
         task = tasks[first]
         raise _CompileFailure(task.label, task.log.relative_to(workspace).as_posix(), first_detail)
@@ -1811,9 +2092,13 @@ def _compile_all(
 
 def _profile_tasks(profile: KeyProfile, directory: Path) -> list[_Task]:
     """Write the generated sources of ``profile`` into ``directory`` and
-    return its two compiles."""
+    return its two compiles. Each source path is checked (``_destination``)
+    before either is written."""
     tasks = []
-    for path, (compile_, text) in _profile_compiles(profile).items():
+    compiles = _profile_compiles(profile)
+    for path in compiles:
+        _destination(path, f"the generated source of key profile {profile.name}")
+    for path, (compile_, text) in compiles.items():
         source = directory / path
         source.parent.mkdir(parents=True, exist_ok=True)
         source.write_text(text, encoding="utf-8")
@@ -1902,28 +2187,188 @@ def _probe_clock(toolchain: _Toolchain, directory: Path) -> str:
     raise _ProbeFailure(_CLOCK_PROGRAM, log.relative_to(directory).as_posix(), detail)
 
 
+class _ContainmentError(BuildError):
+    """A build cache component that is a symbolic link, of another kind than
+    it must be, another user's, or, for the build root, writable by group or
+    others; or a build root or build directory that is no longer the
+    directory admitted, because it was removed or another was put in its
+    place. It is refused before anything is read, created, published or
+    removed through it, so nothing reaches a link's target. It is a
+    configuration error of the work root, so it is never memoized."""
+
+
+def _kind_problem(mode: int, *, directory: bool) -> str | None:
+    """Why ``mode``, taken without following a link, is not that of a real
+    directory, or of a regular file; ``None`` when it is."""
+    if stat.S_ISLNK(mode):
+        return "is a symbolic link"
+    if directory and not stat.S_ISDIR(mode):
+        return "is not a directory"
+    if not directory and not stat.S_ISREG(mode):
+        return "is not a regular file"
+    return None
+
+
+def _ownership_problem(status: os.stat_result, *, directory: bool) -> str | None:
+    """Why ``status``, taken without following a link, is not a real
+    directory, or a regular file, of the effective user; ``None`` when it
+    is."""
+    problem = _kind_problem(status.st_mode, directory=directory)
+    if problem is None and status.st_uid != os.geteuid():
+        problem = f"is owned by uid {status.st_uid}, not {os.geteuid()}"
+    return problem
+
+
+def _open_refusal(what: str, path: Path, exc: OSError, *, directory: bool) -> BuildError:
+    """The error for ``exc``, raised by opening ``path`` with ``O_NOFOLLOW``:
+    a ``_ContainmentError`` when ``os.lstat`` shows a symbolic link or
+    another kind of file than ``path`` must be, which the errno does not
+    tell (``O_DIRECTORY`` gives ``ENOTDIR`` for a link), else a
+    ``BuildError`` naming the errno."""
+    try:
+        problem = _kind_problem(os.lstat(path).st_mode, directory=directory)
+    except OSError:
+        problem = None
+    if problem is not None:
+        return _ContainmentError(f"the {what} {path} {problem}; {_REFUSAL_HINT}")
+    return BuildError(f"cannot open the {what} {path}: {exc.strerror or exc}")
+
+
+def _directory_identity(path: Path, what: str) -> tuple[int, int] | None:
+    """The identity, ``(st_dev, st_ino)``, of ``path`` when it is a real
+    directory of the effective user, inspected without following a link;
+    ``None`` when nothing is there. A symbolic link, whatever it names, any
+    other kind of file and another user's directory raise
+    ``_ContainmentError`` naming ``what``: the cache never reads, writes or
+    removes anything through them."""
+    try:
+        status = os.lstat(path)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise BuildError(f"cannot inspect the {what} {path}: {exc.strerror or exc}") from None
+    problem = _ownership_problem(status, directory=True)
+    if problem is not None:
+        raise _ContainmentError(f"the {what} {path} {problem}; {_REFUSAL_HINT}")
+    return status.st_dev, status.st_ino
+
+
+def _real_directory(path: Path, what: str) -> bool:
+    """Whether ``path`` exists as a real directory of the effective user,
+    inspected without following a link; ``False`` when nothing is there. What
+    ``_directory_identity`` refuses raises ``_ContainmentError`` naming
+    ``what``."""
+    return _directory_identity(path, what) is not None
+
+
+def _check_admitted(
+    path: Path, what: str, admitted: tuple[int, int], *, missing_ok: bool = False
+) -> bool:
+    """Re-admit ``path``, the ``what`` (build root or build directory) whose
+    identity was ``admitted`` when it was first admitted: ``True`` when it is
+    still that real directory of the effective user, inspected without
+    following a link (``_directory_identity``). A symbolic link, any other
+    kind of file, another user's directory and a different directory put in
+    its place raise ``_ContainmentError`` naming ``what``, so nothing is
+    reused, created, set aside, published or removed through it. A ``path``
+    removed since is ``False`` with ``missing_ok`` and refused without it."""
+    identity = _directory_identity(path, what)
+    if identity is None:
+        if missing_ok:
+            return False
+        raise _ContainmentError(
+            f"the {what} {path} was removed after it was admitted; nothing is created in "
+            f"its place"
+        )
+    if identity != admitted:
+        raise _ContainmentError(
+            f"the {what} {path} is no longer the directory admitted; {_REFUSAL_HINT}"
+        )
+    return True
+
+
+def _admit_build_root(work: Path) -> tuple[Path, tuple[int, int]]:
+    """``<work>/_build``, created with ``_PRIVATE_DIR_MODE`` (and the work
+    root with it) when missing, once it is admitted, with its identity
+    ``(st_dev, st_ino)`` as admitted, which ``_check_admitted`` holds it to
+    afterwards: opened with ``O_DIRECTORY|O_NOFOLLOW``, it must be a real
+    directory of the effective user that neither group nor others can write
+    to. A symbolic link, whatever it names, any other kind of file, another
+    user's directory and a shared-writable one raise ``_ContainmentError``
+    before anything is created, reused, published or removed in it, so
+    nothing reaches a link's target. A build root an earlier session created
+    with mode 0755 is admitted."""
+    build_root = work / _BUILD_SUBDIR
+    try:
+        work.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise BuildError(f"cannot create the work root {work}: {exc.strerror or exc}") from None
+    try:
+        os.mkdir(build_root, _PRIVATE_DIR_MODE)
+    except FileExistsError:
+        pass  # whatever is there is admitted or refused below, never followed
+    except OSError as exc:
+        raise BuildError(
+            f"cannot create the build root {build_root}: {exc.strerror or exc}"
+        ) from None
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    try:
+        descriptor = os.open(build_root, flags)
+    except OSError as exc:
+        raise _open_refusal("build root", build_root, exc, directory=True) from None
+    try:
+        status = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    problem = _ownership_problem(status, directory=True)
+    if problem is not None:
+        raise _ContainmentError(f"the build root {build_root} {problem}; {_REFUSAL_HINT}")
+    if status.st_mode & _SHARED_WRITE:
+        raise _ContainmentError(
+            f"the build root {build_root} is writable by group or others (mode "
+            f"{stat.S_IMODE(status.st_mode):04o}), so they could plant links in it; run "
+            f"chmod go-w on it or choose another work root"
+        )
+    return build_root, (status.st_dev, status.st_ino)
+
+
 def _remove_tree(path: Path) -> None:
     shutil.rmtree(path, ignore_errors=True)
 
 
 @contextmanager
-def _key_lock(build_root: Path, key: str) -> Iterator[None]:
+def _key_lock(build_root: Path, key: str, verify: Callable[[], object]) -> Iterator[None]:
     """Hold the exclusive lock of one build key, ``<build root>/<key>.lock``.
 
     ``fcntl.flock`` locks an open file description, so the lock excludes other
     processes and other threads alike, and the kernel releases it when its
     holder exits, however it ends. The lock file is never deleted: removing it
-    would let two sessions lock two different files of the same name."""
+    would let two sessions lock two different files of the same name. It is
+    opened with ``O_NOFOLLOW`` and must be a regular file of the effective
+    user: a planted link is refused (``_ContainmentError``), never followed,
+    and its target is not created. ``verify`` re-admits by identity the
+    components the holder works in (``_check_admitted``: the build root, and
+    for a ``BuildCache`` its build directory and ``profiles/``) before the
+    lock file is opened, so none is created through a swapped build root,
+    and again once the lock is held, so nothing the holder inspects, sets
+    aside, removes or publishes goes through one; what it raises releases
+    the lock and propagates."""
+    verify()
     path = build_root / f"{key}{_LOCK_SUFFIX}"
+    flags = os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC
     try:
-        descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o666)
+        descriptor = os.open(path, flags, 0o666)
     except OSError as exc:
-        raise BuildError(f"cannot open the build lock {path}: {exc}") from None
+        raise _open_refusal("build lock", path, exc, directory=False) from None
     try:
+        problem = _ownership_problem(os.fstat(descriptor), directory=False)
+        if problem is not None:
+            raise _ContainmentError(f"the build lock {path} {problem}; {_REFUSAL_HINT}")
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX)
         except OSError as exc:
             raise BuildError(f"cannot lock the build lock {path}: {exc}") from None
+        verify()
         yield
     finally:
         os.close(descriptor)
@@ -1943,12 +2388,15 @@ def _set_aside(directory: Path, target: Path) -> Path:
 def _publish(workspace: Path, final: Path) -> None:
     """Rename a finished workspace to its final name. When another session
     published the same name first, its copy is used and this one dropped.
+    A ``final`` that is a symbolic link or no directory is refused
+    (``_ContainmentError``) and nothing is published or reused through it.
     The caller holds the key lock."""
+    _real_directory(final, "build directory")
     try:
         os.replace(workspace, final)
     except OSError as exc:
         _remove_tree(workspace)
-        if not (final / _COMPLETE).is_file():
+        if not (_real_directory(final, "build directory") and (final / _COMPLETE).is_file()):
             raise BuildError(f"cannot publish the build directory {final}: {exc}") from exc
 
 
@@ -1960,20 +2408,34 @@ def _build_failure(failure: _CompileFailure, workspace: Path, target: Path) -> B
     return BuildError(failure.message(log), unit=failure.unit, log_path=log)
 
 
-def _keep_unfinished(workspace: Path, target: Path, build_root: Path, key: str) -> None:
+def _discard(workspace: Path, verify: Callable[[], object]) -> None:
+    """Remove ``workspace``, a temporary directory of a build, once ``verify``
+    re-admits the components it lies in (see ``_key_lock``). When ``verify``
+    refuses one, ``workspace`` is reachable only through a swapped component,
+    so it is left where it is and nothing is removed through it."""
+    try:
+        verify()
+    except BuildError:
+        return
+    _remove_tree(workspace)
+
+
+def _keep_unfinished(
+    workspace: Path, target: Path, build_root: Path, key: str, verify: Callable[[], object]
+) -> None:
     """Keep ``workspace``, which an exception other than a compile failure
     stopped, as ``target`` with the logs its compiles wrote, taking the key
-    lock for the rename. ``target`` is never complete, so it is never
-    published or reused. When the lock or the rename fails, the workspace is
-    removed instead and nothing is raised: the caller re-raises the exception
-    that stopped the build."""
+    lock, with ``verify``, for the rename. ``target`` is never complete, so it
+    is never published or reused. When the lock or the rename fails, the
+    workspace is removed instead (``_discard``) and nothing is raised: the
+    caller re-raises the exception that stopped the build."""
     try:
-        with _key_lock(build_root, key):
+        with _key_lock(build_root, key, verify):
             kept = _set_aside(workspace, target)
     except Exception:  # BuildError from the lock; the stopping exception goes on
         kept = workspace
     if kept != target:
-        _remove_tree(workspace)
+        _discard(workspace, verify)
 
 
 def _artifact_hashes(directory: Path) -> dict[str, str]:
@@ -2001,11 +2463,18 @@ def _artifacts_intact(directory: Path, artifacts: Any) -> bool:
     non-empty mapping of safe relative paths (neither absolute nor holding a
     ``..`` part) to sha256 hex digests, and each path names a regular file
     inside ``directory`` with that digest. Files it does not list, such as a
-    profile built on demand later, are not looked at."""
+    profile built on demand later, are not looked at. The trust root is
+    ``directory`` itself, never a link's target: a ``directory`` that is a
+    symbolic link, is reached through one, or is no directory is not
+    intact."""
     if not isinstance(artifacts, Mapping) or not artifacts:
         return False
     try:
         root = directory.resolve(strict=True)
+        if root != Path(os.path.abspath(directory)) or not stat.S_ISDIR(
+            os.lstat(directory).st_mode
+        ):
+            return False
         for relative, digest in artifacts.items():
             if not (
                 isinstance(relative, str)
@@ -2045,11 +2514,16 @@ def _profile_intact(directory: Path, name: str) -> bool:
 def _populate(
     workspace: Path, key: str, plan: _Plan, toolchain: _Toolchain, repo_root: Path
 ) -> None:
+    tasks = [_Task(compile_, compile_.name, workspace, workspace / "logs" / f"{compile_.name}.log")
+             for compile_ in plan.compiles]
+    # Every compile's artifact and log, and every generated source path, is
+    # checked before anything is written.
+    _check_tasks(tasks, workspace)
+    for path in plan.generated:
+        _destination(path, "the generated source")
     for path, text in plan.generated.items():
         (workspace / path).parent.mkdir(parents=True, exist_ok=True)
         (workspace / path).write_text(text, encoding="utf-8")
-    tasks = [_Task(compile_, compile_.name, workspace, workspace / "logs" / f"{compile_.name}.log")
-             for compile_ in plan.compiles]
     profile_dirs = [workspace / "profiles" / profile.name for profile in plan.profiles]
     for profile, directory in zip(plan.profiles, profile_dirs):
         tasks += _profile_tasks(profile, directory)
@@ -2081,9 +2555,12 @@ def _complete_mode(directory: Path, key: str) -> str | None:
     unfinished, of another key, or holding a truncated, altered or missing
     artifact or a manifest without the hashes, is removed, so it gets rebuilt;
     files the manifest does not list, such as profiles built on demand, are
-    not looked at. The caller holds the key lock, so no other session
-    publishes the directory between the inspection and the removal."""
-    if not directory.exists():
+    not looked at. A ``directory`` that is a symbolic link, whatever it
+    names, or no directory is refused (``_ContainmentError``) before
+    anything is read, reused or removed through it. The caller holds the key
+    lock, so no other session publishes the directory between the inspection
+    and the removal."""
+    if not _real_directory(directory, "build directory"):
         return None
     try:
         manifest = load_yaml(directory / _MANIFEST) if (directory / _COMPLETE).is_file() else None
@@ -2099,6 +2576,16 @@ def _complete_mode(directory: Path, key: str) -> str | None:
     stale = directory.with_name(f"{directory.name}.stale-{os.getpid()}")
     _remove_tree(_set_aside(directory, stale))
     return None
+
+
+def _admit_finished(directory: Path, key: str) -> tuple[str, tuple[int, int]] | None:
+    """The clock fraction mode of the finished build directory ``directory``
+    (``_complete_mode``) with its identity, ``(st_dev, st_ino)``, taken
+    without following a link as it is admitted, or ``None`` when there is no
+    finished directory. The caller holds the key lock."""
+    mode = _complete_mode(directory, key)
+    identity = None if mode is None else _directory_identity(directory, "build directory")
+    return None if mode is None or identity is None else (mode, identity)
 
 
 # --------------------------------------------------------------------------
@@ -2122,11 +2609,28 @@ class BuildCache:
     manifest when it was loaded (``_complete_mode``). A profile built on
     demand carries its own manifest, checked on the profile's first use by
     this instance: a profile whose manifest is missing or any of whose
-    artifacts does not match is set aside, removed and built afresh."""
+    artifacts does not match is set aside, removed and built afresh.
+
+    The cache holds the identities, ``(st_dev, st_ino)``, of the build root
+    ``_build`` and of the build directory as they were admitted:
+    ``admitted``, as ``ensure_built`` passes them, or else taken here without
+    following a link. Every ``loader`` and ``unloader`` call, the fast path of
+    a profile already checked included, and every creation, set-aside,
+    removal or publication of a profile, under the key lock, first re-admits
+    both by those identities (``_readmit``) and then checks ``profiles/`` and
+    ``profiles/<profile>/``: a build root or build directory that is now a
+    symbolic link, no directory, another user's, removed or a different
+    directory, and a ``profiles/`` or ``profiles/<profile>/`` that is a
+    symbolic link or no directory, are refused (``_ContainmentError``)
+    before any profile is reused, created, set aside or published through
+    them. A swap made while a profile's compiles run can receive what the
+    build writes into its workspace, and is refused at the next check,
+    before that workspace is set aside, removed or published."""
 
     def __init__(
         self, *, key: str, directory: Path, repo_root: Path, toolchain: _Toolchain, plan: _Plan,
         clock_fraction_mode: str,
+        admitted: tuple[tuple[int, int], tuple[int, int]] | None = None,
     ) -> None:
         self.key = key
         self.dir = directory
@@ -2149,9 +2653,42 @@ class BuildCache:
         # The on-demand profiles checked or built by this instance; written
         # only under _lock.
         self._verified_profiles: set[str] = set()
+        # The identities of the build root and the build directory as they
+        # were admitted; the cache is made only while both still are those.
+        if admitted is None:
+            admitted = (
+                self._identity(directory.parent, "build root"),
+                self._identity(directory, "build directory"),
+            )
+        self._admitted = admitted
+        self._readmit()
 
     def __repr__(self) -> str:
         return f"BuildCache(key={self.key[:16]}..., dir={self.dir})"
+
+    @staticmethod
+    def _identity(path: Path, what: str) -> tuple[int, int]:
+        """The identity of ``path``, which must be a real directory of the
+        effective user (``_directory_identity``); a missing one is a
+        ``BuildError``."""
+        identity = _directory_identity(path, what)
+        if identity is None:
+            raise BuildError(f"the {what} {path} does not exist")
+        return identity
+
+    def _readmit(self, *, missing_ok: bool = False) -> bool:
+        """Re-admit the build root ``_build`` and this build directory by the
+        identities they were admitted with (``_check_admitted``): ``True``
+        when both still are those real directories of the effective user. A
+        symbolic link, any other kind of file, another user's directory and a
+        different directory in the place of either raise
+        ``_ContainmentError`` naming it, before anything is reused, created,
+        set aside, published or removed through it. One removed since is
+        ``False`` with ``missing_ok`` and refused without it."""
+        root, directory = self._admitted
+        return _check_admitted(
+            self.dir.parent, "build root", root, missing_ok=missing_ok
+        ) and _check_admitted(self.dir, "build directory", directory, missing_ok=missing_ok)
 
     def is_complete(self) -> bool:
         return (self.dir / _COMPLETE).is_file()
@@ -2194,6 +2731,9 @@ class BuildCache:
             raise BuildError(f"a KeyProfile is required, got {profile!r}")
         name = profile.name
         directory = self.dir / "profiles" / name
+        # Before every use, the fast path below included: the path returned is
+        # executed, so it must lie in the directories admitted.
+        self._check_profile_components(directory)
         # A static profile was checked with the whole directory when the cache
         # was loaded; an on-demand one is checked here on its first use. The
         # first test runs unlocked, the second under _lock, which every write
@@ -2213,23 +2753,42 @@ class BuildCache:
                 self._verified_profiles.add(name)
         return directory
 
+    def _check_profile_components(self, directory: Path) -> None:
+        """Re-admit the build root and this build directory by identity
+        (``_readmit``), then refuse ``profiles/`` and ``directory``, one
+        ``profiles/<profile>/`` of this cache, with ``_ContainmentError`` when
+        either is a symbolic link or no directory; nothing is read through
+        them. Either of the last two may be missing."""
+        self._readmit()
+        if _real_directory(directory.parent, "profiles directory"):
+            _real_directory(directory, "profile directory")
+
     def _drop_unverified_profile(self, name: str, directory: Path) -> None:
         """Set aside and remove ``directory``, the on-demand profile ``name``,
         unless it is finished with every artifact matching its manifest
         (``_profile_intact``), so the caller builds it afresh; ``_publish``
         would otherwise keep the existing copy. The check is repeated under the
-        key lock before the removal, so a copy another session has just
-        published intact is kept. The caller holds ``_lock``."""
+        key lock, once the lock has re-admitted the components
+        (``_check_profile_components``), before the removal, so a copy another
+        session has just published intact is kept. The caller holds
+        ``_lock``."""
         if not os.path.lexists(directory) or _profile_intact(directory, name):
             return
-        with _key_lock(self.dir.parent, self.key):
+        verify = functools.partial(self._check_profile_components, directory)
+        with _key_lock(self.dir.parent, self.key, verify):
             if not os.path.lexists(directory) or _profile_intact(directory, name):
                 return
             stale = directory.with_name(f"{name}.stale-{os.getpid()}")
             _remove_tree(_set_aside(directory, stale))
 
     def _build_profile(self, profile: KeyProfile, directory: Path) -> None:
+        # The components are re-admitted (_check_profile_components) before
+        # profiles/ and the workspace are created, and by the key lock before
+        # the workspace is set aside, published or removed.
+        verify = functools.partial(self._check_profile_components, directory)
+        verify()
         directory.parent.mkdir(parents=True, exist_ok=True)
+        verify()
         workspace = Path(tempfile.mkdtemp(prefix=f".{profile.name}-", dir=directory.parent))
         target = directory.with_name(f"{profile.name}.failed")
         stopped: tuple[int, Any] | None = None
@@ -2240,13 +2799,13 @@ class BuildCache:
             (workspace / _MANIFEST).write_text(dump_yaml(manifest), encoding="utf-8")
             (workspace / _COMPLETE).write_text("", encoding="utf-8")
         except _CompileFailure as failure:
-            with _key_lock(self.dir.parent, self.key):
+            with _key_lock(self.dir.parent, self.key, verify):
                 error = _build_failure(failure, workspace, target)
             raise error from None
         except BaseException as exc:
             # KeyboardInterrupt, SIGTERM or SIGHUP (_Terminated), or any other
             # exception: keep the logs written so far, then let it go on.
-            _keep_unfinished(workspace, target, self.dir.parent, self.key)
+            _keep_unfinished(workspace, target, self.dir.parent, self.key, verify)
             if not isinstance(exc, _Terminated):
                 raise
             stopped = exc.signum, exc.disposition
@@ -2256,10 +2815,10 @@ class BuildCache:
         # The compiles ran unlocked; only the rename is serialized, so the first
         # session to publish the profile wins and the others use its copy.
         try:
-            with _key_lock(self.dir.parent, self.key):
+            with _key_lock(self.dir.parent, self.key, verify):
                 _publish(workspace, directory)
         except BaseException:
-            _remove_tree(workspace)  # a no-op once the workspace is published
+            _discard(workspace, verify)  # a no-op once the workspace is published
             raise
 
 
@@ -2289,7 +2848,33 @@ def ensure_built(repo_root: Path | str, work_root: Path | str) -> BuildCache:
     with the same message, unit and log path, and compiles nothing. A missing
     toolchain is memoized by its probe instead (``_probe_toolchain``); an
     interrupted build, a configuration error and a work root inside the
-    repository are not memoized."""
+    repository are not memoized.
+
+    Only ``work_root`` itself is taken as given, symbolic links resolved;
+    below it every component is refused at admission when it is unsound and
+    re-verified by identity before every reuse, creation, set-aside, removal
+    or publication. ``_build`` is created with mode 0700 when missing and
+    admitted only as a real directory of the effective user that neither
+    group nor others can write to (``_admit_build_root``); the key lock,
+    ``_build/<key>/`` and its ``profiles`` must not be symbolic links. The
+    identities, ``(st_dev, st_ino)``, of ``_build`` as admitted and of
+    ``_build/<key>/`` once found or published finished are kept on the
+    cache. ``_build`` is re-admitted by its identity in every key lock
+    section, before the lock file is opened and once it is held, and before
+    the build workspace is created; both are re-admitted when the cache is
+    made, by every call that would return the memoized cache, and by every
+    ``loader`` and ``unloader`` call (``BuildCache``). A component that is
+    now a symbolic link, no directory, another user's or a different
+    directory raises ``BuildError`` naming it, never ``ToolchainUnavailable``,
+    before anything is created, reused, set aside, published or removed
+    through it; it is a configuration error, so it is not memoized and the
+    next call checks again. A memoized cache whose ``_build`` or
+    ``_build/<key>/`` was removed, or which is no longer complete, is
+    admitted and built afresh. These checks run before each such step, not
+    while a build writes into its own workspace: a swap made while the
+    compiles run can receive what they and the build then write there, and
+    is refused at the next check, before anything is set aside, removed or
+    published."""
     root = Path(repo_root).resolve()
     work = Path(work_root).resolve()
     if work == root or root in work.parents:
@@ -2300,7 +2885,10 @@ def ensure_built(repo_root: Path | str, work_root: Path | str) -> BuildCache:
     memo_key = (str(root), str(work))
     with _ENSURE_LOCK:
         cache = _CACHES.get(memo_key)
-        if cache is not None and cache.is_complete():
+        # The memoized cache is re-admitted by identity before it is reused:
+        # a build root or build directory swapped since raises; one removed
+        # since, or a cache no longer complete, is admitted and built afresh.
+        if cache is not None and cache._readmit(missing_ok=True) and cache.is_complete():
             return cache
         remembered = _BUILD_FAILURES.get(memo_key)
         if remembered is not None:
@@ -2309,27 +2897,31 @@ def ensure_built(repo_root: Path | str, work_root: Path | str) -> BuildCache:
         toolchain = _toolchain()
         plan = _plan(root)
         key = _build_key(root, toolchain, plan)
-        build_root = work / _BUILD_SUBDIR
-        build_root.mkdir(parents=True, exist_ok=True)
+        build_root, admitted_root = _admit_build_root(work)
+        # Re-admits the build root by identity: in each key lock section,
+        # before the lock file is opened and once it is held, and before the
+        # workspace is created.
+        verify = functools.partial(_check_admitted, build_root, "build root", admitted_root)
         final = build_root / key
-        with _key_lock(build_root, key):
-            mode = _complete_mode(final, key)
-        if mode is None:
+        with _key_lock(build_root, key, verify):
+            finished = _admit_finished(final, key)
+        if finished is None:
             # The compiles run unlocked in a private workspace, so concurrent
             # sessions build side by side and the first to publish wins.
+            verify()
             workspace = Path(tempfile.mkdtemp(prefix=f".{key[:16]}-", dir=build_root))
             failed = build_root / f"{key}.failed"
             stopped: tuple[int, Any] | None = None
             try:
                 _populate(workspace, key, plan, toolchain, root)
             except _CompileFailure as failure:
-                with _key_lock(build_root, key):
+                with _key_lock(build_root, key, verify):
                     error = _build_failure(failure, workspace, failed)
                 raise _remember_failure(memo_key, error) from None
             except BaseException as exc:
                 # KeyboardInterrupt, SIGTERM or SIGHUP (_Terminated), or any other
                 # exception: keep the logs written so far, then let it go on.
-                _keep_unfinished(workspace, failed, build_root, key)
+                _keep_unfinished(workspace, failed, build_root, key, verify)
                 if not isinstance(exc, _Terminated):
                     raise
                 stopped = exc.signum, exc.disposition
@@ -2337,20 +2929,25 @@ def ensure_built(repo_root: Path | str, work_root: Path | str) -> BuildCache:
                 # Outside the handler, so what follows does not chain _Terminated.
                 _resume_signal(*stopped)
             try:
-                with _key_lock(build_root, key):
+                with _key_lock(build_root, key, verify):
                     _publish(workspace, final)
-                    mode = _complete_mode(final, key)
+                    finished = _admit_finished(final, key)
             except BaseException as exc:
-                _remove_tree(workspace)  # a no-op once the workspace is published
-                if isinstance(exc, BuildError):  # the publication or its lock failed
+                _discard(workspace, verify)  # a no-op once the workspace is published
+                # The publication or its lock failed; a refused component is a
+                # configuration error of the work root, never memoized.
+                if isinstance(exc, BuildError) and not isinstance(exc, _ContainmentError):
                     _remember_failure(memo_key, exc)
                 raise
-            if mode is None:
+            if finished is None:
                 error = BuildError(f"the build directory {final} is incomplete after publishing")
                 raise _remember_failure(memo_key, error)
+        mode, admitted_directory = finished
+        # The cache re-admits both identities when it is made, so a build root
+        # or build directory swapped since they were admitted is refused here.
         cache = BuildCache(
             key=key, directory=final, repo_root=root, toolchain=toolchain, plan=plan,
-            clock_fraction_mode=mode,
+            clock_fraction_mode=mode, admitted=(admitted_root, admitted_directory),
         )
         _CACHES[memo_key] = cache
         return cache

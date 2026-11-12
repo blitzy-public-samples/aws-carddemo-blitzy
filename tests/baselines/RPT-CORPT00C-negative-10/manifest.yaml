@@ -11,7 +11,7 @@
 # [app/cbl/CORPT00C.cbl:429-474,556-580]. Only unikix can run the scenario, so
 # expected.yaml was authored from the source, not captured, and is
 # inferred-not-observed (GAP-INF-009, GAP-INF-012), the doubtful outcome pinned
-# as observed (observed-only, GAP-UNC-013). It names no execution_id or
+# as observed (observed-only, GAP-UNC-014). It names no execution_id or
 # execution_fingerprint and holds no datasets/ until report.py --import-unikix
 # promotes an eligible UniKix run.
 #

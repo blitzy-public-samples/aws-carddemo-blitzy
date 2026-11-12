@@ -57,9 +57,9 @@ description: >-
   account 00000000003 on the COACTUPC update screen (CAUP). The card
   cross-reference through CXACAIX gives customer 000000003 and the account is
   found in ACCTDAT, but CUSTDAT holds no record for that customer. COACTUPC
-  shows 'CustId:000000003 not found in customer master.Resp: 000000013
-  REAS:0000000' (cut at 75 characters) in the message line, keeps the account
-  id and the search-key prompt, and shows no account or customer details.
+  shows 'CustId:000000003 not found in customer master.Resp: 000000013  REAS:0000000'
+  (cut at 75 characters) in the message line, keeps the account id and the
+  search-key prompt, and shows no account or customer details.
 # Primary item first, then the program, the maps asserted, the transaction step
 # 3 runs, the CSD files COACTUPC reads, and the online-only copybooks it
 # copies. Sign-on and the menu (CC00, CM00, COSGN00, USRSEC) are verified by the

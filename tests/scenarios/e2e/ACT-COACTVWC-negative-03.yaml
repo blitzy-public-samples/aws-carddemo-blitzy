@@ -58,9 +58,9 @@ description: >-
   account 00000000001, which CARDXREF links to customer 000000001 but ACCTDATA
   does not hold. The 88-level text 'Did not find this account in account master
   file' never appears, because its SET is commented out. COACTVW shows the
-  composed 'Account:00000000001 not found in Acct Master file.Resp:000000013
-  Reas:0000' instead, keeps the id, and, since the guard on the never-set
-  condition does not stop the lookup, shows customer 000000001 as well.
+  composed 'Account:00000000001 not found in Acct Master file.Resp:000000013  Reas:0000'
+  instead, keeps the id, and, since the guard on the never-set condition does
+  not stop the lookup, shows customer 000000001 as well.
 # The message condition is the primary item. After it come the program, the maps
 # asserted (COMEN01 on step 1, COACTVW on steps 2 and 3), the transaction that
 # runs the lookup, the three CSD files it reads, and the online-only copybooks

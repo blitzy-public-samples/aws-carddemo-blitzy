@@ -7,18 +7,22 @@ GAP-DOC-020), must not be modified, and have not been built there
 (GAP-MIS-008).
 
 The zip's own scripts cannot run as they stand: ``bin/create_project`` fixes
-``BASE_DIR=$HOME/unikixdemo``, and ``bin/deploy_app`` and ``bin/compile`` set
-``MIGAPP_DIR=/home/ec2-user/migrated_app``. This module performs their steps
-with the paths ``env.py`` derived from the test-owned deployment root. File
-copies and moves are done in Python; every UniKix command goes through
-``env.CommandSet.run``, so nothing is issued outside ``commands.yaml``.
+``BASE_DIR=$HOME/unikixdemo``, and ``bin/deploy_app`` and ``bin/compile``
+hard-code ``MIGAPP_DIR`` to the sample operator's home directory. This
+module performs their steps with the paths ``env.py`` derived from the
+test-owned deployment root. File copies and moves are done in Python; every
+UniKix command goes through ``env.CommandSet.run``, so nothing is issued
+outside ``commands.yaml``.
 
 ``extract_zip``
     Extracts the zip once per work root into ``<work root>/_unikix_zip/``,
     files ``0444`` and directories ``0555``, the root included before it is
     published. Nothing writes inside it afterwards; every reuse checks the
-    tree against the zip, and source identities hash these originals, never
-    the staging copy.
+    tree against the zip, comparing each file with its member one block at
+    a time, and source identities hash these originals, never the staging
+    copy. A zip, an entry or the entries together larger than their bounds,
+    or a zip of too many entries, is refused before anything is extracted
+    or compared.
 ``deploy``
     Builds ``<work root>/unikix/<execution_id>/``, which replaces
     ``$HOME/unikixdemo`` as ``BASE_DIR``: a writable staging copy of
@@ -29,13 +33,18 @@ copies and moves are done in Python; every UniKix command goes through
     its own ``timeout_s`` raises ``AdapterUnavailable`` with its entry's gap,
     so the scenarios that needed the deployment are ``blocked``.
 
-    The deployment runs under the deadline of the scenario that asked for
-    it. Every command's ``timeout_s`` is capped at the time left, the
-    runtime scripts are sourced within it, and it is checked again before
-    each filesystem step. Its expiry is never a command failure: it raises
-    ``ScenarioTimeout``, so that scenario is ``failing`` with reason
-    ``timeout``, and an ``AdapterUnavailable`` raised once it has passed
-    becomes the cause of a ``ScenarioTimeout``.
+    ``deploy`` bounds itself by a deadline: the one its caller passes, as a
+    ``time.monotonic()`` value or a function returning the seconds left, or,
+    when none is passed, ``DEFAULT_DEADLINE_S`` from the call. Every
+    command's ``timeout_s`` is capped at the time left, the runtime scripts
+    are sourced within it, and it is checked again before each filesystem
+    step. Its expiry is never a command failure: it raises
+    ``ScenarioTimeout``, so the scenario it bounds is ``failing`` with
+    reason ``timeout``, and an ``AdapterUnavailable`` raised once it has
+    passed becomes the cause of a ``ScenarioTimeout``. The adapter's session
+    setup passes a deadline that never passes, so there each command is
+    bounded by its own ``timeout_s`` alone, and the scenario that started
+    the session keeps its full deadline.
 
 Writes go only to ``<work root>/_unikix_zip`` (once, through its temporary
 sibling ``_unikix_zip.tmp-<pid>``), its ``.sha256`` marker (through a
@@ -176,6 +185,24 @@ _SHARED_WRITE = stat.S_IWGRP | stat.S_IWOTH
 # How many problems an extraction that does not match the zip reports.
 _PROBLEMS_SHOWN = 10
 
+# Bounds on the zip; a zip past any of them is refused before anything is
+# extracted or compared. The committed zip is 434,174 bytes of 381 entries
+# holding 2,652,147 bytes; the 196 it extracts (the other 185 are __MACOSX/
+# or .DS_Store) hold 2,566,831, the largest 186,302
+# (migrated_app/cbl/COACTUPC.cl2). Each bound lies far above these and far
+# below what would exhaust memory or the work root's disk: the zip is read
+# whole into memory, the members' sizes as its central directory gives them
+# bound what extracting writes, since zipfile yields no more of a member
+# than that and checks its CRC, and a reuse compares each file with its
+# member one block at a time. adapter.py's _zip_index holds the source
+# identity it reads from the zip to the same bounds, hashing each member one
+# _COMPARE_BLOCK_BYTES block at a time.
+_ZIP_MAX_ARCHIVE_BYTES = 16 * 1024 * 1024
+_ZIP_MAX_MEMBER_BYTES = 16 * 1024 * 1024
+_ZIP_MAX_TOTAL_BYTES = 64 * 1024 * 1024
+_ZIP_MAX_ENTRIES = 4096
+_COMPARE_BLOCK_BYTES = 1024 * 1024
+
 # One deployment per deployment root, and so per execution id, in this
 # process: the Deployment, or the exception that ended the attempt.
 _ATTEMPTS: dict[str, Deployment | Exception] = {}
@@ -200,7 +227,8 @@ class Deployment:
         ``<work root>/_unikix_zip``, the read-only extraction it came from.
     ``log_dir``
         ``<root>/logs/build``, holding ``<member>.log`` with the output of
-        each build command of a program or map.
+        each build command of a program or map, its JVM options redacted
+        (``_run_build``).
     ``substitutions``
         Each change made to the staging copy, as ``{file, original_sha256,
         deployed_sha256, from, to}``; ``environment.yaml`` records them as
@@ -281,16 +309,21 @@ def extract_zip(
     can write to, raises ``HarnessError``. An
     extraction whose marker ``<work root>/_unikix_zip.sha256`` names the
     zip's sha256, and whose tree matches the zip (the same entries and
-    nothing else, no symbolic link, each file's bytes, files ``0444`` and
-    directories ``0555``, all of the effective user), is reused unchanged;
-    one with another marker or none, or that does not match, raises
-    ``HarnessError`` rather than being replaced. Otherwise every entry except
-    ``__MACOSX/`` and ``.DS_Store`` is extracted into a private temporary
-    sibling, made read-only, root included, and renamed into place after
-    the marker is written. An absolute name, a ``..`` component or a
-    symbolic link anywhere in the zip raises ``HarnessError`` before
-    anything is written. A marker or lock that is a symbolic link is
-    refused, never followed. An exclusive ``flock`` on
+    nothing else, no symbolic link, each file's bytes, compared with its
+    member one block at a time, files ``0444`` and directories ``0555``, all
+    of the effective user), is reused unchanged; one with another marker or
+    none, or that does not match, raises ``HarnessError`` rather than being
+    replaced. Otherwise every entry except ``__MACOSX/`` and ``.DS_Store`` is
+    extracted into a private temporary sibling, made read-only, root
+    included, and renamed into place after the marker is written. An
+    absolute name, a ``..`` component or a symbolic link anywhere in the zip
+    raises ``HarnessError`` before anything is written, and so do a zip
+    larger than ``_ZIP_MAX_ARCHIVE_BYTES`` or of more than
+    ``_ZIP_MAX_ENTRIES`` entries, an entry to extract that the central
+    directory gives as larger than ``_ZIP_MAX_MEMBER_BYTES``, and entries to
+    extract larger than ``_ZIP_MAX_TOTAL_BYTES`` together; a reuse refuses
+    them before any file is compared. A marker or lock that is a symbolic
+    link is refused, never followed. An exclusive ``flock`` on
     ``<work root>/_unikix_zip.lock`` serializes concurrent callers."""
     work = Path(os.path.abspath(work_root))
     repo = Path(repo_root)
@@ -345,23 +378,50 @@ def extract_zip(
 
 
 def _read_zip(repo_root: Path) -> bytes:
-    """The bytes of the UniKix zip; ``HarnessError`` when it cannot be read."""
+    """The bytes of the UniKix zip; ``HarnessError`` when it cannot be read.
+    At most one byte more than ``_ZIP_MAX_ARCHIVE_BYTES`` is read, and a
+    longer zip raises ``HarnessError`` before ``zipfile`` parses any of it."""
     try:
-        return zip_path(repo_root).read_bytes()
+        with open(zip_path(repo_root), "rb") as handle:
+            data = handle.read(_ZIP_MAX_ARCHIVE_BYTES + 1)
     except OSError as exc:
         raise HarnessError(f"cannot read {ZIP_RELPATH}: {exc.strerror or exc}") from None
+    if len(data) > _ZIP_MAX_ARCHIVE_BYTES:
+        raise HarnessError(
+            f"{ZIP_RELPATH} holds more than {_ZIP_MAX_ARCHIVE_BYTES} bytes, the most the zip"
+            " may hold"
+        )
+    return data
 
 
 def _safe_members(archive: zipfile.ZipFile) -> list[tuple[zipfile.ZipInfo, PurePosixPath]]:
-    """The entries to extract with their relative paths. Every unsafe entry
-    is reported at once in one ``HarnessError``."""
+    """The entries to extract with their relative paths. A zip of more than
+    ``_ZIP_MAX_ENTRIES`` entries, those skipped included, raises
+    ``HarnessError`` before any entry is looked at. Every unsafe entry, one
+    larger than ``_ZIP_MAX_MEMBER_BYTES`` included, and entries larger than
+    ``_ZIP_MAX_TOTAL_BYTES`` together, are reported at once in one
+    ``HarnessError``. The sizes are those the central directory records, so
+    nothing is read to check them."""
+    entries = archive.infolist()
+    if len(entries) > _ZIP_MAX_ENTRIES:
+        raise HarnessError(
+            f"{ZIP_RELPATH} holds {len(entries)} entries, more than {_ZIP_MAX_ENTRIES}, the most"
+            " it may hold"
+        )
     members: list[tuple[zipfile.ZipInfo, PurePosixPath]] = []
     problems: list[str] = []
-    for info in archive.infolist():
+    total = 0
+    for info in entries:
         name = info.filename
         relative = PurePosixPath(name)
         if relative.parts[:1] == ("__MACOSX",) or relative.name == ".DS_Store":
             continue
+        total += info.file_size
+        if info.file_size > _ZIP_MAX_MEMBER_BYTES:
+            problems.append(
+                f"{name!r} is {info.file_size} bytes, more than {_ZIP_MAX_MEMBER_BYTES}, the most"
+                " one entry may hold"
+            )
         windows = PureWindowsPath(name)
         if name.startswith(("/", "\\")) or windows.drive or windows.is_absolute():
             problems.append(f"{name!r} is absolute")
@@ -373,6 +433,11 @@ def _safe_members(archive: zipfile.ZipFile) -> list[tuple[zipfile.ZipInfo, PureP
             problems.append(f"{name!r} names no file")
         else:
             members.append((info, relative))
+    if total > _ZIP_MAX_TOTAL_BYTES:
+        problems.append(
+            f"the entries to extract hold {total} bytes, more than {_ZIP_MAX_TOTAL_BYTES}, the"
+            " most they may hold together"
+        )
     if problems:
         raise HarnessError(f"{ZIP_RELPATH} holds unsafe entries: {'; '.join(problems)}")
     return members
@@ -549,28 +614,40 @@ def _file_problems(
     info: zipfile.ZipInfo,
 ) -> list[str]:
     """``_entry_problems`` of the extracted file ``relative``, plus a
-    difference between its bytes and those of its member ``info``."""
+    difference between its bytes and those of its member ``info``, compared
+    one block at a time (``_same_bytes``)."""
     problems = _entry_problems(relative, status, directory=False)
     if not stat.S_ISREG(status.st_mode):
         return problems
     if status.st_size == info.file_size:
         try:
-            content = _read_regular(target.joinpath(*relative.parts))
+            same = _same_bytes(target.joinpath(*relative.parts), archive, info)
         except OSError as exc:
             problems.append(f"{relative} cannot be read: {exc.strerror or exc}")
             return problems
-        if content == archive.read(info):
+        if same:
             return problems
     problems.append(f"{relative} differs from its zip member")
     return problems
 
 
-def _read_regular(path: Path) -> bytes:
-    """The bytes of ``path``, opened without following a symbolic link;
-    ``O_NONBLOCK`` keeps a FIFO swapped in from blocking the open."""
+def _same_bytes(path: Path, archive: zipfile.ZipFile, info: zipfile.ZipInfo) -> bool:
+    """Whether the file ``path`` holds the bytes of the member ``info`` of
+    ``archive`` and nothing beyond them. Both are read
+    ``_COMPARE_BLOCK_BYTES`` at a time and compared block by block, stopping
+    at the first difference, so neither is ever held whole. ``path`` is
+    opened without following a symbolic link; ``O_NONBLOCK`` keeps a FIFO
+    swapped in from blocking the open. A file that cannot be read raises
+    ``OSError``, a member whose CRC does not match ``BadZipFile``."""
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
-    with os.fdopen(descriptor, "rb") as handle:
-        return handle.read()
+    with os.fdopen(descriptor, "rb") as handle, archive.open(info) as member:
+        while True:
+            expected = member.read(_COMPARE_BLOCK_BYTES)
+            if not expected:
+                # The member has ended, so the file must end with it.
+                return handle.read(1) == b""
+            if handle.read(len(expected)) != expected:
+                return False
 
 
 def _file_type(status: os.stat_result) -> str:
@@ -1410,7 +1487,9 @@ def _run_build(
     """Run one build entry, capped at the seconds ``progress`` leaves, append
     its outcome and output to ``log``, and raise ``AdapterUnavailable`` with
     the entry's gap unless it exited 0. ``check=False`` lets a failing
-    compiler's output reach the log.
+    compiler's output reach the log. The output passes ``env.redact``
+    first, so of the JVM options the log, and the excerpt of it a
+    scenario's evidence carries, keeps only the owned temporary settings.
 
     Every ``AdapterUnavailable`` names the entry, the member or map and
     the log: one the entry raised itself (failed probe, process that could
@@ -1430,8 +1509,8 @@ def _run_build(
     _append_log(
         log,
         f"--- {entry_id} exit status {result.returncode} ---\n"
-        f"--- stdout ---\n{_terminated(result.stdout)}"
-        f"--- stderr ---\n{_terminated(result.stderr)}",
+        f"--- stdout ---\n{_terminated(env.redact(result.stdout))}"
+        f"--- stderr ---\n{_terminated(env.redact(result.stderr))}",
     )
     if result.returncode != 0:
         raise AdapterUnavailable(

@@ -62,8 +62,8 @@ description: >-
   confirming with Y. COTRN02C looks up the account's card 9680294154603697
   through CXACAIX, writes TRANSACT record 0000000996722788 from the entered
   fields and that card, its TRAN-ORIG-TS and TRAN-PROC-TS the run date followed
-  by 16 spaces, blanks the screen and shows 'Transaction added successfully.
-  Your Tran ID is 0000000996722788.'.
+  by 16 spaces, blanks the screen and shows
+  'Transaction added successfully.  Your Tran ID is 0000000996722788.'.
 # The sign-on step's own items (COSGN00, CC00, USRSEC) and the menu option and
 # transaction (CM00) belong to the SEC and MNU scenarios; the confirmation
 # message and the next-id calculation are the primary items of their own

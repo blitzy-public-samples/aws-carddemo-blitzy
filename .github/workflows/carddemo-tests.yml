@@ -1,12 +1,13 @@
 # CardDemo characterization suite: the repository's single CI workflow.
 #
 # Runs `pytest tests/` twice on the default gnucobol-batch adapter, which no
-# step overrides (tests/conftest.py deselects the scenarios only unikix can run
-# and the reports show them blocked), proves that the deterministic
-# projection of the reports is identical across a forward and a reverse run,
-# then checks the reports, the job-chain proof, the protected tree and the
-# baseline version bumps. CI never commits: the reports are uploaded as the
-# carddemo-reports artifact.
+# step overrides, and runs nothing on UniKix: tests/conftest.py deselects the
+# scenarios only unikix can run, and the reports show each of them blocked
+# unless committed, current, eligible UniKix evidence gives it another
+# status. It proves that the deterministic projection of the reports is
+# identical across a forward and a reverse run, then checks the reports, the
+# job-chain proof, the protected tree and the baseline version bumps. CI never
+# commits: the reports are uploaded as the carddemo-reports artifact.
 
 name: carddemo-tests
 
@@ -25,15 +26,42 @@ jobs:
   characterization:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    # The undici bundled in the pinned action releases ends the action on an
+    # assertion when a TLS 1.2 peer renegotiates with a different certificate
+    # (CVE-2026-87018, GHSA-qrxm-fqhp-jwvm). TLS 1.3 has no renegotiation, so
+    # the actions' Node processes accept nothing older. The services they
+    # reach (GitHub, its Actions results service, Azure Blob Storage) support
+    # TLS 1.3; a peer that does not fails the step instead of falling back.
+    # It is set in the job's env because the runner refuses NODE_OPTIONS from
+    # GITHUB_ENV.
+    env:
+      NODE_OPTIONS: --tls-min-v1.3
     steps:
       # The job-wide work root lives under RUNNER_TEMP, outside the checkout.
       # The runner context is unavailable in a job-level `env:`, so it is
       # exported here, first, so that it exists even when checkout fails and the
-      # upload paths stay valid.
+      # upload paths stay valid. It is created owner-only (0700) whatever the
+      # runner's umask, under umask 077 in a subshell, since the harness
+      # refuses a work root that group or others can write and would run in a
+      # fresh temporary root instead. The step fails unless the work root is
+      # then a directory, not a symbolic link, of the runner user with
+      # permission bits 0700, so one already there with another mode does not
+      # slip through. The pinned pytest keeps its temporary directories under
+      # a predictable shared default, <temp dir>/pytest-of-<user>
+      # (CVE-2025-71176), so PYTEST_DEBUG_TEMPROOT names a fresh owner-only
+      # (0700) _pytest folder of the work root instead; mkdir without -p fails
+      # the step when that path already exists, a symbolic link included.
       - name: Work root
         run: |
           echo "CARDDEMO_TEST_WORKDIR=$RUNNER_TEMP/carddemo-work" >> "$GITHUB_ENV"
-          mkdir -p "$RUNNER_TEMP/carddemo-work"
+          (umask 077 && mkdir -p "$RUNNER_TEMP/carddemo-work")
+          mode="$(stat -c %a "$RUNNER_TEMP/carddemo-work")"
+          if [[ -L "$RUNNER_TEMP/carddemo-work" || ! -O "$RUNNER_TEMP/carddemo-work" ]] || (( (8#$mode & 8#777) != 8#700 )); then
+            echo "::error::$RUNNER_TEMP/carddemo-work must be a directory of the runner user with mode 0700, not a symbolic link (mode $mode); the harness refuses a work root that group or others can write"
+            exit 1
+          fi
+          mkdir -m 0700 "$RUNNER_TEMP/carddemo-work/_pytest"
+          echo "PYTEST_DEBUG_TEMPROOT=$RUNNER_TEMP/carddemo-work/_pytest" >> "$GITHUB_ENV"
 
       # The full history holds the starting commit 93ebec71ff7b59a68cedd7c501afe496a8eaa68d
       # (the inventory's protected_base) and the bump-check base. Only local git
@@ -214,7 +242,8 @@ jobs:
 
       # The runner removes a passing scenario's working directory, so only the
       # failing ones remain under the work root; the build cache, the
-      # extracted UniKix zip and the sessions' lock file are left out.
+      # extracted UniKix zip, the sessions' lock file and pytest's temporary
+      # root are left out.
       - name: Upload reports
         if: always()
         uses: actions/upload-artifact@v7.0.2
@@ -227,3 +256,4 @@ jobs:
             !${{ env.CARDDEMO_TEST_WORKDIR }}/_build
             !${{ env.CARDDEMO_TEST_WORKDIR }}/_unikix_zip
             !${{ env.CARDDEMO_TEST_WORKDIR }}/_session.lock
+            !${{ env.CARDDEMO_TEST_WORKDIR }}/_pytest

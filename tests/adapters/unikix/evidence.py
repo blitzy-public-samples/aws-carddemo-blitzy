@@ -55,8 +55,20 @@ Evidence is never overwritten or deleted. The writer claims a scenario
 directory by creating it exclusively, so only the write whose creation
 succeeds puts files in it and two writes never mix theirs; a scenario
 directory that already exists, empty or not, is refused with ``HarnessError``
-and kept as found. Every file is created exclusively. Evidence is written
-only for an id of the closed scenario id manifest
+and kept as found. Every file is created exclusively. Evidence stays inside
+``reports/unikix/``: the writer opens the tests root once and reaches every
+folder below it (``reports/``, ``unikix/``, the execution and scenario
+folders and the folders in them) through the descriptor of the folder above,
+with ``O_DIRECTORY|O_NOFOLLOW``, and creates each file in its folder's
+descriptor with ``O_EXCL|O_NOFOLLOW``, so a symbolic link in place of any of
+those folders or files is refused, never followed. The folders it creates
+get mode ``0755`` and its files ``0644``, whatever the umask. An existing
+``reports/``, ``unikix/`` or execution folder must be a real folder of the
+effective user, and loses its group and other write bits before anything is
+created or looked up in it, so once a write has passed a folder nobody else
+can swap it for a link or add an entry to it. The tests root itself is
+trusted as found: whoever can write it can change the suite. Evidence is
+written only for an id of the closed scenario id manifest
 (``harness.scenarios.ALL_IDS``) and a record that conforms to the result
 record contract as a stored record (``harness.results.record_problems``),
 the checks the import applies. Everything to be written is checked before
@@ -65,9 +77,12 @@ the first file is created, so a refused write leaves no file behind.
 
 from __future__ import annotations
 
+import contextlib
+import errno
 import os
 import re
 import socket
+import stat
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -113,6 +128,16 @@ _HOSTNAME_DIGITS = 8
 _RUN_DATE_KEYS = ("bpe_job_start_date", "first_step_screen_date")
 # What capture_summary.steps keeps of each screens_raw entry.
 _STEP_KEYS = ("attempt", "step", "session", "map")
+
+# Modes, never left to the umask: every evidence folder is writable by its
+# owner alone, so nobody else can swap one for a link or add an entry to it.
+_DIR_MODE = 0o755
+_FILE_MODE = 0o644
+_SHARED_WRITE = stat.S_IWGRP | stat.S_IWOTH
+# Each folder below the tests root is opened relative to the folder above and
+# never through a symbolic link; each file is created new, never through one.
+_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+_FILE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
 
 
 # --------------------------------------------------------------------------
@@ -311,65 +336,185 @@ def _sequence(value: Any, what: str) -> Sequence:
     return value
 
 
-def _make_dir(path: Path) -> None:
-    """Create the folder ``path`` unless it exists; refuse a symbolic link or
-    a file in its place, so no evidence is written outside its folder."""
+def _kept(descriptors: contextlib.ExitStack, descriptor: int) -> int:
+    """``descriptor``, closed when ``descriptors`` closes."""
+    descriptors.callback(os.close, descriptor)
+    return descriptor
+
+
+def _open_tests_root(path: Path) -> int:
+    """A descriptor of the tests root ``path``, the one folder every evidence
+    folder is reached from. A symbolic link in ``path`` is followed on
+    purpose: whoever can write ``tests/`` or a folder above it can already
+    rewrite the suite's own code, so the tests root is trusted as found."""
     try:
-        os.mkdir(path)
-    except FileExistsError:
-        pass
+        return os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    except OSError as exc:
+        raise HarnessError(f"cannot open the tests root {display_path(path)}: {exc.strerror or exc}") from None
+
+
+def _open_folder(parent: int, name: str, shown: Path, *, created: bool) -> int:
+    """A descriptor of the folder ``name`` of the open folder ``parent``,
+    opened with ``O_DIRECTORY|O_NOFOLLOW`` and vetted before anything is
+    created or looked up in it; ``shown`` is its path for messages. A
+    symbolic link or a file in its place, or a folder another user owns,
+    raises ``HarnessError``. A folder this write ``created`` gets mode
+    ``0755`` whatever the umask; an existing one loses its group and other
+    write bits. The change goes through the descriptor, so it reaches the
+    folder that was vetted, and once the folder passes nobody else can swap
+    it for a link or add an entry to it."""
+    try:
+        folder = os.open(name, _DIR_FLAGS, dir_fd=parent)
+    except OSError as exc:
+        if exc.errno in (errno.ENOTDIR, errno.ELOOP):
+            raise HarnessError(
+                f"{display_path(shown)} is not a folder of its own: evidence is never written "
+                f"through a symbolic link or over a file"
+            ) from None
+        raise HarnessError(
+            f"cannot open the evidence folder {display_path(shown)}: {exc.strerror or exc}"
+        ) from None
+    try:
+        try:
+            status = os.fstat(folder)
+        except OSError as exc:
+            raise HarnessError(
+                f"cannot inspect the evidence folder {display_path(shown)}: {exc.strerror or exc}"
+            ) from None
+        if not stat.S_ISDIR(status.st_mode):
+            raise HarnessError(
+                f"{display_path(shown)} is not a folder of its own: evidence is never written "
+                f"through a symbolic link or over a file"
+            )
+        euid = os.geteuid()
+        if status.st_uid != euid:
+            raise HarnessError(
+                f"{display_path(shown)} is owned by uid {status.st_uid}, not {euid}: evidence is "
+                f"written only into folders of its own user"
+            )
+        mode = stat.S_IMODE(status.st_mode)
+        wanted = _DIR_MODE if created else mode & ~_SHARED_WRITE
+        if wanted != mode:
+            try:
+                os.fchmod(folder, wanted)
+            except OSError as exc:
+                raise HarnessError(
+                    f"cannot make the evidence folder {display_path(shown)} writable by its owner "
+                    f"only: {exc.strerror or exc}"
+                ) from None
+    except BaseException:
+        os.close(folder)
+        raise
+    return folder
+
+
+def _set_new_folder_mode(parent: int, name: str, shown: Path) -> None:
+    """Give the folder ``name`` this write has just created in the open
+    folder ``parent`` mode ``0755``, before it is opened: a umask that takes
+    its owner's read bit would otherwise make ``_open_folder`` fail on it.
+    ``shown`` is its path for messages."""
+    # Set by name relative to ``parent``, which is the tests root, trusted as
+    # found, or a folder already opened without following a link, owned by
+    # the effective user and stripped of group and other write, so only this
+    # user can have replaced the name since its creation. The folder is then
+    # opened with O_NOFOLLOW and vetted by _open_folder.
+    try:
+        os.chmod(name, _DIR_MODE, dir_fd=parent)
     except OSError as exc:
         raise HarnessError(
-            f"cannot create the evidence folder {display_path(path)}: {exc.strerror or exc}"
+            f"cannot create the evidence folder {display_path(shown)}: {exc.strerror or exc}"
         ) from None
-    if path.is_symlink() or not path.is_dir():
-        raise HarnessError(
-            f"{display_path(path)} is not a folder of its own: evidence is never written "
-            f"through a symbolic link or over a file"
-        )
 
 
-def _claim_dir(path: Path) -> None:
-    """Create the scenario folder ``path``, which must not exist yet. The
-    creation is exclusive, so of several writes of one scenario only the one
-    that creates the folder writes into it. Whatever already stands at
-    ``path`` (a folder, empty or not, a file or a symbolic link, which is
-    never followed) is refused and kept as found."""
+def _own_folder(parent: int, name: str, shown: Path) -> int:
+    """The folder ``name`` of the open folder ``parent``, created unless it
+    exists, as a vetted descriptor (``_open_folder``); ``shown`` is its path
+    for messages. ``reports/``, ``unikix/`` and the execution folder are
+    reached this way, and so are ``datasets/``, ``sysout/`` and each folder
+    below ``sysout/`` in the claimed scenario folder."""
     try:
-        os.mkdir(path)
+        os.mkdir(name, _DIR_MODE, dir_fd=parent)
     except FileExistsError:
-        if path.is_symlink():
-            cause = "a symbolic link stands in its place"
-        elif not path.is_dir():
-            cause = "a file stands in its place"
-        elif os.path.lexists(path / RESULT_FILE):
-            cause = f"its {RESULT_FILE} already exists"
-        else:
-            cause = "another write owns it or left it incomplete"
+        created = False
+    except OSError as exc:
         raise HarnessError(
-            f"evidence is immutable: {display_path(path)} already exists ({cause}); it is kept as found"
+            f"cannot create the evidence folder {display_path(shown)}: {exc.strerror or exc}"
+        ) from None
+    else:
+        _set_new_folder_mode(parent, name, shown)
+        created = True
+    return _open_folder(parent, name, shown, created=created)
+
+
+def _occupant(parent: int, name: str) -> str:
+    """What already stands at ``name`` in the open folder ``parent``, as the
+    refusal of a scenario folder names it; nothing is followed through a
+    symbolic link. A folder that vanishes or cannot be looked into is taken
+    as another write's, complete or not."""
+    unknown = "another write owns it or left it incomplete"
+    try:
+        status = os.stat(name, dir_fd=parent, follow_symlinks=False)
+    except OSError:
+        return unknown
+    if stat.S_ISLNK(status.st_mode):
+        return "a symbolic link stands in its place"
+    if not stat.S_ISDIR(status.st_mode):
+        return "a file stands in its place"
+    try:
+        folder = os.open(name, _DIR_FLAGS, dir_fd=parent)
+    except OSError:
+        return unknown
+    try:
+        os.stat(RESULT_FILE, dir_fd=folder, follow_symlinks=False)
+    except OSError:
+        return unknown
+    finally:
+        os.close(folder)
+    return f"its {RESULT_FILE} already exists"
+
+
+def _claim_folder(parent: int, name: str, shown: Path) -> int:
+    """Create the scenario folder ``name`` in the open execution folder
+    ``parent`` and return it as a vetted descriptor (``_open_folder``);
+    ``shown`` is its path for messages. The creation is exclusive, so of
+    several writes of one scenario only the one that creates the folder
+    writes into it. Whatever already stands there (a folder, empty or not, a
+    file or a symbolic link, which is never followed) is refused and kept as
+    found."""
+    try:
+        os.mkdir(name, _DIR_MODE, dir_fd=parent)
+    except FileExistsError:
+        raise HarnessError(
+            f"evidence is immutable: {display_path(shown)} already exists ({_occupant(parent, name)}); "
+            f"it is kept as found"
         ) from None
     except OSError as exc:
         raise HarnessError(
-            f"cannot create the evidence folder {display_path(path)}: {exc.strerror or exc}"
+            f"cannot create the evidence folder {display_path(shown)}: {exc.strerror or exc}"
         ) from None
-    if path.is_symlink() or not path.is_dir():
-        raise HarnessError(
-            f"{display_path(path)} is not a folder of its own: evidence is never written "
-            f"through a symbolic link or over a file"
-        )
+    # A failure here leaves the claimed folder empty, and a later write of
+    # the scenario refuses it as another write's.
+    _set_new_folder_mode(parent, name, shown)
+    return _open_folder(parent, name, shown, created=True)
 
 
-def _create(path: Path, data: bytes) -> None:
-    """Write ``data`` to the new file ``path``; an existing file, or a link
-    in its place, is never replaced."""
+def _create(folder: int, name: str, shown: Path, data: bytes) -> None:
+    """Write ``data`` to the new file ``name`` of the open folder ``folder``,
+    mode ``0644`` whatever the umask; ``shown`` is its path for messages. The
+    file is created with ``O_EXCL|O_NOFOLLOW``, so an existing file, or a
+    link in its place, is never replaced or written through."""
     try:
-        with open(path, "xb") as handle:
+        descriptor = os.open(name, _FILE_FLAGS, _FILE_MODE, dir_fd=folder)
+    except FileExistsError:
+        raise HarnessError(f"evidence is immutable: {display_path(shown)} already exists") from None
+    except OSError as exc:
+        raise HarnessError(f"cannot write evidence {display_path(shown)}: {exc.strerror or exc}") from None
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            os.fchmod(descriptor, _FILE_MODE)
             handle.write(data)
-    except FileExistsError:
-        raise HarnessError(f"evidence is immutable: {display_path(path)} already exists") from None
     except OSError as exc:
-        raise HarnessError(f"cannot write evidence {display_path(path)}: {exc.strerror or exc}") from None
+        raise HarnessError(f"cannot write evidence {display_path(shown)}: {exc.strerror or exc}") from None
 
 
 class EvidenceWriter:
@@ -396,7 +541,10 @@ class EvidenceWriter:
         adapter or execution or a field outside ``RECORD_FIELDS``, when it
         breaks the result record contract (``harness.results.record_problems``
         of a stored record), or when the capture holds something that cannot
-        be written. Nothing is written in those cases."""
+        be written. Nothing is written in those cases. ``HarnessError`` also
+        when the tests root cannot be opened, or a folder on the way is not a
+        real folder of the effective user (a symbolic link, a file or another
+        user's folder), which is refused before anything is created in it."""
         scenario_id = _scenario_id(scenario if isinstance(scenario, str) else getattr(scenario, "id", None))
         if not isinstance(capture, Capture):
             raise TypeError(f"capture must be an evidence Capture, got {type(capture).__name__}")
@@ -406,20 +554,34 @@ class EvidenceWriter:
         except HarnessError as exc:
             raise HarnessError(f"{scenario_id}: evidence not written: {exc}") from None
 
-        for folder in (self.tests_root / "reports", self.tests_root / "reports" / "unikix", self.root):
-            _make_dir(folder)
-        directory = self.root / scenario_id
-        _claim_dir(directory)
-        # Both folders exist in every evidence directory, empty or not.
-        for folder_name in (DATASETS_DIR, SYSOUT_DIR):
-            _make_dir(directory / folder_name)
-        for relative_file, data in files:
-            target = directory
-            parts = relative_file.split("/")
-            for part in parts[:-1]:
-                target = target / part
-                _make_dir(target)
-            _create(target / parts[-1], data)
+        # Each folder is reached through the descriptor of the folder above
+        # it, from the tests root opened once, and each file is created in
+        # its own folder's descriptor, so a link swapped in for any of them
+        # is refused, never followed.
+        with contextlib.ExitStack() as descriptors:
+            folder = _kept(descriptors, _open_tests_root(self.tests_root))
+            shown = self.tests_root
+            for name in ("reports", "unikix", self.execution_id):
+                shown = shown / name
+                folder = _kept(descriptors, _own_folder(folder, name, shown))
+            directory = self.root / scenario_id
+            # Folder path in the scenario directory ("" for itself) -> its
+            # descriptor, so each folder is created and opened once.
+            folders = {"": _kept(descriptors, _claim_folder(folder, scenario_id, directory))}
+            # Both folders exist in every evidence directory, empty or not.
+            for folder_name in (DATASETS_DIR, SYSOUT_DIR):
+                folders[folder_name] = _kept(
+                    descriptors, _own_folder(folders[""], folder_name, directory / folder_name)
+                )
+            for relative_file, data in files:
+                parts = relative_file.split("/")
+                parent = ""
+                for part in parts[:-1]:
+                    path = f"{parent}/{part}" if parent else part
+                    if path not in folders:
+                        folders[path] = _kept(descriptors, _own_folder(folders[parent], part, directory / path))
+                    parent = path
+                _create(folders[parent], parts[-1], directory / relative_file, data)
         return relative
 
     def _files(

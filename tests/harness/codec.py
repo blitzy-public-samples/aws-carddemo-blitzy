@@ -36,6 +36,17 @@ Errors
     ``path``). ``encode_record``, ``decode_record`` and ``split_records``
     take the dataset (and the record number) from their caller.
 
+    Descriptors and layouts are bounded before any value is computed or any
+    record image allocated, and one outside its bounds raises ``CodecError``:
+    ``digits`` lies between 1 and 38 (``MAX_DIGIT_POSITIONS``) and ``scale``
+    between ``-(38 - digits)`` (trailing ``P``) and 38 (leading ``P``),
+    because a PICTURE holds at most 38 digit positions, ``P`` included; a
+    field or record ``length`` is at most 32760 bytes (``MAX_RECORD_LENGTH``);
+    ``offset`` and ``occurs`` are non-negative integers, and every occurrence
+    of a field lies inside the record and inside its group's occurrence. A
+    value is checked against the field by its count of significant digits,
+    so no power of ten beyond the field's digits is ever computed.
+
 Every function is pure: the module reads nothing except layouts through
 ``harness.layouts``.
 """
@@ -82,6 +93,18 @@ TYPES = TEXT_TYPES | NUMERIC_TYPES
 
 # encode_record key that replaces the whole record image with a text.
 RAW_KEY = "@raw"
+
+# The most digit positions a numeric PICTURE holds, its P scaling positions
+# included: GnuCOBOL's largest numeric item (cobc refuses PIC 9(39),
+# PIC S9(5)V9(34) and PIC 9(5)P(34) with "numeric field cannot be larger
+# than 38 digits"). Leading P positions are held to the same bound.
+MAX_DIGIT_POSITIONS = 38
+
+# The longest record, and so the longest field, the codec accepts: 32760
+# bytes, the largest LRECL z/OS allows a fixed-length (RECFM=F or FB) data
+# set. The longest committed layout is 554 bytes (COMEN02Y) and the largest
+# MAXLRECL in app/catlg/LISTCAT.txt is 8185.
+MAX_RECORD_LENGTH = 32760
 
 _POSITIVE_OVERPUNCH = "{ABCDEFGHI"
 _NEGATIVE_OVERPUNCH = "}JKLMNOPQR"
@@ -143,7 +166,12 @@ class CodecError(HarnessError):
         if self.columns is not None:
             parts.append(f"columns {self.columns[0]}-{self.columns[1]}")
         context = f" [{', '.join(parts)}]" if parts else ""
-        super().__init__(f"{where}{reason} (value {value!r}){context}")
+        try:
+            shown = repr(value)
+        except ValueError:
+            # An int beyond Python's limit on int-to-text conversion.
+            shown = f"<{type(value).__name__} too long to show>"
+        super().__init__(f"{where}{reason} (value {shown}){context}")
 
     def with_context(
         self,
@@ -275,17 +303,40 @@ def _spec(field: Mapping[str, Any]) -> _Spec:
         isinstance(length, bool) or not isinstance(length, int) or length <= 0
     ):
         raise CodecError(label, length, "length must be a positive integer")
+    if length is not None and length > MAX_RECORD_LENGTH:
+        raise CodecError(
+            label,
+            length,
+            f"length must be at most {MAX_RECORD_LENGTH} bytes, the longest record accepted",
+        )
     if type_ in TEXT_TYPES:
         if type_ == "pointer" and length is None:
             length = 4
         return _Spec(label, type_, length, None, 0, False)
     digits = field.get("digits")
-    if isinstance(digits, bool) or not isinstance(digits, int) or not 1 <= digits <= 38:
-        raise CodecError(label, digits, "a numeric field needs digits between 1 and 38")
+    if (
+        isinstance(digits, bool)
+        or not isinstance(digits, int)
+        or not 1 <= digits <= MAX_DIGIT_POSITIONS
+    ):
+        raise CodecError(
+            label, digits, f"a numeric field needs digits between 1 and {MAX_DIGIT_POSITIONS}"
+        )
     scale = field.get("scale")
     scale = 0 if scale is None else scale
     if isinstance(scale, bool) or not isinstance(scale, int):
         raise CodecError(label, scale, "scale must be an integer")
+    # Leading P positions give a scale above digits, trailing ones a negative
+    # scale; either way digits and P positions together are at most
+    # MAX_DIGIT_POSITIONS.
+    if not digits - MAX_DIGIT_POSITIONS <= scale <= MAX_DIGIT_POSITIONS:
+        raise CodecError(
+            label,
+            scale,
+            f"scale must lie between {digits - MAX_DIGIT_POSITIONS} and {MAX_DIGIT_POSITIONS}: "
+            f"a PICTURE holds at most {MAX_DIGIT_POSITIONS} digit positions, "
+            "P scaling positions included",
+        )
     if type_ == "binary" and digits > 18:
         raise CodecError(label, digits, "a binary field holds at most 18 digits")
     expected = _numeric_length(type_, digits)
@@ -374,20 +425,27 @@ def _unscaled(spec: _Spec, value: Any) -> int:
     if not number.is_finite():
         raise CodecError(spec.label, value, "not a finite number")
     sign, digit_tuple, exponent = number.as_tuple()
-    magnitude = int("".join(str(digit) for digit in digit_tuple) or "0")
-    shift = exponent + spec.scale
-    if shift >= 0:
-        unscaled = magnitude * 10**shift
-    else:
-        unscaled, remainder = divmod(magnitude, 10**-shift)
-        if remainder:
-            raise CodecError(
-                spec.label, value, f"has more decimal places than the field's scale {spec.scale}"
-            )
-    if unscaled >= 10 ** spec.digits:
+    # The value's significant digits, its trailing zeros moved into the
+    # exponent. Both checks count digits, and the stored integer is built only
+    # once it fits: no power of ten beyond the field's digits (a Decimal may
+    # carry 1E+1000000000) and no integer from an unbounded digit string.
+    text = "".join(str(digit) for digit in digit_tuple)
+    significant = text.rstrip("0")
+    shift = exponent + len(text) - len(significant) + spec.scale
+    significant = significant.lstrip("0")
+    if not significant:
+        unscaled = 0
+    elif shift < 0:
+        # The last significant digit is not zero and lies below the scale.
+        raise CodecError(
+            spec.label, value, f"has more decimal places than the field's scale {spec.scale}"
+        )
+    elif len(significant) + shift > spec.digits:
         raise CodecError(
             spec.label, value, f"does not fit {spec.digits} digits at scale {spec.scale}"
         )
+    else:
+        unscaled = int(significant) * 10**shift
     negative = bool(sign) and unscaled != 0
     if negative and not spec.signed:
         raise CodecError(spec.label, value, "an unsigned field cannot hold a negative value")
@@ -601,23 +659,35 @@ class _Plan:
 def resolve_layout(layout: str | Mapping[str, Any]) -> Mapping[str, Any]:
     """A record layout dict from a layout name (anything
     ``harness.layouts.record`` accepts) or from a layout dict, which must hold
-    ``length`` and ``fields``."""
+    ``length`` and ``fields``. Either must be at most ``MAX_RECORD_LENGTH``
+    bytes long."""
+    record = layout
     if isinstance(layout, str):
         try:
-            return _layouts.record(layout)
+            record = _layouts.record(layout)
         except HarnessError as exc:
             raise CodecError(None, layout, str(exc), layout=layout) from None
-    if not isinstance(layout, Mapping):
+        if not isinstance(record, Mapping):
+            raise CodecError(
+                None, layout, "the layout file holds no record layout dict for it", layout=layout
+            )
+    elif not isinstance(layout, Mapping):
         raise CodecError(None, layout, "a layout is a layout name or a record layout dict")
-    fields = layout.get("fields")
-    length = layout.get("length")
+    fields = record.get("fields")
+    length = record.get("length")
     if not isinstance(fields, list) or not fields:
         raise CodecError(
-            None, layout.get("record"), "a record layout needs a non-empty 'fields' list"
+            None, record.get("record"), "a record layout needs a non-empty 'fields' list"
         )
     if isinstance(length, bool) or not isinstance(length, int) or length <= 0:
-        raise CodecError(None, layout.get("record"), "a record layout needs a positive 'length'")
-    return layout
+        raise CodecError(None, record.get("record"), "a record layout needs a positive 'length'")
+    if length > MAX_RECORD_LENGTH:
+        raise CodecError(
+            record.get("record"),
+            length,
+            f"a record layout is at most {MAX_RECORD_LENGTH} bytes long",
+        )
+    return record
 
 
 def _name_counts(fields: list[Mapping[str, Any]]) -> dict[str, int]:
@@ -681,7 +751,16 @@ def _build_plan(layout: str | Mapping[str, Any]) -> _Plan:
                 layout=label,
             )
         (children.setdefault(parent, []) if parent else roots).append(entry)
-        occurs = entry.get("occurs") or 0
+        occurs = entry.get("occurs")
+        for name, number in (
+            ("offset", entry.get("offset")),
+            ("occurs", 0 if occurs is None else occurs),
+        ):
+            if isinstance(number, bool) or not isinstance(number, int) or number < 0:
+                raise CodecError(
+                    path, number, f"{name} must be a non-negative integer", layout=label
+                )
+        occurs = occurs or 0
         dimensions[path] = dimensions.get(parent, ()) + ((occurs,) if occurs else ())
         ranges = ",".join(f"1..{count}" for count in dimensions[path])
         key = _key_for(entry, counts)
@@ -689,7 +768,11 @@ def _build_plan(layout: str | Mapping[str, Any]) -> _Plan:
     slots: list[_Slot] = []
 
     def visit(
-        entry: Mapping[str, Any], delta: int, indices: tuple[int, ...], redefining: bool
+        entry: Mapping[str, Any],
+        delta: int,
+        indices: tuple[int, ...],
+        redefining: bool,
+        group: _Slot | None,
     ) -> None:
         try:
             spec = _spec(entry)
@@ -703,37 +786,52 @@ def _build_plan(layout: str | Mapping[str, Any]) -> _Plan:
         redefining = redefining or bool(entry.get("redefines"))
         occurs = entry.get("occurs") or 0
         leaf = spec.type != "group" and entry["path"] not in children
+        # Every occurrence lies inside the record, or inside the occurrence of
+        # the group that holds it, so each field has at most one occurrence
+        # per byte of the record. Checked before any occurrence is laid out:
+        # the first occurrence outside is refused.
+        if group is None:
+            start, end = 0, length
+        else:
+            start, end = group.offset, group.offset + group.spec.length
+        first = entry["offset"] + delta
+        if first < start or first + max(occurs, 1) * spec.length > end:
+            outside = 1 if first < start else max(1, (end - first) // spec.length + 1)
+            offset = first + (outside - 1) * spec.length
+            where = (
+                f"the {length} bytes of {label}"
+                if group is None
+                else f"its group {group.qualified}, columns {start + 1}-{end}"
+            )
+            raise CodecError(
+                spec.label,
+                offset,
+                f"lies outside {where}",
+                layout=label,
+                columns=(offset + 1, offset + spec.length),
+                path=_subscripted(entry["path"], indices + ((outside,) if occurs else ())),
+            )
         for occurrence in range(1, occurs + 1) if occurs else (0,):
             sub_indices = indices + (occurrence,) if occurrence else indices
             sub_delta = delta + (occurrence - 1) * spec.length if occurrence else delta
             offset = entry["offset"] + sub_delta
-            if offset < 0 or offset + spec.length > length:
-                raise CodecError(
-                    spec.label,
-                    offset,
-                    f"lies outside the {length} bytes of {label}",
-                    layout=label,
-                    columns=(offset + 1, offset + spec.length),
-                    path=_subscripted(entry["path"], sub_indices),
-                )
             aliases = {_subscripted(key, sub_indices), _subscripted(entry["path"], sub_indices)}
-            slots.append(
-                _Slot(
-                    key=_subscripted(key, sub_indices),
-                    aliases=tuple(sorted(aliases)),
-                    path=entry["path"],
-                    indices=sub_indices,
-                    offset=offset,
-                    spec=spec,
-                    leaf=leaf,
-                    redefining=redefining,
-                )
+            slot = _Slot(
+                key=_subscripted(key, sub_indices),
+                aliases=tuple(sorted(aliases)),
+                path=entry["path"],
+                indices=sub_indices,
+                offset=offset,
+                spec=spec,
+                leaf=leaf,
+                redefining=redefining,
             )
+            slots.append(slot)
             for child in children.get(entry["path"], ()):
-                visit(child, sub_delta, sub_indices, redefining)
+                visit(child, sub_delta, sub_indices, redefining, slot)
 
     for root in roots:
-        visit(root, 0, (), False)
+        visit(root, 0, (), False, None)
     by_key: dict[str, _Slot] = {}
     for slot in slots:
         for alias in slot.aliases:

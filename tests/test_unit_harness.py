@@ -1,14 +1,39 @@
 """Harness self-tests.
 
 These check the instruments every business assertion depends on: the
-layouts against the copybooks and LISTCAT, the codecs, the EBCDIC fixture
+layouts against the copybooks and LISTCAT and the layout file's
+no-follow write, the codecs and their descriptor bounds, the EBCDIC fixture
 cross-check and the approved fixture sources, the frozen inventory, the
 scenario, baseline and result files
 against the closed id manifest and the scenario schema, the gap register and
-the seam rule, the configuration (markers, ``commands.yaml`` and the adapter
-contract), the baseline version-bump check and the protected-tree check,
-with the harness and adapter code that runs scenarios and records, compares
-and reports their outcomes.
+the seam rule, the configuration (markers, ``commands.yaml``, the adapter
+contract and the documented launch: the README's GnuCOBOL block, pasted into
+a shell without errexit, builds only a verified archive; the README launch
+and the workflow's Work root step start pytest only with
+``PYTEST_DEBUG_TEMPROOT`` naming a new owner-only folder of the work root,
+which the upload leaves out; the workflow uses exactly the four pinned action
+tags, whose Node processes take ``NODE_OPTIONS=--tls-min-v1.3`` from the
+job's env only), the baseline version-bump check and the protected-tree
+check, with the harness and adapter code that runs scenarios and records,
+compares and reports their outcomes: among it the scenario deadline over
+decoding, comparison, the diff and the record's text, the bounded reading of
+imported UniKix raw evidence, the binding of each ``validation.yaml`` to the
+``result.yaml`` it was judged from (a planted, copied or tampered verdict
+counts nowhere and ``--check`` names it), the refusal to regenerate, import
+or revalidate while a scenario file or ``validation.yaml`` cannot be read,
+the record of a run the schema check stops, which names the baseline
+version it stands against, the formula neutralization of the CSV reports'
+cells, the work-root admission (a root of the user's own that its owner can
+read, write and search and that no one else can write, a resolved path
+free of the characters a shell reads inside cobc's double quotes and of
+characters that are not printable and within the length limit, and under
+``unikix`` free of whitespace and quotes) with the fallback conftest and
+``capture.py`` take from a refused root, the runner's working directories
+made and filled through descriptors that follow no link, the build's
+compile paths relative to its build directory and its refusal of a cobc
+argument holding shell text, and the GnuCOBOL build's refusal of a unit id,
+compile flag or build destination that could leave its build directory and
+of a linked, shared-writable or swapped build cache directory.
 
 They are not inventory scenarios and never verify an inventory item on their
 own.
@@ -26,11 +51,13 @@ from __future__ import annotations
 
 import configparser
 import copy
+import csv
 import dataclasses
 import datetime
 import errno
 import functools
 import inspect
+import io
 import json
 import os
 import re
@@ -43,6 +70,8 @@ import sys
 import tempfile
 import threading
 import time
+import zipfile
+import zlib
 from collections import Counter
 from collections.abc import Callable, Iterator, Mapping
 from decimal import ROUND_HALF_UP, Decimal
@@ -58,7 +87,7 @@ if _TESTS_ROOT not in sys.path:
 
 import harness  # noqa: E402
 from adapters import base  # noqa: E402
-from adapters.gnucobol_batch import build, datasets, jobs  # noqa: E402
+from adapters.gnucobol_batch import build, datasets, jobs, utilities  # noqa: E402
 from adapters.gnucobol_batch.adapter import GnuCOBOLBatchAdapter  # noqa: E402
 from adapters.unikix import adapter as unikix_adapter  # noqa: E402
 from adapters.unikix import bpe, deploy, evidence, tpe  # noqa: E402
@@ -1395,6 +1424,152 @@ def test_evidence_writer_writes_a_conforming_record_that_reads_back_equal(
     assert results.record_problems(fields) == []
 
 
+# The folders above the scenario's evidence folder, relative to the case's
+# tests root: an existing one is checked before anything is created in it.
+EVIDENCE_ANCESTORS = [
+    pytest.param("reports", id="reports"),
+    pytest.param("reports/unikix", id="unikix"),
+    pytest.param(f"reports/unikix/{EVIDENCE_EXECUTION_ID}", id="execution"),
+]
+# Where a write that a link redirected would land: a folder of the case's
+# tests root outside reports/.
+EVIDENCE_ELSEWHERE = "elsewhere"
+EVIDENCE_FILES = (
+    evidence.DATASETS_DIR,
+    evidence.ENVIRONMENT_FILE,
+    evidence.RESULT_FILE,
+    evidence.SCREENS_FILE,
+    evidence.SYSOUT_DIR,
+)
+
+
+def _evidence_capture() -> evidence.Capture:
+    """A capture with a dataset and a sysout file in a folder of its own, so
+    a write creates every kind of evidence folder."""
+    return evidence.Capture(datasets={"USRSEC": b"\x00\x01abc"}, sysout={"1/SYSOUT": b"RC 0\n"})
+
+
+@pytest.mark.parametrize("umask", [0o002, 0o077, 0o477], ids=["umask-002", "umask-077", "umask-477"])
+def test_evidence_writer_sets_its_modes_whatever_the_umask(evidence_tests_root: Path, umask: int) -> None:
+    writer = evidence.EvidenceWriter(evidence_tests_root, EVIDENCE_EXECUTION_ID)
+    previous = os.umask(umask)
+    try:
+        writer.write(EVIDENCE_SCENARIO, _evidence_record(), _evidence_capture())
+    finally:
+        os.umask(previous)
+    scenario = _evidence_folder(evidence_tests_root).relative_to(evidence_tests_root).as_posix()
+    folders = (
+        "reports",
+        "reports/unikix",
+        f"reports/unikix/{EVIDENCE_EXECUTION_ID}",
+        scenario,
+        f"{scenario}/{evidence.DATASETS_DIR}",
+        f"{scenario}/{evidence.SYSOUT_DIR}",
+        f"{scenario}/{evidence.SYSOUT_DIR}/1",
+    )
+    files = (
+        f"{scenario}/{evidence.DATASETS_DIR}/USRSEC.bin",
+        f"{scenario}/{evidence.SYSOUT_DIR}/1/SYSOUT",
+        f"{scenario}/{evidence.SCREENS_FILE}",
+        f"{scenario}/{evidence.ENVIRONMENT_FILE}",
+        f"{scenario}/{evidence.RESULT_FILE}",
+    )
+    reports = evidence_tests_root / "reports"
+    modes = {
+        path.relative_to(evidence_tests_root).as_posix(): stat.S_IMODE(path.lstat().st_mode)
+        for path in (reports, *reports.rglob("*"))
+    }
+    assert modes == {**dict.fromkeys(folders, 0o755), **dict.fromkeys(files, 0o644)}
+
+
+@pytest.mark.parametrize(("before", "after"), [(0o777, 0o755), (0o730, 0o710)], ids=["0777", "0730"])
+@pytest.mark.parametrize("ancestor", EVIDENCE_ANCESTORS)
+def test_evidence_writer_takes_group_and_other_write_from_an_existing_ancestor(
+    evidence_tests_root: Path, ancestor: str, before: int, after: int
+) -> None:
+    folder = evidence_tests_root / ancestor
+    folder.mkdir(parents=True)
+    folder.chmod(before)
+    writer = evidence.EvidenceWriter(evidence_tests_root, EVIDENCE_EXECUTION_ID)
+    writer.write(EVIDENCE_SCENARIO, _evidence_record(), _evidence_capture())
+    assert stat.S_IMODE(folder.lstat().st_mode) == after
+    assert sorted(os.listdir(_evidence_folder(evidence_tests_root))) == sorted(EVIDENCE_FILES)
+
+
+@pytest.mark.parametrize("ancestor", EVIDENCE_ANCESTORS)
+def test_evidence_writer_refuses_a_linked_ancestor_and_writes_nothing_through_it(
+    evidence_tests_root: Path, ancestor: str
+) -> None:
+    link = evidence_tests_root / ancestor
+    link.parent.mkdir(parents=True, exist_ok=True)
+    elsewhere = evidence_tests_root / EVIDENCE_ELSEWHERE
+    elsewhere.mkdir()
+    link.symlink_to(elsewhere, target_is_directory=True)
+    before = _tree(evidence_tests_root)
+    writer = evidence.EvidenceWriter(evidence_tests_root, EVIDENCE_EXECUTION_ID)
+    with pytest.raises(HarnessError) as caught:
+        writer.write(EVIDENCE_SCENARIO, _evidence_record(), _evidence_capture())
+    assert str(caught.value) == (
+        f"{harness.display_path(link)} is not a folder of its own: evidence is never written "
+        f"through a symbolic link or over a file"
+    )
+    assert list(elsewhere.iterdir()) == []
+    assert _tree(evidence_tests_root) == before
+
+
+def test_evidence_writer_refuses_an_ancestor_another_user_owns(
+    evidence_tests_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Another user's folder, as the writer sees it: the effective uid it
+    # compares the owner with is one the folder's owner does not have, so no
+    # chown (and no root) is needed.
+    reports = evidence_tests_root / "reports"
+    reports.mkdir()
+    reports.chmod(0o777)
+    owner = reports.lstat().st_uid
+    before = _tree(evidence_tests_root)
+    monkeypatch.setattr(evidence.os, "geteuid", lambda: owner + 1)
+    writer = evidence.EvidenceWriter(evidence_tests_root, EVIDENCE_EXECUTION_ID)
+    with pytest.raises(HarnessError) as caught:
+        writer.write(EVIDENCE_SCENARIO, _evidence_record(), _evidence_capture())
+    assert str(caught.value) == (
+        f"{harness.display_path(reports)} is owned by uid {owner}, not {owner + 1}: evidence is "
+        f"written only into folders of its own user"
+    )
+    assert _tree(evidence_tests_root) == before
+    assert stat.S_IMODE(reports.lstat().st_mode) == 0o777
+
+
+def test_evidence_writer_writes_nothing_through_a_scenario_folder_swapped_for_a_link(
+    evidence_tests_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = _evidence_folder(evidence_tests_root)
+    moved = folder.with_name(f"{folder.name}.moved")
+    elsewhere = evidence_tests_root / EVIDENCE_ELSEWHERE
+    elsewhere.mkdir()
+    make_folder = os.mkdir
+    swapped: list[str] = []
+
+    def mkdir(path: str | os.PathLike[str], *args: object, **kwargs: object) -> None:
+        # Just before datasets/ is made in the claimed scenario folder, one
+        # who can write the execution folder moves the scenario folder aside
+        # and puts a link to a folder outside reports/ in its place.
+        if not swapped and os.path.basename(os.fspath(path)) == evidence.DATASETS_DIR:
+            os.rename(folder, moved)
+            os.symlink(elsewhere, folder, target_is_directory=True)
+            swapped.append(os.fspath(path))
+        make_folder(path, *args, **kwargs)
+
+    monkeypatch.setattr(evidence.os, "mkdir", mkdir)
+    writer = evidence.EvidenceWriter(evidence_tests_root, EVIDENCE_EXECUTION_ID)
+    writer.write(EVIDENCE_SCENARIO, _evidence_record(), _evidence_capture())
+    assert swapped
+    assert folder.is_symlink()
+    assert list(elsewhere.iterdir()) == []
+    assert sorted(os.listdir(moved)) == sorted(EVIDENCE_FILES)
+    assert load_yaml(moved / evidence.RESULT_FILE)["scenario_id"] == EVIDENCE_SCENARIO
+
+
 # baselines.write publishing one id whole, on a baselines folder in the
 # case's own work_root_case folder inside the session work root. A writer
 # child process (sys.executable -B with tests/ on its path, the case folder
@@ -1812,6 +1987,43 @@ def test_evidence_command_log_renders_every_field_but_the_elapsed_time() -> None
     assert all(unikix_env.LOG_ELAPSED_KEY in record for record in records)
 
 
+# A sourcing entry, logged by its own _record: what a sourced script printed
+# on stderr, nothing, or more than the limit, beside a stdout within or over it.
+UNIKIX_OVER_LIMIT = unikix_env.LOG_LIMIT_BYTES + 1
+
+
+@pytest.mark.parametrize(
+    ("stdout", "stderr", "truncated"),
+    [
+        pytest.param("", "batchenv sourced\n", None, id="printed"),
+        pytest.param("", "", None, id="printed-nothing"),
+        pytest.param("", "E" * UNIKIX_OVER_LIMIT, None, id="clipped-stderr"),
+        pytest.param("T" * UNIKIX_OVER_LIMIT, "E" * UNIKIX_OVER_LIMIT, ["stdout"], id="clipped-both"),
+    ],
+)
+def test_evidence_command_log_withholds_what_a_sourced_script_printed(
+    stdout: str, stderr: str, truncated: list[str] | None
+) -> None:
+    commands = unikix_env.CommandSet.load()
+    commands._record(
+        SimpleNamespace(vars={}), "run", "bpe_env", '. "$EBMHOME/batchenv" sys1', "/deployment/project", 0,
+        "completed", 0.5, stdout=stdout, stderr=stderr, sourcing=True,
+    )
+    records = commands.log
+    [shown] = yaml.safe_load_all(unikix_env.CommandSet.render_evidence_log(records))
+    expected = {
+        key: value for key, value in records[0].items() if key not in (unikix_env.LOG_ELAPSED_KEY, "truncated")
+    }
+    if stderr:
+        expected.update(stderr="", withheld=["stderr"])
+    if truncated:
+        expected["truncated"] = truncated
+    assert shown == expected
+    # The record keeps what the script printed, clipped to the limit.
+    assert records[0]["sourcing"] is True
+    assert records[0]["stderr"] == stderr[:unikix_env.LOG_LIMIT_BYTES]
+
+
 def test_unikix_write_evidence_writes_the_command_log_without_elapsed_times(
     evidence_tests_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1997,7 +2209,8 @@ def test_unikix_load_points_every_temporary_file_setting_at_the_deployment_tmp(
     assert "JDK_JAVA_OPTIONS" not in environment.vars
     deployment = environment.as_record()["deployment"]
     assert [deployment[name] for name in UNIKIX_TEMP_VARS] == [str(temp)] * 3
-    assert deployment["JAVA_TOOL_OPTIONS"] == f"-Xmx64m {owned}"
+    # environment.yaml shows the owned options as they are and every other one redacted.
+    assert deployment["JAVA_TOOL_OPTIONS"] == f"{unikix_env.REDACTED} {owned}"
     assert deployment["_JAVA_OPTIONS"] == owned
 
 
@@ -2028,6 +2241,165 @@ def test_unikix_load_refuses_jvm_options_with_an_unmatched_quote(unikix_temp_roo
     assert (caught.value.reason, caught.value.gap_id) == (
         f"{name} set by {env_file} has an unmatched quote",
         "GAP-MIS-009",
+    )
+
+
+# An operator's JVM property carrying a credential, and a token an operator's
+# environment file prints while sourced, each assembled from parts so that no
+# secret scanner reads them as one.
+UNIKIX_SECRET_PROPERTY = "-Dservice." + "password=" + "private-value"
+UNIKIX_SOURCING_TOKEN = "install-" + "token-" + "1234"
+# The name and the value of UNIKIX_SECRET_PROPERTY, as a property listing
+# shows them.
+UNIKIX_SECRET_NAME, UNIKIX_SECRET_VALUE = UNIKIX_SECRET_PROPERTY.removeprefix("-D").split("=", 1)
+# What env.redact is given: the owned options of a deployment under /work,
+# beside the secret property, a heap size and a quoted property.
+UNIKIX_REDACT_OWNED = f"-Djava.io.tmpdir=/work/unikix/case/tmp {UNIKIX_JVM_OWNED}"
+UNIKIX_REDACT_OPTIONS = f'{UNIKIX_SECRET_PROPERTY} -Xmx64m -Dlabel="x y" {UNIKIX_REDACT_OWNED}'
+UNIKIX_REDACT_VARS = {"JAVA_TOOL_OPTIONS": UNIKIX_REDACT_OPTIONS, "_JAVA_OPTIONS": UNIKIX_REDACT_OWNED}
+# What a listing may show that no hidden option sets: the secret property's
+# name inside a longer name (after a word character, "." or "-", or before
+# ".old") with its value, and the name with a longer value.
+UNIKIX_OTHER_PROPERTIES = (
+    f"x{UNIKIX_SECRET_NAME}={UNIKIX_SECRET_VALUE}\n    app.{UNIKIX_SECRET_NAME} = {UNIKIX_SECRET_VALUE}\n"
+    f"my-{UNIKIX_SECRET_NAME}={UNIKIX_SECRET_VALUE}\n    {UNIKIX_SECRET_NAME}.old = {UNIKIX_SECRET_VALUE}\n"
+    f"{UNIKIX_SECRET_NAME}={UNIKIX_SECRET_VALUE}s\n"
+)
+# Output as commands print it and as env.redact leaves it: {options} stands
+# for UNIKIX_REDACT_OPTIONS, {owned} for UNIKIX_REDACT_OWNED, {shown} for the
+# options as redacted, {r} for env.REDACTED.
+UNIKIX_REDACT_CASES = {
+    "hotspot-echo": (
+        "Picked up JAVA_TOOL_OPTIONS: {options}\nPicked up _JAVA_OPTIONS: {owned}\n",
+        "Picked up JAVA_TOOL_OPTIONS: {shown}\nPicked up _JAVA_OPTIONS: {owned}\n",
+    ),
+    # A variable the environment does not hold, which the launcher reads.
+    "launcher-note": (
+        "NOTE: Picked up JDK_JAVA_OPTIONS: -Dlauncher.key=k1 {owned}\r\nopenjdk 17\n",
+        "NOTE: Picked up JDK_JAVA_OPTIONS: {r} {owned}\r\nopenjdk 17\n",
+    ),
+    "set-x-trace": (
+        "+ JAVA_TOOL_OPTIONS='{options}'\n+ java -version\n",
+        "+ JAVA_TOOL_OPTIONS='{shown}'\n+ java -version\n",
+    ),
+    "env-listing": ("PATH=/usr/bin\nJAVA_TOOL_OPTIONS={options}\n", "PATH=/usr/bin\nJAVA_TOOL_OPTIONS={shown}\n"),
+    # An option as a JVM reads it, its quotes removed.
+    "decoded-option": ("property -Dlabel=x y set\n", "property {r} set\n"),
+    # An echo cut inside a quote, as LOG_LIMIT_BYTES may cut it.
+    "clipped-echo": ("Picked up JAVA_TOOL_OPTIONS: -Dcut='private", "Picked up JAVA_TOOL_OPTIONS: {r}"),
+    "owned-only": ("Picked up _JAVA_OPTIONS: {owned}\n", "Picked up _JAVA_OPTIONS: {owned}\n"),
+    "no-option": ("kixregion 12.0.0\n", "kixregion 12.0.0\n"),
+    # Words an option only begins: not an option of the environment.
+    "longer-words": ("-Xmx64mb -Dlabel=x yz\n", "-Xmx64mb -Dlabel=x yz\n"),
+    # A hidden -D option as java -XshowSettings:properties lists it, and as a
+    # properties listing does: its value hidden, its name kept.
+    "property-listing": (
+        f"    {UNIKIX_SECRET_NAME} = {UNIKIX_SECRET_VALUE}\n", f"    {UNIKIX_SECRET_NAME} = {{r}}\n"
+    ),
+    "properties-file": (f"{UNIKIX_SECRET_NAME}={UNIKIX_SECRET_VALUE}\n", f"{UNIKIX_SECRET_NAME}={{r}}\n"),
+    "other-property": (UNIKIX_OTHER_PROPERTIES, UNIKIX_OTHER_PROPERTIES),
+}
+
+
+@pytest.mark.parametrize(("text", "expected"), list(UNIKIX_REDACT_CASES.values()), ids=list(UNIKIX_REDACT_CASES))
+def test_unikix_redact_hides_every_jvm_option_but_the_owned_temporary_settings(text: str, expected: str) -> None:
+    r = unikix_env.REDACTED
+    values = {
+        "options": UNIKIX_REDACT_OPTIONS, "owned": UNIKIX_REDACT_OWNED, "shown": f"{r} {r} {r} {UNIKIX_REDACT_OWNED}",
+        "r": r,
+    }
+    redacted = unikix_env.redact(text.format(**values), UNIKIX_REDACT_VARS)
+    assert redacted == expected.format(**values)
+    assert UNIKIX_SECRET_PROPERTY not in redacted
+    # Applying it again changes nothing.
+    assert unikix_env.redact(redacted, UNIKIX_REDACT_VARS) == redacted
+
+
+@pytest.mark.parametrize(
+    ("value", "shown"),
+    [
+        pytest.param(UNIKIX_REDACT_OPTIONS, "{r} {r} {r} " + UNIKIX_REDACT_OWNED, id="operator-options"),
+        pytest.param(f"  {UNIKIX_REDACT_OWNED}\t", UNIKIX_REDACT_OWNED, id="owned-only"),
+        # Only the owned settings as written stand: a quoted one is not one of them.
+        pytest.param('-Djava.io.tmpdir="/a b" -XX:+PerfDisableSharedMem', "{r} -XX:+PerfDisableSharedMem", id="quoted"),
+        pytest.param(UNIKIX_UNMATCHED_JVM_OPTIONS, "{r}", id="unmatched-quote"),
+        pytest.param(" \t", "", id="blank"),
+    ],
+)
+def test_unikix_redact_jvm_options_shows_the_owned_temporary_settings_alone(value: str, shown: str) -> None:
+    redacted = unikix_env.redact_jvm_options(value)
+    assert redacted == shown.format(r=unikix_env.REDACTED)
+    assert unikix_env.redact_jvm_options(redacted) == redacted
+
+
+# A command that prints the JVM's echo of JAVA_TOOL_OPTIONS on stderr and the
+# variable itself on stdout.
+UNIKIX_ECHOES_JVM_OPTIONS = (
+    "printf 'Picked up JAVA_TOOL_OPTIONS: %s\\n' \"$JAVA_TOOL_OPTIONS\" >&2; printf '%s\\n' \"$JAVA_TOOL_OPTIONS\""
+)
+
+
+def test_unikix_evidence_holds_no_operator_jvm_option_and_no_sourcing_output(
+    unikix_temp_root: Path, evidence_tests_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    environment = _fake_unikix_environment(
+        unikix_temp_root, (f"JAVA_TOOL_OPTIONS='{UNIKIX_SECRET_PROPERTY}'", f"echo {UNIKIX_SOURCING_TOKEN}")
+    )
+    owned = f"-Djava.io.tmpdir={environment.deployment_root / 'tmp'} {UNIKIX_JVM_OWNED}"
+    shown = f"{unikix_env.REDACTED} {owned}"
+    # Containment is unchanged: every command still gets the operator's option.
+    assert environment.vars["JAVA_TOOL_OPTIONS"] == f"{UNIKIX_SECRET_PROPERTY} {owned}"
+    # A registry file of its own, which environment.yaml hashes.
+    commands_file = unikix_temp_root / "commands.yaml"
+    commands_file.write_text(dump_yaml({"schema_version": 1, "entries": {"temp_case": {
+        "action": "echo the JVM options", "command": UNIKIX_ECHOES_JVM_OPTIONS, "probe": "true", "timeout_s": 10,
+        "gap": "GAP-MIS-003", "status": "unconfirmed", "source": "unit case", "notes": "unit case",
+    }}}), encoding="utf-8")
+    commands = unikix_env.CommandSet.load(commands_file)
+    assert commands.run("temp_case", environment).stdout == f"{UNIKIX_SECRET_PROPERTY} {owned}\n"
+    ran = commands.log[-1]
+    assert (ran["stdout"], ran["stderr"]) == (f"{shown}\n", f"Picked up JAVA_TOOL_OPTIONS: {shown}\n")
+    record = environment.as_record()
+    assert (record["deployment"]["JAVA_TOOL_OPTIONS"], record["deployment"]["_JAVA_OPTIONS"]) == (shown, owned)
+    assert record["sourcing_log"] == str(environment.log_dir / "sourcing.log")
+    assert "sourcing_output" not in record
+    # The evidence the adapter writes of them.
+    adapter = UniKixAdapter(work_root=evidence_tests_root, repo_root=Path(_TESTS_ROOT).parent)
+    adapter.execution_id = EVIDENCE_EXECUTION_ID
+    adapter._env, adapter._commands = environment, commands
+    adapter._capture, adapter._capture_id = evidence.Capture(), EVIDENCE_SCENARIO
+    monkeypatch.setattr(unikix_adapter.harness, "TESTS_ROOT", evidence_tests_root)
+    written = _evidence_record()
+    assert adapter.write_evidence(scenarios.get(EVIDENCE_SCENARIO), written) == written["evidence_path"]
+    tree = _tree(_evidence_folder(evidence_tests_root))
+    files = {name: data for name, data in tree.items() if isinstance(data, bytes)}
+    assert {evidence.ENVIRONMENT_FILE, EVIDENCE_COMMANDS_LOG} <= set(files)
+    texts = {
+        "as_record": dump_yaml(record),
+        "evidence log": unikix_env.CommandSet.render_evidence_log(commands.log),
+        "in-memory log": dump_yaml(commands.log),
+        "logs/commands.log": (environment.log_dir / "commands.log").read_text(encoding="utf-8"),
+        **{name: data.decode("utf-8") for name, data in files.items()},
+    }
+    for name, text in texts.items():
+        assert UNIKIX_SECRET_PROPERTY not in text and UNIKIX_SOURCING_TOKEN not in text, name
+    assert shown in texts[EVIDENCE_COMMANDS_LOG] and shown in texts[evidence.ENVIRONMENT_FILE]
+    # What the file printed stays in memory and in the work root's sourcing.log.
+    assert UNIKIX_SOURCING_TOKEN in environment.sourcing_output
+    sourcing = (environment.log_dir / "sourcing.log").read_text(encoding="utf-8")
+    assert sourcing.startswith(f"--- {environment.env_file} ---\n") and f"{UNIKIX_SOURCING_TOKEN}\n" in sourcing
+
+
+def test_unikix_build_log_shows_no_operator_jvm_option(unikix_temp_root: Path) -> None:
+    environment = _fake_unikix_environment(unikix_temp_root, (f"JAVA_TOOL_OPTIONS='{UNIKIX_SECRET_PROPERTY}'",))
+    shown = f"{unikix_env.REDACTED} -Djava.io.tmpdir={environment.deployment_root / 'tmp'} {UNIKIX_JVM_OWNED}"
+    commands = _one_command(unikix_temp_root, UNIKIX_ECHOES_JVM_OPTIONS, "true")
+    log = environment.log_dir / "COSGN00C.log"
+    deploy._run_build(commands, environment, "temp_case", log, deploy._Progress(lambda: 60.0), member="COSGN00C")
+    assert log.read_text(encoding="utf-8") == (
+        "--- temp_case exit status 0 ---\n"
+        f"--- stdout ---\n{shown}\n"
+        f"--- stderr ---\nPicked up JAVA_TOOL_OPTIONS: {shown}\n"
     )
 
 
@@ -2335,9 +2707,10 @@ def test_unikix_process_start_refuses_what_changed_since_load(unikix_temp_root: 
     temp = environment.deployment_root / "tmp"
     outside = _outside(unikix_temp_root)
     if change.endswith("-link"):
-        # The temporary directory or the log folder, swapped for a link out.
+        # The temporary directory or the log folder, which holds sourcing.log
+        # since load, swapped for a link out.
         linked = environment.deployment_root / change.removesuffix("-link")
-        linked.rmdir()
+        shutil.rmtree(linked)
         linked.symlink_to(outside, target_is_directory=True)
         message = f"deployment directory {linked} is a symbolic link; remove it or choose another work root"
     else:
@@ -2372,7 +2745,7 @@ def test_unikix_command_log_is_never_appended_through_a_link(unikix_temp_root: P
 def test_unikix_sources_batchenv_by_running_the_bpe_env_entry(unikix_temp_root: Path) -> None:
     environment = _fake_unikix_environment(unikix_temp_root)
     root = environment.deployment_root
-    _fake_runtime_scripts(environment)
+    paths = _fake_runtime_scripts(environment)
     commands = _bpe_env_commands(unikix_temp_root, command=UNIKIX_BPE_ENV_OVERRIDE)
     assert environment.source_runtime_scripts(commands) == {
         "userenv": "sourced",
@@ -2394,6 +2767,17 @@ def test_unikix_sources_batchenv_by_running_the_bpe_env_entry(unikix_temp_root: 
     assert records[1]["stdout"] == "" and "batchenv sourced" in records[1]["stderr"]
     logged = (environment.log_dir / "commands.log").read_text(encoding="utf-8")
     assert "BATCHENV_ARGS" not in logged and str(root / "bpenode" / "submit") not in logged
+    # What batchenv printed is a sourcing entry's: the evidence copy withholds it.
+    assert records[1]["sourcing"] is True and "sourcing" not in records[0]
+    shown = list(yaml.safe_load_all(unikix_env.CommandSet.render_evidence_log(records)))
+    assert [(entry["stderr"], entry.get("withheld")) for entry in shown] == [
+        (records[0]["stderr"], None),
+        ("", ["stderr"]),
+    ]
+    assert "batchenv sourced" in records[1]["stderr"]
+    # It goes to the work root's sourcing.log too.
+    sourcing = (environment.log_dir / "sourcing.log").read_text(encoding="utf-8")
+    assert f"--- {paths['batchenv']} ---\nbatchenv sourced\n" in sourcing
 
 
 @pytest.mark.parametrize(
@@ -2539,6 +2923,518 @@ def test_unikix_deploy_refuses_userenv_before_region_install_sources_it(
     # Nothing userenv sets was merged.
     assert environment.generation == generation and "USERENV_SEEN" not in environment.vars
     assert environment.vars["TMPDIR"] == str(environment.temp_dir)
+
+
+# deploy.extract_zip on a fake repository root whose zip is crafted with
+# zipfile, under bounds lowered so the zips stay tiny. UNIKIX_ZIP_AT_BOUNDS
+# meets the entry, member and total bounds exactly: 8 entries, and files to
+# extract holding 128 bytes, none over 64. Its __MACOSX/ and .DS_Store
+# entries count as entries, while their 128 bytes, never extracted, count
+# toward no size.
+UNIKIX_ZIP_BOUNDS = {
+    "_ZIP_MAX_ARCHIVE_BYTES": 2048,
+    "_ZIP_MAX_MEMBER_BYTES": 64,
+    "_ZIP_MAX_TOTAL_BYTES": 128,
+    "_ZIP_MAX_ENTRIES": 8,
+}
+UNIKIX_ZIP_AT_BOUNDS = {
+    "migrated_app/": b"",
+    "migrated_app/cbl/": b"",
+    "migrated_app/cbl/A.cbl": b"A" * 64,
+    "migrated_app/cbl/B.cbl": b"B" * 64,
+    "migrated_app/cbl/C.cbl": b"",
+    "migrated_app/.DS_Store": b"D" * 64,
+    "__MACOSX/": b"",
+    "__MACOSX/migrated_app/._A.cbl": b"M" * 64,
+}
+UNIKIX_ZIP_EXTRACTED = [
+    "migrated_app", "migrated_app/cbl",
+    "migrated_app/cbl/A.cbl", "migrated_app/cbl/B.cbl", "migrated_app/cbl/C.cbl",
+]
+# What a reuse compares at a time, so a file of 64 bytes takes four blocks.
+UNIKIX_ZIP_COMPARE_BLOCK = 16
+
+
+def _crafted_unikix_zip(repo: Path, members: Mapping[str, bytes], comment: bytes = b"") -> Path:
+    """Write ``members``, in order, with ``comment`` as the UniKix zip of the
+    fake repository root ``repo``; return the zip's path."""
+    path = deploy.zip_path(repo)
+    path.parent.mkdir(parents=True)
+    with zipfile.ZipFile(path, "w") as archive:
+        for name, data in members.items():
+            archive.writestr(name, data)
+        archive.comment = comment
+    return path
+
+
+def _bounded_work_root(case_root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """``<case_root>/work``, made 0700 so that it passes extract_zip's
+    ownership check whatever the umask, with deploy's zip bounds lowered to
+    UNIKIX_ZIP_BOUNDS. Under a session work root whose path holds
+    whitespace or a quote, which extract_zip refuses as a work root, the
+    case is skipped."""
+    work = case_root / "work"
+    if _holds_jvm_unsafe_text(os.path.abspath(work)):
+        pytest.skip(UNIKIX_UNSAFE_ROOT_SKIP)
+    work.mkdir(mode=0o700)
+    work.chmod(0o700)
+    for name, value in UNIKIX_ZIP_BOUNDS.items():
+        monkeypatch.setattr(deploy, name, value)
+    return work
+
+
+@pytest.mark.parametrize(
+    ("members", "comment", "refusal"),
+    [
+        pytest.param(
+            UNIKIX_ZIP_AT_BOUNDS, b"#" * 2048, "holds more than 2048 bytes, the most the zip may hold",
+            id="archive",
+        ),
+        # A skipped entry counts.
+        pytest.param(
+            {**UNIKIX_ZIP_AT_BOUNDS, "__MACOSX/migrated_app/._B.cbl": b""}, b"",
+            "holds 9 entries, more than 8, the most it may hold",
+            id="entries",
+        ),
+        pytest.param(
+            {**UNIKIX_ZIP_AT_BOUNDS, "migrated_app/cbl/A.cbl": b"A" * 65, "migrated_app/cbl/B.cbl": b"B" * 63},
+            b"",
+            "holds unsafe entries: 'migrated_app/cbl/A.cbl' is 65 bytes, more than 64, the most one entry may hold",
+            id="member",
+        ),
+        pytest.param(
+            {**UNIKIX_ZIP_AT_BOUNDS, "migrated_app/cbl/C.cbl": b"C"}, b"",
+            "holds unsafe entries: the entries to extract hold 129 bytes, more than 128, the most they may hold "
+            "together",
+            id="total",
+        ),
+    ],
+)
+def test_unikix_extract_zip_refuses_a_zip_past_a_bound_before_writing(
+    unikix_temp_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    members: dict[str, bytes],
+    comment: bytes,
+    refusal: str,
+) -> None:
+    repo = unikix_temp_root / "repo"
+    _crafted_unikix_zip(repo, members, comment)
+    work = _bounded_work_root(unikix_temp_root, monkeypatch)
+    with pytest.raises(HarnessError) as caught:
+        deploy.extract_zip(work, repo)
+    assert str(caught.value) == f"{deploy.ZIP_RELPATH} {refusal}"
+    # Only the lock taken first: no extraction, temporary sibling or marker.
+    assert os.listdir(work) == [f"{deploy.ZIP_DIR_NAME}.lock"]
+
+
+def test_unikix_extract_zip_reuse_refuses_a_file_of_other_bytes_of_its_size(
+    unikix_deploy_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = unikix_deploy_root / "repo"
+    path = _crafted_unikix_zip(repo, UNIKIX_ZIP_AT_BOUNDS)
+    work = _bounded_work_root(unikix_deploy_root, monkeypatch)
+    # The archive bound is met exactly too.
+    monkeypatch.setattr(deploy, "_ZIP_MAX_ARCHIVE_BYTES", path.stat().st_size)
+    monkeypatch.setattr(deploy, "_COMPARE_BLOCK_BYTES", UNIKIX_ZIP_COMPARE_BLOCK)
+    target = deploy.extract_zip(work, repo)
+    assert sorted(entry.relative_to(target).as_posix() for entry in target.rglob("*")) == UNIKIX_ZIP_EXTRACTED
+    assert deploy.extract_zip(work, repo) == target
+    # Other bytes in the last of its four blocks, the size and mode kept.
+    tampered = target / "migrated_app" / "cbl" / "B.cbl"
+    tampered.chmod(0o644)
+    tampered.write_bytes(b"B" * 63 + b"b")
+    tampered.chmod(0o444)
+    with pytest.raises(HarnessError) as caught:
+        deploy.extract_zip(work, repo)
+    assert str(caught.value) == (
+        f"{target} does not match {deploy.ZIP_RELPATH}: migrated_app/cbl/B.cbl differs from its zip member; "
+        "remove it or choose another work root"
+    )
+
+
+@pytest.mark.parametrize(
+    ("content", "same"),
+    [
+        pytest.param(b"B" * 64, True, id="equal"),
+        pytest.param(b"b" + b"B" * 63, False, id="differs-in-the-first-block"),
+        pytest.param(b"B" * 63 + b"b", False, id="differs-in-the-last-block"),
+        pytest.param(b"B" * 63, False, id="ends-before-the-member"),
+        pytest.param(b"B" * 65, False, id="holds-a-byte-beyond-the-member"),
+    ],
+)
+def test_unikix_same_bytes_compares_a_file_with_its_member_block_by_block(
+    unikix_temp_root: Path, monkeypatch: pytest.MonkeyPatch, content: bytes, same: bool
+) -> None:
+    monkeypatch.setattr(deploy, "_COMPARE_BLOCK_BYTES", UNIKIX_ZIP_COMPARE_BLOCK)
+    path = _crafted_unikix_zip(unikix_temp_root / "repo", UNIKIX_ZIP_AT_BOUNDS)
+    extracted = unikix_temp_root / "B.cbl"
+    extracted.write_bytes(content)
+    with zipfile.ZipFile(path) as archive:
+        assert deploy._same_bytes(extracted, archive, archive.getinfo("migrated_app/cbl/B.cbl")) is same
+
+
+@pytest.mark.parametrize(
+    ("bound", "refusal"),
+    [
+        pytest.param(
+            "_ZIP_MAX_MEMBER_BYTES", "{shown}:{member} is {size} bytes, more than {bound}, the most a member may hold",
+            id="member",
+        ),
+        pytest.param(
+            "_ZIP_MAX_ARCHIVE_BYTES", "{shown} is {size} bytes, more than {bound}, the most the zip may hold",
+            id="archive",
+        ),
+    ],
+)
+def test_inventory_zip_member_refuses_a_zip_or_member_past_its_bound(
+    unikix_temp_root: Path, monkeypatch: pytest.MonkeyPatch, bound: str, refusal: str
+) -> None:
+    content = b"F" * 64
+    shown, member = inventory_tools.UNIKIX_ZIP, inventory_tools.FCT_MEMBER
+    path = _crafted_unikix_zip(unikix_temp_root / "repo", {member: content})
+    bounds = {"_ZIP_MAX_ARCHIVE_BYTES": path.stat().st_size, "_ZIP_MAX_MEMBER_BYTES": len(content)}
+    for name, value in bounds.items():
+        monkeypatch.setattr(inventory_tools, name, value)
+    # At both bounds the member is read.
+    assert inventory_tools._zip_member(path, shown, member) == content
+    monkeypatch.setattr(inventory_tools, bound, bounds[bound] - 1)
+    with pytest.raises(inventory_tools.InventoryError) as caught:
+        inventory_tools._zip_member(path, shown, member)
+    assert str(caught.value) == refusal.format(
+        shown=shown, member=member, size=bounds[bound], bound=bounds[bound] - 1
+    )
+
+
+# The source identity readers of the UniKix zip, adapters/unikix/adapter.py
+# _zip_index and harness/report.py _zip_members and _zip_units, on crafted
+# zips under the UNIKIX_ZIP_BOUNDS bounds, members read 16 bytes at a time.
+# Each holds every member but directories and __MACOSX/ entries, a .DS_Store
+# included, to the bounds, so UNIKIX_IDENTITY_ZIP_AT_BOUNDS meets the entry,
+# member and total bounds exactly: 8 entries, and members holding 128 bytes,
+# none over 64. A.cbl COPYs the copybook B, a reference _zip_index and
+# _zip_units read from its text.
+UNIKIX_IDENTITY_COPY_LINE = b"       COPY B."
+UNIKIX_IDENTITY_ZIP_AT_BOUNDS = {
+    "migrated_app/": b"",
+    "migrated_app/cbl/": b"",
+    "migrated_app/cbl/A.cbl": UNIKIX_IDENTITY_COPY_LINE.ljust(63) + b"\n",
+    "migrated_app/cpy/B": b"B" * 48,
+    "migrated_app/cbl/C.cbl": b"",
+    "migrated_app/.DS_Store": b"D" * 16,
+    "__MACOSX/": b"",
+    "__MACOSX/migrated_app/._A.cbl": b"M" * 64,
+}
+UNIKIX_IDENTITY_HASHED = (
+    "migrated_app/cbl/A.cbl", "migrated_app/cpy/B", "migrated_app/cbl/C.cbl", "migrated_app/.DS_Store",
+)
+UNIKIX_IDENTITY_READ_BLOCK = 16
+# Each reader by name: the module holding its bounds, and the name of its read block there.
+UNIKIX_IDENTITY_READERS = {
+    "adapter": (deploy, "_COMPARE_BLOCK_BYTES"),
+    "report": (report, "_ZIP_READ_BLOCK_BYTES"),
+    "units": (report, "_ZIP_READ_BLOCK_BYTES"),
+}
+UNIKIX_IDENTITY_REFUSALS = [
+    pytest.param({}, b"#" * 2048, "holds more than 2048 bytes, the most the zip may hold", id="archive"),
+    # A skipped entry counts.
+    pytest.param(
+        {"__MACOSX/migrated_app/._B.cbl": b""}, b"", "holds 9 entries, more than 8, the most it may hold", id="entries"
+    ),
+    pytest.param(
+        {"migrated_app/cbl/A.cbl": UNIKIX_IDENTITY_COPY_LINE.ljust(64) + b"\n", "migrated_app/cpy/B": b"B" * 47},
+        b"",
+        "holds members past a size bound: 'migrated_app/cbl/A.cbl' is 65 bytes, more than 64, the most one member "
+        "may hold",
+        id="member",
+    ),
+    # A .DS_Store is hashed, so its bytes count.
+    pytest.param(
+        {"migrated_app/cbl/C.cbl": b"C"},
+        b"",
+        "holds members past a size bound: the members hold 129 bytes, more than 128, the most they may hold together",
+        id="total",
+    ),
+]
+
+
+def _identity_bounds(monkeypatch: pytest.MonkeyPatch, reader: str, archive_bytes: int | None = None) -> None:
+    """Lower the zip bounds of ``reader`` to UNIKIX_ZIP_BOUNDS, its archive
+    bound to ``archive_bytes`` when given, and its read block to
+    UNIKIX_IDENTITY_READ_BLOCK."""
+    module, block = UNIKIX_IDENTITY_READERS[reader]
+    for name, value in UNIKIX_ZIP_BOUNDS.items():
+        monkeypatch.setattr(module, name, value)
+    if archive_bytes is not None:
+        monkeypatch.setattr(module, "_ZIP_MAX_ARCHIVE_BYTES", archive_bytes)
+    monkeypatch.setattr(module, block, UNIKIX_IDENTITY_READ_BLOCK)
+
+
+class _CountedReads:
+    """A file the reader under test opened, recording the length of each read."""
+
+    def __init__(self, handle: io.BufferedReader, counted: list[int]) -> None:
+        self._handle = handle
+        self._counted = counted
+
+    def __enter__(self) -> "_CountedReads":
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self._handle.close()
+
+    def read(self, size: int = -1) -> bytes:
+        data = self._handle.read(size)
+        self._counted.append(len(data))
+        return data
+
+
+@pytest.mark.parametrize("reader", sorted(UNIKIX_IDENTITY_READERS))
+@pytest.mark.parametrize(("changes", "comment", "refusal"), UNIKIX_IDENTITY_REFUSALS)
+def test_unikix_zip_identity_readers_refuse_a_zip_past_a_bound_before_reading_a_member(
+    unikix_temp_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    changes: dict[str, bytes],
+    comment: bytes,
+    refusal: str,
+    reader: str,
+) -> None:
+    path = _crafted_unikix_zip(unikix_temp_root / "repo", {**UNIKIX_IDENTITY_ZIP_AT_BOUNDS, **changes}, comment)
+    digest, size = sha256_file(path), path.stat().st_size
+    archive_bound = UNIKIX_ZIP_BOUNDS["_ZIP_MAX_ARCHIVE_BYTES"]
+    _identity_bounds(monkeypatch, reader)
+    counted: list[int] = []
+    module = unikix_adapter if reader == "adapter" else report
+    monkeypatch.setattr(module, "open", lambda *args, **kwargs: _CountedReads(open(*args, **kwargs), counted),
+                        raising=False)
+
+    def refuse(*args: object, **kwargs: object) -> None:
+        raise AssertionError("the zip was read past a bound")
+
+    # No member is opened; a zip past the archive bound is never parsed.
+    monkeypatch.setattr(zipfile.ZipFile, "open", refuse)
+    if size > archive_bound:
+        monkeypatch.setattr(zipfile.ZipFile, "__init__", refuse)
+    if reader == "adapter":
+        with pytest.raises(HarnessError) as caught:
+            unikix_adapter._zip_index(str(path), digest)
+        assert type(caught.value) is HarnessError
+        assert str(caught.value) == f"{deploy.ZIP_RELPATH} {refusal}"
+    else:
+        read = report._zip_members if reader == "report" else report._zip_units
+        with pytest.raises(report.ReportError) as caught:
+            read(digest, str(path))
+        assert str(caught.value) == f"{report.display_path(path)} {refusal}"
+    # One read of the zip, of at most one byte past the archive bound.
+    assert counted == [min(size, archive_bound + 1)]
+    if reader == "report":
+        assert report.zip_identity(path) is None
+
+
+@pytest.mark.parametrize("reader", sorted(UNIKIX_IDENTITY_READERS))
+def test_unikix_zip_identity_readers_refuse_other_bytes_than_their_digest_before_parsing(
+    unikix_temp_root: Path, monkeypatch: pytest.MonkeyPatch, reader: str
+) -> None:
+    path = _crafted_unikix_zip(unikix_temp_root / "repo", UNIKIX_IDENTITY_ZIP_AT_BOUNDS)
+    digest = sha256_file(path)
+    # Another zip takes its place once its digest is taken: each reader hashes
+    # the bytes it reads and refuses them before zipfile parses any.
+    other = _crafted_unikix_zip(
+        unikix_temp_root / "other", {**UNIKIX_IDENTITY_ZIP_AT_BOUNDS, "migrated_app/cpy/B": b"b" * 48}
+    )
+    path.write_bytes(other.read_bytes())
+
+    def refuse(*args: object, **kwargs: object) -> None:
+        raise AssertionError("a zip of other bytes was parsed")
+
+    monkeypatch.setattr(zipfile.ZipFile, "__init__", refuse)
+    shown = report.display_path(path)
+    if reader == "adapter":
+        with pytest.raises(HarnessError) as caught:
+            unikix_adapter._zip_index(str(path), digest)
+        assert type(caught.value) is HarnessError
+        assert str(caught.value) == f"{deploy.ZIP_RELPATH} changed while its source identity was read"
+    elif reader == "report":
+        with pytest.raises(report.ReportError) as caught:
+            report._zip_members(digest, str(path))
+        assert str(caught.value) == f"{shown} changed while it was read"
+    else:
+        message = f"{shown} is not the zip whose sha256 is {digest}"
+        with pytest.raises(report.ReportError) as caught:
+            report._zip_units(digest, str(path))
+        assert str(caught.value) == message
+        # identity_problem's derivation of the units a run executes reports it, never raising.
+        monkeypatch.setattr(report, "UNIKIX_ZIP", path)
+        assert report._required_units(SimpleNamespace(id="SWAPPED"), digest) == (
+            set(), f"the units SWAPPED executes cannot be derived: {report._clip(message, 300)}"
+        )
+
+
+
+def test_unikix_zip_identity_readers_hash_each_member_a_block_at_a_time(
+    unikix_temp_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _crafted_unikix_zip(unikix_temp_root / "repo", UNIKIX_IDENTITY_ZIP_AT_BOUNDS)
+    digest = sha256_file(path)
+    expected = {name: harness.sha256_hex(UNIKIX_IDENTITY_ZIP_AT_BOUNDS[name]) for name in UNIKIX_IDENTITY_HASHED}
+    # The archive bound is met exactly too.
+    for reader in UNIKIX_IDENTITY_READERS:
+        _identity_bounds(monkeypatch, reader, path.stat().st_size)
+    requested: list[int] = []
+    read = zipfile.ZipExtFile.read
+
+    def recorded(self: zipfile.ZipExtFile, n: int = -1) -> bytes:
+        requested.append(n)
+        return read(self, n)
+
+    monkeypatch.setattr(zipfile.ZipExtFile, "read", recorded)
+    index = unikix_adapter._zip_index(str(path), digest)
+    assert dict(index.hashes) == expected
+    assert dict(index.references) == {
+        "migrated_app/cbl/A.cbl": frozenset({"migrated_app/cpy/B"}),
+        "migrated_app/cpy/B": frozenset(),
+        "migrated_app/cbl/C.cbl": frozenset(),
+    }
+    assert report.zip_identity(path) == (digest, expected)
+    units = report._zip_units(digest, str(path))
+    assert units.names == frozenset(UNIKIX_IDENTITY_HASHED)
+    assert units.references == dict(index.references)
+    # Each reader reads every member it needs a block at a time until an
+    # empty block, never whole: A.cbl in 5 reads, B in 4, C.cbl in 1 and
+    # .DS_Store in 2, which _zip_units, reading programs and copybooks only,
+    # does not read.
+    assert requested == [UNIKIX_IDENTITY_READ_BLOCK] * 34
+
+
+def test_unikix_zip_identity_readers_hash_the_committed_zip_as_whole_member_reads_do() -> None:
+    repo = Path(_TESTS_ROOT).parent
+    path, digest = deploy.zip_path(repo), deploy.zip_sha256(repo)
+    with zipfile.ZipFile(path) as archive:
+        whole = {
+            info.filename: harness.sha256_hex(archive.read(info))
+            for info in archive.infolist()
+            if not info.is_dir() and not info.filename.startswith("__MACOSX/")
+        }
+    assert len(whole) == 183
+    index = unikix_adapter._zip_index(str(path), digest)
+    assert dict(index.hashes) == whole
+    # The references read from the streamed texts are those report.py reads whole.
+    assert dict(index.references) == report._zip_units(digest, str(path)).references
+    assert report.zip_identity(path) == (digest, whole)
+    # The committed UniKix-copy source identities name these very hashes.
+    identities = [
+        manifest["source_identity"]
+        for manifest in map(load_yaml, sorted(BASELINES_DIR.glob("*/manifest.yaml")))
+        if (manifest.get("source_identity") or {}).get("tree") == "unikix-copy"
+    ]
+    assert len(identities) == 3
+    for identity in identities:
+        assert identity["zip_sha256"] == digest
+        assert {unit: whole.get(unit) for unit in identity["units"]} == identity["units"]
+
+
+# The same readers on a zip whose first member, A.cbl, deflated, is damaged
+# as each case names, followed by the copybook B, stored. Each case gives
+# the error zipfile itself raises (one of inventory_tools._ZIP_ERRORS) and
+# where harness/report.py meets it: at A.cbl's read, or at the parse of the
+# central directory for a name it cannot decode.
+UNIKIX_IDENTITY_DAMAGED = "migrated_app/cbl/A.cbl"
+UNIKIX_IDENTITY_AT_MEMBER = "cannot read {member!r} from {shown}: {reason}"
+UNIKIX_IDENTITY_AT_PARSE = "cannot read {shown}: {reason}"
+UNIKIX_IDENTITY_DAMAGES = [
+    # Its compressed bytes all 0xff: a final block of the reserved type 11.
+    pytest.param("corrupt-deflate", zlib.error, UNIKIX_IDENTITY_AT_MEMBER, id="corrupt-deflate"),
+    pytest.param("unsupported-compression", NotImplementedError, UNIKIX_IDENTITY_AT_MEMBER,
+                 id="unsupported-compression"),
+    pytest.param("encrypted", RuntimeError, UNIKIX_IDENTITY_AT_MEMBER, id="encrypted"),
+    pytest.param("bad-crc", zipfile.BadZipFile, UNIKIX_IDENTITY_AT_MEMBER, id="bad-crc"),
+    pytest.param("undecodable-name", UnicodeDecodeError, UNIKIX_IDENTITY_AT_PARSE, id="undecodable-name"),
+]
+
+
+def _damaged_unikix_zip(repo: Path, damage: str) -> Path:
+    """Write the UniKix zip of the fake repository root ``repo``:
+    UNIKIX_IDENTITY_DAMAGED, deflated and damaged as ``damage`` names
+    (UNIKIX_IDENTITY_DAMAGES), then the copybook B, stored. Return its path."""
+    path = deploy.zip_path(repo)
+    path.parent.mkdir(parents=True)
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr(UNIKIX_IDENTITY_DAMAGED, (UNIKIX_IDENTITY_COPY_LINE + b"\n") * 4,
+                         compress_type=zipfile.ZIP_DEFLATED)
+        archive.writestr("migrated_app/cpy/B", b"B" * 48)
+    with zipfile.ZipFile(path) as archive:
+        info = archive.getinfo(UNIKIX_IDENTITY_DAMAGED)
+        # A.cbl's local header, and its record, the first of the central directory.
+        local, central = info.header_offset, archive.start_dir
+    data = bytearray(path.read_bytes())
+
+    def field(offset: int, size: int) -> int:
+        return int.from_bytes(data[offset:offset + size], "little")
+
+    def patch(offset: int, size: int, value: int) -> None:
+        data[offset:offset + size] = value.to_bytes(size, "little")
+
+    # The local header gives the name and extra field lengths at 26 and 28;
+    # a central directory record the flags at 8, the method at 10, the
+    # CRC-32 at 16 and the name at 46. zipfile takes all but the name from
+    # the central directory.
+    if damage == "corrupt-deflate":
+        start = local + 30 + field(local + 26, 2) + field(local + 28, 2)
+        data[start:start + info.compress_size] = b"\xff" * info.compress_size
+    elif damage == "unsupported-compression":
+        patch(central + 10, 2, 99)
+    elif damage == "encrypted":
+        patch(central + 8, 2, field(central + 8, 2) | 0x1)
+    elif damage == "bad-crc":
+        patch(central + 16, 4, info.CRC ^ 0xFFFFFFFF)
+    elif damage == "undecodable-name":
+        # The UTF-8 flag set on a name holding the byte 0xff in place of "A".
+        patch(central + 8, 2, field(central + 8, 2) | 0x800)
+        data[central + 46 + len("migrated_app/cbl/")] = 0xFF
+    else:
+        raise AssertionError(f"no damage named {damage!r}")
+    path.write_bytes(bytes(data))
+    return path
+
+
+@pytest.mark.parametrize("reader", sorted(UNIKIX_IDENTITY_READERS))
+@pytest.mark.parametrize(("damage", "error", "where"), UNIKIX_IDENTITY_DAMAGES)
+def test_unikix_zip_identity_readers_refuse_a_damaged_member(
+    unikix_temp_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    damage: str,
+    error: type[Exception],
+    where: str,
+    reader: str,
+) -> None:
+    path = _damaged_unikix_zip(unikix_temp_root / "repo", damage)
+    digest = sha256_file(path)
+    with pytest.raises(error) as raised:
+        with zipfile.ZipFile(path) as archive:
+            for info in archive.infolist():
+                archive.read(info)
+    assert type(raised.value) is error
+    reason = str(raised.value) or type(raised.value).__name__
+    if reader == "adapter":
+        with pytest.raises(HarnessError) as caught:
+            unikix_adapter._zip_index(str(path), digest)
+        assert type(caught.value) is HarnessError
+        assert str(caught.value) == f"cannot read {deploy.ZIP_RELPATH}: {reason}"
+        return
+    message = where.format(member=UNIKIX_IDENTITY_DAMAGED, shown=report.display_path(path), reason=reason)
+    if reader == "report":
+        with pytest.raises(report.ReportError) as caught:
+            report._zip_members(digest, str(path))
+        assert str(caught.value) == message
+        assert report.zip_identity(path) is None
+    else:
+        with pytest.raises(report.ReportError) as caught:
+            report._zip_units(digest, str(path))
+        assert str(caught.value) == message
+        # identity_problem's derivation of the units a run executes reports it, never raising.
+        monkeypatch.setattr(report, "UNIKIX_ZIP", path)
+        assert report._required_units(SimpleNamespace(id="DAMAGED"), digest) == (
+            set(), f"the units DAMAGED executes cannot be derived: {report._clip(message, 300)}"
+        )
 
 
 # UniKixAdapter's @TDQ:JOBS capture on fakes: jobs_capture answers with
@@ -4088,6 +4984,387 @@ def test_build_cache_rebuilds_an_unsound_on_demand_profile_once(
     assert (builds, checks[checked:]) == ([CACHE_PROFILE.name], [CACHE_PROFILE.name])
 
 
+# Build cache containment: a component of the build cache planted in a work
+# root of the case's own (cache_root/work) as a symbolic link aimed at a
+# directory outside it (cache_root/outside), as a file of the wrong kind, or
+# writable by group or others. ensure_built runs on stand-ins; nothing is
+# compiled.
+CACHE_LOCK = f"_build/{CACHE_KEY}.lock"
+
+
+def _link_build_root(work: Path, outside: Path) -> Path:
+    link = work / "_build"
+    link.symlink_to(outside, target_is_directory=True)
+    return link
+
+
+def _build_root_of_mode(mode: int) -> Callable[[Path, Path], Path]:
+    def plant(work: Path, outside: Path) -> Path:
+        build_root = work / "_build"
+        build_root.mkdir()
+        build_root.chmod(mode)
+        return build_root
+
+    return plant
+
+
+def _file_build_root(work: Path, outside: Path) -> Path:
+    path = work / "_build"
+    path.write_bytes(b"")
+    return path
+
+
+def _link_key_lock(work: Path, outside: Path) -> Path:
+    """``<key>.lock`` linked to a path outside that does not exist."""
+    (work / "_build").mkdir(mode=0o700)
+    link = work / CACHE_LOCK
+    link.symlink_to(outside / "planted.lock")
+    return link
+
+
+def _link_build_directory(work: Path, outside: Path) -> Path:
+    """``<key>`` linked to a complete cache outside whose hashes all match,
+    which ``_complete_mode`` would reuse were it followed."""
+    (work / "_build").mkdir(mode=0o700)
+    link = work / "_build" / CACHE_KEY
+    link.symlink_to(_cache_directory(outside), target_is_directory=True)
+    return link
+
+
+def _file_build_directory(work: Path, outside: Path) -> Path:
+    (work / "_build").mkdir(mode=0o700)
+    path = work / "_build" / CACHE_KEY
+    path.write_bytes(b"")
+    return path
+
+
+# What ensure_built refuses, and the start of its message, of the planted path.
+CACHE_CONTAINMENT_PLANTS = [
+    pytest.param(_link_build_root, "the build root {} is a symbolic link; ", id="build-root-linked"),
+    pytest.param(
+        _build_root_of_mode(0o770), "the build root {} is writable by group or others (mode 0770)",
+        id="build-root-group-writable",
+    ),
+    pytest.param(
+        _build_root_of_mode(0o757), "the build root {} is writable by group or others (mode 0757)",
+        id="build-root-world-writable",
+    ),
+    pytest.param(_file_build_root, "the build root {} is not a directory; ", id="build-root-a-file"),
+    pytest.param(_link_key_lock, "the build lock {} is a symbolic link; ", id="key-lock-linked"),
+    pytest.param(
+        _link_build_directory, "the build directory {} is a symbolic link; ",
+        id="build-directory-linked-to-a-complete-cache",
+    ),
+    pytest.param(
+        _file_build_directory, "the build directory {} is not a directory; ",
+        id="build-directory-a-file",
+    ),
+]
+
+
+def _stand_in_build(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    """Stand-ins for the toolchain, the plan and the build key (CACHE_KEY), a
+    ``_populate`` that writes the directory ``_cache_directory`` lays out into
+    its workspace, and fresh memos, so nothing this case builds reaches the
+    session's adapters. Returns the workspaces populated, in order."""
+    populated: list[Path] = []
+
+    def populate(workspace: Path, *_: object) -> None:
+        populated.append(workspace)
+        _write_tree(workspace, CACHE_ARTIFACTS)
+        manifest = {
+            "artifacts": build._artifact_hashes(workspace),
+            "clock_fraction_mode": CACHE_MODE,
+            "key": CACHE_KEY,
+        }
+        (workspace / "manifest.yaml").write_text(dump_yaml(manifest), encoding="utf-8")
+        (workspace / "COMPLETE").write_text("", encoding="utf-8")
+
+    toolchain = SimpleNamespace(cobc="/usr/bin/cobc", cobc_version="cobc (GnuCOBOL) 3.2.0",
+                                lib_dirs=())
+    plan = SimpleNamespace(units={}, compiles=(), profiles=(CACHE_STATIC_PROFILE,))
+    monkeypatch.setattr(build, "_toolchain", lambda: toolchain)
+    monkeypatch.setattr(build, "_plan", lambda _root: plan)
+    monkeypatch.setattr(build, "_build_key", lambda *_: CACHE_KEY)
+    monkeypatch.setattr(build, "_populate", populate)
+    monkeypatch.setattr(build, "_CACHES", {})
+    monkeypatch.setattr(build, "_BUILD_FAILURES", {})
+    return populated
+
+
+@pytest.mark.parametrize(("plant", "refusal"), CACHE_CONTAINMENT_PLANTS)
+def test_ensure_built_refuses_an_unsound_build_cache_component(
+    cache_root: Path, monkeypatch: pytest.MonkeyPatch,
+    plant: Callable[[Path, Path], Path], refusal: str,
+) -> None:
+    repo_root, work_root, outside = (cache_root / name for name in ("repo", "work", "outside"))
+    for directory in (repo_root, work_root, outside):
+        directory.mkdir()
+    planted = plant(work_root, outside)
+    planted_mode = os.lstat(planted).st_mode
+    work_before, outside_before = _tree(work_root), _tree(outside)
+    populated = _stand_in_build(monkeypatch)
+    with pytest.raises(build.BuildError) as error:
+        build.ensure_built(repo_root, work_root)
+    assert not isinstance(error.value, build.ToolchainUnavailable)
+    assert str(error.value).startswith(refusal.format(planted)), str(error.value)
+    # Nothing populated or memoized, and nothing outside created or changed:
+    # no lock, no temporary workspace, the planted cache byte for byte.
+    assert (populated, build._BUILD_FAILURES, build._CACHES) == ([], {}, {})
+    assert _tree(outside) == outside_before
+    # The work root is left as planted, the link in place, but for the key
+    # lock taken once _build was admitted.
+    work_after = _tree(work_root)
+    if CACHE_LOCK not in work_before and work_after.get(CACHE_LOCK) == b"":
+        del work_after[CACHE_LOCK]
+    assert work_after == work_before
+    assert os.lstat(planted).st_mode == planted_mode
+
+
+@pytest.mark.parametrize("existing_mode", [
+    pytest.param(None, id="fresh-work-root"),
+    pytest.param(0o755, id="existing-0755-build-root"),
+])
+def test_ensure_built_admits_a_private_build_root(
+    cache_root: Path, monkeypatch: pytest.MonkeyPatch, existing_mode: int | None
+) -> None:
+    repo_root, work_root = cache_root / "repo", cache_root / "work"
+    build_root = work_root / "_build"
+    repo_root.mkdir()
+    if existing_mode is not None:
+        build_root.mkdir(parents=True)
+        build_root.chmod(existing_mode)
+    populated = _stand_in_build(monkeypatch)
+    cache = build.ensure_built(repo_root, work_root)
+    assert (cache.dir, cache.clock_fraction_mode) == (build_root / CACHE_KEY, CACHE_MODE)
+    assert [workspace.parent for workspace in populated] == [build_root]
+    # The permission bits; a set-group-ID work root passes its bit on.
+    assert os.lstat(build_root).st_mode & 0o777 == (existing_mode or 0o700)
+    assert sorted(os.listdir(build_root)) == [CACHE_KEY, f"{CACHE_KEY}.lock"]
+    assert build.ensure_built(repo_root, work_root) is cache
+    assert len(populated) == 1
+
+
+def _link_profiles(directory: Path, outside: Path) -> Path:
+    """``profiles/`` moved outside, a sound on-demand profile added to it
+    there, and linked from the cache directory."""
+    profiles = directory / "profiles"
+    moved = outside / "profiles"
+    os.replace(profiles, moved)
+    _write_profile(moved / CACHE_PROFILE.name)
+    profiles.symlink_to(moved, target_is_directory=True)
+    return profiles
+
+
+def _link_profile(directory: Path, outside: Path) -> Path:
+    """``profiles/<CACHE_PROFILE>`` linked to a sound profile outside."""
+    _write_profile(outside / CACHE_PROFILE.name)
+    link = directory / "profiles" / CACHE_PROFILE.name
+    link.symlink_to(outside / CACHE_PROFILE.name, target_is_directory=True)
+    return link
+
+
+# The linked component, what the refusal calls it, and the profiles it refuses.
+CACHE_PROFILE_LINKS = [
+    pytest.param(
+        _link_profiles, "profiles directory", (CACHE_PROFILE, CACHE_STATIC_PROFILE),
+        id="profiles-linked",
+    ),
+    pytest.param(_link_profile, "profile directory", (CACHE_PROFILE,), id="profile-linked"),
+]
+
+
+@pytest.mark.parametrize(("plant", "what", "refused"), CACHE_PROFILE_LINKS)
+def test_build_cache_refuses_a_linked_profile_directory(
+    cache_root: Path, monkeypatch: pytest.MonkeyPatch,
+    plant: Callable[[Path, Path], Path], what: str, refused: tuple[build.KeyProfile, ...],
+) -> None:
+    directory = _cache_directory(cache_root)
+    outside = cache_root / "outside"
+    outside.mkdir()
+    link = plant(directory, outside)
+    build_before, outside_before = _tree(cache_root / "_build"), _tree(outside)
+    builds: list[str] = []
+    monkeypatch.setattr(
+        build.BuildCache, "_build_profile",
+        lambda cache, profile, target: builds.append(profile.name),
+    )
+    cache = _stand_in_cache(directory)
+    for profile in refused:
+        for program in (cache.loader, cache.unloader):
+            with pytest.raises(build.BuildError) as error:
+                program(profile)
+            assert str(error.value) == (
+                f"the {what} {link} is a symbolic link; remove it or choose another work root"
+            )
+    assert builds == []
+    assert (_tree(cache_root / "_build"), _tree(outside)) == (build_before, outside_before)
+
+
+def test_cache_verification_never_trusts_a_linked_directory(cache_root: Path) -> None:
+    real = _cache_directory(cache_root / "outside")
+    artifacts = build._artifact_hashes(real)
+    assert build._artifacts_intact(real, artifacts)
+    (cache_root / "_build").mkdir()
+    linked = cache_root / "_build" / CACHE_KEY
+    linked.symlink_to(real, target_is_directory=True)
+    via_parent = cache_root / "linked"
+    via_parent.symlink_to(real.parent, target_is_directory=True)
+    before = _tree(cache_root)
+    assert not build._artifacts_intact(linked, artifacts)
+    assert not build._artifacts_intact(via_parent / CACHE_KEY, artifacts)
+    with pytest.raises(build.BuildError) as error:
+        build._complete_mode(linked, CACHE_KEY)
+    assert str(error.value) == (
+        f"the build directory {linked} is a symbolic link; remove it or choose another work root"
+    )
+    assert _tree(cache_root) == before
+
+
+def _swapped(relative: str, *, linked: bool) -> Callable[[Path, Path], Path]:
+    """A swap of the work root's ``relative`` once it was admitted: moved
+    outside, then linked back from its place (``linked``) or replaced by a
+    copy, a different real directory holding the same files and modes."""
+
+    def swap(work: Path, outside: Path) -> Path:
+        component, moved = work / relative, outside / Path(relative).name
+        os.replace(component, moved)
+        if linked:
+            component.symlink_to(moved, target_is_directory=True)
+        else:
+            shutil.copytree(moved, component, symlinks=True)
+        return component
+
+    return swap
+
+
+def _unswap(component: Path, outside: Path) -> None:
+    """Put the admitted directory a ``_swapped`` swap moved outside back."""
+    if component.is_symlink():
+        component.unlink()
+    else:
+        shutil.rmtree(component)
+    os.replace(outside / component.name, component)
+
+
+CACHE_SWAP_REFUSAL = "; remove it or choose another work root"
+# A swap after the build cache was admitted, what the refusal calls the
+# component and what it says of it.
+CACHE_SWAPS = [
+    pytest.param(
+        _swapped("_build", linked=True), "build root", "is a symbolic link",
+        id="build-root-linked",
+    ),
+    pytest.param(
+        _swapped("_build", linked=False), "build root", "is no longer the directory admitted",
+        id="build-root-replaced",
+    ),
+    pytest.param(
+        _swapped(f"_build/{CACHE_KEY}", linked=True), "build directory", "is a symbolic link",
+        id="build-directory-linked",
+    ),
+    pytest.param(
+        _swapped(f"_build/{CACHE_KEY}", linked=False), "build directory",
+        "is no longer the directory admitted", id="build-directory-replaced",
+    ),
+]
+
+
+@pytest.mark.parametrize(("swap", "what", "problem"), CACHE_SWAPS)
+def test_a_build_cache_swapped_after_admission_is_refused_before_reuse(
+    cache_root: Path, monkeypatch: pytest.MonkeyPatch,
+    swap: Callable[[Path, Path], Path], what: str, problem: str,
+) -> None:
+    repo_root, work_root, outside = (cache_root / name for name in ("repo", "work", "outside"))
+    for directory in (repo_root, outside):
+        directory.mkdir()
+    populated = _stand_in_build(monkeypatch)
+    cache = build.ensure_built(repo_root, work_root)
+    builds: list[str] = []
+    monkeypatch.setattr(
+        build.BuildCache, "_build_profile",
+        lambda cache, profile, target: builds.append(profile.name),
+    )
+    # A sound on-demand profile checked on its first use, and the static one,
+    # so the loader's fast path would return either without building.
+    _write_profile(cache.dir / "profiles" / CACHE_PROFILE.name)
+    profiles = (CACHE_PROFILE, CACHE_STATIC_PROFILE)
+    for profile in profiles:
+        assert cache.loader(profile) == cache.dir / "profiles" / profile.name / "KSLOAD"
+    component = swap(work_root, outside)
+    work_before, outside_before = _tree(work_root), _tree(outside)
+    refusal = f"the {what} {component} {problem}{CACHE_SWAP_REFUSAL}"
+    for _ in range(2):  # never memoized: the second call checks again
+        with pytest.raises(build.BuildError) as error:
+            build.ensure_built(repo_root, work_root)
+        assert not isinstance(error.value, build.ToolchainUnavailable)
+        assert str(error.value) == refusal
+    for profile in profiles:
+        for program in (cache.loader, cache.unloader):
+            with pytest.raises(build.BuildError) as error:
+                program(profile)
+            assert str(error.value) == refusal
+    # Nothing built, populated again or memoized, and neither the work root
+    # nor the outside directory changed, links included, byte for byte.
+    assert (builds, len(populated), build._BUILD_FAILURES) == ([], 1, {})
+    assert (_tree(work_root), _tree(outside)) == (work_before, outside_before)
+    # The admitted directory put back is admitted again by its identity.
+    _unswap(component, outside)
+    assert build.ensure_built(repo_root, work_root) is cache
+    assert cache.unloader(CACHE_PROFILE) == cache.dir / "profiles" / CACHE_PROFILE.name / "KSUNLOAD"
+    assert (builds, len(populated)) == ([], 1)
+
+
+def _stop_compile_failed() -> BaseException:
+    return build._CompileFailure("CBTRN02C", "logs/CBTRN02C.log", "stand-in compile failure")
+
+
+# How a build whose _build was swapped while it compiled ends: published,
+# after a failed compile or interrupted, and the exception ensure_built raises.
+BUILD_WINDOW_STOPS = [
+    pytest.param(None, build.BuildError, id="published"),
+    pytest.param(_stop_compile_failed, build.BuildError, id="compile-failed"),
+    pytest.param(KeyboardInterrupt, KeyboardInterrupt, id="interrupted"),
+]
+
+
+@pytest.mark.parametrize(("stop", "raised"), BUILD_WINDOW_STOPS)
+def test_ensure_built_refuses_a_build_root_swapped_while_it_builds(
+    cache_root: Path, monkeypatch: pytest.MonkeyPatch,
+    stop: Callable[[], BaseException] | None, raised: type[BaseException],
+) -> None:
+    repo_root, work_root, outside = (cache_root / name for name in ("repo", "work", "outside"))
+    for directory in (repo_root, outside):
+        directory.mkdir()
+    _stand_in_build(monkeypatch)
+    populate = build._populate
+    swapped: list[dict[str, bytes | str | None]] = []
+
+    def swapping_populate(workspace: Path, *rest: object) -> None:
+        # The workspace is written, then _build is moved outside and linked
+        # back before the build ends.
+        populate(workspace, *rest)
+        _swapped("_build", linked=True)(work_root, outside)
+        swapped.append(_tree(outside))
+        if stop is not None:
+            raise stop()
+
+    monkeypatch.setattr(build, "_populate", swapping_populate)
+    with pytest.raises(raised) as error:
+        build.ensure_built(repo_root, work_root)
+    if raised is build.BuildError:
+        assert not isinstance(error.value, build.ToolchainUnavailable)
+        assert str(error.value) == (
+            f"the build root {work_root / '_build'} is a symbolic link{CACHE_SWAP_REFUSAL}"
+        )
+    # Nothing published, set aside or removed through the link: the moved
+    # build root, its workspace included, is as the swap left it, and nothing
+    # is memoized.
+    assert len(swapped) == 1
+    assert _tree(outside) == swapped[0]
+    assert (build._CACHES, build._BUILD_FAILURES) == ({}, {})
+
+
 PROCESS_SCOPE_ROOT_PREFIX = "unit-process-scope-"
 # The whole environment of the cases' shell groups; run_process adds HOME.
 PROCESS_SCOPE_ENV = {"PATH": "/usr/bin:/bin"}
@@ -4446,6 +5723,655 @@ def test_ensure_built_raises_a_failed_build_again_without_rebuilding(
         assert not final.exists()
 
 
+def _compile_toolchain(cobc: str) -> object:
+    """A toolchain whose cobc is ``cobc`` and whose compile ``PATH`` holds
+    the system's tools; nothing is probed."""
+    return build._Toolchain(
+        cobc=cobc, cc="/usr/bin/cc", cobc_version="", cc_version="", bin_dirs=("/usr/bin", "/bin"),
+        lib_dirs=(), overrides=(),
+    )
+
+
+def test_compile_arguments_name_no_path_below_the_work_root(build_memo_root: Path) -> None:
+    """Every compile of the build plan, and the loader and unloader of every
+    static key profile, in the build directory and, built on demand, in a
+    profile workspace of their own, names its output and generated sources
+    relative to the directory it runs in, so no argument holds that
+    directory's path, which starts with the work root's."""
+    repo_root = TESTS_ROOT.parent
+    toolchain = _compile_toolchain("/usr/bin/cobc")
+    plan = build._plan(repo_root)
+    workspace = build_memo_root / "work`root" / "_build" / ".key-workspace"
+    runs = [(compile_, workspace, workspace) for compile_ in plan.compiles]
+    for profile in plan.profiles:
+        for compile_, _ in build._profile_compiles(profile).values():
+            runs.append((compile_, workspace / "profiles" / profile.name, workspace))
+            on_demand = workspace / "profiles" / f".{profile.name}-workspace"
+            runs.append((compile_, on_demand, on_demand))
+    assert len(runs) == len(plan.compiles) + 4 * len(plan.profiles)
+    for compile_, base, cwd in runs:
+        argv = compile_.argv(toolchain, repo_root, base, cwd)
+        assert not [element for element in argv if str(build_memo_root) in element], argv
+        output = argv[argv.index("-o") + 1]
+        assert not Path(output).is_absolute() and cwd / output == base / compile_.artifact, argv
+        if compile_.generated:
+            assert [cwd / element for element in argv[-len(compile_.sources):]] == [
+                base / source for source in compile_.sources
+            ], argv
+        else:
+            assert argv[-len(compile_.sources):] == [str(repo_root / source) for source in compile_.sources]
+
+
+# A fake cobc that records its working directory, its TMPDIR and each of its
+# arguments, one per line, touches a canary and creates the file after -o.
+BUILD_RECORDING_COBC = """\
+#!/bin/sh
+touch {canary}
+printf '%s\\n' "$PWD" "$TMPDIR" "$@" > {record}
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = -o ]; then : > "$2"; fi
+    shift
+done
+"""
+# The repository folder name each case's checkout path holds: a plain one,
+# and ones holding a character a shell reads inside cobc's double quotes or
+# one that is not printable.
+BUILD_CHECKOUT_TEXT = [
+    pytest.param("", None, id="plain"),
+    pytest.param("`", "holds '`', which a shell reads even inside the double quotes", id="backquote"),
+    pytest.param("$", "holds '$', which a shell reads even inside the double quotes", id="dollar"),
+    pytest.param('"', "holds '\"', which a shell reads even inside the double quotes", id="double-quote"),
+    pytest.param("\\", "holds '\\\\', which a shell reads even inside the double quotes", id="backslash"),
+    pytest.param("\n", "holds the non-printable character '\\n'", id="newline"),
+]
+
+
+@pytest.mark.parametrize(("text", "refusal"), BUILD_CHECKOUT_TEXT)
+def test_compile_runs_in_the_build_directory_and_refuses_shell_text(
+    build_memo_root: Path, text: str, refusal: str | None
+) -> None:
+    """``build._compile_all`` runs a cobc compile in the build directory with
+    ``TMPDIR=tmp``, its output named from there, and logs that directory as
+    ``<build>``. When an argument holds a character a shell would read in
+    cobc's C compiler commands, or one that is not printable, as the
+    checkout's absolute ``-I app/cpy`` does here, nothing runs (the fake's
+    canary stays absent) and the compile fails with ``_CompileFailure``
+    naming the argument and the character, which the log gives as its
+    status. The refused characters are those the work-root admission
+    refuses."""
+    assert build._SHELL_QUOTED_CHARACTERS == harness._SHELL_QUOTED_CHARACTERS
+    fake = build_memo_root / "cobc"
+    canary, record = build_memo_root / "canary", build_memo_root / "record"
+    fake.write_text(
+        BUILD_RECORDING_COBC.format(canary=shlex.quote(str(canary)), record=shlex.quote(str(record))),
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    repo_root = build_memo_root / f"re{text}po"
+    workspace = build_memo_root / "work" / "_build" / ".key-workspace"
+    workspace.mkdir(parents=True)
+    job = next(compile_ for compile_ in build._TOOL_COMPILES if compile_.name == "DTCDRV")
+    task = build._Task(job, job.name, workspace, workspace / "logs" / f"{job.name}.log")
+    toolchain = _compile_toolchain(str(fake))
+    include = str(repo_root / build.COPYBOOK_DIR)
+    argv = [str(fake), *job.flags, "-I", include, "-o", job.artifact, str(repo_root / job.sources[0])]
+    if refusal is None:
+        build._compile_all([task], toolchain, repo_root, workspace)
+        assert canary.is_file() and (workspace / job.artifact).is_file()
+        assert record.read_text(encoding="utf-8").splitlines() == [str(workspace), "tmp", *argv[1:]]
+        status = "exit 0"
+    else:
+        with pytest.raises(build._CompileFailure) as failed:
+            build._compile_all([task], toolchain, repo_root, workspace)
+        assert not canary.exists() and not record.exists(), "the refused compile ran cobc"
+        status = failed.value.detail
+        assert status.startswith(f"not run: the argument {include!r} {refusal}"), status
+        assert (failed.value.unit, failed.value.log) == (job.name, f"logs/{job.name}.log")
+        assert failed.value.message(workspace / failed.value.log).startswith(f"cannot compile {job.name}: {status}")
+    log = task.log.read_text(encoding="utf-8")
+    assert log.startswith(f"command: {shlex.join(argv)}\ncwd: <build>\nstatus: {status}\n"), log
+    assert not (workspace / build._COMPILE_TMPDIR).exists(), "the compile's TMPDIR was left behind"
+
+
+# A stand-in for cobc and cc that records each run in the case's runs file and
+# fails, so a case can tell whether anything was compiled.
+BUILD_RECORDING_TOOL = """\
+#!/bin/sh
+echo "$*" >> {runs}
+exit 1
+"""
+BUILD_PROGRAMS_YAML = "tests/adapters/gnucobol_batch/programs.yaml"
+BUILD_UNIT_ID_RULE = (
+    "is not a batch program name: one to eight upper-case letters and digits, starting "
+    "with a letter"
+)
+BUILD_FLAG_RULE = "is not allowed; a unit may add only -fbinary-byteorder=native"
+BUILD_DESTINATION_RULE = "is not a relative path inside the build directory"
+BUILD_OUTSIDE = "{outside}"  # in a case's flag, the case's directory outside the work root
+# The dialect flags of every COBOL compile, and the committed units as
+# planned: run, then the flags, sources and artifact of the cobc call that
+# compiles each one. CBSTM03B has none of its own: CBSTM03A's call holds it.
+BUILD_COBOL_FLAGS = ("-std=ibm", "-fsign=EBCDIC", "-ftab-width=4", "-fbinary-truncate")
+BUILD_COMMITTED_UNITS = {
+    **{
+        unit: ("executable", ("-x", *BUILD_COBOL_FLAGS), (f"app/cbl/{unit}.cbl",), f"bin/{unit}")
+        for unit in (
+            "CBACT01C", "CBACT02C", "CBACT03C", "CBCUS01C", "CBTRN01C", "CBTRN02C", "CBTRN03C",
+        )
+    },
+    "CBACT04C": (
+        "parmdrv", ("-m", *BUILD_COBOL_FLAGS), ("app/cbl/CBACT04C.cbl",), "modules/CBACT04C.so",
+    ),
+    "CBSTM03A": (
+        "executable", ("-x", *BUILD_COBOL_FLAGS, "-fbinary-byteorder=native"),
+        ("app/cbl/CBSTM03A.CBL", "app/cbl/CBSTM03B.CBL"), "bin/CBSTM03A",
+    ),
+    "CSUTLDTC": (
+        "dtcdrv", ("-m", *BUILD_COBOL_FLAGS), ("app/cbl/CSUTLDTC.cbl",), "modules/CSUTLDTC.so",
+    ),
+}
+BUILD_CALLED_UNITS = {"CBSTM03B": {"called_by": "CBSTM03A", "run": "called"}}
+
+
+def _unit_key_case(key: object) -> Callable[[dict, Path], str]:
+    """An admission case adding the unit ``key`` with a copy of CBACT01C's
+    entry; it returns the message of the ``BuildError`` it must raise."""
+
+    def change(programs: dict, outside: Path) -> str:
+        programs[key] = copy.deepcopy(programs["CBACT01C"])
+        return f"{BUILD_PROGRAMS_YAML} unit {key!r} {BUILD_UNIT_ID_RULE}"
+
+    return change
+
+
+def _flag_case(unit: str, *flags: str) -> Callable[[dict, Path], str]:
+    """An admission case appending ``flags``, the refused one first and
+    ``BUILD_OUTSIDE`` standing for the case's outside directory, to the
+    ``extra_flags`` of ``unit``."""
+
+    def change(programs: dict, outside: Path) -> str:
+        placed = [flag.replace(BUILD_OUTSIDE, str(outside)) for flag in flags]
+        programs[unit]["compile"]["extra_flags"] += placed
+        return (
+            f"{BUILD_PROGRAMS_YAML} unit {unit} extra_flags: flag {placed[0]!r} {BUILD_FLAG_RULE}"
+        )
+
+    return change
+
+
+def _called_by_case(called_by: object) -> Callable[[dict, Path], str]:
+    """An admission case giving CBSTM03B the ``called_by`` ``called_by``."""
+
+    def change(programs: dict, outside: Path) -> str:
+        programs["CBSTM03B"]["called_by"] = called_by
+        return (
+            f"{BUILD_PROGRAMS_YAML} unit CBSTM03B is called, but its called_by {called_by!r} "
+            f"names no unit of {BUILD_PROGRAMS_YAML}"
+        )
+
+    return change
+
+
+def _link_with_case(unit: str) -> Callable[[dict, Path], str]:
+    """An admission case making CBSTM03A link ``unit`` too."""
+
+    def change(programs: dict, outside: Path) -> str:
+        programs["CBSTM03A"]["compile"]["link_with"].append(unit)
+        return (
+            f"{BUILD_PROGRAMS_YAML} unit CBSTM03A links {unit}, which {BUILD_PROGRAMS_YAML} lacks"
+        )
+
+    return change
+
+
+BUILD_ADMISSION_CASES = [
+    pytest.param(_unit_key_case("../../../../outside/payload"), id="unit-id-traversal"),
+    pytest.param(_unit_key_case("CBACT/01"), id="unit-id-slash"),
+    pytest.param(_unit_key_case("cbact09c"), id="unit-id-lower-case"),
+    pytest.param(_unit_key_case("CBACT099C"), id="unit-id-overlong"),
+    pytest.param(_unit_key_case(12345678), id="unit-id-not-text"),
+    pytest.param(_flag_case("CBACT01C", "-t", f"{BUILD_OUTSIDE}/listing.lst"), id="flag-listing"),
+    pytest.param(_flag_case("CBACT01C", "-T", f"{BUILD_OUTSIDE}/wide.lst"), id="flag-wide-listing"),
+    pytest.param(_flag_case("CBACT01C", f"-P={BUILD_OUTSIDE}"), id="flag-preprocessed-listing"),
+    pytest.param(_flag_case("CBACT01C", f"--save-temps={BUILD_OUTSIDE}"), id="flag-save-temps"),
+    pytest.param(_flag_case("CBACT01C", "-A", f"-o {BUILD_OUTSIDE}/unit.o"), id="flag-c-compiler"),
+    pytest.param(_flag_case("CBACT01C", "-Q", f"-Wl,-o,{BUILD_OUTSIDE}/unit"), id="flag-linker"),
+    pytest.param(
+        _flag_case("CBACT01C", f"--conf={BUILD_OUTSIDE}/carddemo.conf"), id="flag-configuration"
+    ),
+    pytest.param(_flag_case("CBACT01C", "-o", f"{BUILD_OUTSIDE}/payload"), id="flag-output"),
+    pytest.param(
+        _flag_case("CBSTM03B", "-t", f"{BUILD_OUTSIDE}/linked.lst"), id="flag-of-a-linked-unit"
+    ),
+    pytest.param(_called_by_case(["CBSTM03A"]), id="called-by-not-text"),
+    pytest.param(_called_by_case("NOSUCHU"), id="called-by-unknown-unit"),
+    pytest.param(_link_with_case("NOSUCHU"), id="link-with-unknown-unit"),
+]
+# Compiles whose artifact or generated source would leave the directory they
+# are built in: the artifact, the generated source (None: a repository
+# source), and the destination the BuildError names.
+BUILD_ESCAPING_COMPILES = [
+    pytest.param(
+        "bin/../../../outside/payload", None, "the artifact of UNIT 'bin/../../../outside/payload'",
+        id="artifact-traversal",
+    ),
+    pytest.param(
+        "/outside/payload", None, "the artifact of UNIT '/outside/payload'", id="artifact-absolute"
+    ),
+    pytest.param("", None, "the artifact of UNIT ''", id="artifact-empty"),
+    pytest.param(".", None, "the artifact of UNIT '.'", id="artifact-the-directory"),
+    pytest.param(
+        "bin/UNIT", "../outside/UNIT.cbl", "the generated source of UNIT '../outside/UNIT.cbl'",
+        id="generated-source-traversal",
+    ),
+    pytest.param(
+        "bin/UNIT", "/outside/UNIT.cbl", "the generated source of UNIT '/outside/UNIT.cbl'",
+        id="generated-source-absolute",
+    ),
+]
+BUILD_ESCAPING_TASKS = [
+    pytest.param("log", id="task-log-traversal"),
+    pytest.param("base", id="task-outside-the-workspace"),
+    pytest.param("generated", id="generated-source-traversal"),
+    pytest.param("plan-log", id="plan-log-traversal"),
+]
+
+
+def _recording_toolchain(directory: Path, runs: Path) -> build._Toolchain:
+    """A toolchain whose cobc and cc are one ``BUILD_RECORDING_TOOL`` in
+    ``directory``, recording each run in ``runs``."""
+    tool = directory / "tool"
+    tool.write_text(BUILD_RECORDING_TOOL.format(runs=shlex.quote(str(runs))), encoding="utf-8")
+    tool.chmod(0o755)
+    return build._Toolchain(
+        str(tool), str(tool), "cobc (GnuCOBOL) 3.2.0", "cc (stand-in) 1", (), (), ()
+    )
+
+
+@pytest.mark.parametrize("case", BUILD_ADMISSION_CASES)
+def test_ensure_built_refuses_a_bad_unit_id_or_flag_before_writing(
+    monkeypatch: pytest.MonkeyPatch, build_memo_root: Path, case: Callable[[dict, Path], str]
+) -> None:
+    repo_root = Path(_TESTS_ROOT).parent
+    work_root, outside = build_memo_root / "work", build_memo_root / "outside"
+    work_root.mkdir()
+    outside.mkdir()
+    runs = build_memo_root / "runs.log"
+    toolchain = _recording_toolchain(build_memo_root, runs)
+    committed = build._load_config
+    document = copy.deepcopy(committed(repo_root, BUILD_PROGRAMS_YAML))
+    expected = case(document["programs"], outside)
+
+    def load_config(root: Path, relative: str) -> object:
+        if relative == BUILD_PROGRAMS_YAML:
+            return copy.deepcopy(document)
+        return committed(root, relative)
+
+    # Fresh memos, so nothing this case builds reaches the session's adapters.
+    monkeypatch.setattr(build, "_toolchain", lambda: toolchain)
+    monkeypatch.setattr(build, "_load_config", load_config)
+    monkeypatch.setattr(build, "_CACHES", {})
+    monkeypatch.setattr(build, "_BUILD_FAILURES", {})
+    with pytest.raises(build.BuildError) as error:
+        build.ensure_built(repo_root, work_root)
+    assert (type(error.value), str(error.value), error.value.unit, error.value.log_path) == (
+        build.BuildError, expected, None, None
+    )
+    # Neither _build nor anything outside the work root was created, and no
+    # compiler ran.
+    assert list(work_root.iterdir()) == []
+    assert list(outside.iterdir()) == []
+    assert sorted(path.name for path in build_memo_root.iterdir()) == ["outside", "tool", "work"]
+
+
+def test_build_plan_admits_the_committed_programs_table_unchanged() -> None:
+    plan = build._plan(Path(_TESTS_ROOT).parent)
+    compiles = {compile_.name: compile_ for compile_ in plan.compiles}
+    planned = {
+        unit: (entry["run"], compiles[unit].flags, compiles[unit].sources, compiles[unit].artifact)
+        for unit, entry in plan.units.items()
+        if entry["run"] != "called"
+    }
+    assert planned == BUILD_COMMITTED_UNITS
+    assert {unit: plan.units[unit]["artifact"] for unit in BUILD_COMMITTED_UNITS} == {
+        unit: artifact for unit, (_, _, _, artifact) in BUILD_COMMITTED_UNITS.items()
+    }
+    assert {unit: entry for unit, entry in plan.units.items() if entry["run"] == "called"} == (
+        BUILD_CALLED_UNITS
+    )
+
+
+# Python's integer string conversion limit, which int() enforces with
+# ValueError. A case that needs a number past it lowers it to 640, the least
+# sys.set_int_max_str_digits allows, so the numbers stay small.
+DIGIT_LIMIT = 640
+DIGIT_LIMIT_REFUSAL = "has {digits} digits, too many to read as a number"
+
+
+def _lowered_digit_limit_call(call: Callable[[], object]) -> object:
+    """``call()`` with the integer string conversion limit at ``DIGIT_LIMIT``,
+    restored afterwards."""
+    limit = sys.get_int_max_str_digits()
+    sys.set_int_max_str_digits(DIGIT_LIMIT)
+    try:
+        return call()
+    finally:
+        sys.set_int_max_str_digits(limit)
+
+
+# Build configuration values of the wrong type, which build._plan reads
+# directly or through static_profiles: each is refused with a BuildError
+# naming the entry, not the AttributeError, TypeError or ValueError reading it
+# raised. (changes as (file, the keys and indexes to a value, the value put
+# there), the message.)
+BUILD_JOBS_YAML = "tests/adapters/gnucobol_batch/jobs.yaml"
+BUILD_DATASETS_YAML = "tests/fixtures/datasets.yaml"
+BUILD_ACCTFILE_DD = ("programs", "CBACT01C", "dd", "ACCTFILE")
+BUILD_FIRST_STEP = f"{BUILD_JOBS_YAML} job ACCTFILE step STEP05"  # the first step read
+BUILD_FIRST_STEP_PATH = ("jobs", "ACCTFILE", "steps", 0)
+BUILD_PAST_LIMIT = "1" * (DIGIT_LIMIT + 1)
+BUILD_PAST_LIMIT_REFUSAL = DIGIT_LIMIT_REFUSAL.format(digits=DIGIT_LIMIT + 1)
+BUILD_DEFINE_SYSIN = ("jobs", "ACCTFILE", "steps", 1, "params", "sysin")
+BUILD_CLUSTER = "  DEFINE CLUSTER (NAME(A.B) KEYS({keys}) RECORDSIZE(300 300) INDEXED)"
+BUILD_MALFORMED_CASES = [
+    pytest.param(
+        [(BUILD_PROGRAMS_YAML, ("programs", "CBACT01C", "compile"), ["executable"])],
+        f"{BUILD_PROGRAMS_YAML} unit CBACT01C compile must be a mapping, got ['executable']",
+        id="compile-list",
+    ),
+    pytest.param(
+        [(BUILD_PROGRAMS_YAML, ("programs", "CBACT01C", "compile"), "executable")],
+        f"{BUILD_PROGRAMS_YAML} unit CBACT01C compile must be a mapping, got 'executable'",
+        id="compile-text",
+    ),
+    # CBSTM03B, planned before CSUTLDTC, reads its caller's compile first.
+    pytest.param(
+        [
+            (BUILD_PROGRAMS_YAML, ("programs", "CBSTM03B", "called_by"), "CSUTLDTC"),
+            (BUILD_PROGRAMS_YAML, ("programs", "CSUTLDTC", "compile"), ["-m"]),
+        ],
+        f"{BUILD_PROGRAMS_YAML} unit CSUTLDTC compile must be a mapping, got ['-m']",
+        id="caller-compile-list",
+    ),
+    pytest.param(
+        [(BUILD_PROGRAMS_YAML, ("programs", "CBSTM03B", "compile"), "-x")],
+        f"{BUILD_PROGRAMS_YAML} unit CBSTM03B compile must be a mapping, got '-x'",
+        id="linked-compile-text",
+    ),
+    pytest.param(
+        [(BUILD_PROGRAMS_YAML, ("programs", "CBACT01C", "run"), ["executable"])],
+        f"{BUILD_PROGRAMS_YAML} unit CBACT01C: run ['executable'] does not fit compile mode "
+        f"'executable'",
+        id="run-list",
+    ),
+    pytest.param(
+        [(BUILD_PROGRAMS_YAML, ("programs", "CBACT01C", "dd"), ["ACCTFILE"])],
+        f"{BUILD_PROGRAMS_YAML} CBACT01C dd must be a mapping, got ['ACCTFILE']",
+        id="dd-list",
+    ),
+    pytest.param(
+        [(BUILD_PROGRAMS_YAML, ("programs", "CBACT01C", "dd", 1), {"organization": "indexed"})],
+        f"{BUILD_PROGRAMS_YAML} CBACT01C dd name 1 is not text",
+        id="dd-name-number",
+    ),
+    pytest.param(
+        [(BUILD_PROGRAMS_YAML, (*BUILD_ACCTFILE_DD, "logical"), ["X"])],
+        f"{BUILD_PROGRAMS_YAML} CBACT01C dd ACCTFILE logical must be a dataset name, got ['X']",
+        id="dd-logical-list",
+    ),
+    pytest.param(
+        [(BUILD_PROGRAMS_YAML, (*BUILD_ACCTFILE_DD, "keys", "alternates"), 5)],
+        "alternates must be a list, got 5",
+        id="dd-alternates-number",
+    ),
+    pytest.param(
+        [(BUILD_DATASETS_YAML, ("datasets", 0, "layout"), ["X"])],
+        "dataset ACCTDATA names layout ['X'], which tests/inventory/layouts.yaml lacks",
+        id="dataset-layout-list",
+    ),
+    pytest.param(
+        [(BUILD_DATASETS_YAML, ("datasets", 0, "alternate_keys"), 7)],
+        "alternate_keys must be a list, got 7",
+        id="dataset-alternate-keys-number",
+    ),
+    pytest.param(
+        [(BUILD_JOBS_YAML, ("jobs", 1), {"steps": []})],
+        f"{BUILD_JOBS_YAML} job name 1 is not text",
+        id="job-name-number",
+    ),
+    pytest.param(
+        [(BUILD_JOBS_YAML, (*BUILD_FIRST_STEP_PATH, "dd"), ["SYSPRINT"])],
+        f"{BUILD_FIRST_STEP} dd must be a mapping, got ['SYSPRINT']",
+        id="step-dd-list",
+    ),
+    pytest.param(
+        [(BUILD_JOBS_YAML, (*BUILD_FIRST_STEP_PATH, "dd", "SYSPRINT", "concat"), 5)],
+        f"{BUILD_FIRST_STEP} dd SYSPRINT concat must be a list, got 5",
+        id="step-concat-number",
+    ),
+    pytest.param(
+        [
+            (
+                BUILD_JOBS_YAML, (*BUILD_FIRST_STEP_PATH, "dd", "SYSPRINT"),
+                {"dsn": ["A.B"], "logical": "ACCTDATA"},
+            )
+        ],
+        f"{BUILD_FIRST_STEP} dd SYSPRINT: dsn and logical must be text, got ['A.B'] and "
+        f"'ACCTDATA'",
+        id="step-dsn-list",
+    ),
+    pytest.param(
+        [(BUILD_JOBS_YAML, (*BUILD_FIRST_STEP_PATH, "params"), ["sysin"])],
+        f"{BUILD_FIRST_STEP} params must be a mapping, got ['sysin']",
+        id="step-params-list",
+    ),
+    pytest.param(
+        [(BUILD_JOBS_YAML, (*BUILD_FIRST_STEP_PATH, "params", "sysin"), 5)],
+        f"{BUILD_FIRST_STEP} sysin must be a list, got 5",
+        id="step-sysin-number",
+    ),
+    pytest.param(
+        [
+            (
+                BUILD_JOBS_YAML, BUILD_DEFINE_SYSIN,
+                [BUILD_CLUSTER.format(keys=f"{BUILD_PAST_LIMIT} 0")],
+            )
+        ],
+        f"{BUILD_JOBS_YAML} job ACCTFILE: DEFINE CLUSTER A.B KEYS length "
+        f"{BUILD_PAST_LIMIT_REFUSAL}",
+        id="define-cluster-keys-past-digit-limit",
+    ),
+    pytest.param(
+        [
+            (
+                BUILD_JOBS_YAML, BUILD_DEFINE_SYSIN,
+                [
+                    BUILD_CLUSTER.format(keys="11 0"),
+                    f"  DEFINE ALTERNATEINDEX (NAME(A.B.AIX) RELATE(A.B) "
+                    f"KEYS(16 {BUILD_PAST_LIMIT}))",
+                ],
+            )
+        ],
+        f"{BUILD_JOBS_YAML} job ACCTFILE: DEFINE ALTERNATEINDEX KEYS offset "
+        f"{BUILD_PAST_LIMIT_REFUSAL}",
+        id="define-aix-keys-past-digit-limit",
+    ),
+]
+
+
+@pytest.mark.parametrize(("changes", "message"), BUILD_MALFORMED_CASES)
+def test_build_plan_refuses_a_configuration_value_of_the_wrong_type(
+    monkeypatch: pytest.MonkeyPatch, changes: list[tuple[str, tuple, object]], message: str
+) -> None:
+    repo_root = Path(_TESTS_ROOT).parent
+    committed = build._load_config
+    documents = {
+        relative: copy.deepcopy(committed(repo_root, relative)) for relative, _, _ in changes
+    }
+    for relative, path, value in changes:
+        target = documents[relative]
+        for key in path[:-1]:
+            target = target[key]
+        target[path[-1]] = value
+
+    def load_config(root: Path, relative: str) -> object:
+        if relative in documents:
+            return copy.deepcopy(documents[relative])
+        return committed(root, relative)
+
+    monkeypatch.setattr(build, "_load_config", load_config)
+    with pytest.raises(build.BuildError) as refused:
+        _lowered_digit_limit_call(lambda: build._plan(repo_root))
+    assert (type(refused.value), str(refused.value)) == (build.BuildError, message)
+
+
+# Control-statement numbers longer than the integer string conversion limit:
+# each SYMNAMES and IDCAMS reader refuses them with UtilityError, and reads a
+# number of exactly the limit's digits as before.
+# (reader, line, digits of its number {n}, the UtilityError's message, or None
+# when the line is read): in a message, {refused} stands for
+# DIGIT_LIMIT_REFUSAL and {line} for the line as the reader quotes it.
+DIGIT_LIMIT_CASES = [
+    pytest.param("symnames", "FLD,{n},8", DIGIT_LIMIT, None, id="symnames-position-at-limit"),
+    pytest.param(
+        "symnames", "FLD,{n},8", DIGIT_LIMIT + 1,
+        "SYMNAMES line 1: the position {refused}; the line reads: {line}",
+        id="symnames-position-over-limit",
+    ),
+    pytest.param("symnames", "FLD,1,{n}", DIGIT_LIMIT, None, id="symnames-length-at-limit"),
+    pytest.param(
+        "symnames", "FLD,1,{n}", DIGIT_LIMIT + 1,
+        "SYMNAMES line 1: the length {refused}; the line reads: {line}",
+        id="symnames-length-over-limit",
+    ),
+    # SYMNAMES has no repetition factor, so one is refused whatever its length.
+    pytest.param(
+        "symnames", "FLD,{n}C'A'", DIGIT_LIMIT + 1,
+        "SYMNAMES line 1: a repetition factor is not valid in {n}C'A'; the line reads: {line}",
+        id="symnames-repetition-over-limit",
+    ),
+    pytest.param(
+        "idcams", "  IF LASTCC > {n} THEN SET MAXCC = 0", DIGIT_LIMIT, None,
+        id="idcams-if-value-at-limit",
+    ),
+    pytest.param(
+        "idcams", "  IF LASTCC > {n} THEN SET MAXCC = 0", DIGIT_LIMIT + 1,
+        "IDCAMS command 1: the IF LASTCC value {refused}; the command reads: {line}",
+        id="idcams-if-value-over-limit",
+    ),
+    pytest.param(
+        "idcams", "  SET MAXCC = {n}", DIGIT_LIMIT + 1,
+        "IDCAMS command 1: the SET MAXCC value {refused}; the command reads: {line}",
+        id="idcams-set-value-over-limit",
+    ),
+    pytest.param(
+        "idcams", "  REPRO INFILE(A) OUTFILE(B) ERRORLIMIT({n})", DIGIT_LIMIT, None,
+        id="idcams-number-at-limit",
+    ),
+    pytest.param(
+        "idcams", "  DEFINE CLUSTER (NAME(A.B) KEYS({n} 0) RECORDSIZE(10 10) INDEXED)",
+        DIGIT_LIMIT + 1,
+        "IDCAMS command 1 (DEFINE): a number of KEYS {refused}; the command reads: {line}",
+        id="idcams-number-over-limit",
+    ),
+]
+
+
+@pytest.mark.parametrize(("reader", "line", "digits", "refusal"), DIGIT_LIMIT_CASES)
+def test_control_statement_numbers_beyond_the_int_digit_limit_raise_utility_error(
+    reader: str, line: str, digits: int, refusal: str | None
+) -> None:
+    number = "1" * digits
+    text = line.format(n=number)
+    read = {"symnames": utilities.parse_symnames, "idcams": utilities.parse_idcams}[reader]
+    if refusal is None:
+        _lowered_digit_limit_call(lambda: read([text]))
+        return
+    with pytest.raises(utilities.UtilityError) as refused:
+        _lowered_digit_limit_call(lambda: read([text]))
+    assert str(refused.value) == refusal.format(
+        n=number, refused=DIGIT_LIMIT_REFUSAL.format(digits=digits), line=" ".join(text.split())
+    )
+
+
+@pytest.mark.parametrize(("artifact", "generated", "refused"), BUILD_ESCAPING_COMPILES)
+def test_build_compile_refuses_a_destination_outside_its_directory(
+    artifact: str, generated: str | None, refused: str
+) -> None:
+    sources = ("app/cbl/CBACT01C.cbl",) if generated is None else (generated,)
+    with pytest.raises(build.BuildError) as error:
+        build._Compile("UNIT", "cobc", ("-x",), sources, artifact, generated=generated is not None)
+    assert str(error.value) == f"{refused} {BUILD_DESTINATION_RULE}"
+
+
+@pytest.mark.parametrize("escape", BUILD_ESCAPING_TASKS)
+def test_build_refuses_a_task_or_generated_source_outside_the_workspace_unwritten(
+    build_memo_root: Path, escape: str
+) -> None:
+    repo_root = Path(_TESTS_ROOT).parent
+    workspace = build_memo_root / "work" / "_build" / ".workspace"
+    outside = build_memo_root / "outside"
+    workspace.mkdir(parents=True)
+    outside.mkdir()
+    runs = build_memo_root / "runs.log"
+    toolchain = _recording_toolchain(build_memo_root, runs)
+    unit = build._Compile("UNIT", "cobc", ("-x",), ("app/cbl/CBACT01C.cbl",), "bin/UNIT")
+    sound = build._Task(unit, "UNIT", workspace, workspace / "logs" / "UNIT.log")
+    # Up four levels from logs/ is the case's folder, which holds outside/.
+    escaping_log = workspace / "logs" / ".." / ".." / ".." / ".." / "outside" / "UNIT.log"
+    generated = {"src/SOUND.cbl": "", "../../../outside/X.cbl": ""}
+    escaping_name = build._Compile(
+        "../../../../outside/X", "cobc", ("-x",), ("app/cbl/CBACT01C.cbl",), "bin/X"
+    )
+    attempts: dict[str, tuple[Callable[[], object], str]] = {
+        "log": (
+            lambda: build._compile_all(
+                [sound, build._Task(unit, "LOGGED", workspace, escaping_log)],
+                toolchain, repo_root, workspace,
+            ),
+            f"the log of LOGGED 'logs/../../../../outside/UNIT.log' {BUILD_DESTINATION_RULE}",
+        ),
+        "base": (
+            lambda: build._compile_all(
+                [sound, build._Task(unit, "BASED", outside, outside / "UNIT.log")],
+                toolchain, repo_root, workspace,
+            ),
+            f"the artifact of BASED {str(outside / 'bin' / 'UNIT')!r} is not inside the build "
+            f"directory",
+        ),
+        "generated": (
+            lambda: build._populate(
+                workspace, BUILD_FAILED_KEY,
+                build._Plan(units={}, compiles=(), profiles=(), generated=generated),
+                toolchain, repo_root,
+            ),
+            f"the generated source '../../../outside/X.cbl' {BUILD_DESTINATION_RULE}",
+        ),
+        # A compile whose name takes its log out, refused before the sound
+        # generated source is written.
+        "plan-log": (
+            lambda: build._populate(
+                workspace, BUILD_FAILED_KEY,
+                build._Plan(
+                    units={}, compiles=(escaping_name,), profiles=(),
+                    generated={"src/SOUND.cbl": ""},
+                ),
+                toolchain, repo_root,
+            ),
+            f"the log of {escaping_name.name} 'logs/{escaping_name.name}.log' "
+            f"{BUILD_DESTINATION_RULE}",
+        ),
+    }
+    attempt, expected = attempts[escape]
+    with pytest.raises(build.BuildError) as error:
+        attempt()
+    assert str(error.value) == expected
+    # Refused before any directory was created, file written or compiler run.
+    assert list(workspace.iterdir()) == []
+    assert list(outside.iterdir()) == []
+    assert not runs.exists()
+
+
 def _written_pid(path: Path) -> int | None:
     """The pid written to ``path`` as one whole line, or ``None`` while the
     file is absent or partly written."""
@@ -4572,6 +6498,331 @@ def test_catalog_new_records_a_generation_rolled_off_under_noscratch_as_uncatalo
     assert catalog.uncatalogued == expected_uncatalogued
     evidence = yaml.safe_load(catalog.write_evidence().read_text(encoding="utf-8"))
     assert evidence["uncatalogued"] == expected_uncatalogued
+
+
+# Utility size bounds (CWE-789): the DFSORT OUTREC limits (repetition 4095,
+# column and input field end 32752), the longest fixed-length record (32760)
+# and the bytes one utility step may build or write, each patched to a few
+# bytes so that a regression could allocate no more than that.
+BOUND_REPETITION = 8
+BOUND_COLUMN = 40  # also the last byte an OUTREC input field may reach
+BOUND_RECORD = 48
+# (OUTREC operand, SYMNAMES lines, the OUTREC record length when accepted,
+# the refusal's words when refused): each limit at its value and one past it.
+OUTREC_BOUND_CASES = [
+    pytest.param("(8X)", [], 8, None, id="blanks-repetition-at-limit"),
+    pytest.param(
+        "(9X)", [], None, "the repetition factor 9 of 9X is more than 8",
+        id="blanks-repetition-over-limit",
+    ),
+    pytest.param("(8C'AB')", [], 16, None, id="char-repetition-at-limit"),
+    pytest.param(
+        "(9C'A')", [], None, "the repetition factor 9 of 9C'A' is more than 8",
+        id="char-repetition-over-limit",
+    ),
+    pytest.param("(8X'C1')", [], 8, None, id="hex-repetition-at-limit"),
+    pytest.param(
+        "(9X'C1')", [], None, "the repetition factor 9 of 9X'C1' is more than 8",
+        id="hex-repetition-over-limit",
+    ),
+    pytest.param("(40:X)", [], 40, None, id="column-at-limit"),
+    pytest.param("(41:X)", [], None, "column 41 is beyond 40", id="column-over-limit"),
+    pytest.param("(33,8)", [], 8, None, id="field-end-at-limit"),
+    pytest.param(
+        "(33,9)", [], None, "the OUTREC field 33,9 ends at byte 41, beyond 40",
+        id="field-end-over-limit",
+    ),
+    pytest.param("(FLD)", ["FLD,33,8"], 8, None, id="symbol-field-end-at-limit"),
+    pytest.param(
+        "(FLD)", ["FLD,33,9"], None, "the OUTREC field FLD ends at byte 41, beyond 40",
+        id="symbol-field-end-over-limit",
+    ),
+    pytest.param("(33:8C'AB')", [], 48, None, id="repeated-item-end-at-record-limit"),
+    pytest.param(
+        "(34:8C'AB')", [], None,
+        "the OUTREC item \"8C'AB'\" at column 34 ends at byte 49, beyond 48",
+        id="repeated-item-end-over-record-limit",
+    ),
+    pytest.param("(40:1,9)", [], 48, None, id="field-item-end-at-record-limit"),
+    pytest.param(
+        "(40:1,10)", [], None, "the OUTREC item '1,10' at column 40 ends at byte 49, beyond 48",
+        id="field-item-end-over-record-limit",
+    ),
+    pytest.param("(8X,8X,8X,8X,8X,8X)", [], 48, None, id="items-end-at-record-limit"),
+    pytest.param(
+        "(8X,8X,8X,8X,8X,8X,X)", [], None, "the OUTREC item 'X' at column 49 ends at byte 49",
+        id="items-end-over-record-limit",
+    ),
+]
+
+
+@pytest.mark.parametrize(("operand", "symnames", "length", "refusal"), OUTREC_BOUND_CASES)
+def test_parse_sort_bounds_outrec_items_by_the_dfsort_limits(
+    monkeypatch: pytest.MonkeyPatch,
+    operand: str,
+    symnames: list[str],
+    length: int | None,
+    refusal: str | None,
+) -> None:
+    monkeypatch.setattr(utilities, "_MAX_REPETITION", BOUND_REPETITION)
+    monkeypatch.setattr(utilities, "_MAX_COLUMN", BOUND_COLUMN)
+    monkeypatch.setattr(utilities, "_MAX_FIELD_END", BOUND_COLUMN)
+    monkeypatch.setattr(utilities, "_MAX_RECORD_LENGTH", BOUND_RECORD)
+    lines = [" SORT FIELDS=COPY", f" OUTREC FIELDS={operand}"]
+    symbols = utilities.parse_symnames(symnames)
+    if refusal is None:
+        spec = utilities.parse_sort(lines, symbols)
+        assert spec.outrec_length == length
+        assert len(spec.reformat(b"R" * BOUND_COLUMN)) == length
+        return
+    with pytest.raises(utilities.UtilityError) as refused:
+        utilities.parse_sort(lines, symbols)
+    message = str(refused.value)
+    assert message.startswith(f"SORT OUTREC statement: {refusal}"), message
+    assert message.endswith(f"; the statement reads: OUTREC FIELDS={operand}"), message
+
+
+@pytest.mark.parametrize("length", [BOUND_RECORD, BOUND_RECORD + 1], ids=["at-limit", "over-limit"])
+def test_sort_spec_reformat_bounds_the_outrec_record_by_the_record_limit(
+    monkeypatch: pytest.MonkeyPatch, length: int
+) -> None:
+    monkeypatch.setattr(utilities, "_MAX_RECORD_LENGTH", BOUND_RECORD)
+    spec = utilities.SortSpec((), outrec=(utilities.OutItem(1, length, data=b"A" * length),))
+    if length <= BOUND_RECORD:
+        assert spec.reformat(b"") == b"A" * length
+        return
+    with pytest.raises(utilities.UtilityError) as refused:
+        spec.reformat(b"")
+    assert str(refused.value).startswith(
+        f"the OUTREC record is {length} bytes, longer than {BOUND_RECORD}"
+    ), refused.value
+
+
+UTILITY_BOUND_WORKDIR_PREFIX = "unit-utility-bounds-"
+UTILITY_BOUND_JOB = "BOUNDJOB"
+UTILITY_BOUND_DSN = "CARDDEMO.BOUND.OUTPUT"
+UTILITY_BOUND_INPUT = ("A", "B", "C")  # three in-stream card images
+UTILITY_BOUND_OUTREC = " OUTREC FIELDS=(1:1,1,48:X)"  # a 48-byte OUTREC record
+# (utility, the output's DCB LRECL or None for an existing dataset catalogued
+# with a record length of BOUND_RECORD + 1, an OUTREC statement, the step
+# byte bound, the refusal's words when refused).
+UTILITY_BOUND_CASES = [
+    pytest.param("sort", 48, None, 3 * 48, None, id="sort-lrecl-at-record-limit"),
+    pytest.param(
+        "sort", 49, None, 3 * 49, "step STEP01 DD SORTOUT: DCB LRECL=49 is longer than 48",
+        id="sort-lrecl-over-record-limit",
+    ),
+    pytest.param("sort", 40, None, 3 * 40, None, id="sort-output-at-step-bound"),
+    pytest.param(
+        "sort", 40, None, 3 * 40 - 1,
+        f"job {UTILITY_BOUND_JOB} step STEP01: 3 records of 40 bytes for {UTILITY_BOUND_DSN} "
+        f"are 120 bytes, more than the 119 one utility step may build",
+        id="sort-output-over-step-bound",
+    ),
+    pytest.param(
+        "sort", 40, UTILITY_BOUND_OUTREC, 3 * 48, None, id="sort-outrec-at-step-bound"
+    ),
+    pytest.param(
+        "sort", 40, UTILITY_BOUND_OUTREC, 3 * 48 - 1,
+        f"job {UTILITY_BOUND_JOB} step STEP01: 3 records of 48 bytes for {UTILITY_BOUND_DSN} "
+        f"are 144 bytes, more than the 143 one utility step may build",
+        id="sort-outrec-over-step-bound",
+    ),
+    pytest.param("iebgener", 40, None, 3 * 40, None, id="iebgener-output-at-step-bound"),
+    pytest.param(
+        "iebgener", 40, None, 3 * 40 - 1,
+        f"job {UTILITY_BOUND_JOB} step STEP01: 3 records of 40 bytes for {UTILITY_BOUND_DSN} "
+        f"are 120 bytes, more than the 119 one utility step may write",
+        id="iebgener-output-over-step-bound",
+    ),
+    pytest.param(
+        "iebgener", None, None, 3 * 49,
+        f"job {UTILITY_BOUND_JOB} step STEP01: {UTILITY_BOUND_DSN} has a record length of 49, "
+        f"longer than 48",
+        id="iebgener-catalogued-length-over-record-limit",
+    ),
+]
+
+
+@pytest.fixture
+def utility_bound_workdir(carddemo_work_root: Path) -> Iterator[Path]:
+    """A fresh directory of this case's own inside the session work root
+    (carddemo_work_root), never under pytest's basetemp, removed afterwards."""
+    directory = Path(
+        tempfile.mkdtemp(prefix=UTILITY_BOUND_WORKDIR_PREFIX, dir=carddemo_work_root)
+    )
+    try:
+        yield directory
+    finally:
+        shutil.rmtree(directory)
+
+
+def _bound_step(
+    kind: str, lrecl: int | None, outrec: str | None, status: str = "OLD"
+) -> dict[str, object]:
+    """A SORT (``FIELDS=COPY``), IEBGENER or IDCAMS ``REPRO`` step copying
+    the in-stream UTILITY_BOUND_INPUT to UTILITY_BOUND_DSN: a new dataset of
+    DCB LRECL ``lrecl``, or the existing catalogued one, with DISP status
+    ``status``, when ``lrecl`` is None."""
+    output: dict[str, object] = (
+        {"dsn": UTILITY_BOUND_DSN, "disp": [status]}
+        if lrecl is None
+        else {
+            "dsn": UTILITY_BOUND_DSN,
+            "disp": ["NEW", "CATLG", "DELETE"],
+            "dcb": {"lrecl": lrecl, "recfm": "FB"},
+        }
+    )
+    source = {"instream": list(UTILITY_BOUND_INPUT)}
+    if kind == "sort":
+        sysin = [" SORT FIELDS=COPY", *([outrec] if outrec else [])]
+        return {
+            "step": "STEP01",
+            "kind": "sort",
+            "dd": {"SORTIN": source, "SYSOUT": {"sysout": "*"}, "SORTOUT": output},
+            "params": {"sysin": sysin},
+        }
+    if kind == "idcams":
+        return {
+            "step": "STEP01",
+            "kind": "idcams",
+            "dd": {"SYSPRINT": {"sysout": "*"}, "SYSUT1": source, "SYSUT2": output},
+            "params": {"sysin": [" REPRO INFILE(SYSUT1) OUTFILE(SYSUT2)"]},
+        }
+    return {
+        "step": "STEP01",
+        "kind": "iebgener",
+        "dd": {
+            "SYSPRINT": {"sysout": "*"},
+            "SYSUT1": source,
+            "SYSUT2": output,
+            "SYSIN": {"dummy": True},
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    ("kind", "lrecl", "outrec", "step_bytes", "refusal"), UTILITY_BOUND_CASES
+)
+def test_run_utility_bounds_the_record_length_and_the_step_output(
+    utility_bound_workdir: Path,
+    carddemo_repo_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+    lrecl: int | None,
+    outrec: str | None,
+    step_bytes: int,
+    refusal: str | None,
+) -> None:
+    monkeypatch.setattr(utilities, "_MAX_RECORD_LENGTH", BOUND_RECORD)
+    monkeypatch.setattr(utilities, "_MAX_STEP_BYTES", step_bytes)
+    store = datasets.DatasetStore(utility_bound_workdir, None)
+    catalog = datasets.Catalog(store, datasets.DsnMap({"jobs": {}}, specs={}))
+    path = catalog.path_for(UTILITY_BOUND_DSN)
+    if lrecl is None:
+        store.write_sequential(path, b"", BOUND_RECORD + 1)
+        catalog.register(
+            datasets.Entry.nonvsam(UTILITY_BOUND_DSN, path, record_length=BOUND_RECORD + 1)
+        )
+    ctx = utilities.StepContext(
+        store, catalog, datasets.JobGenerations(catalog), catalog.dsn_map, carddemo_repo_root,
+        utility_bound_workdir, 1, job=UTILITY_BOUND_JOB,
+    )
+    step = _bound_step(kind, lrecl, outrec)
+    if refusal is None:
+        assert utilities.run_utility(step, ctx).rc == 0
+        expected = b"".join(f"{line:<{lrecl}}".encode("latin-1") for line in UTILITY_BOUND_INPUT)
+        assert store.read_sequential(path) == expected
+        return
+    with pytest.raises(utilities.UtilityError) as refused:
+        utilities.run_utility(step, ctx)
+    assert str(refused.value).startswith(refusal), refused.value
+    if lrecl is None:
+        assert store.read_sequential(path) == b""
+    else:
+        assert not store.exists(path)
+
+
+# A DISP=MOD output: UTILITY_BOUND_DSN catalogued with one kept record of
+# UTILITY_MOD_LENGTH bytes, to which the step appends the three in-stream
+# records, so the dataset written holds UTILITY_MOD_WRITTEN bytes.
+UTILITY_MOD_LENGTH = 40
+UTILITY_MOD_KEPT = b"KEPT".ljust(UTILITY_MOD_LENGTH)
+UTILITY_MOD_WRITTEN = len(UTILITY_MOD_KEPT) + len(UTILITY_BOUND_INPUT) * UTILITY_MOD_LENGTH
+UTILITY_MOD_KINDS = ["sort", "iebgener", "idcams"]
+
+
+def _mod_bound_context(
+    workdir: Path, repo_root: Path
+) -> tuple[datasets.DatasetStore, Path, utilities.StepContext]:
+    """The store, the file of UTILITY_BOUND_DSN holding UTILITY_MOD_KEPT,
+    and the step context of a job whose step extends it under DISP=MOD."""
+    store = datasets.DatasetStore(workdir, None)
+    catalog = datasets.Catalog(store, datasets.DsnMap({"jobs": {}}, specs={}))
+    path = catalog.path_for(UTILITY_BOUND_DSN)
+    store.write_sequential(path, UTILITY_MOD_KEPT, UTILITY_MOD_LENGTH)
+    catalog.register(
+        datasets.Entry.nonvsam(UTILITY_BOUND_DSN, path, record_length=UTILITY_MOD_LENGTH)
+    )
+    ctx = utilities.StepContext(
+        store, catalog, datasets.JobGenerations(catalog), catalog.dsn_map, repo_root, workdir, 1,
+        job=UTILITY_BOUND_JOB,
+    )
+    return store, path, ctx
+
+
+@pytest.mark.parametrize("excess", [0, 1], ids=["at-step-bound", "over-step-bound"])
+@pytest.mark.parametrize("kind", UTILITY_MOD_KINDS)
+def test_run_utility_bounds_a_disp_mod_output_with_the_bytes_it_keeps(
+    utility_bound_workdir: Path,
+    carddemo_repo_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+    excess: int,
+) -> None:
+    monkeypatch.setattr(utilities, "_MAX_RECORD_LENGTH", BOUND_RECORD)
+    monkeypatch.setattr(utilities, "_MAX_STEP_BYTES", UTILITY_MOD_WRITTEN - excess)
+    store, path, ctx = _mod_bound_context(utility_bound_workdir, carddemo_repo_root)
+    step = _bound_step(kind, None, None, status="MOD")
+    if not excess:
+        assert utilities.run_utility(step, ctx).rc == 0
+        appended = b"".join(
+            f"{line:<{UTILITY_MOD_LENGTH}}".encode("latin-1") for line in UTILITY_BOUND_INPUT
+        )
+        assert store.read_sequential(path) == UTILITY_MOD_KEPT + appended
+        return
+    with pytest.raises(utilities.UtilityError) as refused:
+        utilities.run_utility(step, ctx)
+    assert str(refused.value) == (
+        f"job {UTILITY_BOUND_JOB} step STEP01: {len(UTILITY_BOUND_INPUT)} records of "
+        f"{UTILITY_MOD_LENGTH} bytes for {UTILITY_BOUND_DSN} plus the {len(UTILITY_MOD_KEPT)} "
+        f"bytes DISP=MOD keeps of it are {UTILITY_MOD_WRITTEN} bytes, more than the "
+        f"{UTILITY_MOD_WRITTEN - 1} one utility step may write (an emulation bound)"
+    )
+    assert store.read_sequential(path) == UTILITY_MOD_KEPT
+
+
+def test_run_utility_refuses_a_disp_mod_output_whose_size_cannot_be_read(
+    utility_bound_workdir: Path, carddemo_repo_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, path, ctx = _mod_bound_context(utility_bound_workdir, carddemo_repo_root)
+    check_deadline = utilities.StepContext.check_deadline
+
+    def vanish_before_the_write(self: utilities.StepContext, what: str) -> None:
+        """The deadline check, after which the DISP=MOD dataset is gone."""
+        check_deadline(self, what)
+        if what == f"before SORT wrote {UTILITY_BOUND_DSN}":
+            path.unlink()
+
+    monkeypatch.setattr(utilities.StepContext, "check_deadline", vanish_before_the_write)
+    with pytest.raises(utilities.UtilityError) as refused:
+        utilities.run_utility(_bound_step("sort", None, None, status="MOD"), ctx)
+    assert str(refused.value) == (
+        f"job {UTILITY_BOUND_JOB} step STEP01: the size of {UTILITY_BOUND_DSN}, which DISP=MOD "
+        f"extends, cannot be read: {os.strerror(errno.ENOENT)}"
+    )
+    assert isinstance(refused.value.__cause__, FileNotFoundError)
+    assert not store.exists(path)
 
 
 # Stage observations: logical dataset <LOGICAL> at the end of job <JOB> of a
@@ -6105,6 +8356,9 @@ NON_RAN_JUDGEMENTS = [
 ]
 NON_RAN_FINGERPRINT = "5" * 64
 NON_RAN_LACKS = "observed (the run's return code, messages and screens)"
+# The result.yaml sha256 that in-memory evidence carries, as read_evidence
+# sets it, so the validation.yaml judged from it can bind its raw record.
+BOUND_RESULT_SHA256 = "4" * 64
 
 
 def _every_observation(scenario: scenarios.Scenario, baseline: baselines.Baseline) -> dict:
@@ -6149,7 +8403,8 @@ def test_a_verdict_with_no_outcome_to_compare_is_revalidated_only_from_every_obs
         execution_id=EVIDENCE_EXECUTION_ID,
     )
     raw = dict(record, observed=_every_observation(scenario, baseline) if observed else None)
-    found = report.Evidence(EVIDENCE_EXECUTION_ID, NON_RAN_SCENARIO, work_root_case / NON_RAN_SCENARIO, raw, {}, {})
+    found = report.Evidence(EVIDENCE_EXECUTION_ID, NON_RAN_SCENARIO, work_root_case / NON_RAN_SCENARIO, raw, {}, {},
+                            result_sha256=BOUND_RESULT_SHA256)
     assert not found.ran
     assert report.missing_observations(found, scenario, baseline) == ([] if observed else [NON_RAN_LACKS])
     writes: list[dict] = []
@@ -6245,7 +8500,8 @@ def test_a_scenario_failing_the_schema_check_is_validated_failing_and_never_prom
         execution_id=EVIDENCE_EXECUTION_ID,
     )
     raw = dict(record, observed={"return_code": code, "messages": [], "screens": []})
-    found = report.Evidence(EVIDENCE_EXECUTION_ID, scenario_id, work_root_case / scenario_id, raw, {}, {})
+    found = report.Evidence(EVIDENCE_EXECUTION_ID, scenario_id, work_root_case / scenario_id, raw, {}, {},
+                            result_sha256=BOUND_RESULT_SHA256)
     assert found.ran and report.missing_observations(found, scenario, baseline) == []
     writes: list[dict] = []
     monkeypatch.setattr(report, "current_fingerprint", lambda current: (SCHEMA_GATE_FINGERPRINT, None))
@@ -6283,9 +8539,9 @@ def test_a_passed_record_of_a_scenario_failing_the_schema_check_verifies_nothing
     scenario = _return_code_only(scenarios.get(SCHEMA_DEMOTION_SCENARIO))
     present = report._present_scenarios
 
-    def with_copy() -> tuple[dict, list[str]]:
-        found, problems = present()
-        return dict(found, **{SCHEMA_DEMOTION_SCENARIO: scenario}), problems
+    def with_copy() -> tuple[dict, dict[str, str]]:
+        found, unread = present()
+        return dict(found, **{SCHEMA_DEMOTION_SCENARIO: scenario}), unread
 
     monkeypatch.setattr(report, "_present_scenarios", with_copy)
     recorded = results.load(SCHEMA_DEMOTION_SCENARIO)
@@ -6303,7 +8559,7 @@ def test_a_passed_record_of_a_scenario_failing_the_schema_check_verifies_nothing
                                                               EVIDENCE_EXECUTION_ID))
         path = UNIKIX_EVIDENCE_DIR / EVIDENCE_EXECUTION_ID / SCHEMA_DEMOTION_SCENARIO / report.VALIDATION_FILE
         imported = report.UnikixRecord(EVIDENCE_EXECUTION_ID, SCHEMA_DEMOTION_SCENARIO, passed, path)
-        monkeypatch.setattr(report, "load_unikix_records", lambda *args: ([imported], []))
+        monkeypatch.setattr(report, "load_unikix_records", lambda *args, **kwargs: ([imported], [], {}))
         monkeypatch.setattr(report, "_ineligibility", lambda *args: None)
         monkeypatch.setattr(report, "_imported_is_current", lambda *args: True)
     state = report.build_state()
@@ -6669,7 +8925,8 @@ def _divergent_evidence(directory: Path) -> report.Evidence:
         execution_id=EVIDENCE_EXECUTION_ID,
     )
     raw = dict(record, observed={"return_code": 0, "messages": messages, "screens": []})
-    return report.Evidence(EVIDENCE_EXECUTION_ID, DIVERGENCE_SCENARIO, directory, raw, {}, {})
+    return report.Evidence(EVIDENCE_EXECUTION_ID, DIVERGENCE_SCENARIO, directory, raw, {}, {},
+                           result_sha256=BOUND_RESULT_SHA256)
 
 
 def _judged_eligible(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
@@ -6788,9 +9045,10 @@ def test_revalidation_regenerates_the_reports_only_when_it_changed_a_record_or_t
     found = _divergent_evidence(scenario_dir)
     original = report.GAPS_FILE.read_text(encoding="utf-8")
     # A state the reports can be regenerated from (_refuse_unreportable): no
-    # inventory drift and no unread gnucobol-batch record.
+    # inventory drift and no unread scenario file, gnucobol-batch record or
+    # validation.yaml.
     state = SimpleNamespace(zip_info=None, copy_gaps=report._CopyGaps({}, frozenset()), items=[], total=0,
-                            unread_records={})
+                            unread_scenarios={}, unread_records={}, unread_validations={})
     monkeypatch.setattr(report, "build_state", lambda: state)
     monkeypatch.setattr(report, "_evidence_folder", lambda *parts: work_root_case)
     monkeypatch.setattr(report, "_evidence_executions",
@@ -7185,8 +9443,12 @@ def test_settling_leaves_an_already_closed_entry_as_it_is(closure_root: Path, pr
 # INSTEBM holds, what environment.yaml then records for version_bpe, and
 # whether the installation's versions are recorded (GAP-MIS-009). The empty
 # listing is the committed version_bpe on an installation whose INSTEBM is
-# empty, a probe that exits 0 and prints nothing.
+# empty, a probe that exits 0 and prints nothing. The environment's
+# JAVA_TOOL_OPTIONS holds the operator's UNIKIX_SECRET_PROPERTY, which a
+# version command run on a JVM echoes; {redacted} and {temp} in what is
+# recorded stand for env.REDACTED and the deployment's tmp/.
 VERSION_PROBE_LISTING = 'ls -1 "$INSTEBM"'
+VERSION_PROBE_JVM_ECHO = "echo 'ebm 12.0.0'; printf 'Picked up JAVA_TOOL_OPTIONS: %s\\n' \"$JAVA_TOOL_OPTIONS\" >&2"
 VERSION_PROBE_CASES = [
     pytest.param(VERSION_PROBE_LISTING, [], "no output: version_bpe exited 0 and printed nothing", False,
                  id="empty-listing"),
@@ -7195,6 +9457,9 @@ VERSION_PROBE_CASES = [
     pytest.param(VERSION_PROBE_LISTING, ["ebm-12.0.0"], "ebm-12.0.0\n", True, id="listing"),
     pytest.param("echo 'no such release' >&2; exit 3", [], "exit status 3\nno such release\n", False,
                  id="failure"),
+    pytest.param(VERSION_PROBE_JVM_ECHO, [],
+                 "ebm 12.0.0\nPicked up JAVA_TOOL_OPTIONS: {redacted} -Djava.io.tmpdir={temp} "
+                 f"{UNIKIX_JVM_OWNED}\n", True, id="jvm-echo"),
 ]
 
 
@@ -7226,14 +9491,18 @@ def test_version_probes_are_recorded_as_text_the_import_accepts(
     environment = unikix_env.UniKixEnvironment(
         env_file=env_file, env_file_sha256=sha256_file(env_file), work_root=work_root_case,
         deployment_root=deployment_root,
-        variables={"PATH": os.environ.get("PATH", os.defpath), "INSTEBM": str(instebm)},
+        variables={
+            "PATH": os.environ.get("PATH", os.defpath), "INSTEBM": str(instebm),
+            "JAVA_TOOL_OPTIONS": UNIKIX_SECRET_PROPERTY,
+        },
         inherited_cobcpy="", sourcing_output="",
     )
     versions = environment.versions(unikix_env.CommandSet.load(commands_file))
     assert versions == {
         **{entry_id: f"{entry_id} 12.0.0\n" for entry_id in unikix_env.VERSION_ENTRIES},
-        "version_bpe": recorded,
+        "version_bpe": recorded.format(redacted=unikix_env.REDACTED, temp=deployment_root / "tmp"),
     }
+    assert not any(UNIKIX_SECRET_PROPERTY in text for text in versions.values())
     # The record an import reads: the run date and the installation and
     # deployment facts, valid, beside the versions just recorded.
     document = {
@@ -7629,6 +9898,320 @@ def test_import_of_an_execution_with_no_scenario_record_writes_nothing(
     assert sorted(path.name for path in execution_dir.iterdir()) == files
 
 
+# Evidence dataset bounds: report._evidence_datasets on a datasets/ folder of
+# the case's own, read through _DatasetReads, report's os for the case, with
+# DATASET_LIMITS taken down where a case gives them (None keeps the committed
+# ones). Each case: the files, as (name, size, sparse), a sparse file taking
+# no disk space; the limits; the file whose size fstat understates as
+# DATASET_GROWN_SIZE, as when it grew after its size was taken; the outcome,
+# each dataset returned by name with the file holding its bytes, or the
+# refusal after the folder's shown path; the bytes read from each file
+# opened, which names every file opened; and the capture_summary.datasets
+# map of result.yaml, file name -> the name it gives back. The made-up
+# CARD<n>.bin names of the folder limit case are no dataset's: the entries
+# count toward that limit whatever their names.
+DATASET_MIB = 1024 * 1024
+DATASET_GROWN_SIZE = 10
+DATASET_LIMITS = ("EVIDENCE_DATASET_MAX_FILES", "EVIDENCE_DATASET_MAX_BYTES", "EVIDENCE_DATASETS_MAX_BYTES")
+# A file of every kind of name a scenario can name, the map giving back the
+# reserved observations whose file names do not show them.
+DATASET_RECOGNIZED_FILES = (
+    ("ACCTDATA.bin", 3, False), ("_AFTER_POSTTRAN_ACCTDATA.bin", 4, False),
+    ("_AFTER_POSTTRAN__REGION-FILES.bin", 5, False), ("_AIX_CARDAIX.bin", 6, False),
+    ("_BEFORE_POSTTRAN__REGION-FILES.bin", 7, False), ("_CATALOG.bin", 8, False),
+    ("_REGION-FILES.bin", 9, False), ("_TDQ_JOBS.bin", 10, False),
+)
+DATASET_RECOGNIZED_SUMMARY = {
+    "_AFTER_POSTTRAN_ACCTDATA.bin": "@AFTER:POSTTRAN:ACCTDATA",
+    "_AFTER_POSTTRAN__REGION-FILES.bin": "@AFTER:POSTTRAN:@REGION-FILES",
+    "_AIX_CARDAIX.bin": "@AIX:CARDAIX",
+    "_BEFORE_POSTTRAN__REGION-FILES.bin": "@BEFORE:POSTTRAN:@REGION-FILES",
+}
+# Sparse gibibyte files under names no scenario can name, from the map or
+# their file names: an unknown alternate-index path, a stage observation of
+# no logical dataset or of another observation, a stage name holding
+# whitespace, a region stage of another observation, and plain unknown names.
+DATASET_UNRECOGNIZED_FILES = tuple((name, 1024 * DATASET_MIB, True) for name in (
+    "CARDDATA.bin", "JUNK.bin", "X.bin", "_AFTER_POSTTRAN_JUNK.bin", "_AFTER_POSTTRAN__CATALOG.bin",
+    "_AFTER_POST_TRAN_ACCTDATA.bin", "_AIX_NOSUCHAIX.bin", "_BEFORE_POSTTRAN__CATALOG.bin", "_JUNK.bin",
+))
+DATASET_UNRECOGNIZED_SUMMARY = {
+    "CARDDATA.bin": "JUNK",
+    "X.bin": "JUNK",
+    "_AFTER_POSTTRAN_JUNK.bin": "@AFTER:POSTTRAN:JUNK",
+    "_AFTER_POSTTRAN__CATALOG.bin": "@AFTER:POSTTRAN:@CATALOG",
+    "_AFTER_POST_TRAN_ACCTDATA.bin": "@AFTER:POST TRAN:ACCTDATA",
+    "_AIX_NOSUCHAIX.bin": "@AIX:NOSUCHAIX",
+    "_BEFORE_POSTTRAN__CATALOG.bin": "@BEFORE:POSTTRAN:@CATALOG",
+}
+DATASET_BOUND_CASES = [
+    pytest.param((("ACCTDATA.bin", 16 * DATASET_MIB + 1, True),), None, None,
+                 "/ACCTDATA.bin holds 16777217 bytes; one evidence datasets/ file may hold at most 16777216",
+                 {"ACCTDATA.bin": 0}, {}, id="one-byte-past-the-file-limit"),
+    pytest.param((("ACCTDATA.bin", 60, False), ("CARDDATA.bin", 41, False)), (512, 64, 100), None,
+                 "/CARDDATA.bin holds 41 bytes, and the datasets/ files of one scenario's evidence may hold at most "
+                 "100 together (40 were left for it)",
+                 {"ACCTDATA.bin": 60, "CARDDATA.bin": 0}, {}, id="files-together-past-the-scenario-limit"),
+    pytest.param(tuple((f"CARD{index}.bin", 1, False) for index in range(4)), (3, 64, 128), None,
+                 " holds more than 3 entries; an evidence datasets/ folder may hold at most 3", {}, {},
+                 id="one-entry-past-the-folder-limit"),
+    pytest.param((("ACCTDATA.bin", 64, False), ("_CATALOG.bin", 64, False)), (2, 64, 128), None,
+                 {"ACCTDATA": "ACCTDATA.bin", "@CATALOG": "_CATALOG.bin"}, {"ACCTDATA.bin": 64, "_CATALOG.bin": 64},
+                 {}, id="exactly-at-every-limit"),
+    pytest.param((("ACCTDATA.bin", 1024 * DATASET_MIB, True),), (512, 64, 128), "ACCTDATA.bin",
+                 "/ACCTDATA.bin holds more than 64 bytes; one evidence datasets/ file may hold at most 64",
+                 {"ACCTDATA.bin": 65}, {}, id="grown-after-its-size-was-taken"),
+    pytest.param((("_AIX_CARDAIX.bin", 1024 * DATASET_MIB, True), ("ACCTDATA.bin", 3, False)), None, None,
+                 {"ACCTDATA": "ACCTDATA.bin"}, {"ACCTDATA.bin": 3}, {},
+                 id="an-unnamed-observation-file-is-never-opened"),
+    pytest.param((("JUNK.bin", 1024 * DATASET_MIB, True), ("ACCTDATA.bin", 3, False)), None, None,
+                 {"ACCTDATA": "ACCTDATA.bin"}, {"ACCTDATA.bin": 3}, {}, id="a-file-of-no-dataset-is-never-opened"),
+    pytest.param(DATASET_UNRECOGNIZED_FILES + (("ACCTDATA.bin", 3, False),), None, None,
+                 {"ACCTDATA": "ACCTDATA.bin"}, {"ACCTDATA.bin": 3}, DATASET_UNRECOGNIZED_SUMMARY,
+                 id="files-mapped-or-named-to-no-scenario-name-are-never-opened"),
+    pytest.param(DATASET_RECOGNIZED_FILES, (8, 10, 52), None,
+                 {"ACCTDATA": "ACCTDATA.bin", "@AFTER:POSTTRAN:ACCTDATA": "_AFTER_POSTTRAN_ACCTDATA.bin",
+                  "@AFTER:POSTTRAN:@REGION-FILES": "_AFTER_POSTTRAN__REGION-FILES.bin",
+                  "@AIX:CARDAIX": "_AIX_CARDAIX.bin",
+                  "@BEFORE:POSTTRAN:@REGION-FILES": "_BEFORE_POSTTRAN__REGION-FILES.bin",
+                  "@CATALOG": "_CATALOG.bin", "@REGION-FILES": "_REGION-FILES.bin", "@TDQ:JOBS": "_TDQ_JOBS.bin"},
+                 {name: size for name, size, _sparse in DATASET_RECOGNIZED_FILES}, DATASET_RECOGNIZED_SUMMARY,
+                 id="every-kind-of-name-a-scenario-can-name-is-read"),
+]
+
+
+class _DatasetReads:
+    """``report``'s ``os`` for one case: every call goes to ``os``, but each
+    file opened relative to a folder is recorded in ``received`` with the
+    bytes read from it, and ``fstat`` gives the file named ``grown`` the size
+    DATASET_GROWN_SIZE."""
+
+    def __init__(self, grown: str | None) -> None:
+        self.grown = grown
+        self.received: dict[str, int] = {}
+        self._names: dict[int, str] = {}
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(os, name)
+
+    def open(self, path: str, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
+        descriptor = os.open(path, flags, mode, dir_fd=dir_fd)
+        if dir_fd is not None:
+            self._names[descriptor] = path
+            self.received.setdefault(path, 0)
+        return descriptor
+
+    def read(self, descriptor: int, length: int) -> bytes:
+        data = os.read(descriptor, length)
+        if descriptor in self._names:
+            self.received[self._names[descriptor]] += len(data)
+        return data
+
+    def fstat(self, descriptor: int) -> object:
+        info = os.fstat(descriptor)
+        if self.grown is not None and self._names.get(descriptor) == self.grown:
+            return SimpleNamespace(st_mode=info.st_mode, st_size=DATASET_GROWN_SIZE)
+        return info
+
+    def close(self, descriptor: int) -> None:
+        self._names.pop(descriptor, None)
+        os.close(descriptor)
+
+
+def _evidence_snapshot(root: Path) -> dict[str, tuple[int, int, int, bytes | None]]:
+    """Every path under ``root``, links never followed: its mode, size and
+    modification time, and the bytes of each regular file of at most a
+    mebibyte, so a sparse gibibyte file is never read whole."""
+    snapshot: dict[str, tuple[int, int, int, bytes | None]] = {}
+    for path in sorted(root.rglob("*")):
+        info = path.lstat()
+        small = stat.S_ISREG(info.st_mode) and info.st_size <= DATASET_MIB
+        snapshot[path.relative_to(root).as_posix()] = (
+            info.st_mode, info.st_size, info.st_mtime_ns, path.read_bytes() if small else None)
+    return snapshot
+
+
+@pytest.mark.parametrize(("files", "limits", "grown", "outcome", "reads", "summary"), DATASET_BOUND_CASES)
+def test_evidence_datasets_are_read_only_within_their_bounds(
+    monkeypatch: pytest.MonkeyPatch,
+    work_root_case: Path,
+    files: tuple[tuple[str, int, bool], ...],
+    limits: tuple[int, int, int] | None,
+    grown: str | None,
+    outcome: str | dict[str, str],
+    reads: dict[str, int],
+    summary: dict[str, str],
+) -> None:
+    folder = work_root_case / EVIDENCE_SCENARIO / report.EVIDENCE_DATASETS_DIR
+    folder.mkdir(parents=True)
+    contents = {}
+    for index, (name, size, sparse) in enumerate(files):
+        path = folder / name
+        path.write_bytes(b"" if sparse else bytes([ord("A") + index]) * size)
+        if sparse:
+            os.truncate(path, size)
+        else:
+            contents[name] = path.read_bytes()
+    before = _evidence_snapshot(folder)
+    if limits is not None:
+        for name, value in zip(DATASET_LIMITS, limits):
+            monkeypatch.setattr(report, name, value)
+    reader = _DatasetReads(grown)
+    monkeypatch.setattr(report, "os", reader)
+    raw = {"capture_summary": {"datasets": summary}} if summary else {}
+    if isinstance(outcome, str):
+        with pytest.raises(report.ReportError) as refused:
+            report._evidence_datasets(folder.parent, raw)
+        assert str(refused.value) == f"{report.display_path(folder)}{outcome}"
+    else:
+        found = report._evidence_datasets(folder.parent, raw)
+        assert found == {name: contents[file_name] for name, file_name in outcome.items()}
+        assert list(found) == sorted(found, key=outcome.__getitem__)
+    assert reader.received == reads
+    assert _evidence_snapshot(folder) == before
+
+
+# When the logical datasets of tests/fixtures/datasets.yaml cannot be read,
+# report._evidence_datasets cannot tell which datasets/ files a scenario can
+# name: each case, the failure harness.fixtures.specs raises and the end of
+# the refusal after "the datasets/ files of <scenario dir> cannot be named: ".
+DATASET_NAMING_FAILURES = [
+    pytest.param(OSError(errno.EACCES, "Permission denied", str(fixtures.FIXTURES_FILE)),
+                 "cannot read tests/fixtures/datasets.yaml: Permission denied", id="unreadable"),
+    pytest.param(fixtures.FixtureError("tests/fixtures/datasets.yaml: datasets must be a mapping"),
+                 "tests/fixtures/datasets.yaml: datasets must be a mapping", id="malformed"),
+]
+
+
+@pytest.mark.parametrize(("failure", "refusal"), DATASET_NAMING_FAILURES)
+def test_evidence_datasets_are_refused_unread_when_no_name_can_be_recognized(
+    monkeypatch: pytest.MonkeyPatch, work_root_case: Path, failure: Exception, refusal: str
+) -> None:
+    folder = work_root_case / EVIDENCE_SCENARIO / report.EVIDENCE_DATASETS_DIR
+    folder.mkdir(parents=True)
+    (folder / "ACCTDATA.bin").write_bytes(b"A" * 3)
+    before = _evidence_snapshot(folder)
+
+    def specs() -> dict:
+        raise failure
+
+    monkeypatch.setattr(report._fixtures, "specs", specs)
+    reader = _DatasetReads(None)
+    monkeypatch.setattr(report, "os", reader)
+    with pytest.raises(report.ReportError) as refused:
+        report._evidence_datasets(folder.parent, {})
+    assert str(refused.value) == (f"the datasets/ files of {report.display_path(folder.parent)} cannot be named: "
+                                  f"{refusal}")
+    assert reader.received == {}
+    assert _evidence_snapshot(folder) == before
+
+
+# The bounds on import and on revalidation: report.main on the evidence, in a
+# tests root of the case's own (evidence_tests_root), of a passed UniKix run
+# of PROMOTION_SCENARIO, whose derived baseline an agreeing record would
+# promote, written by evidence.EvidenceWriter with the zip's hash of every
+# unit the scenario executes and admissible as written, then its ACCTDATA.bin
+# made a sparse gibibyte file; before a revalidation an earlier
+# validation.yaml lies beside it. report's state holds the zip's identity
+# alone; validating, promoting and writing a validation.yaml or a baseline
+# fail the case, and the steps after the records are recorded instead of
+# run, so nothing in the checkout is written. Each case: the arguments and
+# the start of the line reporting the record rejected.
+DATASET_BOUND_ACTIONS = [
+    pytest.param(["--import-unikix", EVIDENCE_EXECUTION_ID], f"  rejected {PROMOTION_SCENARIO}: ", id="import"),
+    pytest.param(["--revalidate"], f"rejected {EVIDENCE_EXECUTION_ID}/{PROMOTION_SCENARIO}: ", id="revalidation"),
+]
+
+
+@pytest.mark.parametrize(("argv", "label"), DATASET_BOUND_ACTIONS)
+def test_evidence_past_a_dataset_bound_is_rejected_with_nothing_written(
+    monkeypatch: pytest.MonkeyPatch,
+    evidence_tests_root: Path,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+    label: str,
+) -> None:
+    # The limits tests/reports/unikix/README.md states.
+    assert tuple(getattr(report, name) for name in DATASET_LIMITS) == (512, 16 * DATASET_MIB, 64 * DATASET_MIB)
+    tests_root = evidence_tests_root.resolve()
+    zip_info = report.zip_identity()
+    assert zip_info is not None
+    digest, members = zip_info
+    scenario = scenarios.get(PROMOTION_SCENARIO)
+    baseline = baselines.load(PROMOTION_SCENARIO)
+    assert baseline.capture_platform == "derived"
+    units, problem = report._required_units(scenario, digest)
+    assert problem is None
+    identity = {"commit": "a" * 40, "tree": "unikix-copy", "units": {unit: members[unit] for unit in sorted(units)},
+                "zip_sha256": digest}
+    code = baseline.expected["return_code"]
+    record = results.build_record(
+        scenario,
+        results.UNIKIX,
+        results.STATUS_PASSED,
+        baseline_version=baseline.version,
+        decoded={"return_code": code},
+        execution_fingerprint=SCHEMA_GATE_FINGERPRINT,
+        source_identity=identity,
+        execution_id=EVIDENCE_EXECUTION_ID,
+    )
+    environment: dict[str, object] = {
+        key: f"/opt/carddemo/{key.lower()}" for key in (*report._INSTALLATION_FACTS, *report._DEPLOYMENT_FACTS)}
+    environment.update({key: "12.0.0" for key in report.UNIKIX_VERSION_KEYS})
+    run = base.Result(return_code=code, datasets={"ACCTDATA": fixtures.repository_dataset("ACCTDATA-PS")},
+                      screens=[], messages=list(baseline.expected["messages"]))
+    evidence.EvidenceWriter(tests_root, EVIDENCE_EXECUTION_ID).write(
+        PROMOTION_SCENARIO, record, evidence.Capture(environment=environment, result=run))
+    scenario_dir = evidence.evidence_root(tests_root, EVIDENCE_EXECUTION_ID) / PROMOTION_SCENARIO
+    found, why = report.read_evidence(EVIDENCE_EXECUTION_ID, scenario_dir, zip_info)
+    assert why is None and found is not None and found.ran
+    oversized = scenario_dir / evidence.DATASETS_DIR / "ACCTDATA.bin"
+    os.truncate(oversized, 1024 * DATASET_MIB)
+    if argv == ["--revalidate"]:
+        (scenario_dir / report.VALIDATION_FILE).write_text(REVALIDATION_RECORDED, encoding="utf-8")
+    before = _evidence_snapshot(tests_root)
+    monkeypatch.setattr(report, "TESTS_ROOT", tests_root)
+    monkeypatch.setattr(report, "UNIKIX_EVIDENCE_DIR", tests_root / "reports" / "unikix")
+    state = SimpleNamespace(zip_info=zip_info, copy_gaps=report._CopyGaps({}, frozenset()), items=[], total=0,
+                            unread_scenarios={}, unread_records={}, unread_validations={})
+    monkeypatch.setattr(report, "build_state", lambda: state)
+    for name, what in (("_validate_evidence", "the validation"), ("_promote", "the promotion"),
+                       ("_write_validation", "a validation.yaml write")):
+        monkeypatch.setattr(report, name, _refuse(what))
+    monkeypatch.setattr(baselines, "write", _refuse("baselines.write"))
+    handed: list[tuple[str, object]] = []
+
+    def hand(step: str, pick: Callable[..., object], returns: object = None) -> Callable[..., object]:
+        def called(*args: object) -> object:
+            handed.append((step, pick(*args)))
+            return returns
+        return called
+
+    monkeypatch.setattr(report, "_new_message_items",
+                        hand("imported", lambda current, execution, imported, *rest: sorted(imported)))
+    monkeypatch.setattr(report, "_settle_gaps",
+                        hand("environments", lambda document, current, execution, environments, *rest:
+                             list(environments)))
+    monkeypatch.setattr(report, "_settle_inferred", hand("inferred", lambda *args: None))
+    monkeypatch.setattr(report, "_write_register",
+                        hand("register unchanged", lambda document, *rest: document == load_yaml(report.GAPS_FILE),
+                             False))
+    monkeypatch.setattr(report, "regenerate", hand("regenerated", lambda: None))
+    assert report.main(argv) == 1
+    out, err = capsys.readouterr()
+    refusal = (f"{label}{report.display_path(oversized)} holds {1024 * DATASET_MIB} bytes; one evidence datasets/ "
+               f"file may hold at most {16 * DATASET_MIB}")
+    assert err == ""
+    if argv[0] == "--import-unikix":
+        assert out.splitlines() == [f"import of {EVIDENCE_EXECUTION_ID}:", refusal]
+        assert handed == [("imported", []), ("environments", []), ("register unchanged", True),
+                          ("regenerated", None)]
+    else:
+        assert out.splitlines() == [refusal]
+        assert handed == [("inferred", None), ("register unchanged", True)]
+    assert _evidence_snapshot(tests_root) == before
+
+
 def test_report_lists_a_closure_record_by_its_gap_id() -> None:
     state = report.build_state()
     addition = {"date": "2025-01-03", "inventory_id": "INV-SEC-001", "reason": "An addition."}
@@ -7952,10 +10535,15 @@ def test_import_and_revalidation_refuse_what_regeneration_refuses_before_writing
     committed_state: report.State, monkeypatch: pytest.MonkeyPatch, action: Callable[[], object]
 ) -> None:
     unread = f"tests/reports/results/{UNREADABLE_RECORD}.yaml: not valid YAML: at line 2, column 9"
+    scenario_file = f"{UNREADABLE_RECORD}: scenario file cannot be read: tests/scenarios/unit/{UNREADABLE_RECORD}.yaml"
+    shown = f"tests/reports/unikix/{BINDING_EXECUTION}/{BINDING_SCENARIO}/validation.yaml"
+    validation = report._unread_validation(f"{shown} {report._ENTRY_LINK}", BINDING_EXECUTION)
     refused = dataclasses.replace(
         committed_state,
         header={**committed_state.header, "total": committed_state.total + 1},
+        unread_scenarios={UNREADABLE_RECORD: scenario_file},
         unread_records={UNREADABLE_RECORD: unread},
+        unread_validations={shown: validation},
     )
     monkeypatch.setattr(report, "build_state", lambda: refused)
 
@@ -7970,8 +10558,481 @@ def test_import_and_revalidation_refuse_what_regeneration_refuses_before_writing
     assert str(raised.value) == (
         "the reports are not regenerated, and nothing is written: tests/inventory/inventory.yaml header.total is "
         f"{committed_state.total + 1} but the inventory holds {len(committed_state.items)} items; run python "
-        f"tests/harness/inventory_tools.py --check; {unread}"
+        f"tests/harness/inventory_tools.py --check; {scenario_file}; {unread}; {validation}"
     )
+
+
+# UniKix record binding: report.load_unikix_records over an evidence tree of
+# the case's own (binding_tree), report.py's tests root and evidence folder
+# pointed at it. The tree holds the evidence of one UniKix execution of
+# BINDING_SCENARIO, which only unikix runs: a passed result.yaml written by
+# EvidenceWriter, carrying the adapter's source identity of the committed zip
+# and the scenario's current execution fingerprint, beside the validation.yaml
+# the import's own writer judged from it (report._judge, report._validation,
+# report._write_validation). Each case alters the tree as an operator or a
+# forger could, and gives the problem that then keeps the record from
+# counting, or None for the record left as judged. BINDING_EXECUTION and
+# BINDING_SECOND_EXECUTION are invented execution ids of valid form.
+BINDING_SCENARIO = "SEC-COSGN00C-normal-02"
+BINDING_ITEM = "INV-SEC-011"  # the scenario's primary item, which no other scenario lists
+BINDING_EXECUTION = "unikix-20261112T070000Z-0a0b0c0d"
+BINDING_SECOND_EXECUTION = "unikix-20261112T080000Z-0a0b0c0d"
+BINDING_RUN_DATE = datetime.date(2026, 11, 12)
+BINDING_ENVIRONMENT = {
+    "installation": {"UNIKIX": "/opt/software/TPE", "INSTEBM": "/opt/software/BPE/INSTEBM",
+                     "VCOBOL": "/opt/software/COBOL", "KIXLICDIR": "/opt/unikix", "JAVA_HOME": "/usr/lib/jvm/java"},
+    "deployment": {name: f"/srv/unikix/{name.lower()}" for name in report._DEPLOYMENT_FACTS},
+    "versions": {key: "12.0.0" for key in report.UNIKIX_VERSION_KEYS},
+}
+BINDING_DOES_NOT_COUNT = "; the record does not count"
+BINDING_CHANGED = "its result_sha256 is not the sha256 of the result.yaml beside it"
+BINDING_REJECTED = "the evidence beside it fails the import's checks: "
+BINDING_CASES = [
+    pytest.param("as-judged", None, id="judged-and-bound"),
+    pytest.param("planted-beside-blocked",
+                 "its verdict passed judges an observed outcome, but the result.yaml beside it records blocked "
+                 "(adapter-unavailable) under GAP-MIS-005, with no observed outcome",
+                 id="passed-validation-planted-and-bound-beside-a-blocked-run"),
+    pytest.param("copied-beside-blocked", BINDING_CHANGED, id="passed-validation-copied-beside-a-replaced-run"),
+    pytest.param("zip-sha256", f"{BINDING_REJECTED}source identity: source_identity.zip_sha256 is not the sha256 of",
+                 id="result-zip-sha256-changed-and-rebound"),
+    pytest.param("unit-hash", f"{BINDING_REJECTED}source identity: source_identity unit ",
+                 id="result-unit-hash-changed-and-rebound"),
+    pytest.param("line-endings", BINDING_CHANGED, id="result-line-endings-changed"),
+    pytest.param("fingerprint", "it disagrees with the result.yaml beside it on execution_fingerprint",
+                 id="execution-fingerprint-disagrees"),
+    pytest.param("identity", "it disagrees with the result.yaml beside it on source_identity",
+                 id="source-identity-disagrees"),
+    pytest.param("no-result", f"{BINDING_REJECTED}no result.yaml: the evidence is incomplete", id="result-removed"),
+]
+
+
+def _binding_screens(baseline: baselines.Baseline) -> list[dict]:
+    """The screens of a run showing what ``baseline`` expects on
+    BINDING_RUN_DATE: each matcher field holds a value its matcher accepts."""
+    screens = []
+    for step in baseline.expected["screens"]:
+        screen = {}
+        for name, value in step.items():
+            if baselines.is_matcher(value):
+                value = BINDING_RUN_DATE.strftime(value["format"]) if value["match"] == "run-date" else "10:00:00"
+            screen[name] = value
+        screens.append(screen)
+    return screens
+
+
+def _write_binding_evidence(tests_root: Path, status: str) -> Path:
+    """The scenario directory EvidenceWriter writes under ``tests_root`` for
+    a run of BINDING_SCENARIO under BINDING_EXECUTION: passed, with the
+    screens its baseline expects, or blocked under GAP-MIS-005 with no
+    observed outcome. The record carries the adapter's source identity of
+    the committed zip and the scenario's current execution fingerprint."""
+    scenario = scenarios.get(BINDING_SCENARIO)
+    baseline = baselines.load(BINDING_SCENARIO)
+    tests_root.mkdir(parents=True)
+    adapter = UniKixAdapter(work_root=tests_root.parent, repo_root=Path(_TESTS_ROOT).parent)
+    fields = {
+        "baseline_version": baseline.version,
+        "execution_fingerprint": results.execution_fingerprint(scenario, fixtures.build(scenario), results.UNIKIX),
+        "source_identity": adapter.source_identity(scenario),
+        "execution_id": BINDING_EXECUTION,
+    }
+    run = None
+    if status == results.STATUS_PASSED:
+        run = base.Result(return_code=None, datasets={}, screens=_binding_screens(baseline), messages=[])
+        decoded = baselines.projection(baselines.decode_result(scenario, run), scenario, baseline)
+        record = results.build_record(scenario, results.UNIKIX, status, decoded=decoded, **fields)
+    else:
+        record = results.build_record(scenario, results.UNIKIX, status, reason="adapter-unavailable",
+                                      gap_id="GAP-MIS-005", **fields)
+    capture = evidence.Capture(environment=copy.deepcopy(BINDING_ENVIRONMENT),
+                               run_date={"first_step_screen_date": BINDING_RUN_DATE.isoformat()}, result=run)
+    evidence.EvidenceWriter(tests_root, BINDING_EXECUTION).write(scenario, record, capture)
+    return evidence.evidence_root(tests_root, BINDING_EXECUTION) / BINDING_SCENARIO
+
+
+@pytest.fixture
+def binding_tree(work_root_case: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    """The evidence tree of the binding cases, under ``<case>/tests``, with
+    report.py's tests root and evidence folder pointed at it, and the
+    validation.yaml the import's own writer judged and wrote for it."""
+    tests_root = work_root_case / "tests"
+    evidence_dir = tests_root / "reports" / "unikix"
+    monkeypatch.setattr(report, "TESTS_ROOT", tests_root)
+    monkeypatch.setattr(report, "UNIKIX_EVIDENCE_DIR", evidence_dir)
+    scenario_dir = _write_binding_evidence(tests_root, results.STATUS_PASSED)
+    found, why = report.read_evidence(BINDING_EXECUTION, scenario_dir, report.zip_identity())
+    assert found is not None, why
+    scenario, baseline = scenarios.get(BINDING_SCENARIO), baselines.load(BINDING_SCENARIO)
+    status, reason, diff, projected = report._judge(found, scenario, baseline)
+    assert (status, reason) == (results.STATUS_PASSED, None), diff
+    judged = report._validation(found, scenario, baseline, status, reason, None, projected)
+    report._write_validation(found, judged)
+    return SimpleNamespace(root=work_root_case, evidence_dir=evidence_dir, scenario_dir=scenario_dir,
+                           validation=scenario_dir / report.VALIDATION_FILE, judged=judged)
+
+
+def _rebind(tree: SimpleNamespace) -> None:
+    """Make the tree's validation.yaml bind the result.yaml beside it as it
+    now stands, as a forger who recomputes the binding would."""
+    document = load_yaml(tree.validation)
+    document[report.VALIDATION_BINDING] = sha256_file(tree.scenario_dir / report.RESULT_FILE)
+    tree.validation.write_text(dump_yaml(document), encoding="utf-8")
+
+
+def _alter_binding_tree(tree: SimpleNamespace, alteration: str) -> None:
+    """Apply one alteration of BINDING_CASES to the tree."""
+    result = tree.scenario_dir / report.RESULT_FILE
+    if alteration in ("planted-beside-blocked", "copied-beside-blocked"):
+        blocked = _write_binding_evidence(tree.root / "blocked" / "tests", results.STATUS_BLOCKED)
+        shutil.copyfile(blocked / report.RESULT_FILE, result)
+        if alteration == "planted-beside-blocked":
+            _rebind(tree)
+    elif alteration in ("zip-sha256", "unit-hash"):
+        raw = load_yaml(result)
+        identity = raw["source_identity"]
+        if alteration == "zip-sha256":
+            identity["zip_sha256"] = "0" * 64
+        else:
+            identity["units"][sorted(identity["units"])[0]] = "f" * 64
+        result.write_text(dump_yaml(raw), encoding="utf-8")
+        _rebind(tree)
+    elif alteration == "line-endings":
+        result.write_bytes(result.read_bytes().replace(b"\n", b"\r\n"))
+    elif alteration in ("fingerprint", "identity"):
+        document = load_yaml(tree.validation)
+        if alteration == "fingerprint":
+            document["execution_fingerprint"] = "0" * 64
+        else:
+            document["source_identity"] = {**document["source_identity"], "commit": "0" * 40}
+        tree.validation.write_text(dump_yaml(document), encoding="utf-8")
+    elif alteration == "no-result":
+        result.unlink()
+
+
+@pytest.mark.parametrize(("alteration", "problem"), BINDING_CASES)
+def test_a_validation_counts_only_beside_the_result_it_was_judged_from(
+    binding_tree: SimpleNamespace, alteration: str, problem: str | None
+) -> None:
+    _alter_binding_tree(binding_tree, alteration)
+    found, problems, unread = report.load_unikix_records(binding_tree.evidence_dir, report.zip_identity())
+    assert unread == {}
+    fields = {name: value for name, value in binding_tree.judged.items() if name != report.VALIDATION_BINDING}
+    if problem is None:
+        assert problems == []
+        assert binding_tree.judged[report.VALIDATION_BINDING] == sha256_file(
+            binding_tree.scenario_dir / report.RESULT_FILE)
+        assert [(record.execution_id, record.scenario_id, record.record, record.path) for record in found] == [
+            (BINDING_EXECUTION, BINDING_SCENARIO, fields, binding_tree.validation)]
+        # Comparing executions reads the same record fields, without the binding.
+        assert report._execution_records(BINDING_EXECUTION) == ({BINDING_SCENARIO: fields}, [])
+        return
+    assert found == []
+    [named] = problems
+    shown = report.display_path(binding_tree.validation)
+    assert named.startswith(f"{shown}: ") and named.endswith(BINDING_DOES_NOT_COUNT), named
+    assert problem in named, named
+
+
+@pytest.mark.parametrize(("alteration", "counted"), [
+    pytest.param("as-judged", True, id="judged-and-bound"),
+    pytest.param("planted-beside-blocked", False, id="planted-beside-a-blocked-run"),
+])
+def test_the_status_rules_and_check_repeat_the_cross_check_on_every_read(
+    binding_tree: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, alteration: str, counted: bool
+) -> None:
+    _alter_binding_tree(binding_tree, alteration)
+    monkeypatch.setattr(report, "load_unikix_records",
+                        functools.partial(report.load_unikix_records, binding_tree.evidence_dir))
+    state = report.build_state()
+    status = state.statuses[BINDING_SCENARIO]
+    shown = report.display_path(binding_tree.validation)
+    named = [problem for problem in state.problems if problem.startswith(f"{shown}: ")]
+    if counted:
+        assert status.status == results.STATUS_PASSED and named == []
+        assert [record["execution_id"] for record in status.records] == [BINDING_EXECUTION]
+        assert state.item_status[BINDING_ITEM] == report.VERIFIED
+        return
+    assert status.status == results.STATUS_BLOCKED and status.counted == ()
+    assert state.item_status[BINDING_ITEM] == report.BLOCKED
+    assert len(named) == 1 and named[0].endswith(BINDING_DOES_NOT_COUNT), state.problems
+    assert named[0] in report.check(state)
+
+
+def test_judging_evidence_again_never_binds_a_changed_result(binding_tree: SimpleNamespace) -> None:
+    _alter_binding_tree(binding_tree, "line-endings")
+    found, why = report.read_evidence(BINDING_EXECUTION, binding_tree.scenario_dir, report.zip_identity())
+    assert found is not None, why
+    before = binding_tree.validation.read_bytes()
+    for importing in (True, False):
+        with pytest.raises(report.ReportError) as raised:
+            report._validate_evidence(found, scenarios.get(BINDING_SCENARIO), None, None,
+                                      report._CopyGaps({}, frozenset()), report.zip_identity(), importing=importing)
+        assert str(raised.value).startswith(
+            f"{report.display_path(binding_tree.validation)} was written from another result.yaml: its "
+            f"result_sha256 is not the sha256 of {report.display_path(binding_tree.scenario_dir / 'result.yaml')} "
+            f"({found.result_sha256}), which changed after that verdict; evidence is immutable, so nothing is "
+            "judged or written")
+        assert binding_tree.validation.read_bytes() == before
+
+
+# Unread validation.yaml files: report.load_unikix_records over the binding
+# tree once its validation.yaml is made unreadable in one way, which then is
+# not read at all: unread, led by its path, ending in the way past it, and
+# counted nowhere. Each case: how it is made unreadable, and the problem named.
+UNREAD_VALIDATION_WAY_PAST = (
+    f"; restore it, or remove it and import {BINDING_EXECUTION} again (python tests/harness/report.py "
+    f"--import-unikix {BINDING_EXECUTION}), which writes it anew"
+)
+UNREAD_VALIDATION_CASES = [
+    pytest.param("not-yaml", ": not valid YAML: ", id="not-valid-yaml"),
+    pytest.param("too-large", ": holds more than ", id="larger-than-an-evidence-file-may-hold"),
+    pytest.param("unbound", ": result_sha256: missing; a validation.yaml binds the sha256 of the result.yaml its "
+                 "verdict was judged from", id="no-binding"),
+    pytest.param("malformed-binding", ": result_sha256: 'ABC' is not a sha256 hex digest", id="malformed-binding"),
+    pytest.param("contract", ": status: 'verified' is not one of ", id="record-contract-broken"),
+    pytest.param("link", f" {report._ENTRY_LINK}", id="symbolic-link"),
+]
+
+
+def _make_validation_unread(tree: SimpleNamespace, how: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the tree's validation.yaml unreadable in the way ``how`` of
+    UNREAD_VALIDATION_CASES names."""
+    validation = tree.validation
+    if how == "not-yaml":
+        validation.write_text(INVALID_RECORD_YAML, encoding="utf-8")
+    elif how == "too-large":
+        monkeypatch.setattr(report, "EVIDENCE_YAML_MAX_BYTES", len(validation.read_bytes()) - 1)
+    elif how == "link":
+        moved = tree.root / "validation-copy.yaml"
+        validation.rename(moved)
+        validation.symlink_to(moved)
+    else:
+        document = load_yaml(validation)
+        if how == "unbound":
+            del document[report.VALIDATION_BINDING]
+        elif how == "malformed-binding":
+            document[report.VALIDATION_BINDING] = "ABC"
+        else:
+            document["status"] = "verified"
+        validation.write_text(dump_yaml(document), encoding="utf-8")
+
+
+@pytest.mark.parametrize(("how", "problem"), UNREAD_VALIDATION_CASES)
+def test_a_validation_that_is_not_read_is_named_with_the_way_past_it(
+    binding_tree: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, how: str, problem: str
+) -> None:
+    _make_validation_unread(binding_tree, how, monkeypatch)
+    found, problems, unread = report.load_unikix_records(binding_tree.evidence_dir, report.zip_identity())
+    shown = report.display_path(binding_tree.validation)
+    assert found == [] and list(unread) == [shown] and problems == [unread[shown]]
+    assert unread[shown].startswith(shown) and problem in unread[shown], unread[shown]
+    assert unread[shown].endswith(UNREAD_VALIDATION_WAY_PAST), unread[shown]
+
+
+# Unread inputs on regeneration: python tests/harness/report.py over the
+# committed tree, with two scenario files read from copies of the case's own
+# (one ending in a python tag the safe loader refuses, so its command never
+# runs, one giving a key twice), or with the binding tree's evidence holding
+# two validation.yaml files that are not read (one without its binding, one a
+# symbolic link in a second execution). The regeneration must exit 2, write
+# nothing and name every file, and the projection causes must not count an
+# unreadable scenario file as absent.
+# Each copy: its scenario, the text appended to the committed file, and the
+# problem the refusal names.
+UNREADABLE_SCENARIO_COPIES = [
+    ("DAT-READACCT-normal-01", 'qa_injected: !!python/object/apply:os.system ["true"]\n',
+     "not valid YAML: could not determine a constructor for the tag"),
+    ("DAT-READCUST-normal-01", "id: DAT-READCUST-normal-01\n", "found duplicate key 'id' at line "),
+]
+REFUSED_REGENERATION = "report.py: error: the reports are not regenerated, and nothing is written: "
+
+
+def _refused_regeneration(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> tuple[
+        report.State, str]:
+    """The state ``python tests/harness/report.py`` builds and the error it
+    prints, once it has exited 2 without writing anything."""
+    built: list[report.State] = []
+    original = report.build_state
+
+    def build() -> report.State:
+        built.append(original())
+        return built[-1]
+
+    monkeypatch.setattr(report, "build_state", build)
+    _forbid_report_writes(monkeypatch)
+    before = {path: path.read_bytes() for path in (
+        report.MATRIX_FILE, report.REGISTER_FILE, report.REPORT_FILE, inventory_tools.INVENTORY_FILE)}
+    capsys.readouterr()
+    assert report.main([]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == "" and captured.err.startswith(REFUSED_REGENERATION), captured.err
+    assert {path: path.read_bytes() for path in before} == before
+    [state] = built
+    return state, captured.err
+
+
+def test_regenerate_refuses_unreadable_scenario_files_and_never_reports_them_absent(
+    work_root_case: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    get = scenarios.get
+    copies: dict[str, Path] = {}
+    for scenario_id, extra, _ in UNREADABLE_SCENARIO_COPIES:
+        source = get(scenario_id).path
+        copied = work_root_case / source.parent.name / source.name
+        copied.parent.mkdir(exist_ok=True)
+        copied.write_text(source.read_text(encoding="utf-8") + extra, encoding="utf-8")
+        copies[scenario_id] = copied
+
+    def reading_copies(scenario_id: str, missing_ok: bool = False) -> scenarios.Scenario | None:
+        if scenario_id in copies:
+            return scenarios.load_file(copies[scenario_id])
+        return get(scenario_id, missing_ok)
+
+    monkeypatch.setattr(scenarios, "get", reading_copies)
+    state, error = _refused_regeneration(monkeypatch, capsys)
+    assert sorted(state.unread_scenarios) == sorted(copies)
+    for scenario_id, _, problem in UNREADABLE_SCENARIO_COPIES:
+        unread = state.unread_scenarios[scenario_id]
+        assert unread.startswith(f"{scenario_id}: scenario file cannot be read: "
+                                 f"{report.display_path(copies[scenario_id])}: "), unread
+        assert problem in unread and unread in error and unread in state.problems, unread
+        assert scenario_id not in state.scenarios and scenario_id not in state.statuses
+    causes = report._projection_causes(state)
+    assert not [cause for cause in causes if "are absent" in cause], causes
+    [cause] = [cause for cause in causes if "exist but cannot be read" in cause]
+    assert cause == (f"{len(copies)} scenario files of the id manifest exist but cannot be read (python "
+                     f"tests/harness/report.py --check names each problem): {', '.join(sorted(copies))}; the "
+                     "items only they would list are not-covered.")
+
+
+def test_regenerate_and_check_name_every_validation_that_is_not_read(
+    binding_tree: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _make_validation_unread(binding_tree, "unbound", monkeypatch)
+    linked = binding_tree.evidence_dir / BINDING_SECOND_EXECUTION / BINDING_SCENARIO / report.VALIDATION_FILE
+    linked.parent.mkdir(parents=True)
+    linked.symlink_to(binding_tree.validation)
+    monkeypatch.setattr(report, "load_unikix_records",
+                        functools.partial(report.load_unikix_records, binding_tree.evidence_dir))
+    state, error = _refused_regeneration(monkeypatch, capsys)
+    unbound, link = report.display_path(binding_tree.validation), report.display_path(linked)
+    assert sorted(state.unread_validations) == sorted([unbound, link])
+    assert state.unread_validations[link] == report._unread_validation(f"{link} {report._ENTRY_LINK}",
+                                                                       BINDING_SECOND_EXECUTION)
+    assert state.unread_validations[unbound].startswith(f"{unbound}: result_sha256: missing")
+    assert state.unread_validations[unbound].endswith(UNREAD_VALIDATION_WAY_PAST)
+    findings = report.check(state)
+    for problem in state.unread_validations.values():
+        assert problem in error and problem in findings, problem
+    assert state.statuses[BINDING_SCENARIO].counted == ()
+
+
+# Evidence YAML read again after it was parsed: _observed_messages finds the
+# line of each observed message in result.yaml, and _revalidate compares the
+# bytes of a validation.yaml before and after it judges the evidence. Both
+# read the file only as report._evidence_yaml_bytes does: never through a
+# symbolic link swapped in, never from a FIFO, never more than one byte past
+# EVIDENCE_YAML_MAX_BYTES. The result.yaml holds its message on line 5.
+REREAD_MESSAGE = "A message the evidence observed on its fifth line"
+REREAD_RESULT_LINES = (
+    "adapter: unikix",
+    "observed_messages:",
+    "- field: ERRMSG",
+    "  step: 1",
+    f"  value: {REREAD_MESSAGE}",
+    "scenario_id: SEC-COSGN00C-normal-01",
+)
+REREAD_MESSAGE_LINE = 5
+# Each case: how the file is altered after it was parsed, the line ending it
+# is written with, whether _validation_bytes then gives its bytes, and the
+# line _observed_messages then cites.
+REREAD_CASES = [
+    pytest.param("as-parsed", "\n", True, REREAD_MESSAGE_LINE, id="as-parsed-lf"),
+    pytest.param("as-parsed", "\r\n", True, REREAD_MESSAGE_LINE, id="as-parsed-crlf"),
+    pytest.param("as-parsed", "\r", True, REREAD_MESSAGE_LINE, id="as-parsed-cr"),
+    pytest.param("at-the-bound", "\n", True, REREAD_MESSAGE_LINE, id="exactly-as-large-as-an-evidence-file-may-be"),
+    pytest.param("too-large", "\n", False, 1, id="grown-past-the-bound"),
+    pytest.param("link", "\n", False, 1, id="symbolic-link-swapped-in"),
+    pytest.param("fifo", "\n", False, 1, id="fifo-swapped-in"),
+    pytest.param("removed", "\n", False, 1, id="removed"),
+    pytest.param("not-utf-8", "\n", True, 1, id="no-longer-utf-8"),
+]
+
+
+def _reread_file(folder: Path, name: str, ending: str, how: str, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """``<folder>/<name>`` holding REREAD_RESULT_LINES ended by ``ending``,
+    then altered as ``how`` of REREAD_CASES names. A symbolic link swapped in
+    points at a regular copy of the same bytes, so reading through it would
+    find every line."""
+    path = folder / name
+    path.write_bytes("".join(line + ending for line in REREAD_RESULT_LINES).encode("utf-8"))
+    if how == "not-utf-8":
+        path.write_bytes(path.read_bytes() + b"\xff")
+    elif how == "at-the-bound":
+        monkeypatch.setattr(report, "EVIDENCE_YAML_MAX_BYTES", len(path.read_bytes()))
+    elif how == "too-large":
+        monkeypatch.setattr(report, "EVIDENCE_YAML_MAX_BYTES", len(path.read_bytes()) - 1)
+    elif how == "link":
+        moved = folder / f"elsewhere-{name}"
+        path.rename(moved)
+        path.symlink_to(moved)
+    elif how == "fifo":
+        path.unlink()
+        os.mkfifo(path)
+    elif how == "removed":
+        path.unlink()
+    return path
+
+
+@pytest.mark.parametrize(("how", "ending", "read", "line"), REREAD_CASES)
+def test_observed_messages_read_the_result_again_only_within_the_evidence_bounds(
+    work_root_case: Path, monkeypatch: pytest.MonkeyPatch, how: str, ending: str, read: bool, line: int
+) -> None:
+    source = work_root_case / "parsed.yaml"
+    source.write_bytes("".join(text + ending for text in REREAD_RESULT_LINES).encode("utf-8"))
+    raw = load_yaml(source, max_bytes=report.EVIDENCE_YAML_MAX_BYTES)
+    path = _reread_file(work_root_case, report.RESULT_FILE, ending, how, monkeypatch)
+    [message] = report._observed_messages(path, raw, BINDING_EXECUTION, "SEC-COSGN00C-normal-01")
+    assert (message.text, message.field, message.step, message.line) == (REREAD_MESSAGE, "ERRMSG", 1, line)
+
+
+@pytest.mark.parametrize(("how", "ending", "read", "line"), REREAD_CASES)
+def test_validation_bytes_read_only_what_the_validation_loader_reads(
+    work_root_case: Path, monkeypatch: pytest.MonkeyPatch, how: str, ending: str, read: bool, line: int
+) -> None:
+    written = "".join(text + ending for text in REREAD_RESULT_LINES).encode("utf-8")
+    path = _reread_file(work_root_case, report.VALIDATION_FILE, ending, how, monkeypatch)
+    expected = (written + b"\xff" if how == "not-utf-8" else written) if read else None
+    assert report._validation_bytes(path) == expected
+
+
+def test_check_compares_each_report_as_written_with_a_carriage_return_in_a_cell(
+    work_root_case: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stale_suffix = " is not what the current records give; run python tests/harness/report.py"
+    state = report.build_state()
+    gap_id = sorted(state.gaps.entries)[0]
+    state.gaps.entries[gap_id]["unknown"] = "What the first line asks\rand what the second one adds"
+    for name in ("MATRIX_FILE", "REGISTER_FILE", "REPORT_FILE"):
+        monkeypatch.setattr(report, name, work_root_case / getattr(report, name).name)
+    texts = report.render(state)
+    assert "What the first line asks\rand what the second one adds" in texts[report.REGISTER_FILE]
+    for path, text in texts.items():
+        harness.write_text(path, text)  # as regenerate writes them, byte for byte
+    # The report's Environment section describes the host, never the records.
+    harness.write_text(report.REPORT_FILE, texts[report.REPORT_FILE] + "- another host\n")
+
+    def stale() -> list[str]:
+        return [finding for finding in report.check(state) if finding.endswith(stale_suffix)]
+
+    assert stale() == []
+    # The register as a newline-translating read would see it differs.
+    report.REGISTER_FILE.write_bytes(report.REGISTER_FILE.read_bytes().replace(b"\r", b"\n"))
+    assert stale() == [f"{report.display_path(report.REGISTER_FILE)}{stale_suffix}"]
+    # A register that is no longer UTF-8 is named too, never a crash.
+    report.REGISTER_FILE.write_bytes(texts[report.REGISTER_FILE].encode("utf-8") + b"\xff")
+    assert stale() == [f"{report.display_path(report.REGISTER_FILE)}{stale_suffix}"]
 
 
 # ==========================================================================
@@ -8075,6 +11136,174 @@ def test_layouts_file_is_current(carddemo_repo_root: Path) -> None:
         for static in entry["statics"]:
             assert 1 <= static["row"] <= rows and 1 <= static["col"] <= cols, (mapset, static)
             assert isinstance(static["text"], str) and static["text"], (mapset, static)
+
+
+LAYOUTS_OUTPUT_ROOT_PREFIX = "unit-layouts-output-"
+LAYOUTS_OUTPUT = Path("tests", "inventory", "layouts.yaml")
+# The protected source a planted link aims at, copied into the case's own root.
+LAYOUTS_PROTECTED_COPY = Path("app", "cbl", "CBACT01C.cbl")
+
+
+@pytest.fixture
+def layouts_output_root(carddemo_work_root: Path) -> Iterator[Path]:
+    """A fresh directory of this case's own inside the session work root
+    (carddemo_work_root), never under pytest's basetemp, removed afterwards."""
+    directory = Path(tempfile.mkdtemp(prefix=LAYOUTS_OUTPUT_ROOT_PREFIX, dir=carddemo_work_root))
+    try:
+        yield directory
+    finally:
+        shutil.rmtree(directory)
+
+
+def _tree_state(root: Path) -> dict[str, tuple[str, bytes | str | None]]:
+    """Every entry below ``root``, no link followed: a file's bytes, a link's
+    target, a folder's presence."""
+    state: dict[str, tuple[str, bytes | str | None]] = {}
+    for folder, folders, files in os.walk(root):
+        for name in folders + files:
+            path = Path(folder, name)
+            mode = path.lstat().st_mode
+            shown = path.relative_to(root).as_posix()
+            if stat.S_ISLNK(mode):
+                state[shown] = ("link", os.readlink(path))
+            elif stat.S_ISDIR(mode):
+                state[shown] = ("folder", None)
+            else:
+                state[shown] = ("file", path.read_bytes())
+    return state
+
+
+def _output_links_into_app(root: Path, outside: Path) -> Path:
+    (root / LAYOUTS_OUTPUT.parent).mkdir(parents=True)
+    (root / LAYOUTS_OUTPUT).symlink_to(Path("..", "..", LAYOUTS_PROTECTED_COPY))
+    return root / LAYOUTS_PROTECTED_COPY
+
+
+def _output_links_outside(root: Path, outside: Path) -> Path:
+    target = outside / "layouts.yaml"
+    target.write_bytes(b"outside the repository\n")
+    (root / LAYOUTS_OUTPUT.parent).mkdir(parents=True)
+    (root / LAYOUTS_OUTPUT).symlink_to(target)
+    return target
+
+
+def _inventory_links_into_app(root: Path, outside: Path) -> Path:
+    (root / "tests").mkdir()
+    (root / LAYOUTS_OUTPUT.parent).symlink_to(Path("..", LAYOUTS_PROTECTED_COPY.parent))
+    return root / LAYOUTS_PROTECTED_COPY
+
+
+def _tests_links_outside(root: Path, outside: Path) -> Path:
+    target = outside / LAYOUTS_OUTPUT
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"another tests folder\n")
+    (root / "tests").symlink_to(outside / "tests")
+    return target
+
+
+def _output_is_a_folder(root: Path, outside: Path) -> Path:
+    kept = root / LAYOUTS_OUTPUT / "kept.txt"
+    kept.parent.mkdir(parents=True)
+    kept.write_bytes(b"kept\n")
+    return kept
+
+
+LAYOUTS_OUTPUT_REFUSALS = [
+    pytest.param(
+        _output_links_into_app,
+        "tests/inventory/layouts.yaml is a symbolic link; nothing is read or written through it",
+        id="file-link-to-protected-source",
+    ),
+    pytest.param(
+        _output_links_outside,
+        "tests/inventory/layouts.yaml is a symbolic link; nothing is read or written through it",
+        id="file-link-outside-repository",
+    ),
+    pytest.param(
+        _inventory_links_into_app,
+        "tests/inventory is a symbolic link; nothing is read or written through it",
+        id="inventory-link-to-protected-folder",
+    ),
+    pytest.param(
+        _tests_links_outside,
+        "tests is a symbolic link; nothing is read or written through it",
+        id="tests-link-outside-repository",
+    ),
+    pytest.param(
+        _output_is_a_folder,
+        "tests/inventory/layouts.yaml is not a regular file; nothing is read from or written to it",
+        id="file-is-a-folder",
+    ),
+]
+
+
+@pytest.mark.parametrize(("arrange", "refusal"), LAYOUTS_OUTPUT_REFUSALS)
+def test_layouts_output_refuses_links(
+    carddemo_repo_root: Path,
+    layouts_output_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    arrange: Callable[[Path, Path], Path],
+    refusal: str,
+) -> None:
+    root = layouts_output_root / "repository"
+    outside = layouts_output_root / "outside"
+    (root / LAYOUTS_PROTECTED_COPY).parent.mkdir(parents=True)
+    shutil.copyfile(carddemo_repo_root / LAYOUTS_PROTECTED_COPY, root / LAYOUTS_PROTECTED_COPY)
+    outside.mkdir()
+    target = arrange(root, outside)
+    original = target.read_bytes()
+    before = _tree_state(layouts_output_root)
+
+    for attempt in (
+        lambda: layouts._write_layouts("version: 1\n", root),
+        lambda: layouts._read_layouts(root),
+        lambda: layouts._check_output(root),
+    ):
+        with pytest.raises(HarnessError, match=f"^{re.escape(refusal)}$"):
+            attempt()
+
+    # Both actions refuse before anything is generated: the case's root holds
+    # no source, so generating would fail with another message.
+    monkeypatch.setattr(layouts, "REPO_ROOT", root)
+    monkeypatch.setattr(layouts, "LAYOUTS_FILE", root / LAYOUTS_OUTPUT)
+    for action in ("--write", "--check"):
+        assert layouts.main([action]) == 1
+        captured = capsys.readouterr()
+        assert (captured.out, captured.err) == ("", f"layouts: {refusal}\n"), action
+
+    assert target.read_bytes() == original
+    assert _tree_state(layouts_output_root) == before
+
+
+def test_layouts_output_written_in_place(layouts_output_root: Path) -> None:
+    root = layouts_output_root / "repository"
+    root.mkdir()
+    output = root / LAYOUTS_OUTPUT
+    assert layouts._read_layouts(root) is None
+
+    # A missing file is created, with the folders holding it.
+    assert layouts._write_layouts("version: 1\n", root) is True
+    assert output.read_bytes() == layouts._read_layouts(root) == b"version: 1\n"
+
+    # A differing regular file of the same size is replaced by a new file, so
+    # a hard link to the old one keeps the old bytes, and the replacement
+    # keeps the old file's permission bits.
+    output.chmod(0o640)
+    old = layouts_output_root / "old-layouts.yaml"
+    os.link(output, old)
+    assert layouts._write_layouts("version: 2\n", root) is True
+    assert output.read_bytes() == b"version: 2\n"
+    assert old.read_bytes() == b"version: 1\n"
+    assert output.stat().st_ino != old.stat().st_ino
+    assert stat.S_IMODE(output.stat().st_mode) == 0o640
+
+    # An identical file is left untouched.
+    before = output.stat()
+    assert layouts._write_layouts("version: 2\n", root) is False
+    after = output.stat()
+    assert (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)
+    assert [entry.name for entry in output.parent.iterdir()] == ["layouts.yaml"]
 
 
 # PIC S9(9)V99 with the sign overpunched on its last (units) digit.
@@ -8191,6 +11420,120 @@ def test_cp037_sign_bytes(digit: int) -> None:
     assert codec.encode(Decimal(-100 - digit), field, "cp037") == minus
     assert _shown(codec.decode(plus, field, "cp037")) == _shown(Decimal(100 + digit))
     assert _shown(codec.decode(minus, field, "cp037")) == _shown(Decimal(-100 - digit))
+
+
+def _one_field_record(field: Mapping[str, object], length: int = 10) -> dict:
+    """A record layout dict of ``length`` bytes whose one field, ``F`` at
+    offset 0, is ``field`` (whose own keys win)."""
+    return {"record": "R", "length": length, "fields": [{"name": "F", "path": "F", "offset": 0, **field}]}
+
+
+SCALE_BOUNDS = "scale must lie between -33 and 38"
+
+# (field descriptor, record layout, reason). A field descriptor is refused by
+# encode and decode, and inside a one-field record by encode_record and
+# decode_record; a layout alone is refused by the record calls. Each is a
+# bound on a descriptor dimension, checked before any power of ten or record
+# image is computed: without it scale 10**9 builds 10**1000000000, and a
+# 10**12 length allocates that many bytes.
+REFUSED_DESCRIPTORS = [
+    pytest.param(_zoned(5, 10**9, False), None, SCALE_BOUNDS, id="scale-1e9"),
+    pytest.param(_zoned(5, -(10**9), False), None, SCALE_BOUNDS, id="scale-minus-1e9"),
+    pytest.param(_zoned(5, 39, False), None, SCALE_BOUNDS, id="scale-39"),
+    # PIC 9(5)P(34): 39 digit positions.
+    pytest.param(_zoned(5, -34, False), None, SCALE_BOUNDS, id="digits-5-scale-minus-34"),
+    pytest.param({"type": "alphanumeric", "length": 10**12}, None, "length must be at most 32760 bytes",
+                 id="text-length-1e12"),
+    pytest.param(None, _one_field_record({"type": "alphanumeric", "length": 1}, 10**12),
+                 "a record layout is at most 32760 bytes long", id="record-length-1e12"),
+    pytest.param(None, _one_field_record({"type": "alphanumeric", "length": 1, "occurs": "3"}),
+                 "occurs must be a non-negative integer", id="string-occurs"),
+    pytest.param(None, _one_field_record({"type": "alphanumeric", "length": 1, "occurs": -1}),
+                 "occurs must be a non-negative integer", id="negative-occurs"),
+    pytest.param(None, _one_field_record({"type": "alphanumeric", "length": 1, "offset": -1}),
+                 "offset must be a non-negative integer", id="negative-offset"),
+    pytest.param(None, _one_field_record({"type": "alphanumeric", "length": 1, "occurs": 10**12}),
+                 "lies outside the 10 bytes of R", id="occurs-beyond-the-record"),
+    # A table of 10 one-byte items inside a one-byte group occurrence: unchecked,
+    # nested tables would lay out a slot per pair of subscripts.
+    pytest.param(None, {"record": "R", "length": 100, "fields": [
+        {"name": "G", "path": "G", "type": "group", "length": 1, "offset": 0, "occurs": 5},
+        {"name": "C", "path": "G.C", "type": "alphanumeric", "length": 1, "offset": 0, "occurs": 10},
+    ]}, "lies outside its group G(1), columns 1-1", id="table-beyond-its-group"),
+]
+
+
+@pytest.mark.parametrize(("field", "layout", "reason"), REFUSED_DESCRIPTORS)
+def test_out_of_bounds_descriptors_are_refused(
+    field: dict | None, layout: dict | None, reason: str
+) -> None:
+    calls: list[tuple[Callable[..., object], object, dict]] = []
+    if field is not None:
+        calls += [(codec.encode, "1", field), (codec.decode, b"1", field)]
+        layout = _one_field_record(field)
+    calls += [(codec.encode_record, {}, layout), (codec.decode_record, b" " * 10, layout)]
+    for function, data, target in calls:
+        with pytest.raises(codec.CodecError) as caught:
+            function(data, target)
+        assert reason in caught.value.reason, (function.__name__, str(caught.value))
+
+
+# Values whose exponent lies far outside every field: refused by their count
+# of significant digits, never by computing the power of ten they imply. A
+# digit string or int beyond 4300 digits also exceeds Python's limit on
+# converting between int and text, which neither the check nor the error
+# message may reach.
+EXTREME_VALUES = [
+    pytest.param(Decimal("1E+1000000000"), "does not fit 5 digits at scale 2", id="1E+1000000000"),
+    pytest.param(Decimal("-1E+1000000000"), "does not fit 5 digits at scale 2", id="minus-1E+1000000000"),
+    pytest.param(Decimal("1E-1000000000"), "has more decimal places than the field's scale 2",
+                 id="1E-1000000000"),
+    pytest.param("1" * 5000, "does not fit 5 digits at scale 2", id="5000-digit-text"),
+    pytest.param(10**5000, "does not fit 5 digits at scale 2", id="5001-digit-int"),
+    pytest.param("0." + "0" * 4999 + "1", "has more decimal places than the field's scale 2",
+                 id="5000-decimal-places-text"),
+]
+
+
+@pytest.mark.parametrize(("value", "reason"), EXTREME_VALUES)
+@pytest.mark.parametrize(
+    "field",
+    [
+        pytest.param(_zoned(5, 2, True), id="zoned"),
+        pytest.param(_packed(5, 2, True), id="comp-3"),
+        pytest.param(_binary(5, 2, True), id="binary"),
+    ],
+)
+def test_extreme_values_are_refused_by_digit_count(field: dict, value: Decimal | int | str, reason: str) -> None:
+    with pytest.raises(codec.CodecError) as caught:
+        codec.encode(value, field)
+    assert caught.value.reason == reason
+
+
+# (field, field bytes, decoded value, the same value written otherwise). The
+# extreme scales of 5 digits, PIC P(33)9(5) and PIC 9(5)P(33), hold 38 digit
+# positions and still round-trip; values with far-out exponents or many
+# trailing zeros encode as the number they are.
+EXTREME_VALID_VALUES = [
+    pytest.param(_zoned(5, 38, False), b"12345", Decimal("1.2345E-34"), "0." + "0" * 33 + "12345",
+                 id="zoned-scale-38"),
+    pytest.param(_zoned(5, -33, False), b"12345", Decimal("12345" + "0" * 33), Decimal("1.2345E+37"),
+                 id="zoned-scale-minus-33"),
+    pytest.param(_packed(5, 38, True), bytes.fromhex("12345d"), Decimal("-1.2345E-34"),
+                 Decimal("-1234500E-40"), id="comp-3-scale-38"),
+    pytest.param(_zoned(5, 38, False), b"00000", Decimal("0E-38"), Decimal("0E+1000000000"),
+                 id="zero-with-a-huge-exponent"),
+    pytest.param(_zoned(5, 2, False), b"00100", Decimal("1.00"), "1." + "0" * 5000,
+                 id="5000-trailing-zeros-text"),
+]
+
+
+@pytest.mark.parametrize(("field", "raw", "value", "written"), EXTREME_VALID_VALUES)
+def test_extreme_valid_values_round_trip(field: dict, raw: bytes, value: Decimal, written: Decimal | str) -> None:
+    decoded = codec.decode(raw, field)
+    assert _shown(decoded) == _shown(value)
+    assert codec.encode(decoded, field) == raw
+    assert codec.encode(written, field) == raw
 
 
 # The registered differences between app/data/ASCII and app/data/EBCDIC:
@@ -8493,6 +11836,56 @@ def test_inventory_header() -> None:
     ids = [item.get("id") for item in items]
     assert [item for item in ids if not isinstance(item, str) or not INVENTORY_ID_RE.fullmatch(item)] == []
     assert sorted(item for item, count in Counter(ids).items() if count > 1) == []
+
+
+# One edit of one resolved source line per case, each taking away a fact that
+# a never-shown message row (OVERWRITTEN_MESSAGES, UNSENT_MESSAGES) rests on:
+# (program, area, path, line, old text, new text, part of the refusal).
+NEVER_SHOWN_DRIFTS = {
+    "unsigned-work-field-signed": (
+        "CORPT00C", "RPT", "app/cbl/CORPT00C.cbl", 75, "PIC 9999", "PIC S9999", "anchor /",
+    ),
+    "tested-field-wider": (
+        "CORPT00C", "RPT", "app/cpy-bms/CORPT00.CPY", 90, "X(4)", "X(5)",
+        "no longer has the width of the value moved into it",
+    ),
+    "text-moved-under-a-test-that-holds": (
+        "CORPT00C", "RPT", "app/cbl/CORPT00C.cbl", 340, "'Start Date - Not a valid Day...'",
+        "'Start Date - Not a valid Year...'", "must be moved only at app/cbl/CORPT00C.cbl:347-349",
+    ),
+    "tested-field-written-before-the-test": (
+        "CORPT00C", "RPT", "app/cbl/CORPT00C.cbl", 334, "SDTMML", "SDTYYYYO", "anchor /",
+    ),
+    "condition-set-elsewhere": (
+        "COCRDLIC", "CRD", "app/cbl/COCRDLIC.cbl", 311, "WS-ERROR-MSG-OFF", "WS-EXIT-MESSAGE",
+        "WS-EXIT-MESSAGE must be set only at app/cbl/COCRDLIC.cbl:396-405",
+    ),
+    "xctl-passes-another-commarea": (
+        "COCRDLIC", "CRD", "app/cbl/COCRDLIC.cbl", 404, "CARDDEMO-COMMAREA", "WS-COMMAREA", "anchor /",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(NEVER_SHOWN_DRIFTS))
+def test_inventory_never_shown_message_rows_refuse_source_drift(carddemo_repo_root: Path, case: str) -> None:
+    """A message row that says its text never reaches the screen stops the
+    extraction, and with it ``inventory_tools.py --check``, once the source
+    no longer shows why: the intact program yields a never-reaches
+    description, and the same program with the case's one-line edit raises
+    InventoryError naming the broken fact."""
+    name, area, path, line, old, new, refusal = NEVER_SHOWN_DRIFTS[case]
+    lines = inventory_tools.resolve_copies(carddemo_repo_root / "app" / "cbl" / f"{name}.cbl", carddemo_repo_root)
+    edited = [
+        dataclasses.replace(source, text=source.text.replace(old, new))
+        if (source.path, source.line) == (path, line) else source
+        for source in lines
+    ]
+    assert edited != lines, f"{path}:{line} does not hold {old!r}"
+    program = f"app/cbl/{name}.cbl"
+    intact = inventory_tools.online_items(area, inventory_tools.CobolProgram(name, program, lines))
+    assert any("never reaches" in draft["description"] for draft in intact)
+    with pytest.raises(inventory_tools.InventoryError, match=re.escape(refusal)):
+        inventory_tools.online_items(area, inventory_tools.CobolProgram(name, program, edited))
 
 
 
@@ -8849,7 +12242,8 @@ def case_temporary_directory(work_root_case: Path, monkeypatch: pytest.MonkeyPat
 
 
 # Each maker returns the CARDDEMO_TEST_WORKDIR value to set (None: unset) and
-# the folder inside the repository that a refusal must not create (or None).
+# the folder, inside the repository or below the case's folder, that a
+# refusal must not create (or None).
 
 
 def _unset_work_root(case: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[str | None, Path | None]:
@@ -8888,9 +12282,10 @@ def _in_repository_work_root(case: Path, monkeypatch: pytest.MonkeyPatch) -> tup
 def _unwritable_work_root(case: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[str | None, Path | None]:
     # An existing directory in which nothing can be made, as under chattr +i or
     # without write permission. Simulated, so the case holds when the suite
-    # runs as root too; every other mkdtemp works as before.
+    # runs as root too; every other mkdtemp works as before. Private, so it is
+    # refused as unwritable under any umask.
     root = case / "unwritable"
-    root.mkdir()
+    root.mkdir(mode=0o700)
     make_directory = tempfile.mkdtemp
 
     def mkdtemp(suffix: str | None = None, prefix: str | None = None, dir: str | Path | None = None) -> str:
@@ -8901,6 +12296,71 @@ def _unwritable_work_root(case: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[
     monkeypatch.setattr(tempfile, "mkdtemp", mkdtemp)
     return str(root), None
 
+
+def _group_writable_work_root(case: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[str | None, Path | None]:
+    # As mkdir under umask 002 leaves a directory: whoever is in its group
+    # could swap a scenario's working directory for a link.
+    root = case / "group-writable"
+    root.mkdir(mode=0o700)
+    os.chmod(root, 0o775)
+    return str(root), None
+
+
+def _foreign_work_root(case: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[str | None, Path | None]:
+    # Another owner, simulated through os.geteuid, so the case holds whoever
+    # runs the suite.
+    root = case / "foreign"
+    root.mkdir(mode=0o700)
+    owner = os.stat(root).st_uid
+    monkeypatch.setattr(os, "geteuid", lambda: owner + 1)
+    return str(root), None
+
+
+def _path_text_work_root(text: str) -> Callable[[Path, pytest.MonkeyPatch], tuple[str | None, Path | None]]:
+    """The maker of a missing work root below a folder whose name holds
+    ``text``, which the refusal must not create."""
+
+    def make(case: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[str | None, Path | None]:
+        folder = case / f"w{text}r"
+        return str(folder / "root"), folder
+
+    return make
+
+
+def _work_root_of_length(case: Path, length: int) -> Path:
+    """A path below ``case`` of exactly ``length`` bytes, of names no longer
+    than 200 bytes; the case is skipped when ``case`` leaves no room for
+    one."""
+    path, remaining = str(case), length - len(os.fsencode(case))
+    if remaining < 2:
+        pytest.skip(f"the session work root leaves no room below it for a path of {length} bytes")
+    while remaining:
+        taken = min(201, remaining)  # the separator and a name of up to 200 bytes
+        if remaining - taken == 1:  # never leave room for a separator alone
+            taken -= 1
+        path += "/" + "w" * (taken - 1)
+        remaining -= taken
+    return Path(path)
+
+
+def _over_long_work_root(case: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[str | None, Path | None]:
+    root = _work_root_of_length(case, harness._WORK_ROOT_MAX_BYTES + 1)
+    return str(root), case / root.relative_to(case).parts[0]
+
+
+# Text no work root's path may hold, whatever the adapter, and how the
+# refusal names it: the characters a shell reads inside the double quotes of
+# cobc's compiler commands, and characters that are not printable.
+WORK_ROOT_PATH_TEXT = [
+    pytest.param("`", "holds '`', which a shell reads even inside double quotes", id="backquote"),
+    pytest.param("$", "holds '$', which a shell reads even inside double quotes", id="dollar"),
+    pytest.param('"', "holds '\"', which a shell reads even inside double quotes", id="double-quote"),
+    pytest.param("\\", "holds '\\\\', which a shell reads even inside double quotes", id="backslash"),
+    pytest.param("\n", "holds the non-printable character '\\n'", id="newline"),
+    pytest.param("\t", "holds the non-printable character '\\t'", id="tab"),
+    pytest.param("\x1b", "holds the non-printable character '\\x1b'", id="escape"),
+]
+WORK_ROOT_OVER_LONG = f"bytes long, more than the {harness._WORK_ROOT_MAX_BYTES} a work root may have"
 
 # The work-root values replaced by a fresh temporary root, and what the
 # reason for refusing a set one says (None: unset, which is not refused).
@@ -8913,6 +12373,13 @@ REPLACED_WORK_ROOTS = [
     pytest.param(_repository_work_root, "the path is the repository itself", id="repository"),
     pytest.param(_in_repository_work_root, "inside the repository", id="inside-repository"),
     pytest.param(_unwritable_work_root, "is not writable", id="unwritable-directory"),
+    pytest.param(_group_writable_work_root, "is writable by group or others (mode 0775)", id="group-writable"),
+    pytest.param(_foreign_work_root, "is owned by uid", id="foreign-owner"),
+    *(
+        pytest.param(_path_text_work_root(case.values[0]), case.values[1], id=f"path-{case.id}")
+        for case in WORK_ROOT_PATH_TEXT
+    ),
+    pytest.param(_over_long_work_root, WORK_ROOT_OVER_LONG, id="over-long"),
 ]
 REFUSED_WORK_ROOTS = [case for case in REPLACED_WORK_ROOTS if case.values[0] is not _unset_work_root]
 
@@ -8925,12 +12392,12 @@ def _set_work_root_variable(monkeypatch: pytest.MonkeyPatch, value: str | None) 
 
 
 def _assert_not_created(absent: Path | None) -> None:
-    """Fail when a refused root created ``absent`` inside the repository,
-    after removing it."""
+    """Fail when a refused root created ``absent``, inside the repository or
+    below the case's folder, after removing it."""
     if absent is None or not os.path.lexists(absent):
         return
     shutil.rmtree(absent)
-    pytest.fail(f"{absent} was created inside the repository")
+    pytest.fail(f"{absent} was created by a refused work root")
 
 
 def _assert_fresh_temporary_root(root: Path, case: Path) -> None:
@@ -8998,19 +12465,32 @@ def test_conftest_replaces_an_unset_or_unusable_work_root(
         _assert_not_created(absent)
 
 
-@pytest.mark.parametrize("existing", [pytest.param(True, id="existing"), pytest.param(False, id="missing")])
+@pytest.mark.parametrize(
+    "mode",
+    [
+        pytest.param(None, id="missing"),
+        pytest.param(0o700, id="existing-private"),
+        pytest.param(0o755, id="existing-0755-as-umask-022-makes-it"),
+    ],
+)
 def test_conftest_uses_a_usable_work_root(
-    monkeypatch: pytest.MonkeyPatch, work_root_case: Path, existing: bool
+    monkeypatch: pytest.MonkeyPatch, work_root_case: Path, mode: int | None
 ) -> None:
+    """A usable root is used as configured, with no warning; a missing one is
+    created with mode 0700, and an existing one keeps its mode, 0755 as
+    ``mkdir`` makes one under umask 022 included."""
     import conftest
 
     root = work_root_case / "work root" / "nested"
-    if existing:
-        root.mkdir(parents=True)
+    if mode is not None:
+        root.mkdir(mode=0o700, parents=True)
+        os.chmod(root, mode)
     _set_work_root_variable(monkeypatch, str(root))
     config, given = _configure_session(monkeypatch)
     try:
         assert config.stash[conftest.WORK_ROOT_KEY] == root
+        # Permission bits only: a setgid bit is inherited from the folder above.
+        assert os.stat(root).st_mode & 0o777 == (0o700 if mode is None else mode)
         assert conftest.CREATED_WORK_ROOT_KEY not in config.stash
         assert given == []
         # Only the session lock, which names this process; the write probe is gone.
@@ -9028,71 +12508,84 @@ def test_conftest_uses_a_usable_work_root(
         pass
 
 
-# Work-root modes held to the UniKix deployment's rule: accepted only without
-# the group and other write bits, whatever the setgid and sticky bits.
-OWNER_ONLY_MODES = [0o700, 0o750, 0o755, 0o775, 0o757, 0o777, 0o2775, 0o1777]
-# Work-root names held to the same rule: refused when the path holds
-# whitespace or a quote, which the JVM option variables naming the
-# deployment's tmp/ cannot carry, before its owner and mode are looked at.
-OWNER_ONLY_NAMES = [
+# Work-root modes every admission holds a root to: accepted only without the
+# group and other write bits, whatever the setgid and sticky bits.
+WORK_ROOT_MODES = [0o700, 0o750, 0o755, 0o775, 0o757, 0o777, 0o2775, 0o1777]
+# Work-root names held to the UniKix deployment's path rule as well: with
+# jvm_safe_path, refused when the path holds whitespace or a quote, which the
+# JVM option variables naming the deployment's tmp/ cannot carry, before its
+# owner and mode are looked at; without it only the double quote, which a
+# shell reads, is refused, also before its owner and mode.
+JVM_SAFE_PATH_NAMES = [
     pytest.param("root", id="plain"),
     pytest.param("ro ot", id="space"),
     pytest.param("ro'ot", id="single-quote"),
     pytest.param('ro"ot', id="double-quote"),
 ]
-OWNER_ONLY_UNSAFE_PATH = (
-    "holds whitespace or a quote, which a JVM option variable cannot carry; choose another work root"
+JVM_UNSAFE_PATH = "holds whitespace or a quote, which a JVM option variable cannot carry; choose another work root"
+# Why every admission refuses a path holding a character a shell reads inside
+# double quotes, after the character itself.
+SHELL_TEXT_REFUSAL = (
+    "which a shell reads even inside double quotes, as in the C compiler commands GnuCOBOL's cobc runs "
+    "through /bin/sh; choose another work root"
 )
 
 
-@pytest.mark.parametrize("name", OWNER_ONLY_NAMES)
+@pytest.mark.parametrize("name", JVM_SAFE_PATH_NAMES)
 @pytest.mark.parametrize("foreign", [pytest.param(False, id="own"), pytest.param(True, id="foreign-owner")])
-@pytest.mark.parametrize("mode", OWNER_ONLY_MODES, ids=lambda mode: f"{mode:04o}")
-def test_owner_only_work_root_matches_the_unikix_deployment(
+@pytest.mark.parametrize("mode", WORK_ROOT_MODES, ids=lambda mode: f"{mode:04o}")
+def test_work_root_admission_matches_the_unikix_deployment(
     monkeypatch: pytest.MonkeyPatch, work_root_case: Path, mode: int, foreign: bool, name: str
 ) -> None:
-    """``usable_work_root(owner_only=True)`` accepts and refuses exactly the
-    work roots the UniKix deployment's ``_check_work_root`` does, for the
-    same reason, while the default admission, which gnucobol-batch uses,
-    accepts them all and changes nothing. Another owner is simulated through
-    ``os.geteuid``, so the case holds whoever runs the suite. The expected
-    outcome follows the root's whole path, so a session work root holding
-    whitespace or a quote makes every case the path refusal."""
+    """``usable_work_root(jvm_safe_path=True)``, conftest's admission under
+    unikix, accepts and refuses exactly the work roots the UniKix
+    deployment's ``_check_work_root`` does, for the same reason. The default
+    admission, every other caller's, refuses the same owners and modes for
+    the same reason, but of the names only the one holding a double quote,
+    for its own reason; neither changes the root. Another owner is simulated
+    through ``os.geteuid``, so the case holds whoever runs the suite. The
+    expected outcome follows the root's whole path, so a session work root
+    holding whitespace or a quote makes every ``jvm_safe_path`` case the
+    path refusal."""
     root = work_root_case / name
-    root.mkdir()
+    root.mkdir(mode=0o700)
     os.chmod(root, mode)
     actual = stat.S_IMODE(os.stat(root).st_mode)
     owner = os.stat(root).st_uid
     if foreign:
         monkeypatch.setattr(os, "geteuid", lambda: owner + 1)
     refusals: list[str | None] = []
-    for check in (unikix_adapter.deploy._check_work_root, functools.partial(usable_work_root, owner_only=True)):
+    for check in (
+        unikix_adapter.deploy._check_work_root,
+        functools.partial(usable_work_root, jvm_safe_path=True),
+        usable_work_root,
+    ):
         try:
             check(root)
         except HarnessError as exc:
             refusals.append(str(exc))
         else:
             refusals.append(None)
-    if _holds_jvm_unsafe_text(root):
-        reason = OWNER_ONLY_UNSAFE_PATH
-    elif foreign:
-        reason = f"is owned by uid {owner}, not {owner + 1}; choose another work root"
+    if foreign:
+        owner_reason = f"is owned by uid {owner}, not {owner + 1}; choose another work root"
     elif actual & (stat.S_IWGRP | stat.S_IWOTH):
-        reason = (
+        owner_reason = (
             f"is writable by group or others (mode {actual:04o}), so they could plant links in it; "
             "run chmod go-w on it or choose another work root"
         )
     else:
-        reason = None
-    if reason is None:
-        assert refusals == [None, None], refusals
-    else:
-        assert refusals == [f"work root {root} {reason}", f"{root} {reason}"], refusals
-    assert usable_work_root(root) == root
+        owner_reason = None
+    jvm_reason = JVM_UNSAFE_PATH if _holds_jvm_unsafe_text(root) else owner_reason
+    default_reason = f"holds '\"', {SHELL_TEXT_REFUSAL}" if '"' in name else owner_reason
+    assert refusals == [
+        None if jvm_reason is None else f"work root {root} {jvm_reason}",
+        None if jvm_reason is None else f"{root} {jvm_reason}",
+        None if default_reason is None else f"{root} {default_reason}",
+    ], refusals
     assert stat.S_IMODE(os.stat(root).st_mode) == actual and not any(root.iterdir()), "the admission changed the root"
 
 
-def test_owner_only_path_rule_is_the_unikix_environment_s() -> None:
+def test_jvm_safe_path_rule_is_the_unikix_environment_s() -> None:
     """The harness keeps its own copy of the pattern the UniKix environment
     refuses a temporary directory by (``env._JVM_UNSAFE_PATH_RE``), because
     it does not import the adapters; the copy must not drift from it."""
@@ -9100,33 +12593,111 @@ def test_owner_only_path_rule_is_the_unikix_environment_s() -> None:
     assert (ours.pattern, ours.flags) == (theirs.pattern, theirs.flags)
 
 
-@pytest.mark.parametrize(
-    ("owner_only", "mode"), [pytest.param(True, 0o700, id="owner-only"), pytest.param(False, 0o775, id="default")]
-)
-def test_work_root_made_under_umask_002(work_root_case: Path, owner_only: bool, mode: int) -> None:
+@pytest.mark.parametrize("jvm_safe_path", [pytest.param(True, id="jvm-safe-path"), pytest.param(False, id="default")])
+def test_work_root_made_under_umask_002(work_root_case: Path, jvm_safe_path: bool) -> None:
     """A missing work root made under umask 002, as an operator's shell may
-    have it: the owner-only admission creates it private, so the UniKix
-    deployment accepts it, while the default admission leaves the umask's
-    mode; missing parents get the umask's mode either way. Under a session
-    work root whose path holds whitespace or a quote, the owner-only
+    have it: either admission creates it private, so the runner accepts it
+    and, for a path without whitespace or a quote, so does the UniKix
+    deployment; missing parents get the umask's mode. Under a session work
+    root whose path holds whitespace or a quote, the ``jvm_safe_path``
     admission refuses the root before creating anything."""
     root = work_root_case / "made" / "root"
-    if owner_only and _holds_jvm_unsafe_text(root):
+    if jvm_safe_path and _holds_jvm_unsafe_text(root):
         with pytest.raises(HarnessError) as refused:
-            usable_work_root(root, owner_only=owner_only)
-        assert str(refused.value) == f"{root} {OWNER_ONLY_UNSAFE_PATH}"
-        assert not root.parent.exists(), "a refused owner-only work root was created"
+            usable_work_root(root, jvm_safe_path=jvm_safe_path)
+        assert str(refused.value) == f"{root} {JVM_UNSAFE_PATH}"
+        assert not root.parent.exists(), "a refused work root was created"
         return
     previous = os.umask(0o002)
     try:
-        assert usable_work_root(root, owner_only=owner_only) == root
+        assert usable_work_root(root, jvm_safe_path=jvm_safe_path) == root
+        workdir, _ = runner._fresh_workdir(SimpleNamespace(work_root=root), RUNNER_SCENARIO_ID)
     finally:
         os.umask(previous)
     # Permission bits only: a setgid bit is inherited from the folder above.
-    assert os.stat(root).st_mode & 0o777 == mode
+    assert os.stat(root).st_mode & 0o777 == 0o700
+    assert os.stat(workdir).st_mode & 0o777 == 0o700
     assert os.stat(root.parent).st_mode & 0o777 == 0o775
-    if owner_only:
+    if not _holds_jvm_unsafe_text(root):
         unikix_adapter.deploy._check_work_root(root)
+
+
+@pytest.mark.parametrize(("text", "reason"), WORK_ROOT_PATH_TEXT)
+def test_usable_work_root_refuses_text_no_work_root_may_hold(work_root_case: Path, text: str, reason: str) -> None:
+    """Every admission refuses a path holding a character a shell reads even
+    inside double quotes, or one that is not printable, naming it (the path
+    shown as its ``repr`` when it is not printable), before creating
+    anything. The resolved path is judged, so a link without such text
+    leading to a folder holding it is refused too."""
+    folder = work_root_case / f"w{text}r"
+    root = folder / "root"
+    shown = str(root) if str(root).isprintable() else repr(str(root))
+    with pytest.raises(HarnessError) as refused:
+        usable_work_root(root)
+    assert str(refused.value).startswith(f"{shown} {reason}"), refused.value
+    assert str(refused.value).endswith("; choose another work root"), refused.value
+    assert not os.path.lexists(folder), "a refused work root was created"
+    folder.mkdir(mode=0o700)
+    link = work_root_case / "plain"
+    link.symlink_to(folder, target_is_directory=True)
+    with pytest.raises(HarnessError) as through_link:
+        usable_work_root(link / "root")
+    assert str(through_link.value) == str(refused.value), through_link.value
+    assert not any(folder.iterdir()), "a refused work root was created"
+
+
+@pytest.mark.parametrize(
+    ("extra", "accepted"), [pytest.param(0, True, id="at-the-limit"), pytest.param(1, False, id="one-byte-over")]
+)
+def test_usable_work_root_holds_a_path_to_the_length_limit(work_root_case: Path, extra: int, accepted: bool) -> None:
+    """A resolved work root of ``_WORK_ROOT_MAX_BYTES`` bytes is accepted and
+    created, and one byte more refused, naming its length and the limit,
+    before anything is created: the limit leaves ``_WORK_ROOT_PATH_RESERVE``
+    bytes of ``PATH_MAX`` for the paths the suite makes below the root."""
+    assert harness._WORK_ROOT_MAX_BYTES + harness._WORK_ROOT_PATH_RESERVE == harness._PATH_MAX - 1
+    length = harness._WORK_ROOT_MAX_BYTES + extra
+    root = _work_root_of_length(work_root_case, length)
+    assert len(os.fsencode(root)) == length
+    first = work_root_case / root.relative_to(work_root_case).parts[0]
+    if accepted:
+        assert usable_work_root(root) == root
+        assert os.stat(root).st_mode & 0o777 == 0o700 and not any(root.iterdir())
+        return
+    with pytest.raises(HarnessError) as refused:
+        usable_work_root(root)
+    assert str(refused.value) == (
+        f"the path is {length} bytes long, more than the {harness._WORK_ROOT_MAX_BYTES} a work root may have: "
+        f"the paths the suite makes below it take up to {harness._WORK_ROOT_PATH_RESERVE} more, and no path "
+        f"may exceed {harness._PATH_MAX - 1} bytes (PATH_MAX); choose a shorter work root"
+    )
+    assert not os.path.lexists(first), "a refused work root was created"
+
+
+@pytest.mark.parametrize("caller", ["conftest", "capture"])
+@pytest.mark.parametrize(("text", "reason"), WORK_ROOT_PATH_TEXT)
+def test_a_temporary_root_holding_text_no_work_root_may_hold_is_refused(
+    monkeypatch: pytest.MonkeyPatch, work_root_case: Path, caller: str, text: str, reason: str
+) -> None:
+    """The fresh temporary root that replaces an unset work root is held to
+    the same path rule: under a temporary directory whose path holds such a
+    character, conftest stops with a usage error and ``capture.py`` with a
+    ``CaptureError``, each naming the character, and neither leaves the root
+    it made behind."""
+    import conftest
+
+    temporary = work_root_case / f"te{text}mp"
+    temporary.mkdir(mode=0o700)
+    monkeypatch.setattr(tempfile, "tempdir", str(temporary))
+    _set_work_root_variable(monkeypatch, None)
+    if caller == "conftest":
+        with pytest.raises(pytest.UsageError) as stopped:
+            conftest._work_root()
+    else:
+        with pytest.raises(capture.CaptureError) as stopped:
+            capture._work_root(None)
+    message = str(stopped.value)
+    assert message.startswith("the temporary work root cannot be used: ") and reason in message, message
+    assert not any(temporary.iterdir()), "the refused temporary root was left behind"
 
 
 @pytest.mark.parametrize(
@@ -9136,10 +12707,14 @@ def test_work_root_made_under_umask_002(work_root_case: Path, owner_only: bool, 
         pytest.param("unikix", "work-root", 0o700, id="unikix-private"),
         pytest.param("unikix", "work root", 0o700, id="unikix-whitespace"),
         pytest.param("unikix", "work'root", 0o700, id="unikix-quote"),
-        pytest.param("gnucobol-batch", "work root", 0o775, id="gnucobol-batch-group-writable-whitespace"),
+        pytest.param("unikix", "work`root", 0o700, id="unikix-backquote"),
+        pytest.param("gnucobol-batch", "work root", 0o775, id="gnucobol-batch-group-writable"),
+        pytest.param("gnucobol-batch", "work root", 0o700, id="gnucobol-batch-whitespace"),
+        pytest.param("gnucobol-batch", "work'root", 0o700, id="gnucobol-batch-quote"),
+        pytest.param("gnucobol-batch", "work`root", 0o700, id="gnucobol-batch-backquote"),
     ],
 )
-def test_conftest_holds_a_unikix_work_root_to_the_deployment_rule(
+def test_conftest_holds_a_work_root_to_its_adapter_s_rules(
     monkeypatch: pytest.MonkeyPatch,
     work_root_case: Path,
     case_temporary_directory: Path,
@@ -9147,22 +12722,24 @@ def test_conftest_holds_a_unikix_work_root_to_the_deployment_rule(
     name: str,
     mode: int,
 ) -> None:
-    """Under ``unikix`` a configured work root whose path holds whitespace or
-    a quote, or that group or others can write to, which the deployment
-    would refuse in every scenario, is replaced by a fresh private temporary
-    root with a warning naming the rule; gnucobol-batch, which has no such
-    rule, uses it as configured. The expected outcome follows the root's
-    whole path, so under a session work root holding whitespace or a quote
-    every unikix case is the path refusal."""
+    """A configured work root that group or others can write to, or whose
+    path holds a character a shell reads even inside double quotes, is
+    replaced under every adapter by a fresh private temporary root with a
+    warning naming the rule; under ``unikix`` so is one whose path holds
+    whitespace or a quote, which the deployment would refuse in every
+    scenario, while gnucobol-batch uses a private one as configured. The
+    expected outcome follows the root's whole path, so under a session work
+    root holding whitespace or a quote every unikix case is the path
+    refusal."""
     import conftest
 
     root = work_root_case / name
-    root.mkdir()
+    root.mkdir(mode=0o700)
     os.chmod(root, mode)
-    if adapter != "unikix":
-        reason = None
-    elif _holds_jvm_unsafe_text(root):
-        reason = f"{root} {OWNER_ONLY_UNSAFE_PATH}"
+    if adapter == "unikix" and _holds_jvm_unsafe_text(root):
+        reason = f"{root} {JVM_UNSAFE_PATH}"
+    elif "`" in name:
+        reason = f"{root} holds '`', {SHELL_TEXT_REFUSAL}"
     elif mode & (stat.S_IWGRP | stat.S_IWOTH):
         reason = (
             f"{root} is writable by group or others (mode {mode:04o}), so they could plant links in it; "
@@ -9315,6 +12892,7 @@ def test_capture_uses_a_usable_work_root(
     _set_work_root_variable(monkeypatch, str(root) if source == "variable" else None)
     assert capture._work_root(str(root) if source == "option" else None) == (root, False)
     assert root.is_dir() and not any(root.iterdir()), "the write probe stays in the work root"
+    assert os.stat(root).st_mode & 0o777 == 0o700, "the missing work root was not made private"
     assert capsys.readouterr().err == ""
 
 
@@ -9535,7 +13113,7 @@ def test_conftest_refuses_a_work_root_another_session_holds(
     import conftest
 
     root = work_root_case / "shared"
-    root.mkdir()
+    root.mkdir(mode=0o700)  # private under any umask, as every admission requires
     _set_work_root_variable(monkeypatch, str(root))
     holder, release = hold(root)
     try:
@@ -9571,7 +13149,7 @@ def test_capture_refuses_a_work_root_another_session_holds(
     from harness import capture
 
     root = work_root_case / "shared"
-    root.mkdir()
+    root.mkdir(mode=0o700)  # private under any umask, as every admission requires
     _set_work_root_variable(monkeypatch, str(root) if source == "variable" else None)
     option = ["--work-root", str(root)] if source == "option" else []
     monkeypatch.setattr(capture, "make_adapter", _no_capture_adapter)
@@ -9660,6 +13238,412 @@ def test_bump_check_scratch_avoids_an_unusable_work_root(
     assert scratch == [case_temporary_directory], f"the scratch folder is made in {scratch}"
 
 
+# The scenario whose working directory the runner cases make and fill.
+RUNNER_SCENARIO_ID = "UTL-CSUTLDTC-normal-01"
+# What a case puts outside the work root, which nothing may touch.
+RUNNER_OUTSIDE_FILE = "kept.txt"
+RUNNER_OUTSIDE_TEXT = "kept\n"
+
+
+def _runner_case(case: Path) -> tuple[Path, Path]:
+    """A private work root of the case's own and a folder beside it, outside
+    it, holding ``RUNNER_OUTSIDE_FILE``."""
+    root = case / "root"
+    root.mkdir(mode=0o700)
+    outside = case / "outside"
+    outside.mkdir(mode=0o700)
+    (outside / RUNNER_OUTSIDE_FILE).write_text(RUNNER_OUTSIDE_TEXT, encoding="utf-8")
+    return root, outside
+
+
+def _assert_outside_untouched(outside: Path) -> None:
+    assert sorted(path.name for path in outside.iterdir()) == [RUNNER_OUTSIDE_FILE], sorted(outside.iterdir())
+    assert (outside / RUNNER_OUTSIDE_FILE).read_text(encoding="utf-8") == RUNNER_OUTSIDE_TEXT
+
+
+@pytest.mark.parametrize(
+    ("mode", "foreign", "reason"),
+    [
+        pytest.param(0o770, False, "is writable by group or others (mode 0770)", id="group-writable"),
+        pytest.param(0o703, False, "is writable by group or others (mode 0703)", id="other-writable"),
+        pytest.param(0o700, True, "is owned by uid", id="foreign-owner"),
+    ],
+)
+def test_fresh_workdir_refuses_a_work_root_others_can_write(
+    monkeypatch: pytest.MonkeyPatch, work_root_case: Path, mode: int, foreign: bool, reason: str
+) -> None:
+    """The runner holds the work root an adapter names, however the adapter
+    was made, to the admission's rule on its open descriptor: one group or
+    others can write to, or of another owner (``os.geteuid`` simulated), is
+    refused before the working directory is made."""
+    root, _ = _runner_case(work_root_case)
+    os.chmod(root, mode)
+    if foreign:
+        owner = os.stat(root).st_uid
+        monkeypatch.setattr(os, "geteuid", lambda: owner + 1)
+    with pytest.raises(HarnessError) as refused:
+        runner._fresh_workdir(SimpleNamespace(work_root=root), RUNNER_SCENARIO_ID)
+    assert str(refused.value).startswith(f"{root} {reason}"), refused.value
+    assert str(refused.value).endswith("choose another work root"), refused.value
+    assert not any(root.iterdir()), "a working directory was made in a refused work root"
+
+
+def test_the_runner_opens_directories_as_the_admission_does() -> None:
+    """The runner opens the work root, each working directory and its
+    ``inputs/`` with the helper ``usable_work_root`` admits a root by, so a
+    root admitted is one the runner can open; it opens for reading, as a
+    directory, without following a symbolic link, by no child process."""
+    assert runner._open_directory is harness.open_directory
+    assert harness.DIRECTORY_OPEN_FLAGS == os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+
+
+# Modes of a work root of the user's own that the user cannot use as the
+# runner does: without read permission the runner cannot open it, without
+# search permission nothing can be made or looked up in it.
+INACCESSIBLE_WORK_ROOT_MODES = [
+    pytest.param(0o300, id="0300-no-read"),
+    pytest.param(0o600, id="0600-no-search"),
+]
+# What a refusal for want of permission states after its cause.
+WORK_ROOT_ACCESS_RULE = "a work root must be a directory you own and can read, write and search (chmod u+rwx)"
+# Each admission such a root meets, and the runner, which refuses it at use.
+WORK_ROOT_ACCESS_CALLERS = ["usable_work_root", "conftest", "capture-variable", "capture-option", "runner"]
+# The most seconds the child process judging such a root may take.
+WORK_ROOT_ACCESS_TIMEOUT_S = 120
+
+
+def _work_root_access_outcome(tests_root: str, caller: str, root: str, temporary: str, scenario_id: str) -> dict:
+    """What ``caller`` does with the work root ``root``, as JSON-ready
+    observations: ``usable_work_root``'s verdict; conftest's session (its
+    root's path, mode and entries, whether it made the root, the config-time
+    warnings, whether ``pytest_unconfigure`` removed the root);
+    ``capture.py``'s ``CARDDEMO_TEST_WORKDIR`` path (the same, with stderr
+    and ``_discard``) and ``--work-root`` path (exit status and stderr, the
+    capture refused should the root be accepted); or the exception
+    ``runner._fresh_workdir`` refuses the root with at use. A fresh temporary
+    root is made in ``temporary``, and ``CARDDEMO_ADAPTER`` is unset. It
+    imports what it needs and restores what it changes (the environment,
+    ``tempfile.tempdir``, ``capture.make_adapter``), because it runs in the
+    test process or, from its source, in a child process that cannot
+    override file permissions."""
+    import contextlib
+    import io
+    import os
+    import sys
+    import tempfile
+    from types import SimpleNamespace
+
+    if tests_root not in sys.path:
+        sys.path.insert(0, tests_root)
+    import pytest
+
+    import conftest
+    import harness
+    from harness import capture, runner
+
+    def made_root(path: os.PathLike) -> dict:
+        # Permission bits only: a setgid bit is inherited from the folder above.
+        return {"root": str(path), "mode": os.stat(path).st_mode & 0o777, "entries": sorted(os.listdir(path))}
+
+    def refuse_capture(work_root: os.PathLike) -> None:
+        raise harness.HarnessError(f"the work root {work_root} was accepted, so the capture would run")
+
+    names = (conftest.WORKDIR_ENV, conftest.ADAPTER_ENV)
+    saved_environment = {name: os.environ.get(name) for name in names}
+    saved_tempdir, saved_make_adapter = tempfile.tempdir, capture.make_adapter
+    outcome: dict = {}
+    try:
+        for name in names:
+            os.environ.pop(name, None)
+        tempfile.tempdir = temporary
+        if caller in ("conftest", "capture-variable"):
+            os.environ[conftest.WORKDIR_ENV] = root
+        if caller == "usable_work_root":
+            try:
+                outcome["admitted"] = str(harness.usable_work_root(root))
+            except harness.HarnessError as exc:
+                outcome["refused"] = str(exc)
+        elif caller == "conftest":
+            given: list = []
+            config = SimpleNamespace(
+                stash=pytest.Stash(),
+                issue_config_time_warning=lambda warning, stacklevel: given.append(warning),
+            )
+            conftest.pytest_configure(config)
+            session_root = config.stash[conftest.WORK_ROOT_KEY]
+            outcome.update(made_root(session_root))
+            outcome["created"] = config.stash.get(conftest.CREATED_WORK_ROOT_KEY, None) == session_root
+            outcome["warnings"] = [[type(warning).__name__, str(warning)] for warning in given]
+            conftest.pytest_unconfigure(config)
+            outcome["removed"] = not os.path.lexists(session_root)
+        elif caller == "capture-variable":
+            error = io.StringIO()
+            with contextlib.redirect_stderr(error):
+                capture_root, created = capture._work_root(None)
+                outcome.update(made_root(capture_root))
+                outcome["created"] = created
+                capture._discard(capture_root, created, [])
+            outcome["stderr"] = error.getvalue()
+            outcome["removed"] = not os.path.lexists(capture_root)
+        elif caller == "capture-option":
+            capture.make_adapter = refuse_capture
+            error = io.StringIO()
+            with contextlib.redirect_stderr(error):
+                try:
+                    outcome["exit"] = capture.main([scenario_id, "--work-root", root])
+                except SystemExit as exc:
+                    outcome["exit"] = exc.code
+            outcome["stderr"] = error.getvalue()
+        elif caller == "runner":
+            try:
+                runner._fresh_workdir(SimpleNamespace(work_root=root), scenario_id)
+            except Exception as exc:
+                outcome.update(
+                    error=type(exc).__name__,
+                    harness_error=isinstance(exc, harness.HarnessError),
+                    errno=getattr(exc, "errno", None),
+                    message=str(exc),
+                )
+        else:
+            raise ValueError(f"no such caller: {caller!r}")
+    finally:
+        for name, value in saved_environment.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+        tempfile.tempdir, capture.make_adapter = saved_tempdir, saved_make_adapter
+    return outcome
+
+
+def _overrides_file_permissions(case: Path) -> bool:
+    """Whether this process opens a directory its mode denies it reading, as
+    root, or a process holding CAP_DAC_OVERRIDE or CAP_DAC_READ_SEARCH, does;
+    such a process must judge a permission case in a child without those
+    privileges."""
+    probe = case / "permission-probe"
+    probe.mkdir(mode=0o700)
+    try:
+        os.chmod(probe, 0o300)
+        try:
+            os.close(os.open(probe, harness.DIRECTORY_OPEN_FLAGS))
+        except PermissionError:
+            return False
+        return True
+    finally:
+        os.chmod(probe, 0o700)
+        probe.rmdir()
+
+
+def _judge_work_root_access(case: Path, caller: str, root: Path, temporary: Path) -> dict:
+    """``_work_root_access_outcome`` with file permissions enforced: in this
+    process when it does not override them, else in a child started by
+    ``setpriv`` without capabilities (still the same user, so the owner's
+    mode bits apply), which prints the outcome as its last line. Skipped
+    when this process overrides permissions and ``setpriv`` is absent."""
+    arguments = (str(TESTS_ROOT), caller, str(root), str(temporary), RUNNER_SCENARIO_ID)
+    if not _overrides_file_permissions(case):
+        return _work_root_access_outcome(*arguments)
+    setpriv = shutil.which("setpriv")
+    if setpriv is None:
+        pytest.skip(
+            "this process overrides file permissions (euid 0 or a DAC capability) and setpriv, which starts a "
+            "child without them, is absent, so a root its owner cannot read, write and search cannot be judged"
+        )
+    source = (
+        "from __future__ import annotations\nimport json, sys\n\n"
+        f"{inspect.getsource(_work_root_access_outcome)}\n"
+        "print(json.dumps(_work_root_access_outcome(*sys.argv[1:])))\n"
+    )
+    child = subprocess.run(
+        [setpriv, "--inh-caps=-all", "--bounding-set=-all", sys.executable, "-B", "-c", source, *arguments],
+        cwd=case,
+        env={**os.environ, "TMPDIR": str(temporary)},
+        capture_output=True,
+        text=True,
+        timeout=WORK_ROOT_ACCESS_TIMEOUT_S,
+    )
+    assert child.returncode == 0 and child.stdout, child.stdout + child.stderr
+    return json.loads(child.stdout.splitlines()[-1])
+
+
+@pytest.mark.parametrize("caller", WORK_ROOT_ACCESS_CALLERS)
+@pytest.mark.parametrize("mode", INACCESSIBLE_WORK_ROOT_MODES)
+def test_a_work_root_its_owner_cannot_read_write_and_search_is_refused(
+    work_root_case: Path, case_temporary_directory: Path, mode: int, caller: str
+) -> None:
+    """A work root of the user's own that the user cannot read (0300), so the
+    runner cannot open it, or cannot search (0600), so nothing can be made in
+    it, is refused by ``usable_work_root`` with the permission rule (``chmod
+    u+rwx``), replaced with a warning and a fresh private temporary root by
+    conftest and by ``capture.py``'s ``CARDDEMO_TEST_WORKDIR`` path, and a
+    usage error as ``--work-root``; nothing is made in it. The runner still
+    refuses such a root at use, as one changed since its admission. Judged
+    with file permissions enforced (``_judge_work_root_access``), so the case
+    holds when the suite runs as root too."""
+    root = work_root_case / "inaccessible"
+    root.mkdir(mode=0o700)
+    try:
+        os.chmod(root, mode)
+        outcome = _judge_work_root_access(work_root_case, caller, root, case_temporary_directory)
+    finally:
+        os.chmod(root, 0o700)
+    assert not any(root.iterdir()), "something was made in a refused work root"
+    denied = os.strerror(errno.EACCES)
+    if mode == 0o300:
+        reason = f"{root} cannot be opened: {denied}; {WORK_ROOT_ACCESS_RULE}"
+    else:
+        reason = f"no directory can be made in {root}: {denied}; {WORK_ROOT_ACCESS_RULE}"
+    refused = f"{WORKDIR_VARIABLE}={str(root)!r} is not a usable work root: {reason}"
+    if caller == "usable_work_root":
+        assert outcome == {"refused": reason}, outcome
+    elif caller == "runner":
+        if mode == 0o300:
+            assert outcome["harness_error"], outcome
+            assert outcome["message"] == f"the work root {root} cannot be opened: {denied}", outcome
+        else:
+            assert (outcome["error"], outcome["errno"]) == ("PermissionError", errno.EACCES), outcome
+    elif caller == "capture-option":
+        assert outcome["exit"] == 2, outcome
+        assert f"--work-root {str(root)!r} is not a usable work root: {reason}" in outcome["stderr"], outcome
+    else:
+        made = Path(outcome["root"])
+        assert made.name.startswith("carddemo-") and made.parent == case_temporary_directory, outcome
+        assert outcome["mode"] == 0o700 and outcome["entries"] == [] and outcome["created"], outcome
+        assert outcome["removed"], f"the empty temporary work root {made} was kept"
+        if caller == "conftest":
+            assert outcome["warnings"] == [
+                ["PytestConfigWarning", f"{refused}; this session uses the fresh temporary work root {made} instead"]
+            ], outcome
+        else:
+            assert outcome["stderr"] == (
+                f"capture.py: warning: {refused}; a new temporary work root is used instead\n"
+            ), outcome
+
+
+def _plant_link_to_folder(workdir: Path, outside: Path) -> None:
+    workdir.symlink_to(outside, target_is_directory=True)
+
+
+def _plant_link_to_file(workdir: Path, outside: Path) -> None:
+    workdir.symlink_to(outside / RUNNER_OUTSIDE_FILE)
+
+
+def _plant_regular_file(workdir: Path, outside: Path) -> None:
+    workdir.write_text("left by a previous run\n", encoding="utf-8")
+
+
+def _plant_folder_linking_outward(workdir: Path, outside: Path) -> None:
+    workdir.mkdir()
+    (workdir / "inputs").symlink_to(outside, target_is_directory=True)
+    (workdir / "stale.dat").write_bytes(b"left by a previous run")
+
+
+@pytest.mark.parametrize(
+    "plant",
+    [
+        pytest.param(_plant_link_to_folder, id="link-to-folder"),
+        pytest.param(_plant_link_to_file, id="link-to-file"),
+        pytest.param(_plant_regular_file, id="regular-file"),
+        pytest.param(_plant_folder_linking_outward, id="folder-linking-outward"),
+    ],
+)
+def test_fresh_workdir_removes_what_is_left_without_following_links(
+    work_root_case: Path, plant: Callable[[Path, Path], None]
+) -> None:
+    """Whatever is left at ``<root>/<id>``, a link leading outside the root
+    included, is removed without following a link, so what it leads to is
+    untouched, and replaced by an empty real directory of mode 0700 whose
+    identity is returned."""
+    root, outside = _runner_case(work_root_case)
+    workdir = root / RUNNER_SCENARIO_ID
+    plant(workdir, outside)
+    made, identity = runner._fresh_workdir(SimpleNamespace(work_root=root), RUNNER_SCENARIO_ID)
+    status = os.lstat(workdir)
+    assert made == workdir and stat.S_ISDIR(status.st_mode), made
+    # Permission bits only: a setgid bit is inherited from the work root.
+    assert status.st_mode & 0o777 == 0o700 and (status.st_dev, status.st_ino) == identity
+    assert not any(workdir.iterdir())
+    _assert_outside_untouched(outside)
+
+
+def _keep_workdir(workdir: Path, outside: Path, aside: Path) -> None:
+    return None
+
+
+def _replace_workdir_with_outward_link(workdir: Path, outside: Path, aside: Path) -> None:
+    workdir.rename(aside)
+    workdir.symlink_to(outside, target_is_directory=True)
+
+
+def _replace_workdir_with_another_folder(workdir: Path, outside: Path, aside: Path) -> None:
+    workdir.rename(aside)
+    workdir.mkdir(mode=0o700)
+
+
+def _plant_inputs_link(workdir: Path, outside: Path, aside: Path) -> None:
+    (workdir / runner.INPUTS_DIR).symlink_to(outside, target_is_directory=True)
+
+
+@pytest.mark.parametrize(
+    ("substitute", "refusal"),
+    [
+        pytest.param(_keep_workdir, None, id="kept"),
+        pytest.param(_replace_workdir_with_outward_link, "is a symbolic link", id="replaced-by-outward-link"),
+        pytest.param(
+            _replace_workdir_with_another_folder,
+            "is no longer the directory made for this run: it was replaced, so nothing is written there",
+            id="replaced-by-another-folder",
+        ),
+        pytest.param(_plant_inputs_link, FileExistsError, id="inputs-link-planted"),
+    ],
+)
+def test_materialize_writes_only_into_the_directory_made_for_the_run(
+    work_root_case: Path, substitute: Callable[[Path, Path, Path], None], refusal: str | type | None
+) -> None:
+    """``inputs/`` gets the bytes ``fixtures.build`` gives and the YAML
+    ``dump_yaml`` gives, in the working directory ``_fresh_workdir`` made. A
+    working directory replaced since, by a link leading outside the root or
+    by another directory, is refused naming it, and a link planted at
+    ``inputs`` is never written through; the outside folder, the directory
+    set aside and the replacement receive nothing."""
+    scenario = scenarios.get(RUNNER_SCENARIO_ID)
+    root, outside = _runner_case(work_root_case)
+    aside = work_root_case / "aside"
+    workdir, identity = runner._fresh_workdir(SimpleNamespace(work_root=root), scenario.id)
+    substitute(workdir, outside, aside)
+    if refusal is None:
+        data = runner._materialize(scenario, workdir, identity)
+        assert data == fixtures.build(scenario)
+        inputs = workdir / runner.INPUTS_DIR
+        names = [f"{logical}.dat" for logical in data]
+        assert sorted(path.name for path in inputs.iterdir()) == sorted(
+            [*names, runner.DATASETS_FILE, runner.PARAMETERS_FILE]
+        )
+        for logical, payload in data.items():
+            assert (inputs / f"{logical}.dat").read_bytes() == payload
+        listing = (inputs / runner.DATASETS_FILE).read_bytes()
+        assert listing == dump_yaml(load_yaml(inputs / runner.DATASETS_FILE)).encode("utf-8")
+        assert sorted(load_yaml(inputs / runner.DATASETS_FILE)) == sorted(data)
+        assert (inputs / runner.PARAMETERS_FILE).read_bytes() == dump_yaml(
+            runner._parameters(scenario, data)
+        ).encode("utf-8")
+    elif isinstance(refusal, str):
+        with pytest.raises(HarnessError) as refused:
+            runner._materialize(scenario, workdir, identity)
+        assert str(refused.value) == f"the working directory {workdir} {refusal}", refused.value
+    else:
+        with pytest.raises(refusal):
+            runner._materialize(scenario, workdir, identity)
+    _assert_outside_untouched(outside)
+    if aside.exists():
+        assert not any(aside.iterdir()), "the directory set aside received inputs"
+    if refusal is not None and not workdir.is_symlink():
+        assert sorted(path.name for path in workdir.iterdir()) == (
+            [runner.INPUTS_DIR] if substitute is _plant_inputs_link else []
+        ), sorted(workdir.iterdir())
+
+
 MARKERS = {"unit", "integration", "e2e", "chain", "gnucobol_batch", "unikix"}
 
 
@@ -9673,6 +13657,393 @@ def test_markers_registered(pytestconfig: pytest.Config) -> None:
     assert registered == MARKERS
     assert MARKERS <= {line.split(":", 1)[0].split("(", 1)[0].strip() for line in pytestconfig.getini("markers")}
     assert "--strict-markers" in pytestconfig.getini("addopts")
+
+
+# The documented launch configuration: the README's local-setup blocks run as
+# a developer pastes them, into a shell without errexit, with stubs first on
+# PATH that log each call; every file lands in the case's own folder.
+README_FILE = TESTS_ROOT / "README.md"
+LAUNCH_TIMEOUT_S = 60
+GNUCOBOL_URL = "https://ftp.gnu.org/gnu/gnucobol/gnucobol-3.2.tar.xz"
+GNUCOBOL_CHECKSUM_LINE = "3bb48af46ced4779facf41fdc2ee60e4ccb86eaa99d010b36685315df39c2ee2  gnucobol-3.2.tar.xz\n"
+# curl as the README calls it (-o <file>), writing an archive that is not
+# GnuCOBOL's; or failing as curl -f does on an HTTP error, writing nothing.
+CURL_WRITES_JUNK = """out=
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = -o ]; then out=$2; shift; fi
+  shift
+done
+[ -n "$out" ] || exit 2
+printf 'not the GnuCOBOL 3.2 archive\\n' > "$out"
+"""
+CURL_FAILS = "exit 22\n"
+COBC_ANSWERS = """case $1 in
+  --version) echo 'cobc (GnuCOBOL) 3.2.0' ;;
+  --info) echo 'indexed file handler          : BDB' ;;
+esac
+"""
+# (download_fails, checksum_passes): only the verified archive reaches tar.
+README_BUILD_CASES = [
+    pytest.param(False, False, id="checksum-mismatch"),
+    pytest.param(True, False, id="download-fails"),
+    pytest.param(False, True, id="verified"),
+]
+
+
+def _readme_bash_block(heading: str, holding: str) -> str:
+    """The one fenced bash block of the README section ``heading`` (its
+    ``## `` line) that holds ``holding``."""
+    sections = re.split(r"(?m)^(?=## )", README_FILE.read_text(encoding="utf-8"))
+    section = [part for part in sections if part.startswith(f"{heading}\n")]
+    assert len(section) == 1, f"tests/README.md has {len(section)} sections {heading!r}"
+    blocks = [block for block in re.findall(r"(?ms)^```bash\n(.*?)^```$", section[0]) if holding in block]
+    assert len(blocks) == 1, f"{heading!r} has {len(blocks)} bash blocks holding {holding!r}"
+    return blocks[0]
+
+
+def _stub_log_line(name: str) -> str:
+    """Shell text appending ``name``, the working directory and every argument,
+    tab separated, as one line to ``$STUB_LOG``."""
+    return (
+        f"{{ printf '%s\\t%s' {shlex.quote(name)} \"$PWD\"; "
+        "for arg in \"$@\"; do printf '\\t%s' \"$arg\"; done; printf '\\n'; } >> \"$STUB_LOG\"\n"
+    )
+
+
+def _logging_stub(folder: Path, name: str, then: str = "") -> Path:
+    """An executable ``folder/name`` that logs its call, then runs ``then``."""
+    path = folder / name
+    path.write_text(f"#!/bin/sh\n{_stub_log_line(name)}{then}", encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
+def _stub_calls(case: Path) -> list[tuple[str, Path, list[str]]]:
+    """The calls the case's stubs logged, in order: name, working directory,
+    arguments."""
+    log = case / "stub.log"
+    if not log.exists():
+        return []
+    calls = []
+    for line in log.read_text(encoding="utf-8").splitlines():
+        name, cwd, *arguments = line.split("\t")
+        calls.append((name, Path(cwd), arguments))
+    return calls
+
+
+def _run_bash(case: Path, *arguments: str, **variables: str) -> subprocess.CompletedProcess[str]:
+    """``bash --noprofile --norc`` with ``arguments``, run in the case folder
+    with HOME, TMPDIR and the stub log inside it, its stub folder ahead of the
+    real PATH, and ``variables``."""
+    bash = shutil.which("bash")
+    assert bash is not None, "bash is not on PATH"
+    for folder in ("bin", "home", "tmp"):
+        (case / folder).mkdir(exist_ok=True)
+    environment = {
+        "HOME": str(case / "home"),
+        "TMPDIR": str(case / "tmp"),
+        "PATH": f"{case / 'bin'}{os.pathsep}{os.environ['PATH']}",
+        "STUB_LOG": str(case / "stub.log"),
+        **variables,
+    }
+    return subprocess.run(
+        [bash, "--noprofile", "--norc", *arguments],
+        cwd=case,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=LAUNCH_TIMEOUT_S,
+        check=False,
+    )
+
+
+@pytest.mark.parametrize(("download_fails", "checksum_passes"), README_BUILD_CASES)
+def test_readme_gnucobol_build_fails_closed(work_root_case: Path, download_fails: bool, checksum_passes: bool) -> None:
+    # The block must stop by itself: the pasting shell has no errexit, so the
+    # cobc lines after the subshell run in every case, and only a verified
+    # archive is extracted, configured and built.
+    block = _readme_bash_block("## Local setup", "sha256sum -c")
+    stubs = work_root_case / "bin"
+    stubs.mkdir()
+    _logging_stub(stubs, "sudo")
+    _logging_stub(stubs, "curl", CURL_FAILS if download_fails else CURL_WRITES_JUNK)
+    if checksum_passes:
+        _logging_stub(stubs, "sha256sum", 'cat > "$STUB_LOG.input"\n')
+    _logging_stub(
+        stubs,
+        "tar",
+        f"mkdir gnucobol-3.2\ncat > gnucobol-3.2/configure <<'CONFIGURE'\n#!/bin/sh\n{_stub_log_line('configure')}"
+        "CONFIGURE\nchmod 755 gnucobol-3.2/configure\n",
+    )
+    _logging_stub(stubs, "make")
+    _logging_stub(stubs, "cobc", COBC_ANSWERS)
+    completed = _run_bash(work_root_case, "-c", block)
+    calls = _stub_calls(work_root_case)
+    names = [name for name, _, _ in calls]
+    shown = (names, completed.stdout, completed.stderr)
+    assert names[:2] == ["sudo", "curl"] and names[-2:] == ["cobc", "cobc"], shown
+    _, build_dir, curl_arguments = calls[1]
+    assert GNUCOBOL_URL in curl_arguments, curl_arguments
+    assert build_dir.parent == work_root_case / "tmp", f"curl ran in {build_dir}, not a fresh folder of TMPDIR"
+    if download_fails or not checksum_passes:
+        assert not {"tar", "configure", "make"} & set(names), shown
+        assert not (build_dir / "gnucobol-3.2").exists()
+        if download_fails:
+            assert not (build_dir / "gnucobol-3.2.tar.xz").exists()
+        else:
+            assert "gnucobol-3.2.tar.xz: FAILED" in completed.stdout, shown
+        return
+    assert names == ["sudo", "curl", "sha256sum", "tar", "configure", "make", "make", "cobc", "cobc"], shown
+    assert (work_root_case / "stub.log.input").read_text(encoding="utf-8") == GNUCOBOL_CHECKSUM_LINE
+    source = build_dir / "gnucobol-3.2"
+    assert calls[3][1:] == (build_dir, ["-xJf", "gnucobol-3.2.tar.xz"])
+    assert calls[4][1:] == (source, [f"--prefix={work_root_case / 'home' / 'gnucobol-3.2'}", "--with-db"])
+    assert calls[5][1] == source and len(calls[5][2]) == 1 and re.fullmatch(r"-j[1-9][0-9]*", calls[5][2][0]), calls[5]
+    assert calls[6][1:] == (source, ["install"])
+    assert completed.returncode == 0, shown
+
+
+# python3.11 -m venv <folder> as the README launch calls it: an activate
+# script that changes nothing, so the stubs stay first on PATH. It reaches
+# the real mkdir past the stubs.
+VENV_MAKES_ACTIVATE = """if [ "$1" = -m ] && [ "$2" = venv ]; then
+  command -p mkdir -p "$3/bin" && : > "$3/bin/activate"
+fi
+"""
+MKTEMP_FAILS = "echo 'mktemp: failed to create directory' >&2\nexit 1\n"
+# Beside a failing mktemp, mkdir makes nothing: a launch that went on would
+# otherwise make /_pytest from the empty work root.
+MKDIR_MAKES_NOTHING = "exit 1\n"
+# pytest as the launch starts it: one JSON line per call to $STUB_LOG.pytest,
+# with the temporary root and work root it was given and what lstat sees there.
+PYTEST_RECORDER = """import json, os, sys
+
+
+def seen(path):
+    if not path:
+        return None
+    try:
+        status = os.lstat(path)
+    except OSError as exc:
+        return {"error": exc.strerror}
+    return {"mode": status.st_mode, "uid": status.st_uid}
+
+
+temproot = os.environ.get("PYTEST_DEBUG_TEMPROOT")
+workdir = os.environ.get("CARDDEMO_TEST_WORKDIR")
+with open(os.environ["STUB_LOG"] + ".pytest", "a", encoding="utf-8") as log:
+    log.write(json.dumps({"argv": sys.argv[1:], "temproot": temproot, "workdir": workdir,
+                          "temproot_seen": seen(temproot), "workdir_seen": seen(workdir)}) + "\\n")
+"""
+# Whether mktemp fails, as when TMPDIR cannot take a new folder.
+README_LAUNCH_CASES = [
+    pytest.param(False, id="fresh-work-root"),
+    pytest.param(True, id="mktemp-fails"),
+]
+
+
+def _owner_only_directory(seen: Mapping[str, int] | None) -> bool:
+    """Whether an lstat record is a real directory (no symbolic link) owned by
+    the effective user whose permission bits are 0700. A set-group-ID bit it
+    inherits from its parent, as under a set-group-ID /tmp, grants no access."""
+    return (
+        seen is not None
+        and "mode" in seen
+        and stat.S_ISDIR(seen["mode"])
+        and seen["mode"] & 0o777 == 0o700
+        and seen["uid"] == os.geteuid()
+    )
+
+
+@pytest.mark.parametrize("mktemp_fails", README_LAUNCH_CASES)
+def test_readme_launch_gives_pytest_a_private_temp_root(work_root_case: Path, mktemp_fails: bool) -> None:
+    # The pinned pytest's default temporary root, <temp dir>/pytest-of-<user>,
+    # is predictable (CVE-2025-71176): the launch starts pytest once, only with
+    # PYTEST_DEBUG_TEMPROOT naming a new owner-only folder of a fresh owner-only
+    # work root, and never when that root cannot be made.
+    block = _readme_bash_block("## Local setup", "pytest tests/")
+    stubs = work_root_case / "bin"
+    stubs.mkdir()
+    _logging_stub(stubs, "python3.11", VENV_MAKES_ACTIVATE)
+    _logging_stub(stubs, "pip")
+    if mktemp_fails:
+        _logging_stub(stubs, "mktemp", MKTEMP_FAILS)
+        _logging_stub(stubs, "mkdir", MKDIR_MAKES_NOTHING)
+    recorder = stubs / "pytest"
+    recorder.write_text(f"#!{sys.executable}\n{PYTEST_RECORDER}", encoding="utf-8")
+    recorder.chmod(0o755)
+    completed = _run_bash(work_root_case, "-c", block)
+    calls = _stub_calls(work_root_case)
+    runs_file = work_root_case / "stub.log.pytest"
+    runs = []
+    if runs_file.exists():
+        runs = [json.loads(line) for line in runs_file.read_text(encoding="utf-8").splitlines()]
+    shown = ([name for name, _, _ in calls], runs, completed.stdout, completed.stderr)
+    home = work_root_case / "home"
+    assert calls[0][0] == "python3.11" and calls[0][2] == ["-m", "venv", f"{home}/venvs/carddemo"], shown
+    assert calls[1][0] == "pip" and calls[1][2] == ["install", "-r", "tests/requirements.txt"], shown
+    if mktemp_fails:
+        assert [name for name, _, _ in calls[2:]] == ["mktemp"] and runs == [], shown
+        assert completed.returncode != 0, shown
+        assert list((work_root_case / "tmp").iterdir()) == []
+        return
+    assert len(runs) == 1 and runs[0]["argv"] == ["tests/"], shown
+    assert runs[0]["workdir"] and runs[0]["temproot"], "pytest ran without its work root or temporary root"
+    workdir, temproot = Path(runs[0]["workdir"]), Path(runs[0]["temproot"])
+    assert temproot.parent == workdir and temproot.name == "_pytest", shown
+    assert list((work_root_case / "tmp").iterdir()) == [workdir], "the work root is not a fresh folder of TMPDIR"
+    assert _owner_only_directory(runs[0]["temproot_seen"]), runs[0]["temproot_seen"]
+    assert _owner_only_directory(runs[0]["workdir_seen"]), runs[0]["workdir_seen"]
+    assert completed.returncode == 0, shown
+
+
+WORKFLOW_FILE = harness.REPO_ROOT / ".github" / "workflows" / "carddemo-tests.yml"
+# The action releases the suite pins, each by its exact tag.
+PINNED_ACTIONS = (
+    "actions/cache@v6.1.0",
+    "actions/checkout@v7.0.1",
+    "actions/setup-python@v7.1.0",
+    "actions/upload-artifact@v7.0.2",
+)
+
+
+def _workflow() -> dict:
+    """The workflow as YAML loads it (its ``on`` key loads as ``True``)."""
+    workflow = yaml.safe_load(WORKFLOW_FILE.read_text(encoding="utf-8"))
+    assert list(workflow["jobs"]) == ["characterization"], list(workflow["jobs"])
+    return workflow
+
+
+def test_workflow_actions_take_tls13_only() -> None:
+    # The pinned action releases bundle an undici that a TLS 1.2 peer
+    # renegotiating with another certificate ends on an assertion
+    # (CVE-2026-87018). Their Node processes take TLS 1.3 only, from the job's
+    # env, since the runner refuses NODE_OPTIONS from GITHUB_ENV, and nothing
+    # else sets NODE_OPTIONS.
+    workflow = _workflow()
+    job = workflow["jobs"]["characterization"]
+    environment = job.get("env") or {}
+    assert "NODE_OPTIONS" in environment, "the characterization job's env sets no NODE_OPTIONS"
+    options = str(environment["NODE_OPTIONS"]).split()
+    assert [option for option in options if option.startswith("--tls-")] == ["--tls-min-v1.3"], options
+    assert "NODE_OPTIONS" not in (workflow.get("env") or {})
+    for step in job["steps"]:
+        assert "NODE_OPTIONS" not in (step.get("env") or {}), step["name"]
+        assert "NODE_OPTIONS" not in step.get("run", ""), step["name"]
+    setting = [
+        line.strip()
+        for line in WORKFLOW_FILE.read_text(encoding="utf-8").splitlines()
+        if "NODE_OPTIONS" in line and not line.lstrip().startswith("#")
+    ]
+    assert setting == ["NODE_OPTIONS: --tls-min-v1.3"], setting
+    used = sorted(step["uses"] for step in job["steps"] if "uses" in step)
+    assert used == list(PINNED_ACTIONS), used
+
+
+# (runner umask, what already stands at <RUNNER_TEMP>/carddemo-work, what
+# already stands at its _pytest) when the Work root step runs. Either may be
+# nothing, an owner-only folder or a symbolic link to one; the work root may
+# also be a folder group can write (0775), as mkdir makes one under umask 002.
+WORK_ROOT_STEP_CASES = [
+    pytest.param(0o022, None, None, id="fresh-runner-temp"),
+    pytest.param(0o002, None, None, id="fresh-runner-temp-umask-002"),
+    pytest.param(0o022, "directory", None, id="work-root-exists"),
+    pytest.param(0o022, "group-writable", None, id="work-root-group-writable"),
+    pytest.param(0o022, "symlink", None, id="work-root-is-a-link"),
+    pytest.param(0o022, "directory", "directory", id="temp-root-exists"),
+    pytest.param(0o022, "directory", "symlink", id="temp-root-is-a-link"),
+]
+
+
+def _workflow_step(name: str) -> dict:
+    """The characterization job's one step called ``name``."""
+    steps = [step for step in _workflow()["jobs"]["characterization"]["steps"] if step.get("name") == name]
+    assert len(steps) == 1, f"the workflow has {len(steps)} steps named {name!r}"
+    return steps[0]
+
+
+def test_workflow_temp_root_precedes_runs_and_stays_out_of_upload() -> None:
+    # PYTEST_DEBUG_TEMPROOT is exported before either pytest run starts, and
+    # the artifact, which carries the failing scenarios' folders of the work
+    # root, leaves pytest's temporary root out.
+    names = [step.get("name") for step in _workflow()["jobs"]["characterization"]["steps"]]
+    assert names.index("Work root") < names.index("Run 1") < names.index("Run 2"), names
+    assert "PYTEST_DEBUG_TEMPROOT=" in _workflow_step("Work root")["run"]
+    paths = _workflow_step("Upload reports")["with"]["path"].splitlines()
+    assert "${{ env.CARDDEMO_TEST_WORKDIR }}" in paths, paths
+    assert "!${{ env.CARDDEMO_TEST_WORKDIR }}/_pytest" in paths, paths
+
+
+@pytest.mark.parametrize(("umask", "planted_root", "planted"), WORK_ROOT_STEP_CASES)
+def test_workflow_work_root_step_makes_a_private_temp_root(
+    work_root_case: Path, umask: int, planted_root: str | None, planted: str | None
+) -> None:
+    # Run as Actions runs a `shell: bash` step, under the runner's umask. The
+    # step makes the work root owner-only whatever the umask, so the session
+    # admits the root CARDDEMO_TEST_WORKDIR names instead of replacing it,
+    # and fails unless the root is then the runner user's own 0700 folder,
+    # not a link. It exports a temporary root only once it has made it, a new
+    # owner-only folder, and fails when anything already stands there, a
+    # symbolic link included.
+    script = work_root_case / "work-root-step.sh"
+    script.write_text(_workflow_step("Work root")["run"], encoding="utf-8")
+    runner_temp = work_root_case / "runner-temp"
+    runner_temp.mkdir()
+    github_env = work_root_case / "github-env"
+    github_env.touch()
+    root = runner_temp / "carddemo-work"
+    temp_root = root / "_pytest"
+    elsewhere = work_root_case / "elsewhere"
+    if planted_root == "symlink":
+        elsewhere.mkdir(mode=0o700)
+        elsewhere.chmod(0o700)
+        root.symlink_to(elsewhere, target_is_directory=True)
+    elif planted_root is not None:
+        root.mkdir(mode=0o700)
+        root.chmod(0o775 if planted_root == "group-writable" else 0o700)
+    if planted == "directory":
+        temp_root.mkdir()
+    elif planted == "symlink":
+        elsewhere.mkdir()
+        elsewhere.chmod(0o755)
+        temp_root.symlink_to(elsewhere, target_is_directory=True)
+    previous = os.umask(umask)
+    try:
+        completed = _run_bash(
+            work_root_case, "-eo", "pipefail", str(script), RUNNER_TEMP=str(runner_temp), GITHUB_ENV=str(github_env)
+        )
+    finally:
+        os.umask(previous)
+    exported = github_env.read_text(encoding="utf-8").splitlines()
+    shown = (exported, completed.stdout, completed.stderr)
+    if planted_root in ("group-writable", "symlink") or planted is not None:
+        # CARDDEMO_TEST_WORKDIR is exported first, so the upload paths stay valid.
+        assert completed.returncode != 0, shown
+        assert exported == [f"CARDDEMO_TEST_WORKDIR={root}"], shown
+        if planted is not None:
+            assert "File exists" in completed.stderr, shown
+            if planted == "symlink":
+                assert temp_root.is_symlink() and stat.S_IMODE(elsewhere.stat().st_mode) == 0o755
+                assert list(elsewhere.iterdir()) == []
+            return
+        assert "must be a directory of the runner user with mode 0700" in completed.stdout, shown
+        if planted_root == "symlink":
+            assert root.is_symlink() and stat.S_IMODE(elsewhere.stat().st_mode) == 0o700
+            assert list(elsewhere.iterdir()) == []
+        else:
+            assert stat.S_IMODE(os.lstat(root).st_mode) == 0o775, "the step changed the refused root's mode"
+            assert list(root.iterdir()) == []
+        return
+    assert completed.returncode == 0, shown
+    assert exported == [
+        f"CARDDEMO_TEST_WORKDIR={root}",
+        f"PYTEST_DEBUG_TEMPROOT={temp_root}",
+    ], shown
+    for folder in (root, temp_root):
+        status = os.lstat(folder)
+        assert _owner_only_directory({"mode": status.st_mode, "uid": status.st_uid}), (folder, oct(status.st_mode))
+    # The session's admission takes the root as it stands, so no fresh one replaces it.
+    assert usable_work_root(root) == root
 
 
 # CARDDEMO_ADAPTER value (None: unset) -> the adapter it selects, None when
@@ -9982,7 +14353,7 @@ def test_baseline_bumps_scratch_stays_in_the_work_root(carddemo_repo_root: Path,
     test_baseline_bumps', so the command need only end with a verdict (exit 0
     or 1 and its summary line, no traceback)."""
     work_root = work_root_case / "work root"
-    work_root.mkdir()
+    work_root.mkdir(mode=0o700)  # private under any umask, so the bump check admits it
     tracer = work_root_case / "tracer"
     tracer.mkdir()
     tracer_file = tracer / f"{MKDTEMP_TRACER_MODULE}.py"
@@ -10710,6 +15081,791 @@ def test_runner_conclude_skip_text_names_the_scenario_after_the_gap(
 
 
 # --------------------------------------------------------------------------
+# The scenario deadline over judging: decode_result, projection, compare,
+# the diff and the record's text stop at it, and runner.run ends a run whose
+# judging overruns it failing/timeout, with no outcome kept.
+# --------------------------------------------------------------------------
+
+# Under a far deadline each judging step gives what it gives without one, and at
+# a passed one it raises ScenarioTimeout naming the step, at the first, a middle
+# or the last clock reading, never as a finding. A diff of long lists or long
+# strings keeps its verdict and problem text and costs what it can show
+# (DIFF_MAX_LINES, DIFF_MAX_CHARS, counted through _yaml_lines). dump_yaml
+# writes committed records identically under a far deadline and raises
+# TimeoutError once it has passed, completion included. runner.run ends a run
+# whose judging, record or record text overruns the judge deadline
+# failing/timeout with no outcome, and keeps a result execute returned in time
+# when cleanup overruns the deadline.
+
+# An observed baseline asserting datasets, file states, reason codes and
+# messages, judged on the bytes it observed; and a scenario asserting only a
+# return code and messages, which a stand-in adapter can run.
+JUDGE_OBSERVED_SCENARIO = "TRN-POSTTRAN-normal-01"
+JUDGE_SCENARIO = "DAT-CBACT01C-normal-01"
+JUDGE_WORK_ROOT_PREFIX = "unit-judge-deadline-"
+JUDGE_DEADLINE_S = 1  # runner.DEADLINE_S in the runner cases
+JUDGE_FAR_S = 600  # a deadline no case reaches
+JUDGE_PAST_S = 0.05  # how far past a deadline a stand-in sleeps
+# A list of LONG_ITEMS items whose observed copy differs at index
+# LONG_CHANGED only.
+LONG_ITEMS = 200_000
+LONG_CHANGED = 150_000
+# The most YAML lines a diff of such a list may write through _yaml_lines.
+# A diff writes five windows of at most DIFF_MAX_LINES lines plus one item:
+# _window_end measures one to learn that a list does not fit and one per side
+# from the first difference, and _render writes both cut sides. The sixth
+# window covers each window's last-item overshoot and a mapping's own keys.
+# Writing whole values instead costs at least 2 * LONG_ITEMS lines.
+LONG_RENDERED_LINES = 6 * baselines.DIFF_MAX_LINES
+# The same bound on the characters those windows write, each string cut to
+# _DIFF_MAX_CHARS_PER_VALUE first; a string of LONG_CHARS characters written
+# whole on both sides costs more than it.
+LONG_RENDERED_CHARS = 6 * baselines.DIFF_MAX_CHARS
+LONG_CHARS = 10 * baselines.DIFF_MAX_CHARS
+# A long list value as a plain list or as {count, records}.
+LONG_SHAPES = [pytest.param(False, id="records-list"), pytest.param(True, id="count-and-records")]
+
+JUDGING_STEPS = [
+    pytest.param("decode_result", "decoding the result", id="decode_result"),
+    pytest.param("projection", "projecting the decoded outcome", id="projection"),
+    pytest.param("compare", "comparing the result", id="compare"),
+]
+# Where, among the clock readings of a whole step, the deadline passes.
+DEADLINE_READINGS = [
+    pytest.param(0.0, id="first-loop-reading"),
+    pytest.param(0.5, id="midway"),
+    pytest.param(1.0, id="last-reading"),
+]
+
+
+class _ReadingClock:
+    """A ``time.monotonic`` stand-in: ``0.0`` for its first ``before``
+    readings, then a time past every deadline; ``readings`` counts them."""
+
+    def __init__(self, before: float = float("inf")) -> None:
+        self.before = before
+        self.readings = 0
+
+    def __call__(self) -> float:
+        self.readings += 1
+        return 0.0 if self.readings <= self.before else float("inf")
+
+
+class _YamlLineCount:
+    """A ``baselines._yaml_lines`` stand-in returning what ``yaml_lines``
+    returns; ``lines`` totals the YAML lines it has returned and ``chars``
+    their characters, a line break counted for each."""
+
+    def __init__(self, yaml_lines: Callable[..., list[str]]) -> None:
+        self.yaml_lines = yaml_lines
+        self.lines = 0
+        self.chars = 0
+
+    def __call__(self, value: object, *deadline: object) -> list[str]:
+        written = self.yaml_lines(value, *deadline)
+        self.lines += len(written)
+        self.chars += sum(len(line) + 1 for line in written)
+        return written
+
+
+@pytest.fixture
+def judge_work_root(carddemo_work_root: Path) -> Iterator[Path]:
+    """A fresh, empty work root of this case's own inside the session's,
+    removed afterwards with any working directory a failing run kept."""
+    directory = Path(tempfile.mkdtemp(prefix=JUDGE_WORK_ROOT_PREFIX, dir=carddemo_work_root))
+    try:
+        yield directory
+    finally:
+        shutil.rmtree(directory)
+
+
+def _observed_result(baseline: baselines.Baseline) -> base.Result:
+    """A result holding what ``baseline`` observed: its return code, its
+    messages, its raw datasets and its ``@CATALOG`` lines, which have no
+    raw bytes."""
+    catalog = baseline.expected["file_state"][base.CATALOG]
+    return base.Result(
+        return_code=baseline.expected["return_code"],
+        messages=list(baseline.expected["messages"]),
+        datasets={**baseline.datasets, base.CATALOG: ("\n".join(catalog) + "\n").encode("ascii")},
+    )
+
+
+def _judging_step(
+    step: str, scenario: scenarios.Scenario, baseline: baselines.Baseline, result: base.Result, **deadline: float
+) -> object:
+    """Run one judging step of ``baselines`` with ``deadline`` (``projection``
+    on an unbounded ``decode_result``)."""
+    if step == "decode_result":
+        return baselines.decode_result(scenario, result, **deadline)
+    if step == "projection":
+        return baselines.projection(baselines.decode_result(scenario, result), scenario, baseline, **deadline)
+    return baselines.compare(scenario, baseline, result, "gnucobol-batch", **deadline)
+
+
+@pytest.mark.parametrize(("step", "interrupted"), JUDGING_STEPS)
+def test_judging_steps_stop_at_a_passed_deadline_and_are_unchanged_before_it(step: str, interrupted: str) -> None:
+    scenario = scenarios.get(JUDGE_OBSERVED_SCENARIO)
+    baseline = baselines.load(scenario.id)
+    result = _observed_result(baseline)
+    unbounded = _judging_step(step, scenario, baseline, result)
+    if step == "compare":
+        assert unbounded == ("passed", None, "")
+    assert _judging_step(step, scenario, baseline, result, deadline=time.monotonic() + JUDGE_FAR_S) == unbounded
+    with pytest.raises(base.ScenarioTimeout) as caught:
+        _judging_step(step, scenario, baseline, result, deadline=time.monotonic())
+    assert str(caught.value) == f"the scenario deadline passed while {interrupted}"
+
+
+@pytest.mark.parametrize("share", DEADLINE_READINGS)
+@pytest.mark.parametrize("step", [param.values[0] for param in JUDGING_STEPS])
+def test_a_deadline_passing_inside_a_judging_step_always_interrupts_it(
+    monkeypatch: pytest.MonkeyPatch, step: str, share: float
+) -> None:
+    """With the clock read at every loop iteration, a deadline that passes at
+    a reading after the step's entry check raises ScenarioTimeout at that
+    reading: no check of the step turns it into a finding, a marker or a
+    diff and goes on."""
+    scenario = scenarios.get(JUDGE_OBSERVED_SCENARIO)
+    baseline = baselines.load(scenario.id)
+    result = _observed_result(baseline)
+    monkeypatch.setattr(baselines, "_DEADLINE_EVERY", 1)
+    counting = _ReadingClock()
+    monkeypatch.setattr(baselines, "time", SimpleNamespace(monotonic=counting))
+    assert _judging_step(step, scenario, baseline, result, deadline=1.0) == _judging_step(
+        step, scenario, baseline, result
+    )
+    assert counting.readings > 2
+    passing = _ReadingClock(before=1 + round(share * (counting.readings - 2)))
+    monkeypatch.setattr(baselines, "time", SimpleNamespace(monotonic=passing))
+    with pytest.raises(base.ScenarioTimeout) as caught:
+        _judging_step(step, scenario, baseline, result, deadline=1.0)
+    assert str(caught.value).startswith("the scenario deadline passed while ")
+    # The entry check passed; the reading after the deadline was the last.
+    assert passing.before >= 1 and passing.readings == passing.before + 1
+
+
+@pytest.mark.parametrize("counted", LONG_SHAPES)
+def test_a_long_mismatch_keeps_its_verdict_with_a_bounded_diff_at_its_first_difference(
+    monkeypatch: pytest.MonkeyPatch, counted: bool
+) -> None:
+    lines = [f"LINE {number:06d}" for number in range(LONG_ITEMS)]
+    observed = list(lines)
+    observed[LONG_CHANGED] = "CHANGED"
+    stored = {"count": LONG_ITEMS, "records": lines} if counted else lines
+    key = f"file_state.{base.CATALOG}"
+    scenario = dataclasses.replace(scenarios.get(JUDGE_SCENARIO), expected={"file_state": {base.CATALOG: "baseline"}})
+    baseline = baselines.Baseline(scenario.id, {"file_state": {base.CATALOG: stored}}, DERIVED_MANIFEST)
+    result = base.Result(return_code=0, datasets={base.CATALOG: ("\n".join(observed) + "\n").encode("ascii")})
+    written = _YamlLineCount(baselines._yaml_lines)
+    monkeypatch.setattr(baselines, "_yaml_lines", written)
+    status, reason, diff = baselines.compare(scenario, baseline, result, "gnucobol-batch")
+    assert 0 < written.lines <= LONG_RENDERED_LINES
+    assert (status, reason) == ("failing", "assertion")
+    shown = diff.splitlines()
+    assert len(shown) <= baselines.DIFF_MAX_LINES + 1
+    assert shown[:2] == [
+        f"{scenario.id}: {key}: differs from the baseline",
+        f"  - {key} record {LONG_CHANGED + 1}: expected 'LINE {LONG_CHANGED:06d}', got 'CHANGED'",
+    ]
+    leading = f"{LONG_CHANGED - 3} identical leading item(s) and "
+    assert shown[2].startswith(f"  ... records: {leading}" if counted else f"  ... {leading}")
+    changed = [line for line in shown if line.startswith(("-- ", "+- "))]
+    assert changed == [f"-- LINE {LONG_CHANGED:06d}", "+- CHANGED"]
+
+
+# The actual side of a long record list, the lines the diff must show at the
+# first difference, and how its line saying what is left out begins: the
+# records with one balance changed, or the marker of a dataset not produced,
+# against which the expected records are shown from the first.
+LONG_RECORD_ACTUALS = [
+    pytest.param(
+        False,
+        ["-  ACCT-CURR-BAL: '194.00'", "+  ACCT-CURR-BAL: '0.00'", f"   ACCT-ID: '{LONG_CHANGED:011d}'"],
+        f"  ... {LONG_CHANGED - 3} identical leading item(s) and ",
+        id="records-differ",
+    ),
+    # A record is three YAML lines, so the window ends with the record that
+    # brings it to DIFF_MAX_LINES lines.
+    pytest.param(
+        True,
+        ["-- ACCT-ACTIVE-STATUS: Y", "-  ACCT-CURR-BAL: '194.00'", "-  ACCT-ID: '00000000000'"],
+        f"  ... {LONG_ITEMS - (baselines.DIFF_MAX_LINES // 3 + 1)} expected trailing item(s)",
+        id="records-not-produced",
+    ),
+]
+
+
+@pytest.mark.parametrize(("missing", "first_difference", "left_out"), LONG_RECORD_ACTUALS)
+def test_the_diff_of_long_record_lists_shows_the_records_at_the_first_difference(
+    monkeypatch: pytest.MonkeyPatch, missing: bool, first_difference: list[str], left_out: str
+) -> None:
+    records = [
+        {"ACCT-ID": f"{number:011d}", "ACCT-ACTIVE-STATUS": "Y", "ACCT-CURR-BAL": "194.00"}
+        for number in range(LONG_ITEMS)
+    ]
+    observed = [dict(record) for record in records]
+    observed[LONG_CHANGED]["ACCT-CURR-BAL"] = "0.00"
+    actual: object = {"@missing": True} if missing else observed
+    finding = baselines._Finding("baseline", "datasets.ACCTDATA", ["datasets.ACCTDATA: differs"], records, actual)
+    written = _YamlLineCount(baselines._yaml_lines)
+    monkeypatch.setattr(baselines, "_yaml_lines", written)
+    shown = baselines._render([finding], JUDGE_SCENARIO).splitlines()
+    assert 0 < written.lines <= LONG_RENDERED_LINES
+    assert len(shown) <= baselines.DIFF_MAX_LINES + 1
+    assert shown[2].startswith(left_out) and shown[2].endswith(" trailing item(s) not shown")
+    at = shown.index(first_difference[0])
+    assert shown[at : at + len(first_difference)] == first_difference
+
+
+# A diff shows a string whole up to this many characters, and a longer one
+# cut to them and this marker of the characters LONG_CHARS leaves out.
+SHOWN_CHARS = baselines._DIFF_MAX_CHARS_PER_VALUE
+LONG_MARKER = f"... ({LONG_CHARS - SHOWN_CHARS} more character(s) not shown)"
+# Expected and observed messages holding outsize strings, and the lines the
+# diff must show in order: one long line on one side, long lines on both
+# sides, and DIFF_MAX_LINES lines just short of the cut, so that the
+# character cap, not the line cap, ends the diff.
+LONG_STRINGS = [
+    pytest.param(
+        ["expected"], ["X" * LONG_CHARS], ["-- expected", f"+- {'X' * SHOWN_CHARS}{LONG_MARKER}"], id="one-side"
+    ),
+    pytest.param(
+        ["A" * LONG_CHARS],
+        ["B" * LONG_CHARS],
+        [f"-- {'A' * SHOWN_CHARS}{LONG_MARKER}", f"+- {'B' * SHOWN_CHARS}{LONG_MARKER}"],
+        id="both-sides",
+    ),
+    pytest.param(
+        [f"{number:04d}{'A' * (SHOWN_CHARS - 4)}" for number in range(baselines.DIFF_MAX_LINES)],
+        [f"{number:04d}{'B' * (SHOWN_CHARS - 4)}" for number in range(baselines.DIFF_MAX_LINES)],
+        [f"-- 0000{'A' * (SHOWN_CHARS - 4)}", f"-- 0001{'A' * (SHOWN_CHARS - 4)}"],
+        id="character-cap",
+    ),
+]
+
+
+@pytest.mark.parametrize(("stored", "observed", "lines"), LONG_STRINGS)
+def test_a_long_string_mismatch_keeps_its_verdict_with_a_diff_within_the_character_cap(
+    monkeypatch: pytest.MonkeyPatch, stored: list[str], observed: list[str], lines: list[str]
+) -> None:
+    scenario = dataclasses.replace(scenarios.get(JUDGE_SCENARIO), expected={"messages": "baseline"})
+    baseline = baselines.Baseline(scenario.id, {"messages": stored}, DERIVED_MANIFEST)
+    result = base.Result(return_code=0, messages=observed)
+    unbounded = baselines.compare(scenario, baseline, result, "gnucobol-batch")
+    written = _YamlLineCount(baselines._yaml_lines)
+    monkeypatch.setattr(baselines, "_yaml_lines", written)
+    status, reason, diff = baselines.compare(
+        scenario, baseline, result, "gnucobol-batch", deadline=time.monotonic() + JUDGE_FAR_S
+    )
+    assert (status, reason, diff) == unbounded
+    assert (status, reason) == ("failing", "assertion")
+    assert 0 < written.chars <= LONG_RENDERED_CHARS
+    assert len(diff) <= baselines.DIFF_MAX_CHARS
+    shown = diff.splitlines()
+    assert shown[:2] == [
+        f"{scenario.id}: messages: differs from the baseline",
+        f"  - messages record 1: expected {baselines._show(stored[0])}, got {baselines._show(observed[0])}",
+    ]
+    at = shown.index(lines[0])
+    assert shown[at : at + len(lines)] == lines
+    if len(stored) == baselines.DIFF_MAX_LINES:
+        assert re.fullmatch(r"\.\.\. diff truncated: [0-9]+ more character\(s\) not shown", shown[-1])
+
+
+# Values a diff writes, and the same values with every string cut as it
+# shows them: whole at the limit, cut past it inside lists, tuples and
+# mappings, and of two mapping keys that cut to the same text, the second
+# kept whole so that no entry is lost.
+LONG_KEY = "K" * (SHOWN_CHARS + 5)
+CLIPPED_VALUES = [
+    pytest.param("X" * SHOWN_CHARS, "X" * SHOWN_CHARS, id="string-at-the-limit"),
+    pytest.param("X" * (SHOWN_CHARS + 7), f"{'X' * SHOWN_CHARS}... (7 more character(s) not shown)", id="long-string"),
+    pytest.param(
+        {"F": ["Y" * (SHOWN_CHARS + 1), 5, None], "G": ("Z" * (SHOWN_CHARS + 2),)},
+        {
+            "F": [f"{'Y' * SHOWN_CHARS}... (1 more character(s) not shown)", 5, None],
+            "G": [f"{'Z' * SHOWN_CHARS}... (2 more character(s) not shown)"],
+        },
+        id="nested",
+    ),
+    pytest.param(
+        {f"{LONG_KEY}1": "a", f"{LONG_KEY}2": "b"},
+        {f"{'K' * SHOWN_CHARS}... (6 more character(s) not shown)": "a", f"{LONG_KEY}2": "b"},
+        id="keys-cut-alike",
+    ),
+]
+
+
+@pytest.mark.parametrize(("value", "shown"), CLIPPED_VALUES)
+def test_a_diff_cuts_every_long_string_it_writes_and_keeps_every_key(value: object, shown: object) -> None:
+    original = copy.deepcopy(value)
+    assert baselines._clipped(value, baselines._UNBOUNDED) == shown
+    assert value == original
+
+
+# Committed result records: the largest file, a job's with datasets, file
+# states and reason codes, a program's messages, and one with no decoded
+# outcome (implemented-unexecuted).
+DUMPED_RECORDS = [
+    pytest.param(scenario_id, id=scenario_id)
+    for scenario_id in ("RPT-CBSTM03A-normal-01", JUDGE_OBSERVED_SCENARIO, JUDGE_SCENARIO, "DAT-CBACT01C-recovery-02")
+]
+
+
+@pytest.mark.parametrize("scenario_id", DUMPED_RECORDS)
+def test_dump_yaml_writes_a_committed_record_the_same_under_a_far_deadline(scenario_id: str) -> None:
+    value = load_yaml(RESULTS_DIR / f"{scenario_id}.yaml")
+    assert dump_yaml(value, deadline=time.monotonic() + JUDGE_FAR_S) == dump_yaml(value)
+
+
+@pytest.mark.parametrize(
+    "share", [pytest.param(None, id="before-writing"), *DEADLINE_READINGS]
+)
+def test_dump_yaml_raises_timeout_error_once_its_deadline_has_passed(
+    monkeypatch: pytest.MonkeyPatch, share: float | None
+) -> None:
+    value = load_yaml(RESULTS_DIR / f"{JUDGE_OBSERVED_SCENARIO}.yaml")
+    if share is None:
+        with pytest.raises(TimeoutError):
+            dump_yaml(value, deadline=time.monotonic())
+        return
+    counting = _ReadingClock()
+    monkeypatch.setattr(harness, "time", SimpleNamespace(monotonic=counting))
+    assert dump_yaml(value, deadline=1.0) == dump_yaml(value)
+    # The clock is read at every node and scalar; the last reading is taken
+    # once the text is complete, so text finished past the deadline is
+    # refused too.
+    passing = _ReadingClock(before=1 + round(share * (counting.readings - 2)))
+    monkeypatch.setattr(harness, "time", SimpleNamespace(monotonic=passing))
+    with pytest.raises(TimeoutError):
+        dump_yaml(value, deadline=1.0)
+    assert passing.readings == passing.before + 1
+
+
+class _PassingClock:
+    """A ``time.monotonic`` stand-in: ``0.0`` until ``passed`` is set, then a
+    time past every deadline."""
+
+    def __init__(self) -> None:
+        self.passed = False
+
+    def __call__(self) -> float:
+        return float("inf") if self.passed else 0.0
+
+
+# Values holding three long scalars, as list items, mapping values and
+# mapping keys; DUMPED_LONG_CHARS is longer than any other scalar in them.
+DUMPED_LONG_CHARS = 10_000
+DUMPED_LONG_SCALARS = [f"{index}{'X' * DUMPED_LONG_CHARS}" for index in range(3)]
+LONG_SCALAR_VALUES = [
+    pytest.param({"messages": DUMPED_LONG_SCALARS}, id="list-items"),
+    pytest.param({f"key{index}": text for index, text in enumerate(DUMPED_LONG_SCALARS)}, id="mapping-values"),
+    pytest.param({text: index for index, text in enumerate(DUMPED_LONG_SCALARS)}, id="mapping-keys"),
+]
+
+
+@pytest.mark.parametrize("value", LONG_SCALAR_VALUES)
+def test_dump_yaml_raises_timeout_error_right_after_the_long_scalar_its_deadline_passes_in(
+    monkeypatch: pytest.MonkeyPatch, value: dict
+) -> None:
+    """Time passes while the emitter analyses the first long scalar it
+    writes; the reading that follows that scalar raises, before any other
+    long scalar is written."""
+    clock = _PassingClock()
+    analysed: list[str] = []
+    analyze = yaml.emitter.Emitter.analyze_scalar
+
+    def analysing(emitter: yaml.emitter.Emitter, scalar: str) -> object:
+        if len(scalar) > DUMPED_LONG_CHARS:
+            analysed.append(scalar)
+            clock.passed = True
+        return analyze(emitter, scalar)
+
+    monkeypatch.setattr(yaml.emitter.Emitter, "analyze_scalar", analysing)
+    monkeypatch.setattr(harness, "time", SimpleNamespace(monotonic=clock))
+    with pytest.raises(TimeoutError):
+        dump_yaml(value, deadline=1.0)
+    assert len(analysed) == 1
+
+
+@pytest.mark.parametrize(
+    ("text", "refused"),
+    [
+        pytest.param(None, False, id="no-text"),
+        pytest.param("{rendered}# rendered by the runner\n", False, id="text"),
+        pytest.param("{rendered}", True, id="refused-record"),
+    ],
+)
+def test_results_write_writes_the_record_text_once_the_record_passes_its_checks(
+    judge_work_root: Path, text: str | None, refused: bool
+) -> None:
+    record = results.load(JUDGE_SCENARIO)
+    assert record is not None
+    if refused:
+        record = {**record, "status": "unknown"}
+    rendered = dump_yaml(dict(record))
+    given = None if text is None else text.format(rendered=rendered)
+    outcome = SimpleNamespace(adapter="gnucobol-batch", scenario_id=JUDGE_SCENARIO, record=record, record_text=given)
+    folder = judge_work_root / "results"
+    if refused:
+        with pytest.raises(results.ResultError):
+            results.write(outcome, results_dir=folder)
+        assert not folder.exists()
+        return
+    path = results.write(outcome, results_dir=folder)
+    assert path is not None and path.read_text(encoding="utf-8") == (rendered if given is None else given)
+
+
+def _sleep_past(deadline: float) -> None:
+    time.sleep(max(0.0, deadline - time.monotonic()) + JUDGE_PAST_S)
+
+
+class _JudgedAdapter:
+    """A gnucobol-batch stand-in that can observe everything and returns
+    ``result`` from ``execute`` at once; with ``overrun_cleanup`` its
+    ``cleanup`` returns only once the deadline the runner armed has
+    passed."""
+
+    name = "gnucobol-batch"
+
+    def __init__(self, work_root: Path, result: base.Result, overrun_cleanup: bool = False) -> None:
+        self.work_root = work_root
+        self.deadline: float | None = None
+        self.result = result
+        self.overrun_cleanup = overrun_cleanup
+
+    def can_observe(self, observation: str) -> bool:
+        return True
+
+    def prepare(self, scenario: object, workdir: Path) -> None:
+        return None
+
+    def execute(self, scenario: object, workdir: Path) -> base.Result:
+        return self.result
+
+    def cleanup(self, scenario: object, workdir: Path) -> None:
+        if self.overrun_cleanup and self.deadline is not None:
+            _sleep_past(self.deadline)
+
+
+def _overrunning(real: Callable[..., object], stops: bool) -> Callable[..., object]:
+    """``real``, a step taking ``deadline=``, called with a deadline only once
+    that deadline has passed (``stops``), or called without it and returning
+    once it has passed; called without a deadline, ``real`` unchanged."""
+
+    def step(*args: object, deadline: float | None = None, **kwargs: object) -> object:
+        if deadline is None:
+            return real(*args, **kwargs)
+        if stops:
+            _sleep_past(deadline)
+            return real(*args, deadline=deadline, **kwargs)
+        value = real(*args, **kwargs)
+        _sleep_past(deadline)
+        return value
+
+    return step
+
+
+def _kept_runtimes(monkeypatch: pytest.MonkeyPatch, work_root: Path) -> list[dict[str, object]]:
+    """The runtime files the runner writes, kept in memory, with nothing
+    written in the repository."""
+    runtimes: list[dict[str, object]] = []
+
+    def keep_runtime(scenario_id: str, data: Mapping[str, object]) -> Path:
+        runtimes.append(dict(data))
+        return work_root / f"{scenario_id}.yaml"
+
+    monkeypatch.setattr(results, "write_runtime", keep_runtime)
+    monkeypatch.setattr(results, "write_environment", lambda env: work_root / "environment.yaml")
+    return runtimes
+
+
+@pytest.mark.parametrize(
+    ("owner", "name", "stops", "phase", "superseded"),
+    [
+        pytest.param(baselines, "decode_result", True, "decoding the result", None, id="decode_result"),
+        pytest.param(baselines, "projection", True, "projecting the decoded result", None, id="projection"),
+        pytest.param(baselines, "compare", True, "comparing the result", None, id="compare"),
+        pytest.param(baselines, "compare", False, "judging the result", "passed", id="compare-returns-late"),
+        pytest.param(runner, "dump_yaml", True, "rendering the result record", "passed", id="record-text"),
+    ],
+)
+def test_a_run_whose_judging_overruns_the_deadline_is_a_timeout_without_an_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+    judge_work_root: Path,
+    owner: object,
+    name: str,
+    stops: bool,
+    phase: str,
+    superseded: str | None,
+) -> None:
+    monkeypatch.setattr(runner, "DEADLINE_S", JUDGE_DEADLINE_S)
+    monkeypatch.setattr(owner, name, _overrunning(getattr(owner, name), stops))
+    runtimes = _kept_runtimes(monkeypatch, judge_work_root)
+    messages = list(baselines.load(JUDGE_SCENARIO).expected["messages"])
+    adapter = _JudgedAdapter(judge_work_root, base.Result(return_code=0, messages=messages, elapsed_s=0.25))
+    outcome = runner.run(JUDGE_SCENARIO, adapter)
+    assert (outcome.status, outcome.reason) == ("failing", "timeout"), outcome.diff
+    assert outcome.diff == (
+        f"{JUDGE_SCENARIO}: timeout: the scenario deadline of {JUDGE_DEADLINE_S} s passed while {phase}"
+    )
+    assert outcome.decoded is None and outcome.result is None
+    assert outcome.record is not None and outcome.record["decoded"] is None
+    assert (outcome.record["status"], outcome.record["reason"]) == ("failing", "timeout")
+    assert outcome.record_text == dump_yaml(dict(outcome.record))
+    assert outcome.workdir is not None and outcome.workdir.parent == judge_work_root.resolve()
+    [runtime] = runtimes
+    assert runtime["timeout_phase"] == phase
+    assert runtime["elapsed_execute_s"] == 0.25
+    if superseded is None:
+        assert "superseded" not in runtime
+    else:
+        assert str(runtime["superseded"]).startswith(f"before the timeout the run was {superseded}")
+
+
+@pytest.mark.parametrize(
+    ("return_code", "status", "reason"),
+    [pytest.param(0, "passed", None, id="passed"), pytest.param(4, "failing", "assertion", id="failing")],
+)
+def test_a_result_returned_in_time_stands_when_cleanup_overruns_the_deadline(
+    monkeypatch: pytest.MonkeyPatch, judge_work_root: Path, return_code: int, status: str, reason: str | None
+) -> None:
+    monkeypatch.setattr(runner, "DEADLINE_S", JUDGE_DEADLINE_S)
+    runtimes = _kept_runtimes(monkeypatch, judge_work_root)
+    messages = list(baselines.load(JUDGE_SCENARIO).expected["messages"])
+    adapter = _JudgedAdapter(
+        judge_work_root, base.Result(return_code=return_code, messages=messages), overrun_cleanup=True
+    )
+    started = time.monotonic()
+    outcome = runner.run(JUDGE_SCENARIO, adapter)
+    assert time.monotonic() - started > JUDGE_DEADLINE_S
+    assert (outcome.status, outcome.reason) == (status, reason), outcome.diff
+    assert outcome.decoded is not None and outcome.decoded["messages"] == messages
+    assert outcome.record is not None and outcome.record["decoded"] is not None
+    assert outcome.record_text == dump_yaml(dict(outcome.record))
+    [runtime] = runtimes
+    assert "timeout_phase" not in runtime
+
+
+def _late_once(real: Callable[..., object]) -> Callable[..., object]:
+    """``real``, its first call returning only once the judge deadline of a
+    run under ``JUDGE_DEADLINE_S`` has passed: that deadline lies at most
+    ``JUDGE_DEADLINE_S`` after the end of ``cleanup``, which comes first.
+    Later calls are ``real`` unchanged."""
+    called: list[bool] = []
+
+    def step(*args: object, **kwargs: object) -> object:
+        value = real(*args, **kwargs)
+        if not called:
+            called.append(True)
+            time.sleep(JUDGE_DEADLINE_S + JUDGE_PAST_S)
+        return value
+
+    return step
+
+
+# The steps after judging whose work must be finished before the judge
+# deadline, each finishing in full past it: the owner and name of what the
+# stand-in replaces, the stand-in, and the step the timeout names. The record
+# text is written without a deadline, so dump_yaml itself never raises.
+LATE_STEPS = [
+    pytest.param(runner, "_identify", _late_once, "identifying the run", id="identify"),
+    pytest.param(results, "build_record", _late_once, "building the result record", id="record"),
+    pytest.param(
+        runner,
+        "dump_yaml",
+        functools.partial(_overrunning, stops=False),
+        "rendering the result record",
+        id="record-text",
+    ),
+]
+
+
+@pytest.mark.parametrize("compare", [pytest.param(True, id="compared"), pytest.param(False, id="capture")])
+@pytest.mark.parametrize(("owner", "name", "late", "phase"), LATE_STEPS)
+def test_a_run_whose_record_is_finished_past_the_judge_deadline_is_a_timeout_without_an_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+    judge_work_root: Path,
+    owner: object,
+    name: str,
+    late: Callable[[Callable[..., object]], Callable[..., object]],
+    phase: str,
+    compare: bool,
+) -> None:
+    monkeypatch.setattr(runner, "DEADLINE_S", JUDGE_DEADLINE_S)
+    monkeypatch.setattr(owner, name, late(getattr(owner, name)))
+    runtimes = _kept_runtimes(monkeypatch, judge_work_root)
+    messages = list(baselines.load(JUDGE_SCENARIO).expected["messages"])
+    adapter = _JudgedAdapter(judge_work_root, base.Result(return_code=0, messages=messages, elapsed_s=0.25))
+    outcome = runner.run(JUDGE_SCENARIO, adapter, compare=compare)
+    assert (outcome.status, outcome.reason) == ("failing", "timeout"), outcome.diff
+    assert outcome.diff == (
+        f"{JUDGE_SCENARIO}: timeout: the scenario deadline of {JUDGE_DEADLINE_S} s passed while {phase}"
+    )
+    assert outcome.decoded is None and outcome.result is None
+    assert outcome.record is not None and outcome.record["decoded"] is None
+    assert (outcome.record["status"], outcome.record["reason"]) == ("failing", "timeout")
+    assert outcome.record_text == dump_yaml(dict(outcome.record))
+    [runtime] = runtimes
+    assert runtime["timeout_phase"] == phase
+    assert str(runtime["superseded"]).startswith("before the timeout the run was passed")
+
+
+def test_decoding_stops_at_a_deadline_passing_among_the_screens(monkeypatch: pytest.MonkeyPatch) -> None:
+    scenario = dataclasses.replace(
+        scenarios.get(JUDGE_SCENARIO), expected={"screens": [{base.SCREEN_MAP: "COSGN0A"}]}
+    )
+    result = base.Result(return_code=0, screens=[{base.SCREEN_MAP: "COSGN0A"}] * 3)
+    monkeypatch.setattr(baselines, "_DEADLINE_EVERY", 1)
+    # The entry check reads the clock first; the deadline passes at the next
+    # reading, the first screen's.
+    monkeypatch.setattr(baselines, "time", SimpleNamespace(monotonic=_ReadingClock(before=1)))
+    with pytest.raises(base.ScenarioTimeout) as caught:
+        baselines.decode_result(scenario, result, deadline=1.0)
+    assert str(caught.value) == "the scenario deadline passed while decoding the screens"
+
+
+@pytest.mark.parametrize(
+    ("text", "shown"),
+    [
+        pytest.param("AB\udcff", repr("AB\udcff"), id="short"),
+        pytest.param(
+            "A" * (2 * results._TEXT_SHOWN_CHARS) + "\udcff", f"{'A' * results._TEXT_SHOWN_CHARS!r}...", id="long"
+        ),
+    ],
+)
+def test_a_record_text_holding_a_lone_surrogate_is_refused_showing_at_most_its_start(text: str, shown: str) -> None:
+    with pytest.raises(results.ResultError) as caught:
+        results.build_record(
+            scenarios.get(JUDGE_SCENARIO), "gnucobol-batch", "failing", reason="error", decoded={"messages": [text]}
+        )
+    offset = len(text) - 1
+    assert (
+        f"decoded.messages[0]: text {shown} holds the lone surrogate '\\udcff' at offset {offset}, "
+        "which no record can hold"
+    ) in str(caught.value)
+
+
+# --------------------------------------------------------------------------
+# runner.run stopped by the schema check: the failing record names the
+# version of the baseline it stands against, so it is current and its
+# scenario counts as failing, never as stale.
+# --------------------------------------------------------------------------
+
+# How the schema check stops the run of SCHEMA_DEMOTION_SCENARIO: it lists
+# the problems of the scenario's return-code-only copy (_return_code_only),
+# or it raises SCHEMA_STOP_RAISED on the committed scenario.
+SCHEMA_STOP_CASES = [
+    pytest.param(False, id="schema-problems"),
+    pytest.param(True, id="schema-check-raised"),
+]
+SCHEMA_STOP_RAISED = "the schema check itself is broken"
+# Whether the baseline can be read once the schema check has stopped the run;
+# an unreadable one raises BaselineError with SCHEMA_STOP_UNREADABLE.
+SCHEMA_STOP_BASELINES = [
+    pytest.param(True, id="baseline-read"),
+    pytest.param(False, id="baseline-unreadable"),
+]
+SCHEMA_STOP_UNREADABLE = "manifest.yaml is not valid YAML"
+
+
+class _SchemaStopAdapter:
+    """A gnucobol-batch adapter for runs the schema check stops: ``prepare``
+    and ``execute`` must never be called, and ``cleanup`` records the
+    scenario id and working directory of each call."""
+
+    name = results.GNUCOBOL
+
+    def __init__(self, work_root: Path) -> None:
+        self.work_root = work_root
+        self.deadline: float | None = None
+        self.cleaned: list[tuple[str, Path]] = []
+
+    def prepare(self, scenario: scenarios.Scenario, workdir: Path) -> None:
+        raise AssertionError(f"prepare was called for {scenario.id}")
+
+    def execute(self, scenario: scenarios.Scenario, workdir: Path) -> base.Result:
+        raise AssertionError(f"execute was called for {scenario.id}")
+
+    def cleanup(self, scenario: scenarios.Scenario, workdir: Path) -> None:
+        self.cleaned.append((scenario.id, workdir))
+
+
+@pytest.mark.parametrize("readable", SCHEMA_STOP_BASELINES)
+@pytest.mark.parametrize("raised", SCHEMA_STOP_CASES)
+def test_runner_records_a_schema_stop_against_the_baseline_it_stands_against(
+    monkeypatch: pytest.MonkeyPatch, work_root_case: Path, raised: bool, readable: bool
+) -> None:
+    """The run is ``failing``/``error`` with the schema check's diff, its
+    record names the committed baseline's version, which the gnucobol-batch
+    execution id is derived from, and ``results.is_current`` holds, so the
+    scenario counts as failing. A baseline that cannot be read leaves the
+    verdict and diff as they were, the record without a version (so stale)
+    and a ``baseline_error`` note. Nothing reaches ``prepare``, and the
+    runtime writer is replaced, so nothing is written in the repository."""
+    committed = scenarios.get(SCHEMA_DEMOTION_SCENARIO)
+    baseline = baselines.load(SCHEMA_DEMOTION_SCENARIO)
+    if raised:
+        scenario = committed
+
+        def broken(checked: scenarios.Scenario) -> list[str]:
+            raise RuntimeError(SCHEMA_STOP_RAISED)
+
+        monkeypatch.setattr(scenarios, "validate", broken)
+        diff = f"{scenario.id}: the schema check raised: RuntimeError: {SCHEMA_STOP_RAISED}"
+    else:
+        scenario = _return_code_only(committed)
+        problems = scenarios.validate(scenario)
+        assert any(RETURN_CODE_ONLY in problem for problem in problems), problems
+        diff = f"{scenario.id}: the scenario fails the schema check:\n" + "\n".join(problems)
+    if not readable:
+
+        def unreadable(baseline_id: str, missing_ok: bool = False, **kwargs: object) -> baselines.Baseline:
+            raise baselines.BaselineError(f"{baseline_id}: {SCHEMA_STOP_UNREADABLE}")
+
+        monkeypatch.setattr(baselines, "load", unreadable)
+    runtimes: list[dict[str, object]] = []
+
+    def keep_runtime(scenario_id: str, data: Mapping[str, object]) -> Path:
+        runtimes.append(dict(data))
+        return work_root_case / f"{scenario_id}.yaml"
+
+    monkeypatch.setattr(results, "write_runtime", keep_runtime)
+    adapter = _SchemaStopAdapter(work_root_case)
+    outcome = runner.run(scenario, adapter)
+    assert (outcome.status, outcome.reason, outcome.gap_id) == (results.STATUS_FAILING, runner.REASON_ERROR, None)
+    assert outcome.diff == diff
+    assert adapter.cleaned == [(scenario.id, work_root_case / scenario.id)]
+    assert outcome.workdir is None and not (work_root_case / scenario.id).exists()
+    record = outcome.record
+    assert record is not None
+    assert (record["status"], record["reason"], record["gap_id"]) == (
+        results.STATUS_FAILING,
+        runner.REASON_ERROR,
+        None,
+    )
+    version = baseline.version if readable else None
+    assert record["baseline_version"] == version
+    assert record["scenario_digest"] == scenarios.digest(scenario)
+    commit = harness.git_head()
+    assert record["execution_id"] == results.execution_id(
+        results.GNUCOBOL, scenario, version, None, None if commit == "unknown" else commit
+    )
+    assert results.is_current(record, scenario, baseline) is readable
+    assert len(runtimes) == 1 and runtimes[0]["diff"] == diff
+    note = (
+        "its baseline cannot be read, so the record names no baseline version: "
+        f"BaselineError: {SCHEMA_DEMOTION_SCENARIO}: {SCHEMA_STOP_UNREADABLE}"
+    )
+    if readable:
+        assert "baseline_error" not in runtimes[0] and note not in outcome.detail
+        assert report.scenario_status(scenario, [record]).status == results.STATUS_FAILING
+    else:
+        assert runtimes[0]["baseline_error"] == note and note in outcome.detail
+
+
+# --------------------------------------------------------------------------
 # UniKixAdapter.close on fakes: the region and BPE the session started are
 # stopped, and a stop that could not run is kept and raised.
 # --------------------------------------------------------------------------
@@ -11286,6 +16442,83 @@ def test_matrix_pairs_each_execution_id_with_its_evidence_path(
     }
     # The i-th execution id is the one recorded in the i-th evidence path.
     assert list(zip(row["execution_id"].split(";"), row["evidence_path"].split(";"), strict=True)) == pairs
+
+
+# --------------------------------------------------------------------------
+# CSV formula neutralization: a register or matrix cell whose text begins
+# with a spreadsheet formula prefix is written with a leading "'", the state
+# it was rendered from keeps the exact text, and the matrix check reads the
+# rows back as render_matrix wrote them.
+# --------------------------------------------------------------------------
+
+CSV_GAP_ID = "GAP-UNC-001"
+CSV_AFFECTED = "INV-DAT-001"
+CSV_FORMULA_CASES = [
+    pytest.param("=1+1", "'=1+1", id="equals"),
+    pytest.param("+1+1", "'+1+1", id="plus"),
+    pytest.param("-1+1", "'-1+1", id="minus"),
+    pytest.param("@SUM(A1)", "'@SUM(A1)", id="at"),
+    pytest.param("\t=1+1", "'\t=1+1", id="tab"),
+    pytest.param("\r=1+1", "'\r=1+1", id="carriage-return"),
+    pytest.param("\n=1+1", "'\n=1+1", id="line-feed"),
+    pytest.param("\uff1d1+1", "'\uff1d1+1", id="full-width-equals"),
+    pytest.param("\uff0b1+1", "'\uff0b1+1", id="full-width-plus"),
+    pytest.param("\uff0d1+1", "'\uff0d1+1", id="full-width-minus"),
+    pytest.param("\uff20SUM(A1)", "'\uff20SUM(A1)", id="full-width-at"),
+    # Text that begins with no prefix is written as it is.
+    pytest.param("The owner's statement of purpose", "The owner's statement of purpose", id="plain"),
+    pytest.param("a=1+1", "a=1+1", id="inner-equals"),
+    pytest.param("", "", id="empty"),
+    pytest.param(None, "", id="none"),
+    pytest.param("'=1+1", "'=1+1", id="leading-apostrophe"),
+]
+
+
+@pytest.mark.parametrize(("text", "cell"), CSV_FORMULA_CASES)
+def test_register_csv_neutralizes_formula_prefixes_and_leaves_the_entry_exact(text: str | None, cell: str) -> None:
+    entry = {
+        "category": "uncertain-purpose", "unknown": text, "affected_inventory_ids": [CSV_AFFECTED],
+        "resolving_evidence": text, "needed": text, "status": "open",
+    }
+    original = copy.deepcopy(entry)
+    state = SimpleNamespace(gaps=SimpleNamespace(entries={CSV_GAP_ID: entry}), affected={CSV_GAP_ID: [CSV_AFFECTED]})
+    rows = list(csv.reader(io.StringIO(report.render_register(state))))
+    assert rows == [
+        list(report.REGISTER_HEADER),
+        [CSV_GAP_ID, "uncertain-purpose", cell, CSV_AFFECTED, cell, cell, "open"],
+    ]
+    assert entry == original
+
+
+def test_matrix_csv_neutralizes_formula_prefixes_and_the_check_reads_its_rows_back(
+    work_root_case: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The inventory refuses an id that is not INV-<AREA>-<nnn>; the second id
+    # stands for any row name the check must compare as render_matrix wrote it.
+    items = [
+        {"id": "INV-TRN-077", "source": '=HYPERLINK("http://example.invalid")'},
+        {"id": "@INV-TRN-078", "source": "app/cbl/CBTRN02C.cbl:414-420"},
+    ]
+    original = copy.deepcopy(items)
+    state = SimpleNamespace(
+        items=items, scenarios={}, statuses={},
+        item_scenarios={item["id"]: [] for item in items},
+        item_status={item["id"]: report.NOT_COVERED for item in items},
+    )
+    text = report.render_matrix(state)
+    assert list(csv.reader(io.StringIO(text))) == [
+        list(report.MATRIX_HEADER),
+        ["INV-TRN-077", '\'=HYPERLINK("http://example.invalid")', "", "", report.NOT_COVERED, "", ""],
+        ["'@INV-TRN-078", "app/cbl/CBTRN02C.cbl:414-420", "", "", report.NOT_COVERED, "", ""],
+    ]
+    assert items == original
+    matrix = work_root_case / "coverage-matrix.csv"
+    monkeypatch.setattr(report, "MATRIX_FILE", matrix)
+    matrix.write_text(text, encoding="utf-8")
+    assert report._matrix_findings(state) == []
+    # A row left out is still named.
+    matrix.write_text("".join(text.splitlines(keepends=True)[:2]), encoding="utf-8")
+    assert report._matrix_findings(state) == ["coverage matrix: no row for 1 inventory items: '@INV-TRN-078"]
 
 
 # --------------------------------------------------------------------------
