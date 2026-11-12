@@ -1130,9 +1130,10 @@ def _linked_folder(folder: Path) -> bool:
 def refused_link(scenario_id: str | None = None, *, results_dir: str | PurePath = RESULTS_DIR) -> Path | None:
     """The symbolic link ``load`` and ``load_all`` refuse to read through,
     so a caller can tell a refused record from an absent one: the results
-    folder's parent or the folder itself, else, for ``scenario_id``, its
-    record file ``<id>.yaml``; ``None`` when there is none, and for an id
-    outside the closed manifest, which ``load`` never looks up."""
+    folder's parent, else the folder itself, when it is one, whatever
+    ``scenario_id`` is; else, for an id of the closed manifest, its record
+    file ``<id>.yaml`` when that is one; ``None`` otherwise. An id outside
+    the manifest, which ``load`` never looks up, yields no record-file link."""
     folder = Path(results_dir)
     link = _folder_link(folder)
     if link is not None or scenario_id is None:

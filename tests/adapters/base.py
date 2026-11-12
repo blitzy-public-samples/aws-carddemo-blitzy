@@ -481,7 +481,6 @@ def parse_after_job(key: Any) -> tuple[str, str] | None:
     return job, logical
 
 
-# The stage of a region stage observation -> the prefix of its name.
 _REGION_STAGE_PREFIXES = {"before": BEFORE_PREFIX, "after": AFTER_PREFIX}
 
 

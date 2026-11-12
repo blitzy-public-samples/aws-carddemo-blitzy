@@ -25,8 +25,10 @@ listener of a test-owned region, which must be on loopback. In CI
 ``blocked``. Their baselines are derived from the source and tagged
 ``inferred-not-observed`` (GAP-INF-002). Sign-on uses only the demo users
 ``ADMIN001`` and ``USER0001`` with their documented password ``PASSWORD``, an
-invented wrong password, and the invented id ``NOSUCHID``; the scenario files
-hold these inputs, and this module names no credential, host or port.
+invented wrong password, and the invented id ``NOSUCHID``. The ``SEC-*.yaml``
+scenario files hold these inputs, and ``adapters/unikix/tpe.py`` reads the
+listener address from ``CARDDEMO_TN3270_ADDR`` and refuses any host that is
+not loopback; the test code below carries neither.
 
 Outcome to pytest, through ``harness.runner.conclude``: ``passed`` passes;
 ``failing`` raises ``AssertionError`` carrying the diff; ``blocked`` and
