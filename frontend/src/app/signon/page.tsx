@@ -210,9 +210,10 @@ export default function SignonPage() {
                     <CardContent>
                         <Box component="form" onSubmit={HandleSubmit} noValidate>
                             <Stack spacing={3}>
-                                <Box sx={{ display: 'flex', justifyContent: 'center' }}>
+                                {/* Spacing-free, so the logo keeps the auto margins that center it. */}
+                                <Stack>
                                     <BrandLogo placement="signon" />
-                                </Box>
+                                </Stack>
                                 <Typography variant="h5" component="h1" align="center">
                                     Blitzy Sign On
                                 </Typography>

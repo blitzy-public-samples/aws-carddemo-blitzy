@@ -59,7 +59,6 @@ import {
     Divider,
     IconButton,
     Button,
-    Stack,
 } from '@mui/material';
 import {
     Dashboard,
@@ -703,20 +702,12 @@ export function AppShell(props: AppShellProps) {
                     <Button
                         color="inherit"
                         onClick={() => HandleNavigate(HOME_ROUTE)}
-                        sx={{ textTransform: 'none' }}
+                        sx={{ textTransform: 'none', gap: 1, flexShrink: 0, mr: 2 }}
                     >
-                        {/* A `span` row keeps the button's content phrasing-only. */}
-                        <Stack
-                            component="span"
-                            direction="row"
-                            spacing={1}
-                            sx={{ alignItems: 'center' }}
-                        >
-                            <BrandLogo placement="header" />
-                            <Typography variant="h6" component="span">
-                                {APP_TITLE}
-                            </Typography>
-                        </Stack>
+                        <BrandLogo placement="header" />
+                        <Typography variant="h6" component="span">
+                            {APP_TITLE}
+                        </Typography>
                     </Button>
                     <Box sx={{ flexGrow: 1 }} />
                     {currentUser ? (
@@ -739,6 +730,7 @@ export function AppShell(props: AppShellProps) {
                             <Button
                                 color="inherit"
                                 startIcon={<LogoutIcon />}
+                                sx={{ flexShrink: 0 }}
                                 onClick={HandleLogout}
                                 disabled={isLoggingOut}
                                 aria-busy={isLoggingOut}
